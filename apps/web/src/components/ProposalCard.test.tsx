@@ -1782,7 +1782,8 @@ describe("ProposalCard", () => {
 				],
 			};
 			render(<ProposalCard proposal={withAmbiguous} onDecide={onDecide} />);
-			// The accept toggle for the ambiguous node is disabled.
+			// The accept toggle for the ambiguous node is disabled UNTIL a candidate
+			// is picked.
 			expect(
 				screen.getByRole("button", { name: /accept morris/i }),
 			).toBeDisabled();
@@ -1795,6 +1796,193 @@ describe("ProposalCard", () => {
 			expect(onDecide).toHaveBeenCalledWith("reject", undefined, [
 				{ handle: "@morris", decision: "reject" },
 			]);
+		});
+
+		// The disambiguation picker (#181): an ambiguous node renders its candidates
+		// as an inline radio list; picking one collapses the node ambiguous → reuse.
+		describe("ambiguous candidate picker", () => {
+			// These tests seed the process-shared, module-level `libraryItems.current`
+			// (via seedTwoMorris / the fallback []); restore it after each so the m1/m2
+			// cache can't leak into sibling tests regardless of run order.
+			afterEach(() => {
+				libraryItems.current = [];
+			});
+
+			const ambiguousProposal: PendingProposal = {
+				...graphProposal,
+				payload: { links: [] },
+				resolved_plan: [
+					{
+						handle: "@morris",
+						type: "person",
+						disposition: "ambiguous",
+						label: "Morris",
+						candidates: [
+							{ entity_id: "m1", label: "Morris" },
+							{ entity_id: "m2", label: "Morris" },
+						],
+					},
+				],
+			};
+
+			// Two same-named People distinguished only by their note — the subtitle is
+			// the disambiguator (the candidate labels are identical exact-name matches).
+			const seedTwoMorris = () => {
+				libraryItems.current = [
+					{
+						id: "m1",
+						kind: "person",
+						name: "Morris",
+						note: "from the Rodeo sync",
+					} as LibraryItem,
+					{
+						id: "m2",
+						kind: "person",
+						name: "Morris",
+						note: "the Lead Ads contact",
+					} as LibraryItem,
+				];
+			};
+
+			it("renders a radio per candidate with an enriched disambiguating subtitle", () => {
+				seedTwoMorris();
+				render(
+					<ProposalCard proposal={ambiguousProposal} onDecide={() => {}} />,
+				);
+				const radios = screen.getAllByRole<HTMLInputElement>("radio");
+				expect(radios).toHaveLength(2);
+				// None is pre-selected — an explicit pick is forced (equal exact matches).
+				expect(radios.every((r) => !r.checked)).toBe(true);
+				// The subtitle (libraryItemSubtitle → person note) distinguishes the rows.
+				expect(screen.getByText(/from the Rodeo sync/i)).toBeInTheDocument();
+				expect(screen.getByText(/the Lead Ads contact/i)).toBeInTheDocument();
+			});
+
+			it("keeps accept disabled until a candidate is picked, then enables it", () => {
+				seedTwoMorris();
+				render(
+					<ProposalCard proposal={ambiguousProposal} onDecide={() => {}} />,
+				);
+				expect(
+					screen.getByRole("button", { name: /accept morris/i }),
+				).toBeDisabled();
+				// Pick the first candidate.
+				fireEvent.click(screen.getAllByRole("radio")[0]);
+				expect(
+					screen.getByRole("button", { name: /accept morris/i }),
+				).toBeEnabled();
+				// The badge flips from "Needs disambiguation" to a reuse "Existing «…»".
+				expect(
+					screen.queryByText("Needs disambiguation"),
+				).not.toBeInTheDocument();
+				expect(screen.getByText(/Existing «Morris»/)).toBeInTheDocument();
+			});
+
+			it("Apply submits the picked candidate's entity_id as an accept", () => {
+				seedTwoMorris();
+				const onDecide = vi.fn();
+				render(
+					<ProposalCard proposal={ambiguousProposal} onDecide={onDecide} />,
+				);
+				// Pick the SECOND Morris, then Apply.
+				fireEvent.click(screen.getAllByRole("radio")[1]);
+				fireEvent.click(screen.getByRole("button", { name: /apply 1 item/i }));
+				expect(onDecide).toHaveBeenCalledWith("accept", undefined, [
+					{ handle: "@morris", decision: "accept", entity_id: "m2" },
+				]);
+			});
+
+			it("re-picking switches the chosen candidate", () => {
+				seedTwoMorris();
+				const onDecide = vi.fn();
+				render(
+					<ProposalCard proposal={ambiguousProposal} onDecide={onDecide} />,
+				);
+				fireEvent.click(screen.getAllByRole("radio")[0]);
+				fireEvent.click(screen.getAllByRole("radio")[1]);
+				fireEvent.click(screen.getByRole("button", { name: /apply 1 item/i }));
+				expect(onDecide).toHaveBeenCalledWith("accept", undefined, [
+					{ handle: "@morris", decision: "accept", entity_id: "m2" },
+				]);
+			});
+
+			it("picking after an explicit reject re-accepts the node (forces accept)", () => {
+				seedTwoMorris();
+				const onDecide = vi.fn();
+				render(
+					<ProposalCard proposal={ambiguousProposal} onDecide={onDecide} />,
+				);
+				// Reject the node explicitly, THEN pick a candidate — the pick must
+				// override the stale `reject` in the buffer (not just set the repoint).
+				fireEvent.click(screen.getByRole("button", { name: /reject morris/i }));
+				fireEvent.click(screen.getAllByRole("radio")[0]);
+				fireEvent.click(screen.getByRole("button", { name: /apply 1 item/i }));
+				expect(onDecide).toHaveBeenCalledWith("accept", undefined, [
+					{ handle: "@morris", decision: "accept", entity_id: "m1" },
+				]);
+			});
+
+			it("a pending (unpicked) ambiguous node's Reject toggle reads un-pressed", () => {
+				seedTwoMorris();
+				render(
+					<ProposalCard proposal={ambiguousProposal} onDecide={() => {}} />,
+				);
+				// The node sits at the reject DEFAULT but is awaiting a pick — its Reject
+				// toggle must not look pre-engaged (it reads pending, not dismissed).
+				expect(
+					screen.getByRole("button", { name: /reject morris/i }),
+				).toHaveAttribute("aria-pressed", "false");
+				// After an explicit reject it IS pressed.
+				fireEvent.click(screen.getByRole("button", { name: /reject morris/i }));
+				expect(
+					screen.getByRole("button", { name: /reject morris/i }),
+				).toHaveAttribute("aria-pressed", "true");
+			});
+
+			it("the dynamic note disappears once the ambiguous node is PICKED", () => {
+				seedTwoMorris();
+				render(
+					<ProposalCard proposal={ambiguousProposal} onDecide={() => {}} />,
+				);
+				expect(
+					screen.getByText(/match more than one existing entry/i),
+				).toBeInTheDocument();
+				// Once picked, the guidance note disappears (the node is resolved).
+				fireEvent.click(screen.getAllByRole("radio")[0]);
+				expect(
+					screen.queryByText(/match more than one existing entry/i),
+				).not.toBeInTheDocument();
+			});
+
+			it("the dynamic note disappears once the ambiguous node is explicitly REJECTED", () => {
+				// The other way `unresolvedAmbiguous` goes false: an explicit reject of the
+				// sole ambiguous node resolves it (decline), so the "pick or reject" nag must
+				// also clear — not just on a pick.
+				seedTwoMorris();
+				render(
+					<ProposalCard proposal={ambiguousProposal} onDecide={() => {}} />,
+				);
+				expect(
+					screen.getByText(/match more than one existing entry/i),
+				).toBeInTheDocument();
+				fireEvent.click(screen.getByRole("button", { name: /reject morris/i }));
+				expect(
+					screen.queryByText(/match more than one existing entry/i),
+				).not.toBeInTheDocument();
+			});
+
+			it("falls back to the label when a candidate is not in the library cache", () => {
+				libraryItems.current = []; // no enrichment available
+				render(
+					<ProposalCard proposal={ambiguousProposal} onDecide={() => {}} />,
+				);
+				// Both candidate rows still render (by their label), pickable.
+				expect(screen.getAllByRole("radio")).toHaveLength(2);
+				fireEvent.click(screen.getAllByRole("radio")[0]);
+				expect(
+					screen.getByRole("button", { name: /accept morris/i }),
+				).toBeEnabled();
+			});
 		});
 
 		it("renders the Existing badge for a reuse-disposition node", () => {

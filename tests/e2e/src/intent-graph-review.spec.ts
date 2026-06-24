@@ -1,6 +1,7 @@
 import path from "node:path";
 import { expect, test } from "./fixtures.js";
 import {
+	seedAcceptedPerson,
 	seedAcceptedProject,
 	seedParkedIntentGraphProposal,
 	sqlite,
@@ -406,5 +407,125 @@ test("'Create new instead' overrides the near-match and mints the new Project", 
 			dbPath,
 			`SELECT COUNT(*) FROM entities WHERE type = 'project' AND json_extract(data, '$.name') = ${sqlValue("Lead Ads testing")};`,
 		),
+	).toBe("1");
+});
+
+// --- Ambiguous-node disambiguation picker (#181) ----------------------------
+// When extraction's @morris node matches 2+ existing People named "Morris", Core
+// marks the node `ambiguous` and surfaces the competing candidates. The picker lets
+// the user choose WHICH existing Morris the node reuses: picking writes that
+// entity_id as the per-node override, collapsing ambiguous → reuse, so an otherwise
+// force-rejected capture applies. (The override apply is Rust-unit-tested in
+// decide.rs `decision_vector_entity_id_override_resolves_ambiguous`; this proves the
+// full UI → wire → apply path.)
+
+const MORRIS_ONE_ID = "01900000-0000-7000-8000-00000000d001";
+const MORRIS_TWO_ID = "01900000-0000-7000-8000-00000000d002";
+// The two Morris People are told apart ONLY by their note — the disambiguating
+// subtitle the picker renders (libraryItemSubtitle). Asserting on these in the real
+// proposal/get → library cache → subtitle path pins the affordance that justifies
+// the picker (identical labels otherwise).
+const MORRIS_ONE_NOTE = "from the Rodeo sync";
+const MORRIS_TWO_NOTE = "the Lead Ads contact";
+const AMBIGUOUS_NOTE = "Synced with Morris on the Rodeo side";
+
+// A graph: a Todo linked to the ambiguous @morris person node (no project), so the
+// only plan nodes are the Todo (create) and Morris (ambiguous).
+const AMBIGUOUS_GRAPH = {
+	journal_entry: {
+		handle: "@je",
+		occurred_at: "2026-06-10T17:00:00",
+		body: [
+			{ type: "text", text: "Synced with " },
+			{ type: "entity_ref", target: "@morris" },
+			{ type: "text", text: " on the Rodeo side." },
+		],
+	},
+	entities: [
+		{ handle: "@morris", type: "person", name: "Morris" },
+		{ handle: "@rodeo", type: "todo", title: "Figure out the Rodeo side" },
+	],
+	links: [
+		{ kind: "todo_person", from: "@rodeo", to: "@morris", role: "related" },
+		{ kind: "journal_ref", from: "@je", to: "@morris" },
+	],
+};
+
+test("picking a candidate for an ambiguous node reuses the chosen existing entity", async ({
+	chat,
+	workspace,
+}) => {
+	const dbPath = dbPathFor(workspace.path);
+	// TWO accepted People named "Morris" with DISTINCT notes, so the @morris node
+	// resolves `ambiguous` and the picker can tell the candidates apart by subtitle.
+	seedAcceptedPerson(dbPath, MORRIS_ONE_ID, "Morris", MORRIS_ONE_NOTE);
+	seedAcceptedPerson(dbPath, MORRIS_TWO_ID, "Morris", MORRIS_TWO_NOTE);
+	seedParkedIntentGraphProposal(dbPath, {
+		graph: AMBIGUOUS_GRAPH,
+		title: AMBIGUOUS_NOTE,
+	});
+
+	await chat.goto();
+	await chat.openThread(AMBIGUOUS_NOTE);
+
+	const card = chat.page.locator('[data-proposal-kind="apply_intent_graph"]');
+	await expect(card).toBeVisible({ timeout: 15_000 });
+
+	// The Morris node renders ambiguous with a 2-candidate picker; it is NOT yet
+	// acceptable (accept disabled), so the Apply count covers only the Todo.
+	const morrisRow = card.locator('[data-graph-node="@morris"]');
+	await expect(morrisRow).toContainText("Needs disambiguation");
+	// Each candidate carries its disambiguating SUBTITLE, resolved through the REAL
+	// proposal/get → library cache → libraryItemSubtitle path (not a mocked hook) —
+	// the affordance that lets the user tell two identically-named People apart.
+	await expect(
+		morrisRow.locator(`[data-candidate="${MORRIS_ONE_ID}"]`),
+	).toContainText(MORRIS_ONE_NOTE);
+	await expect(
+		morrisRow.locator(`[data-candidate="${MORRIS_TWO_ID}"]`),
+	).toContainText(MORRIS_TWO_NOTE);
+	await expect(
+		card.getByRole("button", { name: /accept morris/i }),
+	).toBeDisabled();
+	await expect(
+		card.getByText(/match more than one existing entry/i),
+	).toBeVisible();
+	// Unpicked: Apply sweeps only the Todo (Morris stays reject-only).
+	await expect(
+		card.getByRole("button", { name: /apply 1 item/i }),
+	).toBeVisible();
+
+	const runId = await card.getAttribute("data-proposal");
+	expect(runId).not.toBeNull();
+	const decidedCard = chat.page.locator(`[data-proposal="${runId}"]`);
+
+	// Pick the SECOND Morris — the node flips to reuse and is re-pointed onto it.
+	await morrisRow.locator(`[data-candidate="${MORRIS_TWO_ID}"] input`).check();
+	await expect(morrisRow).toHaveAttribute("data-node-repoint", MORRIS_TWO_ID);
+	await expect(morrisRow).toContainText("Existing «Morris»");
+	// Now both nodes are acceptable → Apply covers 2 items.
+	await card.getByRole("button", { name: /apply 2 items/i }).click();
+	await expect(decidedCard).toContainText(/applied/i, { timeout: 15_000 });
+
+	// NO third Morris minted — exactly the two seeded People remain.
+	expect(
+		count(dbPath, "SELECT COUNT(*) FROM entities WHERE type = 'person';"),
+	).toBe("2");
+	// The Todo's person ref points at the CHOSEN Morris (MORRIS_TWO_ID), not the other.
+	expect(
+		count(
+			dbPath,
+			`SELECT COUNT(*) FROM todo_person_refs WHERE person_id = ${sqlValue(MORRIS_TWO_ID)};`,
+		),
+	).toBe("1");
+	expect(
+		count(
+			dbPath,
+			`SELECT COUNT(*) FROM todo_person_refs WHERE person_id = ${sqlValue(MORRIS_ONE_ID)};`,
+		),
+	).toBe("0");
+	// The Todo itself was created (one Todo total).
+	expect(
+		count(dbPath, "SELECT COUNT(*) FROM entities WHERE type = 'todo';"),
 	).toBe("1");
 });

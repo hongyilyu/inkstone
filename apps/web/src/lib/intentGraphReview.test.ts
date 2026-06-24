@@ -6,13 +6,15 @@ import {
 	allRejected,
 	buildDecisions,
 	buildEditedFields,
+	candidateSubtitle,
 	downgradeNotices,
 	draftLabel,
 	draftRequiredEmpty,
 	type GraphLink,
 	type GraphNodeDraft,
-	hasAmbiguous,
+	getOwn,
 	isAcceptable,
+	type NodeStage,
 	parseGraphEntities,
 	parseGraphLinks,
 	type RepointBuffer,
@@ -22,6 +24,7 @@ import {
 	seedNodeDraft,
 	setStage,
 	stageFor,
+	summarizeDecisions,
 } from "./intentGraphReview.js";
 
 const createTodo: ResolvedNode = {
@@ -50,25 +53,79 @@ const ambiguousPerson: ResolvedNode = {
 
 const PLAN: ResolvedNode[] = [createTodo, reuseProject, ambiguousPerson];
 
-describe("isAcceptable / hasAmbiguous", () => {
-	it("create and reuse are acceptable; ambiguous is not", () => {
+describe("isAcceptable", () => {
+	it("create and reuse are acceptable; an unpicked ambiguous is not", () => {
 		expect(isAcceptable(createTodo)).toBe(true);
 		expect(isAcceptable(reuseProject)).toBe(true);
 		expect(isAcceptable(ambiguousPerson)).toBe(false);
 	});
 
-	it("hasAmbiguous detects an ambiguous node", () => {
-		expect(hasAmbiguous(PLAN)).toBe(true);
-		expect(hasAmbiguous([createTodo, reuseProject])).toBe(false);
+	it("a PICKED ambiguous node is acceptable; an unpicked one is reject-only (#181)", () => {
+		// The whole feature: a pick (an entity_id recorded in the repoint buffer)
+		// flips the ambiguous node from reject-only to acceptable.
+		expect(isAcceptable(ambiguousPerson, { "@morris": "m1" })).toBe(true);
+		expect(isAcceptable(ambiguousPerson, {})).toBe(false);
+		// A repoint entry for a DIFFERENT handle does not make THIS node acceptable.
+		expect(isAcceptable(ambiguousPerson, { "@other": "m1" })).toBe(false);
+	});
+
+	it("a create node's acceptability is unaffected by the repoint buffer", () => {
+		expect(isAcceptable(createTodo, {})).toBe(true);
+		expect(isAcceptable(createTodo, { "@rodeo": "x" })).toBe(true);
+	});
+});
+
+// A model-supplied handle equal to an Object.prototype key must NOT make a
+// handle-keyed buffer read surface an inherited member (the `in`/direct-index
+// vs Object.hasOwn hazard the module already guards in `repointFor`). Pins the
+// guard for the staging buffer + draft reads (stageFor / buildDecisions).
+describe("prototype-key handle safety on the staging + draft buffers", () => {
+	const protoTodo: ResolvedNode = {
+		handle: "toString",
+		type: "todo",
+		disposition: "create",
+		label: "toString",
+	};
+
+	it("getOwn returns undefined for an inherited key on an empty record", () => {
+		expect(getOwn<NodeStage>({}, "toString")).toBeUndefined();
+		expect(getOwn<NodeStage>({}, "constructor")).toBeUndefined();
+		// An OWN entry is still returned.
+		expect(getOwn({ toString: "accept" as NodeStage }, "toString")).toBe(
+			"accept",
+		);
+	});
+
+	it("stageFor falls back to the node default for a prototype-key handle, never an inherited fn", () => {
+		const stage = stageFor({}, protoTodo);
+		expect(stage).toBe("accept"); // create node default — not Object.prototype.toString
+		expect(typeof stage).not.toBe("function");
+	});
+
+	it("buildDecisions ignores an inherited draft for a prototype-key handle (plain accept)", () => {
+		// Empty drafts: a direct `drafts["toString"]` would surface the inherited
+		// function and ride into buildEditedFields; getOwn must yield undefined → a
+		// plain accept with no edited_fields.
+		const vector = buildDecisions([protoTodo], {}, {}, new Map(), {});
+		expect(vector).toEqual([{ handle: "toString", decision: "accept" }]);
+		expect(vector[0]).not.toHaveProperty("edited_fields");
 	});
 });
 
 describe("stageFor defaults", () => {
-	it("acceptable nodes default to accept; ambiguous defaults to reject", () => {
+	it("acceptable nodes default to accept; an unpicked ambiguous defaults to reject", () => {
 		const empty: StagingBuffer = {};
 		expect(stageFor(empty, createTodo)).toBe("accept");
 		expect(stageFor(empty, reuseProject)).toBe("accept");
 		expect(stageFor(empty, ambiguousPerson)).toBe("reject");
+	});
+
+	it("a PICKED ambiguous node defaults to accept (it is now acceptable)", () => {
+		// With a pick recorded, the ambiguous node's default flips to accept, so a
+		// plain Apply (empty staging buffer) sweeps it in like any reuse node.
+		expect(stageFor({}, ambiguousPerson, { "@morris": "m2" })).toBe("accept");
+		// Without a pick it stays reject by default.
+		expect(stageFor({}, ambiguousPerson, {})).toBe("reject");
 	});
 
 	it("an explicit entry overrides the default", () => {
@@ -78,9 +135,14 @@ describe("stageFor defaults", () => {
 });
 
 describe("setStage respects the ambiguous accept-block (#181)", () => {
-	it("ignores an accept request on an ambiguous node", () => {
+	it("ignores an accept request on an UNPICKED ambiguous node", () => {
 		const buffer = setStage({}, ambiguousPerson, "accept");
 		expect(stageFor(buffer, ambiguousPerson)).toBe("reject");
+	});
+
+	it("allows accept on a PICKED ambiguous node", () => {
+		const buffer = setStage({}, ambiguousPerson, "accept", { "@morris": "m1" });
+		expect(buffer["@morris"]).toBe("accept");
 	});
 
 	it("accepts a create/reuse node", () => {
@@ -88,17 +150,26 @@ describe("setStage respects the ambiguous accept-block (#181)", () => {
 		expect(buffer["@rodeo"]).toBe("accept");
 	});
 
-	it("can reject any node, including ambiguous", () => {
+	it("can reject any node, including a picked ambiguous one", () => {
 		expect(setStage({}, ambiguousPerson, "reject")["@morris"]).toBe("reject");
+		expect(
+			setStage({}, ambiguousPerson, "reject", { "@morris": "m1" })["@morris"],
+		).toBe("reject");
 	});
 });
 
 describe("acceptAll / rejectAll", () => {
-	it("acceptAll accepts every acceptable node and rejects ambiguous", () => {
+	it("acceptAll accepts every acceptable node and rejects an UNPICKED ambiguous", () => {
 		const buffer = acceptAll(PLAN);
 		expect(buffer["@rodeo"]).toBe("accept");
 		expect(buffer["@leadads"]).toBe("accept");
 		expect(buffer["@morris"]).toBe("reject");
+	});
+
+	it("acceptAll accepts a PICKED ambiguous node", () => {
+		const buffer = acceptAll(PLAN, { "@morris": "m1" });
+		expect(buffer["@morris"]).toBe("accept");
+		expect(buffer["@rodeo"]).toBe("accept");
 	});
 
 	it("rejectAll rejects every node", () => {
@@ -147,6 +218,135 @@ describe("buildDecisions", () => {
 	it("reject-all produces an all-reject vector", () => {
 		const vector = buildDecisions(PLAN, rejectAll(PLAN));
 		expect(vector.every((d) => d.decision === "reject")).toBe(true);
+	});
+});
+
+describe("buildDecisions resolves a picked ambiguous node (the disambiguation picker, #181)", () => {
+	it("a picked ambiguous node submits its entity_id as an accept", () => {
+		// Default staging + a pick → the ambiguous node accepts WITH the chosen
+		// entity_id (the override Core collapses ambiguous → reuse). The whole graph
+		// is now applicable.
+		const repoints: RepointBuffer = { "@morris": "m1" };
+		const vector = buildDecisions(PLAN, {}, {}, new Map(), repoints);
+		expect(vector.find((d) => d.handle === "@morris")).toEqual({
+			handle: "@morris",
+			decision: "accept",
+			entity_id: "m1",
+		});
+	});
+
+	// THE KEY RISK (the half-relaxed guard): an UNPICKED ambiguous node must NEVER
+	// ride a bare accept — Core fails the whole atomic apply on an unresolved
+	// ambiguous accept. It must stay a plain reject, carrying no entity_id.
+	it("an unpicked ambiguous node stays a plain reject — never a bare accept", () => {
+		const morris = buildDecisions(PLAN, {}).find((d) => d.handle === "@morris");
+		expect(morris).toEqual({ handle: "@morris", decision: "reject" });
+		expect(morris).not.toHaveProperty("entity_id");
+	});
+
+	it("a rejected pick drops the entity_id (a rejected node is not reused)", () => {
+		const repoints: RepointBuffer = { "@morris": "m1" };
+		// The user picked, then rejected the node anyway.
+		const buffer = setStage({}, ambiguousPerson, "reject", repoints);
+		const morris = buildDecisions(PLAN, buffer, {}, new Map(), repoints).find(
+			(d) => d.handle === "@morris",
+		);
+		expect(morris).toEqual({ handle: "@morris", decision: "reject" });
+		expect(morris).not.toHaveProperty("entity_id");
+	});
+
+	it("never emits edited_fields for a picked ambiguous node (entity_id XOR edited_fields)", () => {
+		// A picked ambiguous node reuses an existing entity, so it can NEVER carry an
+		// edited_fields correction (Core rejects both — mutually exclusive). Structural,
+		// but pinned so a refactor can't leak an edit onto a reuse.
+		const repoints: RepointBuffer = { "@morris": "m1" };
+		const morris = buildDecisions(PLAN, {}, {}, new Map(), repoints).find(
+			(d) => d.handle === "@morris",
+		);
+		expect(morris).not.toHaveProperty("edited_fields");
+	});
+
+	// Defense-in-depth: the no-bare-ambiguous-accept invariant is a MODULE guarantee,
+	// not a caller contract. If a stale buffer holds `accept` for an ambiguous handle
+	// but the pick was since cleared (repoints no longer resolves it) — a desync a
+	// future "clear pick" UI could produce — buildDecisions must NOT emit a bare
+	// ambiguous accept (Core fails the whole atomic apply). It coerces to reject.
+	it("coerces a stale-accept ambiguous node with no pick to reject (never a bare accept)", () => {
+		const staleBuffer: StagingBuffer = { "@morris": "accept" };
+		const morris = buildDecisions(PLAN, staleBuffer, {}, new Map(), {}).find(
+			(d) => d.handle === "@morris",
+		);
+		expect(morris).toEqual({ handle: "@morris", decision: "reject" });
+		expect(morris).not.toHaveProperty("entity_id");
+	});
+});
+
+describe("summarizeDecisions — count/decision derived from the built vector", () => {
+	it("counts accepts and detects an all-reject vector", () => {
+		expect(summarizeDecisions(buildDecisions(PLAN, {}))).toEqual({
+			acceptedCount: 2, // @rodeo + @leadads accept; @morris (ambiguous) rejects
+			allRejected: false,
+		});
+		expect(summarizeDecisions(buildDecisions(PLAN, rejectAll(PLAN)))).toEqual({
+			acceptedCount: 0,
+			allRejected: true,
+		});
+	});
+
+	it("an empty vector is NOT all-rejected (no nodes to reject)", () => {
+		expect(summarizeDecisions([])).toEqual({
+			acceptedCount: 0,
+			allRejected: false,
+		});
+	});
+
+	// THE DESYNC GUARD (cross-engine finding): a stale-accept ambiguous node with no
+	// pick is coerced to reject by buildDecisions; the summary derived from that vector
+	// must therefore report all-rejected — NOT "Apply 1 item". Deriving the count from a
+	// parallel stageFor pass would disagree with the vector actually sent.
+	it("agrees with the coerced vector for a stale-accept ambiguous-only plan", () => {
+		const plan = [ambiguousPerson];
+		const staleBuffer: StagingBuffer = { "@morris": "accept" };
+		const decisions = buildDecisions(plan, staleBuffer, {}, new Map(), {});
+		expect(decisions).toEqual([{ handle: "@morris", decision: "reject" }]);
+		expect(summarizeDecisions(decisions)).toEqual({
+			acceptedCount: 0,
+			allRejected: true,
+		});
+	});
+
+	it("a picked ambiguous node counts as accepted", () => {
+		const decisions = buildDecisions([ambiguousPerson], {}, {}, new Map(), {
+			"@morris": "m1",
+		});
+		expect(summarizeDecisions(decisions)).toEqual({
+			acceptedCount: 1,
+			allRejected: false,
+		});
+	});
+});
+
+describe("candidateSubtitle — always a distinct disambiguator", () => {
+	it("appends a short id fragment to the resolved subtitle", () => {
+		expect(
+			candidateSubtitle("01900000-0000-7000-8000-0000000000m1", "Met at Rodeo"),
+		).toBe("Met at Rodeo · #01900000");
+	});
+
+	it("falls back to the id fragment alone when the subtitle is missing/blank", () => {
+		expect(candidateSubtitle("abc1234567", null)).toBe("#abc12345");
+		expect(candidateSubtitle("abc1234567", "   ")).toBe("#abc12345");
+	});
+
+	it("two same-named candidates with identical (or absent) subtitles never collide", () => {
+		// The exact failure mode: two People both render "Person" — the id suffix
+		// guarantees the two lines differ.
+		const a = candidateSubtitle("aaaaaaaa-1111", "Person");
+		const b = candidateSubtitle("bbbbbbbb-2222", "Person");
+		expect(a).not.toBe(b);
+		const c = candidateSubtitle("cccccccc-3333", null);
+		const d = candidateSubtitle("dddddddd-4444", null);
+		expect(c).not.toBe(d);
 	});
 });
 
@@ -285,6 +485,23 @@ describe("downgradeNotices", () => {
 	it("no notice when both endpoints are accepted", () => {
 		const plan = [createTodo, reuseProject];
 		expect(downgradeNotices(plan, links, acceptAll(plan))).toEqual([]);
+	});
+
+	// A Todo linked to an AMBIGUOUS person/project target: once the user picks a
+	// candidate, the target is acceptable and the link is KEPT at apply, so no
+	// downgrade notice may fire. Without threading `repoints`, `stageFor` returns the
+	// ambiguous node's pre-pick `reject` default and a SPURIOUS notice appears.
+	it("no notice when a Todo's ambiguous link target has been PICKED", () => {
+		// @rodeo (todo, accept default) links to @morris (ambiguous person).
+		const personLinks: GraphLink[] = [
+			{ kind: "todo_person", from: "@rodeo", to: "@morris" },
+		];
+		// Unpicked: @morris sits at its reject default → the link genuinely drops.
+		expect(downgradeNotices(PLAN, personLinks, {})).toHaveLength(1);
+		// Picked: @morris is acceptable (default accept) → the link is kept, no notice.
+		expect(
+			downgradeNotices(PLAN, personLinks, {}, { "@morris": "m1" }),
+		).toEqual([]);
 	});
 
 	it("no notice when the Todo itself is rejected", () => {

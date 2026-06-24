@@ -33,16 +33,15 @@ import {
 } from "@/lib/entityFields";
 import { useLibraryItems } from "@/lib/hooks/useLibraryItems";
 import {
-	allRejected,
 	buildDecisions,
 	buildEditedFields,
+	candidateSubtitle,
 	type DraftBuffer,
 	downgradeNotices,
 	draftLabel,
 	draftRequiredEmpty,
 	type GraphNodeDraft,
-	hasAmbiguous,
-	isAcceptable,
+	getOwn,
 	parseGraphEntities,
 	parseGraphLinks,
 	type RepointBuffer,
@@ -52,11 +51,13 @@ import {
 	seedNodeDraft,
 	setStage,
 	stageFor,
+	summarizeDecisions,
 } from "@/lib/intentGraphReview";
 import {
 	KIND_META,
 	type LibraryItem,
 	type LibraryItemKind,
+	libraryItemSubtitle,
 	libraryItemTitle,
 } from "@/lib/libraryItems";
 import {
@@ -1333,6 +1334,18 @@ function IntentGraphReviewCard({
 		() => parseGraphEntities(proposal.payload),
 		[proposal.payload],
 	);
+	// An ambiguous node's candidates share an identical exact-name label (that is WHY
+	// they are ambiguous), so the label alone cannot tell them apart. Resolve each
+	// candidate id against the warm library cache to render a disambiguating subtitle
+	// (person note / project outcome / todo due, via `libraryItemSubtitle`). Indexed
+	// by id; a candidate missing from the cache simply has no subtitle (it stays
+	// pickable by its label). Same cache the decided-card link already reads.
+	const { data: libraryItems } = useLibraryItems();
+	const itemsById = useMemo(() => {
+		const map = new Map<string, LibraryItem>();
+		for (const item of libraryItems ?? []) map.set(item.id, item);
+		return map;
+	}, [libraryItems]);
 	// The staging buffer starts at the per-node defaults (acceptable → accept,
 	// ambiguous → reject), so a plain Apply with no toggles accepts everything
 	// resolvable — the common path.
@@ -1397,20 +1410,38 @@ function IntentGraphReviewCard({
 	const submitting = deciding || inFlight !== null;
 	const isError = status === "error";
 
-	const notices = downgradeNotices(plan, links, buffer);
-	const everythingRejected = plan.length > 0 && allRejected(plan, buffer);
-	const acceptedCount = plan.filter(
-		(node) => stageFor(buffer, node) === "accept",
-	).length;
-	const ambiguousPresent = hasAmbiguous(plan);
+	const notices = downgradeNotices(plan, links, buffer, repoints);
+	// The decision vector is the SINGLE source of truth for what Apply sends — build
+	// it once and derive the count + reject-all path from it (not a parallel `stageFor`
+	// pass), so the "Apply N items" label and the scalar decision can never disagree
+	// with the vector. `buildDecisions` is where the `ambiguous-without-pick → reject`
+	// coercion lives, so a separate count could otherwise show "Apply 1" on an
+	// all-reject vector.
+	const decisions = buildDecisions(plan, buffer, drafts, entities, repoints);
+	const { acceptedCount, allRejected: everythingRejected } =
+		summarizeDecisions(decisions);
+	// An ambiguous node is still UNRESOLVED while it has neither a pick (a repoint
+	// id) nor an EXPLICIT reject — it sits at its reject-only default awaiting a
+	// decision. This drives the dynamic guidance note; once every ambiguous node is
+	// picked or explicitly rejected, the note disappears (no nag). The explicit-reject
+	// check reads the RAW buffer entry via `getOwn` (not `stageFor`, whose default for
+	// an unpicked ambiguous node is already `reject`) — `getOwn` guards the
+	// model-supplied handle against a prototype-key collision (see `repointFor`).
+	const unresolvedAmbiguous = plan.some(
+		(node) =>
+			node.disposition === "ambiguous" &&
+			repointFor(repoints, node) === null &&
+			getOwn(buffer, node.handle) !== "reject",
+	);
 
 	const commit = () => {
 		if (submitting) return;
-		// A vector that rejects every node is a reject-all (Core declines the whole
-		// graph); otherwise it is an accept carrying the per-node subset — each
-		// accepted create node folding in its `edited_fields` correction, or its
-		// near-match `entity_id` re-point (default-to-existing, ADR-0042 amendment).
-		const decisions = buildDecisions(plan, buffer, drafts, entities, repoints);
+		// `decisions` (built above) is the exact vector sent, and `everythingRejected`
+		// is derived from it via `summarizeDecisions`, so the scalar decision and the
+		// per-node vector are guaranteed consistent. A vector that rejects every node is
+		// a reject-all (Core declines the whole graph); otherwise it is an accept
+		// carrying the per-node subset — each accepted create node folding in its
+		// `edited_fields` correction, or its near-match/picked `entity_id` re-point.
 		const decision = everythingRejected ? "reject" : "accept";
 		setInFlight(everythingRejected ? "reject" : "commit");
 		onDecide(decision, undefined, decisions);
@@ -1465,6 +1496,20 @@ function IntentGraphReviewCard({
 		setBuffer((current) => setStage(current, node, "accept"));
 	};
 
+	// Pick one of an ambiguous node's candidates (the disambiguation picker, #181):
+	// record that candidate's `entity_id` as the node's re-point, which makes the node
+	// acceptable (`isAcceptable` sees the pick) and rides the `entity_id` override Core
+	// collapses ambiguous → reuse. The accept must be forced HERE — `setStage` consults
+	// `isAcceptable(node, repoints)`, and the `repoints` state update is not yet visible
+	// to a sibling `setBuffer`, so pass the post-pick repoint explicitly.
+	const pickCandidate = (node: ResolvedNode, entityId: string) => {
+		if (submitting) return;
+		setRepoints((current) => ({ ...current, [node.handle]: entityId }));
+		setBuffer((current) =>
+			setStage(current, node, "accept", { [node.handle]: entityId }),
+		);
+	};
+
 	const HeaderGlyph = GRAPH_VIEW.glyph;
 	const commitLabel = everythingRejected
 		? GRAPH_VIEW.rejectLabel
@@ -1499,28 +1544,31 @@ function IntentGraphReviewCard({
 					<GraphNodeRow
 						key={node.handle}
 						node={node}
-						stage={stageFor(buffer, node)}
+						stage={stageFor(buffer, node, repoints)}
+						explicitStage={getOwn(buffer, node.handle)}
 						disabled={submitting}
-						draft={drafts[node.handle]}
+						draft={getOwn(drafts, node.handle)}
 						seed={entities.get(node.handle)}
 						editing={editingHandle === node.handle}
 						repointId={repointFor(repoints, node)}
+						itemsById={itemsById}
 						onStage={(stage) =>
-							setBuffer((current) => setStage(current, node, stage))
+							setBuffer((current) => setStage(current, node, stage, repoints))
 						}
 						onEdit={() => openEdit(node.handle)}
 						onSave={(draft) => saveEdit(node, draft)}
 						onCancel={cancelEdit}
 						onCreateNew={() => createNewInstead(node.handle)}
 						onReuseExisting={() => reuseExisting(node)}
+						onPickCandidate={(entityId) => pickCandidate(node, entityId)}
 					/>
 				))}
 			</ul>
 
-			{ambiguousPresent ? (
+			{unresolvedAmbiguous ? (
 				<p className="text-xs text-muted-foreground">
-					Some items match more than one existing entry. They can only be
-					dismissed for now — disambiguation is coming soon.
+					Some items match more than one existing entry — pick which to reuse,
+					or reject them.
 				</p>
 			) : null}
 
@@ -1607,54 +1655,82 @@ function IntentGraphReviewCard({
  * create/reuse/ambiguous badge, and accept/reject toggles. A `create` node also
  * carries a pencil that expands the row INLINE into its per-type edit form (the
  * `edited_fields` correction); reuse/ambiguous nodes are not editable (Core rejects
- * an edit on a non-create node). An ambiguous node's accept is disabled (reject-only,
- * #181). When a draft is open the collapsed label reflects the edited name/title.
+ * an edit on a non-create node). When a draft is open the collapsed label reflects
+ * the edited name/title.
  *
- * Near-match (ADR-0042 amendment): a `create` node re-pointed onto an existing
- * entity (`repointId` set — the default for a single near-match) wears an
- * "Existing «…»" badge and a "Create new instead" escape, and is NOT editable
- * (you reuse it, not mint it). A create node with near-matches that the user has
- * sent back to "New" offers "Use existing «…»"; 2+ near-matches surface an
- * advisory note (no auto-pick — the picker is #181). */
+ * Re-point — both shapes share the `repointId` → "Existing «…»" badge + reuse path:
+ *  - Near-match (ADR-0042 amendment): a `create` node re-pointed onto an existing
+ *    entity (the default for a single near-match) wears the badge and a "Create new
+ *    instead" escape, and is NOT editable. A create node sent back to "New" with a
+ *    single near-match offers "Use existing «…»".
+ *  - Ambiguous picker (#181): an `ambiguous` node renders its `candidates` as an
+ *    inline radio list; an UNPICKED ambiguous node is reject-only (accept disabled),
+ *    and picking a candidate sets `repointId` → the node becomes acceptable and reads
+ *    "Existing «…»" (it reuses the picked entity). */
 function GraphNodeRow({
 	node,
 	stage,
+	explicitStage,
 	disabled,
 	draft,
 	seed,
 	editing,
 	repointId,
+	itemsById,
 	onStage,
 	onEdit,
 	onSave,
 	onCancel,
 	onCreateNew,
 	onReuseExisting,
+	onPickCandidate,
 }: {
 	node: ResolvedNode;
 	stage: "accept" | "reject";
+	/** The node's RAW staging-buffer entry, or `undefined` if it sits at its default.
+	 * Distinguishes an UNPICKED ambiguous node (default `reject`, awaiting a pick — it
+	 * is pending, not dismissed) from one the user EXPLICITLY rejected. */
+	explicitStage: "accept" | "reject" | undefined;
 	disabled: boolean;
 	draft: GraphNodeDraft | undefined;
 	seed: Record<string, unknown> | undefined;
 	editing: boolean;
 	repointId: string | null;
+	itemsById: Map<string, LibraryItem>;
 	onStage: (stage: "accept" | "reject") => void;
 	onEdit: () => void;
 	onSave: (draft: GraphNodeDraft) => void;
 	onCancel: () => void;
 	onCreateNew: () => void;
 	onReuseExisting: () => void;
+	onPickCandidate: (entityId: string) => void;
 }) {
 	const NodeGlyph = KIND_META[node.type as LibraryItemKind].icon;
-	const rejected = stage === "reject";
+	// An UNPICKED ambiguous node sits at the `reject` DEFAULT but is pending a pick,
+	// not dismissed — it should not read as rejected (no line-through/opacity) and must
+	// still show its picker. A node reads "rejected" only when it is explicitly rejected
+	// OR is a non-ambiguous node at the reject stage.
+	const pendingPick =
+		node.disposition === "ambiguous" &&
+		repointId === null &&
+		explicitStage !== "reject";
+	const rejected = stage === "reject" && !pendingPick;
 	const nearMatches = node.near_matches ?? [];
-	// A create node is re-pointed onto an existing entity when `repointId` resolves
-	// (the single-near-match default, or a future picker pick). The re-point target's
-	// label drives the "Existing «…»" badge; fall back to the id if it is not among
-	// the listed near-matches (a picker could pick outside the list later).
-	const repointed = node.disposition === "create" && repointId !== null;
+	const candidates = node.candidates ?? [];
+	// A node is re-pointed onto an existing entity when `repointId` resolves — a
+	// `create` node's single-near-match default, or an `ambiguous` node's picked
+	// candidate (#181). Both collapse to reuse-that-entity. The badge label prefers
+	// the matching candidate/near-match label, then the library cache, then "existing".
+	const repointed =
+		(node.disposition === "create" || node.disposition === "ambiguous") &&
+		repointId !== null;
+	const repointTarget =
+		repointId !== null ? itemsById.get(repointId) : undefined;
 	const repointLabel = repointed
-		? (nearMatches.find((m) => m.entity_id === repointId)?.label ?? "existing")
+		? (nearMatches.find((m) => m.entity_id === repointId)?.label ??
+			candidates.find((c) => c.entity_id === repointId)?.label ??
+			(repointTarget ? libraryItemTitle(repointTarget) : undefined) ??
+			"existing")
 		: null;
 	// A re-pointed node REUSES its target, so it is not editable (a reuse is
 	// linked-to, never rewritten — ADR-0030); editing stays on plain create nodes.
@@ -1669,7 +1745,16 @@ function GraphNodeRow({
 			}
 		: DISPOSITION_BADGE[node.disposition];
 	const BadgeGlyph = badge.glyph;
-	const acceptable = isAcceptable(node);
+	// An ambiguous node is acceptable only once a candidate is picked (`repointId`
+	// resolves); create/reuse are always acceptable. Mirrors `isAcceptable`, derived
+	// from the already-resolved `repointId` so the row needs no repoint buffer.
+	const acceptable = node.disposition !== "ambiguous" || repointId !== null;
+	// An ambiguous node ALWAYS shows its candidate picker (while pending OR after an
+	// explicit reject): the reject toggle is the "none of these" escape, and picking a
+	// candidate re-accepts the node — so the radios must stay reachable to undo a
+	// reject. Distinct from the near-match affordance, which is for create nodes.
+	const showCandidatePicker =
+		node.disposition === "ambiguous" && candidates.length > 0;
 	// The collapsed row shows the edited name/title once a draft is COMMITTED, so a
 	// correction is visible without re-opening the form.
 	const shownLabel =
@@ -1722,97 +1807,188 @@ function GraphNodeRow({
 			data-node-stage={stage}
 			data-node-edited={edited ? "true" : undefined}
 			data-node-repoint={repointed ? repointId : undefined}
-			className={`flex items-center gap-2.5 rounded-lg border border-border/60 px-3 py-2 ${
+			className={`flex flex-col gap-2 rounded-lg border border-border/60 px-3 py-2 ${
 				rejected ? "opacity-60" : ""
 			}`}
 		>
-			<NodeGlyph
-				className="size-4 shrink-0 text-muted-foreground"
-				aria-hidden
-			/>
-			<div className="min-w-0 flex-1">
-				<p
-					className={`truncate text-sm text-card-foreground ${
-						rejected ? "line-through" : "font-medium"
-					}`}
-				>
-					{shownLabel}
-				</p>
-				<div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5">
-					<Badge variant={badge.variant} size="xs">
-						<BadgeGlyph className="size-3" aria-hidden />
-						{edited ? "Edited" : badge.label}
-					</Badge>
-					{showNearMatchAffordance ? (
-						repointed ? (
-							// Re-pointed onto an existing entity (the default for a single
-							// near-match): offer the escape back to minting a new one.
-							<button
-								type="button"
-								disabled={disabled}
-								onClick={onCreateNew}
-								className="cursor-pointer text-[0.6875rem] font-medium text-muted-foreground underline-offset-2 transition-colors hover:text-foreground hover:underline focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-40"
-							>
-								Create new instead
-							</button>
-						) : nearMatches.length === 1 ? (
-							// A single near-match the user sent back to "New": offer to reuse it.
-							<button
-								type="button"
-								disabled={disabled}
-								onClick={onReuseExisting}
-								className="cursor-pointer text-[0.6875rem] font-medium text-muted-foreground underline-offset-2 transition-colors hover:text-foreground hover:underline focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-40"
-							>
-								Use existing «{nearMatches[0].label}»
-							</button>
-						) : (
-							// 2+ near-matches: surfaced advisorily, no auto-pick (the picker, #181).
-							<span className="text-[0.6875rem] text-muted-foreground">
-								Matches existing: {nearMatches.map((m) => m.label).join(", ")}
-							</span>
-						)
-					) : null}
+			<div className="flex items-center gap-2.5">
+				<NodeGlyph
+					className="size-4 shrink-0 text-muted-foreground"
+					aria-hidden
+				/>
+				<div className="min-w-0 flex-1">
+					<p
+						className={`truncate text-sm text-card-foreground ${
+							rejected ? "line-through" : "font-medium"
+						}`}
+					>
+						{shownLabel}
+					</p>
+					<div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5">
+						<Badge variant={badge.variant} size="xs">
+							<BadgeGlyph className="size-3" aria-hidden />
+							{edited ? "Edited" : badge.label}
+						</Badge>
+						{showNearMatchAffordance ? (
+							repointed ? (
+								// Re-pointed onto an existing entity (the default for a single
+								// near-match): offer the escape back to minting a new one.
+								<button
+									type="button"
+									disabled={disabled}
+									onClick={onCreateNew}
+									className="cursor-pointer text-[0.6875rem] font-medium text-muted-foreground underline-offset-2 transition-colors hover:text-foreground hover:underline focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-40"
+								>
+									Create new instead
+								</button>
+							) : nearMatches.length === 1 ? (
+								// A single near-match the user sent back to "New": offer to reuse it.
+								<button
+									type="button"
+									disabled={disabled}
+									onClick={onReuseExisting}
+									className="cursor-pointer text-[0.6875rem] font-medium text-muted-foreground underline-offset-2 transition-colors hover:text-foreground hover:underline focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-40"
+								>
+									Use existing «{nearMatches[0].label}»
+								</button>
+							) : (
+								// 2+ near-matches: surfaced advisorily, no auto-pick (the picker, #181).
+								<span className="text-[0.6875rem] text-muted-foreground">
+									Matches existing: {nearMatches.map((m) => m.label).join(", ")}
+								</span>
+							)
+						) : null}
+					</div>
 				</div>
-			</div>
-			<div className="flex shrink-0 items-center gap-1">
-				{editable ? (
+				<div className="flex shrink-0 items-center gap-1">
+					{editable ? (
+						<button
+							type="button"
+							disabled={disabled}
+							title="Edit"
+							onClick={onEdit}
+							className="inline-flex size-7 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-40"
+						>
+							<Pencil className="size-3.5" aria-hidden />
+							<span className="sr-only">Edit {shownLabel}</span>
+						</button>
+					) : null}
 					<button
 						type="button"
-						disabled={disabled}
-						title="Edit"
-						onClick={onEdit}
-						className="inline-flex size-7 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-40"
+						aria-pressed={stage === "accept"}
+						disabled={disabled || !acceptable}
+						title={
+							acceptable ? "Accept" : "Needs disambiguation — cannot accept yet"
+						}
+						onClick={() => onStage("accept")}
+						className="inline-flex size-7 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground aria-pressed:bg-primary aria-pressed:text-primary-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-40"
 					>
-						<Pencil className="size-3.5" aria-hidden />
-						<span className="sr-only">Edit {shownLabel}</span>
+						<Check className="size-4" aria-hidden />
+						<span className="sr-only">Accept {shownLabel}</span>
 					</button>
-				) : null}
-				<button
-					type="button"
-					aria-pressed={stage === "accept"}
-					disabled={disabled || !acceptable}
-					title={
-						acceptable ? "Accept" : "Needs disambiguation — cannot accept yet"
-					}
-					onClick={() => onStage("accept")}
-					className="inline-flex size-7 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground aria-pressed:bg-primary aria-pressed:text-primary-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-40"
-				>
-					<Check className="size-4" aria-hidden />
-					<span className="sr-only">Accept {shownLabel}</span>
-				</button>
-				<button
-					type="button"
-					aria-pressed={stage === "reject"}
-					disabled={disabled}
-					title="Reject"
-					onClick={() => onStage("reject")}
-					className="inline-flex size-7 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground aria-pressed:bg-secondary aria-pressed:text-secondary-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-40"
-				>
-					<X className="size-4" aria-hidden />
-					<span className="sr-only">Reject {shownLabel}</span>
-				</button>
+					<button
+						type="button"
+						// `rejected`, not `stage === "reject"`: a PENDING ambiguous node sits at
+						// the reject default but is awaiting a pick, not dismissed — its Reject
+						// toggle must read "off" (un-pressed) so it doesn't look pre-rejected.
+						aria-pressed={rejected}
+						disabled={disabled}
+						title="Reject"
+						onClick={() => onStage("reject")}
+						className="inline-flex size-7 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground aria-pressed:bg-secondary aria-pressed:text-secondary-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-40"
+					>
+						<X className="size-4" aria-hidden />
+						<span className="sr-only">Reject {shownLabel}</span>
+					</button>
+				</div>
 			</div>
+
+			{showCandidatePicker ? (
+				<GraphCandidatePicker
+					node={node}
+					candidates={candidates}
+					pickedId={repointId}
+					itemsById={itemsById}
+					disabled={disabled}
+					onPick={onPickCandidate}
+				/>
+			) : null}
 		</li>
+	);
+}
+
+/** The inline candidate picker for an `ambiguous` node (the disambiguation picker,
+ * #181): a radio list of the node's competing exact-name matches. Their labels are
+ * identical (that is why the node is ambiguous), so each row carries a disambiguating
+ * subtitle resolved from the warm library cache (`libraryItemSubtitle` — person note /
+ * project outcome / todo due). NO candidate is pre-selected: the matches are equal and
+ * the system has no ranking signal, so an explicit pick is forced. Picking writes the
+ * candidate's `entity_id` as the node's re-point, collapsing ambiguous → reuse. The
+ * fieldset is the radio group; "none of these" is the row's Reject toggle, not a row. */
+function GraphCandidatePicker({
+	node,
+	candidates,
+	pickedId,
+	itemsById,
+	disabled,
+	onPick,
+}: {
+	node: ResolvedNode;
+	candidates: readonly { entity_id: string; label: string }[];
+	pickedId: string | null;
+	itemsById: Map<string, LibraryItem>;
+	disabled: boolean;
+	onPick: (entityId: string) => void;
+}) {
+	const groupName = `candidate-${node.handle}`;
+	return (
+		<fieldset
+			className="flex flex-col gap-1 border-0 p-0"
+			aria-label={`Pick which existing entry “${node.label}” reuses`}
+		>
+			{candidates.map((candidate) => {
+				const item = itemsById.get(candidate.entity_id);
+				// ALWAYS render a distinguishing line: the human-meaningful library
+				// subtitle when resolved, plus a short stable id fragment so two
+				// same-named candidates whose subtitles are absent (cache warming) or
+				// identical ("Person"/"Person") never render as byte-identical radios.
+				const subtitle = candidateSubtitle(
+					candidate.entity_id,
+					item ? libraryItemSubtitle(item) : null,
+				);
+				const picked = candidate.entity_id === pickedId;
+				return (
+					<label
+						key={candidate.entity_id}
+						data-candidate={candidate.entity_id}
+						data-candidate-picked={picked ? "true" : undefined}
+						className={`flex cursor-pointer items-start gap-2 rounded-md border px-2.5 py-1.5 transition-colors ${
+							picked
+								? "border-primary/40 bg-primary/5"
+								: "border-border/50 hover:bg-accent/50"
+						} ${disabled ? "cursor-not-allowed opacity-50" : ""}`}
+					>
+						<input
+							type="radio"
+							name={groupName}
+							value={candidate.entity_id}
+							checked={picked}
+							disabled={disabled}
+							onChange={() => onPick(candidate.entity_id)}
+							className="mt-0.5 size-3.5 shrink-0 accent-primary"
+						/>
+						<span className="min-w-0 flex-1">
+							<span className="block truncate text-sm text-card-foreground">
+								{candidate.label}
+							</span>
+							<span className="block truncate text-xs text-muted-foreground">
+								{subtitle}
+							</span>
+						</span>
+					</label>
+				);
+			})}
+		</fieldset>
 	);
 }
 

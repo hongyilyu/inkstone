@@ -27,8 +27,9 @@
 //!   - `create`: zero matches → mint fresh (the slice-2 path).
 //!   - `ambiguous`: two or more matches → the whole apply FAILS
 //!     `InvalidMutation` (ADR-0042 "An ambiguous node has no silent fallback");
-//!     the tx rolls back, nothing is written. The disambiguation picker / per-node
-//!     `entity_id` override is slice 5 / #181.
+//!     the tx rolls back, nothing is written — UNLESS the per-node decision carries
+//!     an `entity_id` override (the disambiguation picker, #181), which resolves the
+//!     node to reuse-that-id before this step (see [`resolve_node`]).
 //!
 //! The JE node stays create-only (ADR-0042 "the JE node is create-only"): it is
 //! always newborn and carries no disposition. Its body may carry

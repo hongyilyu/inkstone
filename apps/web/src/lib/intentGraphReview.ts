@@ -8,12 +8,13 @@ import { parseAliases } from "@/lib/entityFields";
  * node, accumulating per-node accept/reject LOCALLY — nothing is written until
  * commit — then commits ONE `proposal/decide` carrying a `decisions[]` vector.
  *
- * This module owns the rules a card just renders: the per-node stage map, what
- * "accept all" can sweep (an `ambiguous` node has no picker yet — #181 — so it
- * BLOCKS accept-all and is reject-only), the per-node inline EDIT of a create node
- * (the `edited_fields` correction Core merges before minting), the decisions[] the
- * commit sends, and the reconcile notice when rejecting a node a surviving Todo
- * links to.
+ * This module owns the rules a card just renders: the per-node stage map, what a
+ * plain Apply sweeps (an UNPICKED `ambiguous` node is reject-only until the user
+ * picks one of its candidates — the disambiguation picker, #181 — which collapses it
+ * to reuse-that-id), the per-node inline EDIT of a create node (the `edited_fields`
+ * correction Core merges before minting), the decisions[] the commit sends (and the
+ * summary the count/decision derive from), and the reconcile notice when rejecting a
+ * node a surviving Todo links to.
  */
 
 /** A node's staged choice in the local buffer (component state, not the store). */
@@ -23,11 +24,37 @@ export type NodeStage = "accept" | "reject";
  * "undecided" — the user has not stepped past it yet. */
 export type StagingBuffer = Readonly<Record<string, NodeStage>>;
 
-/** Whether a node's disposition forbids `accept` until the picker ships (#181):
- * an `ambiguous` node has no silent fallback and cannot be linked, so it is
- * reject-only (ADR-0042). `create`/`reuse` are freely acceptable. */
-export function isAcceptable(node: ResolvedNode): boolean {
-	return node.disposition !== "ambiguous";
+/** Read a handle-keyed record as an OWN-property lookup, not `record[handle]`.
+ * Every buffer here is keyed by `ResolvedNode.handle`, an unvalidated model-supplied
+ * wire string (protocol `handle` is a bare string, no `@` pattern), so a handle equal
+ * to a prototype key ("toString", "constructor", "__proto__") would make a direct
+ * index return an inherited `Object.prototype` member — a function masquerading as a
+ * `NodeStage`/draft — rather than `undefined`. `Object.hasOwn` is the same hardening
+ * {@link repointFor} already documents; this is the shared helper the other
+ * handle-keyed reads route through. */
+export function getOwn<T>(
+	record: Readonly<Record<string, T>>,
+	handle: string,
+): T | undefined {
+	return Object.hasOwn(record, handle) ? record[handle] : undefined;
+}
+
+/** Whether a node's disposition permits `accept`. `create`/`reuse` are freely
+ * acceptable. An `ambiguous` node has no silent fallback (ADR-0042), so it is
+ * reject-only UNTIL the user picks one of its candidates: a pick is recorded as
+ * that candidate's `entity_id` in the repoint buffer ({@link repointFor}), which
+ * collapses the node `ambiguous → reuse` at decide. So an ambiguous node is
+ * acceptable iff a candidate has been picked (#181 disambiguation picker).
+ *
+ * `repoints` defaults to `{}` so a caller that only has a node (no pick context)
+ * still reads the pre-pick truth: a create/reuse node is acceptable, an ambiguous
+ * one is not. */
+export function isAcceptable(
+	node: ResolvedNode,
+	repoints: RepointBuffer = {},
+): boolean {
+	if (node.disposition !== "ambiguous") return true;
+	return repointFor(repoints, node) !== null;
 }
 
 /** The per-handle re-point buffer (component state) for the near-match
@@ -49,52 +76,60 @@ export function repointFor(
 	buffer: RepointBuffer,
 	node: ResolvedNode,
 ): string | null {
-	// `Object.hasOwn`, not `key in buffer`: `handle` is an unvalidated model-supplied
-	// wire string (protocol `ResolvedNode.handle` is a bare string, no `@` pattern), so
-	// a handle equal to a prototype key ("toString", "constructor", "__proto__") would
-	// make `in` true on an EMPTY buffer and return `Object.prototype.toString` — a
-	// function, not `string | null` — which would then ride to Core as a bogus
-	// `entity_id`. Same hardening the proposal-kind lookup already uses (ProposalCard).
-	if (Object.hasOwn(buffer, node.handle)) return buffer[node.handle];
+	// Read the explicit entry via `getOwn` (the shared prototype-key guard): a handle
+	// equal to a prototype key ("toString", "__proto__") must not surface an inherited
+	// member. An explicit entry — a string id OR `null` ("create new instead") — wins;
+	// `undefined` means absent, so fall through to the near-match default below.
+	const explicit = getOwn(buffer, node.handle);
+	if (explicit !== undefined) return explicit;
 	if (node.disposition !== "create") return null;
 	const near = node.near_matches ?? [];
 	return near.length === 1 ? near[0].entity_id : null;
 }
 
-/** Whether the plan contains an `ambiguous` node — these block "accept all"
- * (ADR-0042: "Accept all cannot sweep past an unresolved ambiguity"). */
-export function hasAmbiguous(plan: readonly ResolvedNode[]): boolean {
-	return plan.some((node) => node.disposition === "ambiguous");
-}
-
 /** The effective stage for a node: its explicit entry, else its default — every
  * acceptable node defaults to `accept` (the common path is accept-everything),
- * while an `ambiguous` node defaults to `reject` (it cannot be accepted yet). */
-export function stageFor(buffer: StagingBuffer, node: ResolvedNode): NodeStage {
-	return buffer[node.handle] ?? (isAcceptable(node) ? "accept" : "reject");
+ * while an UNPICKED `ambiguous` node defaults to `reject` (it cannot be accepted
+ * yet). A picked ambiguous node is acceptable, so it defaults to `accept` and a
+ * plain Apply sweeps it in like any reuse — hence `repoints` is consulted. */
+export function stageFor(
+	buffer: StagingBuffer,
+	node: ResolvedNode,
+	repoints: RepointBuffer = {},
+): NodeStage {
+	return (
+		getOwn(buffer, node.handle) ??
+		(isAcceptable(node, repoints) ? "accept" : "reject")
+	);
 }
 
 /** Toggle one node's stage, respecting the ambiguous accept-block: a request to
- * `accept` an unacceptable node is ignored (it stays reject-only). Returns a NEW
- * buffer (the caller holds it in component state). */
+ * `accept` an unacceptable node is ignored (it stays reject-only). A picked
+ * ambiguous node IS acceptable, so its accept is honored — hence `repoints` is
+ * consulted. Returns a NEW buffer (the caller holds it in component state). */
 export function setStage(
 	buffer: StagingBuffer,
 	node: ResolvedNode,
 	stage: NodeStage,
+	repoints: RepointBuffer = {},
 ): StagingBuffer {
-	if (stage === "accept" && !isAcceptable(node)) {
+	if (stage === "accept" && !isAcceptable(node, repoints)) {
 		return buffer;
 	}
 	return { ...buffer, [node.handle]: stage };
 }
 
-/** Stage EVERY acceptable node `accept` (ambiguous nodes stay `reject`) — the
- * "Accept all" affordance. Ambiguous nodes are explicitly rejected so the commit
- * vector is total and unambiguous. */
-export function acceptAll(plan: readonly ResolvedNode[]): StagingBuffer {
+/** Stage EVERY acceptable node `accept` (an UNPICKED ambiguous node stays
+ * `reject`) — the "Accept all" affordance. A picked ambiguous node is acceptable
+ * (its candidate is chosen), so it is swept into `accept`; unpicked ambiguous
+ * nodes are explicitly rejected so the commit vector is total and unambiguous. */
+export function acceptAll(
+	plan: readonly ResolvedNode[],
+	repoints: RepointBuffer = {},
+): StagingBuffer {
 	const next: Record<string, NodeStage> = {};
 	for (const node of plan) {
-		next[node.handle] = isAcceptable(node) ? "accept" : "reject";
+		next[node.handle] = isAcceptable(node, repoints) ? "accept" : "reject";
 	}
 	return next;
 }
@@ -109,21 +144,25 @@ export function rejectAll(plan: readonly ResolvedNode[]): StagingBuffer {
 }
 
 /** Whether every node has an explicit accepted choice (no node left `reject`).
- * Used to label the commit button (full accept vs partial). */
+ * Used to label the commit button (full accept vs partial). `repoints` is consulted
+ * so a PICKED ambiguous node (default `accept`) counts as accepted. */
 export function allAccepted(
 	plan: readonly ResolvedNode[],
 	buffer: StagingBuffer,
+	repoints: RepointBuffer = {},
 ): boolean {
-	return plan.every((node) => stageFor(buffer, node) === "accept");
+	return plan.every((node) => stageFor(buffer, node, repoints) === "accept");
 }
 
 /** Whether every node is staged `reject` — the commit is effectively a reject-all
- * (Core declines the whole graph; nothing is written). */
+ * (Core declines the whole graph; nothing is written). `repoints` is consulted so a
+ * PICKED ambiguous node (default `accept`) is correctly NOT counted as rejected. */
 export function allRejected(
 	plan: readonly ResolvedNode[],
 	buffer: StagingBuffer,
+	repoints: RepointBuffer = {},
 ): boolean {
-	return plan.every((node) => stageFor(buffer, node) === "reject");
+	return plan.every((node) => stageFor(buffer, node, repoints) === "reject");
 }
 
 /**
@@ -337,24 +376,81 @@ export function buildDecisions(
 	repoints: RepointBuffer = {},
 ): NodeDecision[] {
 	return plan.map((node) => {
-		const decision = stageFor(buffer, node);
-		if (decision === "accept" && node.disposition === "create") {
-			// A near-match re-point reuses an existing entity — it takes precedence
-			// over an edit draft (mutually exclusive: reuse vs mint).
+		const decision = stageFor(buffer, node, repoints);
+		if (decision === "accept") {
 			const repoint = repointFor(repoints, node);
-			if (repoint !== null) {
-				return { handle: node.handle, decision, entity_id: repoint };
+			// An accepted `ambiguous` node is reuse-only: it is acceptable SOLELY
+			// because a candidate was picked, and that pick rides as the `entity_id`
+			// override Core collapses ambiguous → reuse (#181). Self-defend the
+			// no-bare-ambiguous-accept invariant HERE, in the module, rather than
+			// trusting the caller: if an accept survived in the buffer but the pick was
+			// since cleared (a stale-buffer desync a future "clear pick" UI could
+			// produce), `repoint` is null — emit a plain reject, NEVER a bare ambiguous
+			// accept (Core fails the whole atomic apply on one).
+			if (node.disposition === "ambiguous") {
+				return repoint !== null
+					? { handle: node.handle, decision, entity_id: repoint }
+					: { handle: node.handle, decision: "reject" };
 			}
-			const draft = drafts[node.handle];
-			if (draft !== undefined) {
-				const edited = buildEditedFields(entities.get(node.handle), draft);
-				if (edited !== undefined) {
-					return { handle: node.handle, decision, edited_fields: edited };
+			// A `create` node's near-match RE-POINT (ADR-0042 amendment) reuses an
+			// existing entity by id, riding the same `entity_id` override and taking
+			// precedence over an edit draft (mutually exclusive: reuse what you
+			// re-point, edit what you mint).
+			if (node.disposition === "create") {
+				if (repoint !== null) {
+					return { handle: node.handle, decision, entity_id: repoint };
+				}
+				const draft = getOwn(drafts, node.handle);
+				if (draft !== undefined) {
+					const edited = buildEditedFields(entities.get(node.handle), draft);
+					if (edited !== undefined) {
+						return { handle: node.handle, decision, edited_fields: edited };
+					}
 				}
 			}
 		}
 		return { handle: node.handle, decision };
 	});
+}
+
+/** The commit summary derived from the BUILT decision vector — the single source of
+ * truth for what Apply sends. The card's accepted-count label and reject-all path
+ * MUST come from here, not a parallel `stageFor` pass: `buildDecisions` is the only
+ * place the `ambiguous-without-pick → reject` coercion runs, so deriving the count
+ * anywhere else can disagree with the vector actually sent (show "Apply 1 item" while
+ * the vector is all-rejects). `acceptedCount` counts `accept` decisions; `allRejected`
+ * is true iff the vector has ≥1 node and every one is `reject`. */
+export interface DecisionSummary {
+	readonly acceptedCount: number;
+	readonly allRejected: boolean;
+}
+
+export function summarizeDecisions(
+	decisions: readonly NodeDecision[],
+): DecisionSummary {
+	const acceptedCount = decisions.filter((d) => d.decision === "accept").length;
+	return {
+		acceptedCount,
+		allRejected: decisions.length > 0 && acceptedCount === 0,
+	};
+}
+
+/** A GUARANTEED-distinct disambiguator line for one ambiguous-node candidate in the
+ * picker (#181). The candidates share an identical exact-name label (that is WHY the
+ * node is ambiguous), so the label alone can't tell two apart. Prefer the resolved
+ * library subtitle (person note / project outcome / todo due); but that can be absent
+ * (cache still warming) or itself collide (two People with no note both read
+ * "Person"), which would render visually identical radios the user could mis-pick. So
+ * ALWAYS append a short, stable id fragment as a last-resort distinguisher: the
+ * subtitle stays the human-meaningful line, the id suffix guarantees no two rows are
+ * byte-identical. `subtitle` is the resolved `libraryItemSubtitle(item)` or null. */
+export function candidateSubtitle(
+	entityId: string,
+	subtitle: string | null,
+): string {
+	const idTag = `#${entityId.slice(0, 8)}`;
+	const trimmed = subtitle?.trim();
+	return trimmed ? `${trimmed} · ${idTag}` : idTag;
 }
 
 /** A reconcile notice surfaced BEFORE commit (ADR-0042 "shows this downgrade
@@ -390,20 +486,26 @@ export interface GraphLink {
 /** Compute the downgrade notices for the current staging (ADR-0042 reconcile): for
  * every `todo_project`/`todo_person` link whose `from` Todo is staged accept and
  * whose `to` target is staged reject, the link drops and the Todo lands standalone
- * — surfaced so the user sees the downgrade before Apply. */
+ * — surfaced so the user sees the downgrade before Apply.
+ *
+ * `repoints` is consulted (like every other staging read) so a PICKED ambiguous
+ * link target reads as `accept`, not its pre-pick `reject` default: a Todo linked to
+ * a person/project node the user disambiguated keeps that link at apply, so it must
+ * NOT surface a spurious "without its link" notice. */
 export function downgradeNotices(
 	plan: readonly ResolvedNode[],
 	links: readonly GraphLink[],
 	buffer: StagingBuffer,
+	repoints: RepointBuffer = {},
 ): DowngradeNotice[] {
 	const byHandle = new Map(plan.map((node) => [node.handle, node]));
 	const isAccepted = (handle: string): boolean => {
 		const node = byHandle.get(handle);
-		return node !== undefined && stageFor(buffer, node) === "accept";
+		return node !== undefined && stageFor(buffer, node, repoints) === "accept";
 	};
 	const isRejected = (handle: string): boolean => {
 		const node = byHandle.get(handle);
-		return node !== undefined && stageFor(buffer, node) === "reject";
+		return node !== undefined && stageFor(buffer, node, repoints) === "reject";
 	};
 
 	const notices: DowngradeNotice[] = [];
