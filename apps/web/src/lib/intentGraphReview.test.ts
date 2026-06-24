@@ -11,7 +11,9 @@ import {
 	draftRequiredEmpty,
 	type GraphLink,
 	type GraphNodeDraft,
+	getOwn,
 	isAcceptable,
+	type NodeStage,
 	parseGraphEntities,
 	parseGraphLinks,
 	type RepointBuffer,
@@ -68,6 +70,43 @@ describe("isAcceptable", () => {
 	it("a create node's acceptability is unaffected by the repoint buffer", () => {
 		expect(isAcceptable(createTodo, {})).toBe(true);
 		expect(isAcceptable(createTodo, { "@rodeo": "x" })).toBe(true);
+	});
+});
+
+// A model-supplied handle equal to an Object.prototype key must NOT make a
+// handle-keyed buffer read surface an inherited member (the `in`/direct-index
+// vs Object.hasOwn hazard the module already guards in `repointFor`). Pins the
+// guard for the staging buffer + draft reads (stageFor / buildDecisions).
+describe("prototype-key handle safety on the staging + draft buffers", () => {
+	const protoTodo: ResolvedNode = {
+		handle: "toString",
+		type: "todo",
+		disposition: "create",
+		label: "toString",
+	};
+
+	it("getOwn returns undefined for an inherited key on an empty record", () => {
+		expect(getOwn<NodeStage>({}, "toString")).toBeUndefined();
+		expect(getOwn<NodeStage>({}, "constructor")).toBeUndefined();
+		// An OWN entry is still returned.
+		expect(getOwn({ toString: "accept" as NodeStage }, "toString")).toBe(
+			"accept",
+		);
+	});
+
+	it("stageFor falls back to the node default for a prototype-key handle, never an inherited fn", () => {
+		const stage = stageFor({}, protoTodo);
+		expect(stage).toBe("accept"); // create node default — not Object.prototype.toString
+		expect(typeof stage).not.toBe("function");
+	});
+
+	it("buildDecisions ignores an inherited draft for a prototype-key handle (plain accept)", () => {
+		// Empty drafts: a direct `drafts["toString"]` would surface the inherited
+		// function and ride into buildEditedFields; getOwn must yield undefined → a
+		// plain accept with no edited_fields.
+		const vector = buildDecisions([protoTodo], {}, {}, new Map(), {});
+		expect(vector).toEqual([{ handle: "toString", decision: "accept" }]);
+		expect(vector[0]).not.toHaveProperty("edited_fields");
 	});
 });
 

@@ -41,6 +41,7 @@ import {
 	draftLabel,
 	draftRequiredEmpty,
 	type GraphNodeDraft,
+	getOwn,
 	parseGraphEntities,
 	parseGraphLinks,
 	type RepointBuffer,
@@ -1418,14 +1419,14 @@ function IntentGraphReviewCard({
 	// id) nor an EXPLICIT reject — it sits at its reject-only default awaiting a
 	// decision. This drives the dynamic guidance note; once every ambiguous node is
 	// picked or explicitly rejected, the note disappears (no nag). The explicit-reject
-	// check reads the raw buffer (not `stageFor`, whose default for an unpicked
-	// ambiguous node is already `reject`), guarded by `Object.hasOwn` against a
-	// model-supplied handle colliding with a prototype key (see `repointFor`).
+	// check reads the RAW buffer entry via `getOwn` (not `stageFor`, whose default for
+	// an unpicked ambiguous node is already `reject`) — `getOwn` guards the
+	// model-supplied handle against a prototype-key collision (see `repointFor`).
 	const unresolvedAmbiguous = plan.some(
 		(node) =>
 			node.disposition === "ambiguous" &&
 			repointFor(repoints, node) === null &&
-			!(Object.hasOwn(buffer, node.handle) && buffer[node.handle] === "reject"),
+			getOwn(buffer, node.handle) !== "reject",
 	);
 
 	const commit = () => {
@@ -1538,13 +1539,9 @@ function IntentGraphReviewCard({
 						key={node.handle}
 						node={node}
 						stage={stageFor(buffer, node, repoints)}
-						explicitStage={
-							Object.hasOwn(buffer, node.handle)
-								? buffer[node.handle]
-								: undefined
-						}
+						explicitStage={getOwn(buffer, node.handle)}
 						disabled={submitting}
-						draft={drafts[node.handle]}
+						draft={getOwn(drafts, node.handle)}
 						seed={entities.get(node.handle)}
 						editing={editingHandle === node.handle}
 						repointId={repointFor(repoints, node)}

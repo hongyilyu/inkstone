@@ -23,6 +23,21 @@ export type NodeStage = "accept" | "reject";
  * "undecided" — the user has not stepped past it yet. */
 export type StagingBuffer = Readonly<Record<string, NodeStage>>;
 
+/** Read a handle-keyed record as an OWN-property lookup, not `record[handle]`.
+ * Every buffer here is keyed by `ResolvedNode.handle`, an unvalidated model-supplied
+ * wire string (protocol `handle` is a bare string, no `@` pattern), so a handle equal
+ * to a prototype key ("toString", "constructor", "__proto__") would make a direct
+ * index return an inherited `Object.prototype` member — a function masquerading as a
+ * `NodeStage`/draft — rather than `undefined`. `Object.hasOwn` is the same hardening
+ * {@link repointFor} already documents; this is the shared helper the other
+ * handle-keyed reads route through. */
+export function getOwn<T>(
+	record: Readonly<Record<string, T>>,
+	handle: string,
+): T | undefined {
+	return Object.hasOwn(record, handle) ? record[handle] : undefined;
+}
+
 /** Whether a node's disposition permits `accept`. `create`/`reuse` are freely
  * acceptable. An `ambiguous` node has no silent fallback (ADR-0042), so it is
  * reject-only UNTIL the user picks one of its candidates: a pick is recorded as
@@ -83,7 +98,8 @@ export function stageFor(
 	repoints: RepointBuffer = {},
 ): NodeStage {
 	return (
-		buffer[node.handle] ?? (isAcceptable(node, repoints) ? "accept" : "reject")
+		getOwn(buffer, node.handle) ??
+		(isAcceptable(node, repoints) ? "accept" : "reject")
 	);
 }
 
@@ -384,7 +400,7 @@ export function buildDecisions(
 				if (repoint !== null) {
 					return { handle: node.handle, decision, entity_id: repoint };
 				}
-				const draft = drafts[node.handle];
+				const draft = getOwn(drafts, node.handle);
 				if (draft !== undefined) {
 					const edited = buildEditedFields(entities.get(node.handle), draft);
 					if (edited !== undefined) {
