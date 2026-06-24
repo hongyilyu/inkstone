@@ -29,6 +29,11 @@ export function AssistantProposals({ runId }: { runId: string }) {
 						await queryClient.invalidateQueries({
 							queryKey: ["library-items"],
 						});
+						// An accepted mention/link can change an open Entity's backlinks, so
+						// refresh the detail Inspector's read too (ADR-0050).
+						await queryClient.invalidateQueries({
+							queryKey: ["entity-backlinks"],
+						});
 					}
 					// Every decision advances the parked Run (it resumes and runs to a
 					// new milestone), so the recent-Runs feed is now stale regardless of

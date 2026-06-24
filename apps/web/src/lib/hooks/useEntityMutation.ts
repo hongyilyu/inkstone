@@ -35,7 +35,11 @@ export function useEntityMutation() {
 			if (Exit.isSuccess(exit)) return exit.value;
 			throw Cause.squash(exit.cause);
 		},
-		onSuccess: () =>
-			queryClient.invalidateQueries({ queryKey: ["library-items"] }),
+		onSuccess: () => {
+			queryClient.invalidateQueries({ queryKey: ["library-items"] });
+			// A write can change what links to an open Entity (a new mention/todo
+			// link), so refresh the detail Inspector's backlink read too (ADR-0050).
+			queryClient.invalidateQueries({ queryKey: ["entity-backlinks"] });
+		},
 	});
 }

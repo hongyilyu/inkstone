@@ -1,8 +1,9 @@
 import type {
+	EntityBacklinksResult,
 	EntityMutateParams,
 	EntityMutateResult,
 } from "@inkstone/protocol";
-import { WsClient, type WsError } from "@inkstone/ui-sdk";
+import { WsClient, type WsError, WsRequestError } from "@inkstone/ui-sdk";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
 	cleanup,
@@ -53,12 +54,20 @@ afterEach(() => {
 	navigate.mockReset();
 });
 
-// Stub WsClient whose `entityMutate` runs the handler; unused methods die.
+// Stub WsClient whose `entityMutate` and `getBacklinks` run the supplied handlers;
+// unused methods die. `getBacklinks` defaults to a DYING read so a test that
+// doesn't seed backlinks lands on the `isError` fallback — i.e. the inspector
+// derives Waiting/Tasks/Todos from `allEntities` exactly as it did pre-Core
+// (ADR-0050 §7). Tests that prove the Core path override it with real rows.
 function makeRuntime(
 	entityMutate: (
 		params: EntityMutateParams,
 	) => Effect.Effect<EntityMutateResult, WsError> = () =>
 		Effect.succeed({ entity_id: "01900000-0000-7000-8000-000000000099" }),
+	getBacklinks: (
+		entityId: string,
+	) => Effect.Effect<EntityBacklinksResult, WsError> = () =>
+		Effect.die("backlinks not exercised in this test"),
 ) {
 	const unused = Effect.die("not exercised in this test");
 	const stub = WsClient.of({
@@ -68,7 +77,7 @@ function makeRuntime(
 		getRunHistory: () => unused,
 		threadGet: () => unused,
 		listEntities: () => unused,
-		getBacklinks: () => unused,
+		getBacklinks,
 		entityMutate,
 		subscribeRun: () => unused,
 		cancelRun: () => unused,
@@ -83,6 +92,60 @@ function makeRuntime(
 		proposalNotifications: () => unused,
 	});
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
+}
+
+// Build an `EntityBacklinksResult` for the Core-sourced inspector. Rows are wire
+// `EntityRow`s (snake_case `data` + `created_at`/`updated_at` + ride-along
+// `refs`/`person_refs`), the same shape Core emits and `entityCodec` parses.
+function backlinks(
+	result: Partial<EntityBacklinksResult>,
+): EntityBacklinksResult {
+	return { mentioned_in: [], linked_todos: [], ...result };
+}
+
+let backlinkRowSeq = 0;
+/** A fresh row id so two `jeBacklinkRow`/`todoBacklinkRow` calls never collide. */
+function nextBacklinkSeq(): number {
+	backlinkRowSeq += 1;
+	return backlinkRowSeq;
+}
+
+/** A wire JE `EntityRow` whose `text` is its whole body — the title `RelatedRow`
+ * shows for a "Mentioned in" row (`libraryItemTitle` of a text-only entry is its
+ * body text). Core returns the JE that references the entity; the body text is what
+ * the inspector renders. */
+function jeBacklinkRow(
+	text: string,
+	id = `je_bl_${nextBacklinkSeq()}`,
+): EntityBacklinksResult["mentioned_in"][number] {
+	return {
+		id,
+		type: "journal_entry",
+		data: {
+			occurred_at: "2026-06-10T10:30:00",
+			body: [{ type: "text", text }],
+		},
+		created_at: 1000,
+		updated_at: 1000,
+	};
+}
+
+/** A wire Todo `EntityRow` linked to a person via a `person_refs` role. */
+function todoBacklinkRow(
+	title: string,
+	personId: string,
+	role: "waiting_on" | "related",
+	status: Todo["status"] = "active",
+	id = `t_bl_${nextBacklinkSeq()}`,
+): EntityBacklinksResult["linked_todos"][number] {
+	return {
+		id,
+		type: "todo",
+		data: { title, status },
+		created_at: 2000,
+		updated_at: 2000,
+		person_refs: [{ person_id: personId, role }],
+	};
 }
 
 /** Render EntityDetail inside the runtime + QueryClient its edit/delete writes need. */
@@ -429,7 +492,7 @@ describe("EntityDetail Todo delete", () => {
 });
 
 describe("EntityDetail Person projection", () => {
-	it("shows aliases, waiting tasks, and projects derived through todos", () => {
+	it("shows aliases, waiting tasks, and projects derived through todos", async () => {
 		const alice = person("p_alice", "Alice", { aliases: ["Allie", "A."] });
 		const proj = project("pr_1", "Daycare move");
 		const waitingTodo = todoItem("t_wait", {
@@ -437,80 +500,106 @@ describe("EntityDetail Person projection", () => {
 			projectId: "pr_1",
 			personRefs: [{ personId: "p_alice", role: "waiting_on" }],
 		});
+		// allEntities still holds the todo (the live Library loads every row — it
+		// drives the client Person→Projects join); the Waiting/Tasks sections
+		// re-source from the Core `linked_todos` set (ADR-0050).
 		const all: LibraryItem[] = [alice, proj, waitingTodo];
 
-		renderDetail(<EntityDetail entity={alice} allEntities={all} />);
+		renderDetail(
+			<EntityDetail entity={alice} allEntities={all} />,
+			makeRuntime(undefined, () =>
+				Effect.succeed(
+					backlinks({
+						linked_todos: [
+							todoBacklinkRow("Schedule from Alice", "p_alice", "waiting_on"),
+						],
+					}),
+				),
+			),
+		);
 
 		expect(screen.getByText(/Allie, A\./)).toBeInTheDocument();
-		// Waiting-on section lists the task; Projects derives pr_1 through the todo.
-		expect(screen.getByText("Schedule from Alice")).toBeInTheDocument();
+		// Waiting-on section lists the Core task; Projects derives pr_1 through the
+		// allEntities todo (the join stays client-side).
+		expect(await screen.findByText("Schedule from Alice")).toBeInTheDocument();
 		expect(screen.getByText("Daycare move")).toBeInTheDocument();
 	});
 
-	it("keeps a resolved waiting_on todo out of 'Waiting on' (active only)", () => {
+	it("keeps a resolved waiting_on todo out of 'Waiting on' (active only)", async () => {
 		const alice = person("p_alice", "Alice");
-		const resolved = todoItem("t_done", {
-			title: "Already got the draft",
-			status: "completed",
-			completedAt: "2026-06-01T12:00:00",
-			personRefs: [{ personId: "p_alice", role: "waiting_on" }],
-		});
 		renderDetail(
-			<EntityDetail entity={alice} allEntities={[alice, resolved]} />,
+			<EntityDetail entity={alice} allEntities={[alice]} />,
+			makeRuntime(undefined, () =>
+				Effect.succeed(
+					backlinks({
+						linked_todos: [
+							todoBacklinkRow(
+								"Already got the draft",
+								"p_alice",
+								"waiting_on",
+								"completed",
+							),
+						],
+					}),
+				),
+			),
 		);
 
+		// It still appears as a (historical) task on arrival of the Core read.
+		expect(
+			await screen.findByText("Already got the draft"),
+		).toBeInTheDocument();
+		expect(screen.getByText(/Tasks/)).toBeInTheDocument();
 		// The completed task is not a live follow-up — no "Waiting on" section.
-		expect(screen.queryByText("Waiting on")).not.toBeInTheDocument();
-		// It still appears as a (historical) task.
-		expect(screen.getByText("Tasks")).toBeInTheDocument();
-		expect(screen.getByText("Already got the draft")).toBeInTheDocument();
+		expect(screen.queryByText(/Waiting on/)).not.toBeInTheDocument();
 	});
 
-	it("shows 'Mentioned in' journal entries that reference the person", () => {
+	it("shows 'Mentioned in' journal entries the Core read returns", async () => {
 		const alice = person("p_alice", "Alice");
-		const journalEntry: JournalEntry = {
-			id: "je_1",
-			kind: "journal_entry",
-			occurredAt: "2026-06-10T10:30:00",
-			body: [
-				{ type: "text", text: "Met " },
-				{
-					type: "entity_ref",
-					refId: "ref_1",
-					targetEntityId: "p_alice",
-					targetKind: "person",
-					targetTitle: "Alice",
-				},
-				{ type: "text", text: " about daycare." },
-			],
-			recency: 1,
-			createdAt: "fixture",
-		};
 		renderDetail(
-			<EntityDetail entity={alice} allEntities={[alice, journalEntry]} />,
+			<EntityDetail entity={alice} allEntities={[alice]} />,
+			makeRuntime(undefined, () =>
+				Effect.succeed(
+					backlinks({
+						mentioned_in: [jeBacklinkRow("Met Alice about daycare.")],
+					}),
+				),
+			),
 		);
 
-		expect(screen.getByText("Mentioned in")).toBeInTheDocument();
-		// The referencing journal entry is listed as a related row.
-		expect(screen.getByText("Met Alice about daycare.")).toBeInTheDocument();
+		// The "Mentioned in" section is sourced from `entity/backlinks`, not a scan
+		// of `allEntities` (ADR-0050) — so it appears on arrival of the async read.
+		expect(
+			await screen.findByText("Met Alice about daycare."),
+		).toBeInTheDocument();
+		expect(screen.getByText(/Mentioned in/)).toBeInTheDocument();
 	});
 });
 
 describe("EntityDetail Project projection", () => {
-	it("shows note, review state, and people derived through its todos", () => {
+	it("shows note, review state, and people derived through its todos", async () => {
 		const alice = person("p_alice", "Alice");
 		const proj = project("pr_1", "Daycare move", {
 			note: "Provider switch by August.",
 			nextReviewAt: "2026-06-21T20:00:00",
 			lastReviewedAt: "2026-06-14T20:00:00",
 		});
-		const todo = todoItem("t_1", {
-			projectId: "pr_1",
-			personRefs: [{ personId: "p_alice", role: "related" }],
-		});
-		const all: LibraryItem[] = [alice, proj, todo];
+		// People derive (client-side join) from the Core `linked_todos` set + the
+		// Person in allEntities (ADR-0050).
+		const all: LibraryItem[] = [alice, proj];
 
-		renderDetail(<EntityDetail entity={proj} allEntities={all} />);
+		renderDetail(
+			<EntityDetail entity={proj} allEntities={all} />,
+			makeRuntime(undefined, () =>
+				Effect.succeed(
+					backlinks({
+						linked_todos: [
+							todoBacklinkRow("Daycare task", "p_alice", "related"),
+						],
+					}),
+				),
+			),
+		);
 
 		expect(screen.getByText("Provider switch by August.")).toBeInTheDocument();
 		expect(
@@ -519,8 +608,118 @@ describe("EntityDetail Project projection", () => {
 		expect(
 			screen.getByText(dayBadge("last reviewed ", "2026-06-14T20:00:00")),
 		).toBeInTheDocument();
-		// Person derived through the project's todo appears (no direct link).
-		expect(screen.getByText("Alice")).toBeInTheDocument();
+		// Person derived through the project's Core-linked todo appears (no direct
+		// link) — on arrival of the async read.
+		expect(await screen.findByText("Alice")).toBeInTheDocument();
+	});
+});
+
+// ── Core-sourced backlinks (ADR-0050) ────────────────────────────────────────
+
+describe("EntityDetail Core-sourced backlinks", () => {
+	it("renders 'Mentioned in' from the Core read for Person, Project, and Todo", async () => {
+		const subjects: { entity: LibraryItem; text: string }[] = [
+			{ entity: person("p_x", "Person X"), text: "Mentions the person." },
+			{ entity: project("pr_x", "Project X"), text: "Mentions the project." },
+			{
+				entity: todoItem("t_x", { title: "Todo X" }),
+				text: "Mentions the todo.",
+			},
+		];
+		for (const { entity, text } of subjects) {
+			renderDetail(
+				<EntityDetail entity={entity} allEntities={[entity]} />,
+				makeRuntime(undefined, () =>
+					Effect.succeed(backlinks({ mentioned_in: [jeBacklinkRow(text)] })),
+				),
+			);
+			expect(await screen.findByText(text)).toBeInTheDocument();
+			expect(screen.getByText(/Mentioned in/)).toBeInTheDocument();
+			cleanup();
+		}
+	});
+
+	it("shows 'Mentioned in' on a Project (the section it never rendered before)", async () => {
+		const proj = project("pr_bug", "Lead Ads testing");
+		renderDetail(
+			<EntityDetail entity={proj} allEntities={[proj]} />,
+			makeRuntime(undefined, () =>
+				Effect.succeed(
+					backlinks({
+						mentioned_in: [jeBacklinkRow("Kicked off Lead Ads.")],
+					}),
+				),
+			),
+		);
+
+		expect(await screen.findByText("Kicked off Lead Ads.")).toBeInTheDocument();
+		expect(screen.getByText(/Mentioned in/)).toBeInTheDocument();
+	});
+
+	it("counts the mentions on the section header (Mentioned in · N)", async () => {
+		const alice = person("p_count", "Alice");
+		renderDetail(
+			<EntityDetail entity={alice} allEntities={[alice]} />,
+			makeRuntime(undefined, () =>
+				Effect.succeed(
+					backlinks({
+						mentioned_in: [
+							jeBacklinkRow("First mention."),
+							jeBacklinkRow("Second mention."),
+						],
+					}),
+				),
+			),
+		);
+
+		expect(await screen.findByText("First mention.")).toBeInTheDocument();
+		expect(screen.getByText(/Mentioned in · 2/)).toBeInTheDocument();
+	});
+
+	it("derives Person Waiting/Tasks from the Core linked_todos set", async () => {
+		const alice = person("p_core", "Alice");
+		renderDetail(
+			<EntityDetail entity={alice} allEntities={[alice]} />,
+			makeRuntime(undefined, () =>
+				Effect.succeed(
+					backlinks({
+						linked_todos: [
+							todoBacklinkRow("Awaiting Alice's reply", "p_core", "waiting_on"),
+							todoBacklinkRow("Follow up with Alice", "p_core", "related"),
+						],
+					}),
+				),
+			),
+		);
+
+		// Both the waiting_on follow-up and the related task come from the Core set,
+		// not a scan of `allEntities` (which holds only the Person here).
+		expect(
+			await screen.findByText("Awaiting Alice's reply"),
+		).toBeInTheDocument();
+		expect(screen.getByText("Follow up with Alice")).toBeInTheDocument();
+		expect(screen.getByText(/Waiting on/)).toBeInTheDocument();
+		expect(screen.getByText(/Tasks/)).toBeInTheDocument();
+	});
+
+	it("falls back to allEntities-derived Waiting/Tasks and omits Mentioned-in on a read error", async () => {
+		const alice = person("p_err", "Alice");
+		const waitingTodo = todoItem("t_err", {
+			title: "Schedule from Alice",
+			personRefs: [{ personId: "p_err", role: "waiting_on" }],
+		});
+		renderDetail(
+			<EntityDetail entity={alice} allEntities={[alice, waitingTodo]} />,
+			makeRuntime(undefined, () =>
+				Effect.fail(new WsRequestError({ reason: "core unreachable" })),
+			),
+		);
+
+		// The relation never vanishes — it degrades to the client-derived set.
+		expect(await screen.findByText("Schedule from Alice")).toBeInTheDocument();
+		expect(screen.getByText(/Waiting on/)).toBeInTheDocument();
+		// Mentioned-in has no client fallback, so it is simply absent on error.
+		expect(screen.queryByText(/Mentioned in/)).not.toBeInTheDocument();
 	});
 });
 
