@@ -300,6 +300,57 @@ describe("WsClient", () => {
 		}
 	});
 
+	it("getBacklinks(entityId) sends entity/backlinks with { entity_id } and round-trips EntityBacklinksResult", async () => {
+		const expected = {
+			mentioned_in: [
+				{
+					id: "01999999-0000-7000-8000-000000000040",
+					type: "journal_entry",
+					data: { title: "standup", body: "talked to alice" },
+					created_at: 1717200000000,
+					updated_at: 1717200000000,
+				},
+			],
+			linked_todos: [
+				{
+					id: "01999999-0000-7000-8000-000000000041",
+					type: "todo",
+					data: { title: "follow up", done: false },
+					created_at: 1717200001000,
+					updated_at: 1717200001000,
+				},
+			],
+		};
+
+		let observed: WireRequest | undefined;
+		const server = await makeServer((ws, req) => {
+			if (req.method === "entity/backlinks") {
+				observed = req;
+				ws.send(
+					JSON.stringify({
+						jsonrpc: "2.0",
+						id: req.id,
+						result: expected,
+					}),
+				);
+			}
+		});
+
+		const program = Effect.gen(function* () {
+			const client = yield* WsClient;
+			return yield* client.getBacklinks("p_1");
+		});
+
+		try {
+			const result = await Effect.runPromise(provide(server.url)(program));
+			expect(result).toEqual(expected);
+			expect(observed?.method).toBe("entity/backlinks");
+			expect(observed?.params).toEqual({ entity_id: "p_1" });
+		} finally {
+			await server.close();
+		}
+	});
+
 	it("threadGet round-trips the canonical ThreadGetResult", async () => {
 		const expected = {
 			thread_id: "01999999-0000-7000-8000-000000000001",

@@ -32,6 +32,7 @@ function makeStubRuntime(queue: Queue.Queue<RunEventValue>, runId: RunId) {
 		getRunHistory: () => unused,
 		threadGet: () => unused,
 		listEntities: () => unused,
+		getBacklinks: () => unused,
 		entityMutate: () => unused,
 		subscribeRun: () => Stream.fromQueue(queue),
 		cancelRun: () => unused,

@@ -68,6 +68,7 @@ function makeRuntime(
 		getRunHistory: () => unused,
 		threadGet: () => unused,
 		listEntities: () => unused,
+		getBacklinks: () => unused,
 		entityMutate,
 		subscribeRun: () => unused,
 		cancelRun: () => unused,

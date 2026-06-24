@@ -1,5 +1,6 @@
 import { Socket } from "@effect/platform";
 import {
+	EntityBacklinksResult,
 	EntityListResult,
 	type EntityMutateParams,
 	EntityMutateResult,
@@ -169,6 +170,9 @@ export class WsClient extends Context.Tag("@inkstone/ui-sdk/WsClient")<
 		readonly listEntities: (
 			type: string,
 		) => Effect.Effect<EntityListResult, WsError>;
+		readonly getBacklinks: (
+			entityId: string,
+		) => Effect.Effect<EntityBacklinksResult, WsError>;
 		readonly entityMutate: (
 			params: EntityMutateParams,
 		) => Effect.Effect<EntityMutateResult, WsError>;
@@ -433,6 +437,17 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 			): Effect.Effect<EntityListResult, WsError> =>
 				request("entity/list", { type }, EntityListResult);
 
+			// entity/backlinks (ADR-0050): the two reverse sets the detail Inspector
+			// shows for one Entity — mentioned_in (Journal Entries) + linked_todos.
+			const getBacklinks = (
+				entityId: string,
+			): Effect.Effect<EntityBacklinksResult, WsError> =>
+				request(
+					"entity/backlinks",
+					{ entity_id: entityId },
+					EntityBacklinksResult,
+				);
+
 			// entity/mutate (ADR-0033): a user-initiated CRUD request — same
 			// {mutation_kind, payload} envelope as the Worker's propose tool.
 			const entityMutate = (
@@ -510,6 +525,7 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 				getRunHistory,
 				threadGet,
 				listEntities,
+				getBacklinks,
 				entityMutate,
 				messageSearch,
 				subscribeRun,

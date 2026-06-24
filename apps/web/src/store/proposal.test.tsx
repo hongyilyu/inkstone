@@ -62,6 +62,7 @@ function makeStubRuntime(opts: {
 		getRunHistory: () => unused,
 		threadGet: () => unused,
 		listEntities: () => unused,
+		getBacklinks: () => unused,
 		entityMutate: () => unused,
 		subscribeRun: () => {
 			opts.onSubscribe?.();
