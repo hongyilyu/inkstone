@@ -326,6 +326,147 @@ fn entity_title(entity_type: &str, data: &serde_json::Value) -> Option<String> {
         .map(str::to_string)
 }
 
+/// The two reverse relation sets the detail Inspector reads for one Entity
+/// (`entity/backlinks`, ADR-0050): the distinct Journal Entries that reference it
+/// and the Todos linked to it. Both are full [`EntityRow`]s so the Web client
+/// renders them through the existing entity codec.
+pub struct Backlinks {
+    /// DISTINCT Journal Entries referencing this Entity, newest-occurred first,
+    /// each carrying its `refs` + `source` (the `entity/list` JE assembly).
+    pub mentioned_in: Vec<EntityRow>,
+    /// Todos linked to this Entity (Person → all `person_refs`; Project →
+    /// `project_id`; Todo → none), newest-first, each carrying its `person_refs`.
+    pub linked_todos: Vec<EntityRow>,
+}
+
+/// Resolve the backlinks for a Person, Project, or Todo (ADR-0050). A narrow
+/// per-entity read fired on detail-open — it does NOT fatten `entity/list` rows
+/// (ADR-0032's pattern) nor resolve the joined Person→Projects / Project→People /
+/// Progress derivations (those stay client-side). An entity of any other type (or
+/// an absent id) simply yields empty sets.
+pub async fn backlinks_for_entity(pool: &SqlitePool, entity_id: &str) -> sqlx::Result<Backlinks> {
+    let mentioned_in = mentioned_in_journal_entries(pool, entity_id).await?;
+
+    // `linked_todos` dispatches on the target's Entity Type: a Person's Todos
+    // (all roles), a Project's Todos, and nothing for a Todo (it is Mentioned-in
+    // only). An unknown / absent target yields no linked Todos.
+    let linked_todos = match entity_type_by_id(pool, entity_id).await? {
+        Some(crate::mutation::EntityType::Person) => {
+            let mut rows = todos_by_person(pool, entity_id, None).await?;
+            attach_person_refs(pool, &mut rows).await?;
+            rows
+        }
+        Some(crate::mutation::EntityType::Project) => {
+            let mut rows = todos_by_project(pool, entity_id).await?;
+            attach_person_refs(pool, &mut rows).await?;
+            rows
+        }
+        _ => Vec::new(),
+    };
+
+    Ok(Backlinks {
+        mentioned_in,
+        linked_todos,
+    })
+}
+
+/// Build the DISTINCT-Journal-Entry "Mentioned in" set for `target_entity_id`,
+/// reusing the `entity/list` JE-row assembly so each row carries its `refs` +
+/// `source`. `journal_entry_refs_targeting` returns one row per `entity_ref`; the
+/// `(source_entity_id, target_entity_id)` UNIQUE constraint already caps that at
+/// one row per JE for a given target, but the collapse is kept so a JE can never
+/// list twice. Ordered newest-occurred first by the JE's `data.occurred_at` (an
+/// ISO-8601 string, so lexical order is chronological), tie-broken by JE id.
+async fn mentioned_in_journal_entries(
+    pool: &SqlitePool,
+    target_entity_id: &str,
+) -> sqlx::Result<Vec<EntityRow>> {
+    let refs = queries::journal_entry_refs_targeting(pool, target_entity_id).await?;
+    let mut je_ids = Vec::<String>::new();
+    for (_ref_id, source_entity_id, _source_data, _label) in &refs {
+        if !je_ids.contains(source_entity_id) {
+            je_ids.push(source_entity_id.clone());
+        }
+    }
+
+    let mut rows = queries::journal_entries_by_ids(pool, &je_ids)
+        .await?
+        .into_iter()
+        .map(|(id, data, created_at, updated_at)| {
+            let data = parse_entity_data(&id, &data)?;
+            Ok(EntityRow {
+                id,
+                r#type: "journal_entry".to_string(),
+                data,
+                created_at,
+                updated_at,
+                refs: Vec::new(),
+                person_refs: Vec::new(),
+                source: None,
+            })
+        })
+        .collect::<sqlx::Result<Vec<_>>>()?;
+
+    // Attach each JE's refs + Captured-from source exactly as the `journal_entry`
+    // branch of `list_by_type` does.
+    let source_entity_ids = rows.iter().map(|row| row.id.clone()).collect::<Vec<_>>();
+    let resolved_refs = resolved_entity_refs_for_sources(pool, &source_entity_ids).await?;
+    let mut refs_by_source = HashMap::<String, Vec<ResolvedEntityRef>>::new();
+    for entity_ref in resolved_refs {
+        refs_by_source
+            .entry(entity_ref.source_entity_id.clone())
+            .or_default()
+            .push(entity_ref);
+    }
+    let provenance = queries::provenance_for_entities(pool, &source_entity_ids).await?;
+    let mut provenance_by_entity = HashMap::<String, EntityProvenance>::new();
+    for (je_id, source_entity_id, thread_id, thread_title) in provenance {
+        provenance_by_entity
+            .entry(je_id)
+            .or_insert_with(|| match source_entity_id {
+                Some(journal_entry_id) => EntityProvenance::JournalEntry { journal_entry_id },
+                None => EntityProvenance::Message {
+                    thread_id: thread_id.unwrap_or_default(),
+                    thread_title: thread_title.unwrap_or_default(),
+                },
+            });
+    }
+    for row in &mut rows {
+        row.refs = refs_by_source.remove(&row.id).unwrap_or_default();
+        row.source = provenance_by_entity.remove(&row.id);
+    }
+
+    // Newest-occurred first; the JE's `occurred_at` is an ISO-8601 string in
+    // `data`, so a reverse string compare is chronological. Stable tie-break by id.
+    rows.sort_by(|a, b| {
+        let a_occurred = a.data.get("occurred_at").and_then(|v| v.as_str()).unwrap_or("");
+        let b_occurred = b.data.get("occurred_at").and_then(|v| v.as_str()).unwrap_or("");
+        b_occurred.cmp(a_occurred).then_with(|| a.id.cmp(&b.id))
+    });
+
+    Ok(rows)
+}
+
+/// Attach each Todo row's Person References (ADR-0032) in one batched read,
+/// mirroring the `entity_type == "todo"` branch of [`list_by_type`]. The
+/// `todos_by_*` reads zero `person_refs`; the GTD Waiting/Tasks split (ADR-0031)
+/// depends on these riding along.
+async fn attach_person_refs(pool: &SqlitePool, rows: &mut [EntityRow]) -> sqlx::Result<()> {
+    let todo_ids = rows.iter().map(|row| row.id.clone()).collect::<Vec<_>>();
+    let refs = queries::person_refs_for_todos(pool, &todo_ids).await?;
+    let mut refs_by_todo = HashMap::<String, Vec<(String, String)>>::new();
+    for (todo_id, person_id, role) in refs {
+        refs_by_todo
+            .entry(todo_id)
+            .or_default()
+            .push((person_id, role));
+    }
+    for row in rows {
+        row.person_refs = refs_by_todo.remove(&row.id).unwrap_or_default();
+    }
+    Ok(())
+}
+
 /// One Journal Entry returned to the Worker for same-Thread correction context.
 /// `data` is the latest accepted revision snapshot.
 pub struct CurrentThreadJournalEntryRow {
@@ -1645,7 +1786,6 @@ fn entity_row(row: (String, String, String, i64, i64)) -> sqlx::Result<EntityRow
 /// Read every Todo owning `project_id` (its `data.project_id` matches), reusing
 /// the `json_extract` project match. Returns full [`EntityRow`]s with real
 /// `created_at`/`updated_at`, newest-first.
-#[allow(dead_code)]
 pub async fn todos_by_project(pool: &SqlitePool, project_id: &str) -> sqlx::Result<Vec<EntityRow>> {
     let rows = queries::todos_by_project(pool, project_id).await?;
     rows.into_iter()
@@ -1657,7 +1797,6 @@ pub async fn todos_by_project(pool: &SqlitePool, project_id: &str) -> sqlx::Resu
 
 /// Read every Todo linked to `person_id` via `todo_person_refs`, optionally
 /// filtered to `role` (ADR-0031). Returns full [`EntityRow`]s, newest-first.
-#[allow(dead_code)]
 pub async fn todos_by_person(
     pool: &SqlitePool,
     person_id: &str,
@@ -3996,5 +4135,260 @@ mod tests {
         update_thread_title(&pool, Uuid::now_v7(), "X")
             .await
             .expect("update of an absent thread is a no-op Ok");
+    }
+
+    // ─── entity/backlinks read (ADR-0050) ──────────────────────────────────
+
+    /// Seed one `entities` row with an explicit `created_at`/`updated_at`, so a
+    /// read's newest-first ordering can be exercised (the bare `seed_entity`
+    /// pins both to `1`).
+    async fn seed_entity_at(
+        pool: &SqlitePool,
+        id: &str,
+        entity_type: &str,
+        data: &str,
+        created_at: i64,
+    ) {
+        sqlx::query(
+            "INSERT INTO entities \
+             (id, type, schema_version, data, created_by, created_via_proposal_id, \
+              created_at, updated_at) \
+             VALUES (?, ?, 1, ?, 'user', NULL, ?, ?)",
+        )
+        .bind(id)
+        .bind(entity_type)
+        .bind(data)
+        .bind(created_at)
+        .bind(created_at)
+        .execute(pool)
+        .await
+        .expect("insert entity at");
+    }
+
+    /// Insert one `entity_refs` row directly (a Journal Entry → target link).
+    async fn seed_entity_ref(pool: &SqlitePool, id: &str, source_je: &str, target: &str) {
+        sqlx::query(
+            "INSERT INTO entity_refs \
+             (id, source_entity_id, target_entity_id, label_snapshot, created_at) \
+             VALUES (?, ?, ?, NULL, 1)",
+        )
+        .bind(id)
+        .bind(source_je)
+        .bind(target)
+        .execute(pool)
+        .await
+        .expect("insert entity_ref");
+    }
+
+    fn je_data(occurred_at: &str, text: &str) -> String {
+        serde_json::json!({
+            "occurred_at": occurred_at,
+            "body": [{ "type": "text", "text": text }],
+        })
+        .to_string()
+    }
+
+    /// `backlinks_for_entity` resolves the two reverse sets for a Person, Project,
+    /// or Todo: `mentioned_in` (DISTINCT Journal Entries referencing it, with their
+    /// `refs` + `source` attached, newest-occurred first) and `linked_todos` (the
+    /// Todos linked via `person_refs` for a Person / `project_id` for a Project,
+    /// each carrying its `person_refs`, newest-first; empty for a Todo target).
+    #[tokio::test]
+    async fn backlinks_resolves_mentioned_in_and_linked_todos() {
+        let pool = memory_pool().await;
+
+        // Provenance for the mentioning JEs (so each JE row carries its `source`).
+        seed_thread_message(&pool, "thr-1", "Morning dump", "msg-1").await;
+
+        // Targets.
+        seed_entity(&pool, "person-a", "person", r#"{"name":"Alice"}"#).await;
+        seed_entity(&pool, "proj-a", "project", r#"{"name":"Lead Ads"}"#).await;
+        seed_entity(&pool, "todo-standalone", "todo", r#"{"title":"Standalone"}"#).await;
+        seed_entity(&pool, "person-zero", "person", r#"{"name":"Nobody"}"#).await;
+
+        // Journal Entries with refs. JE-older and JE-newer both reference Alice;
+        // JE-newer occurred later. JE-newer references Alice via TWO ref rows would
+        // be blocked by the (source,target) UNIQUE constraint, so dedupe is proven
+        // by asserting each distinct JE appears exactly ONCE.
+        seed_entity_at(
+            &pool,
+            "je-older",
+            "journal_entry",
+            &je_data("2026-06-01T09:00:00", "Met Alice"),
+            10,
+        )
+        .await;
+        seed_entity_at(
+            &pool,
+            "je-newer",
+            "journal_entry",
+            &je_data("2026-06-05T09:00:00", "Alice again, re Lead Ads"),
+            20,
+        )
+        .await;
+        seed_entity_at(
+            &pool,
+            "je-proj",
+            "journal_entry",
+            &je_data("2026-06-03T09:00:00", "Lead Ads kickoff"),
+            15,
+        )
+        .await;
+        seed_entity_at(
+            &pool,
+            "je-todo",
+            "journal_entry",
+            &je_data("2026-06-02T09:00:00", "Mentioned the standalone todo"),
+            12,
+        )
+        .await;
+
+        // Each mentioning JE is `created_from` the user Message (so `source`
+        // attaches), exercising the same provenance assembly as `entity/list`.
+        for (src_id, je) in [
+            ("s-older", "je-older"),
+            ("s-newer", "je-newer"),
+            ("s-proj", "je-proj"),
+            ("s-todo", "je-todo"),
+        ] {
+            seed_source(&pool, src_id, je, Some("msg-1"), None, "created_from", 5).await;
+        }
+
+        // Refs: both JEs → Alice; JE-newer also → the Project (so JE-newer carries
+        // multiple refs). JE-proj → Project, JE-todo → the standalone Todo.
+        seed_entity_ref(&pool, "ref-1", "je-older", "person-a").await;
+        seed_entity_ref(&pool, "ref-2", "je-newer", "person-a").await;
+        seed_entity_ref(&pool, "ref-3", "je-newer", "proj-a").await;
+        seed_entity_ref(&pool, "ref-4", "je-proj", "proj-a").await;
+        seed_entity_ref(&pool, "ref-5", "je-todo", "todo-standalone").await;
+
+        // Linked todos. Alice is on two todos (waiting_on + related → all roles);
+        // the Project owns one todo. `t-wait` is newer than `t-rel` so newest-first
+        // ordering is observable.
+        seed_entity_at(&pool, "t-rel", "todo", r#"{"title":"Older task"}"#, 30).await;
+        seed_entity_at(
+            &pool,
+            "t-wait",
+            "todo",
+            r#"{"title":"Newer task"}"#,
+            40,
+        )
+        .await;
+        seed_ref(&pool, "t-rel", "person-a", "related").await;
+        seed_ref(&pool, "t-wait", "person-a", "waiting_on").await;
+        seed_entity_at(
+            &pool,
+            "t-proj",
+            "todo",
+            r#"{"title":"Project task","project_id":"proj-a"}"#,
+            35,
+        )
+        .await;
+
+        // ── Person target ──────────────────────────────────────────────────
+        let person = backlinks_for_entity(&pool, "person-a")
+            .await
+            .expect("backlinks for person");
+
+        let mentioned_ids: Vec<&str> = person
+            .mentioned_in
+            .iter()
+            .map(|row| row.id.as_str())
+            .collect();
+        assert_eq!(
+            mentioned_ids,
+            vec!["je-newer", "je-older"],
+            "distinct JEs mentioning the Person, newest-occurred first"
+        );
+        // Each JE row carries its refs (reuse of the entity/list JE assembly) and
+        // its source provenance.
+        let je_newer = person
+            .mentioned_in
+            .iter()
+            .find(|r| r.id == "je-newer")
+            .expect("je-newer row");
+        assert_eq!(
+            je_newer.refs.len(),
+            2,
+            "je-newer carries both of its entity_refs (Alice + Project)"
+        );
+        assert!(
+            matches!(
+                je_newer.source.as_ref(),
+                Some(EntityProvenance::Message { thread_id, .. }) if thread_id == "thr-1"
+            ),
+            "mentioned-in JE carries its Captured-from provenance"
+        );
+
+        let linked_ids: Vec<&str> = person
+            .linked_todos
+            .iter()
+            .map(|row| row.id.as_str())
+            .collect();
+        assert_eq!(
+            linked_ids,
+            vec!["t-wait", "t-rel"],
+            "Person's linked todos across all roles, newest-first"
+        );
+        // person_refs ride along on each linked Todo (the GTD Waiting/Tasks split).
+        let wait = person
+            .linked_todos
+            .iter()
+            .find(|r| r.id == "t-wait")
+            .expect("t-wait row");
+        assert_eq!(
+            wait.person_refs,
+            vec![("person-a".to_string(), "waiting_on".to_string())],
+            "linked Todo carries its person_refs"
+        );
+
+        // ── Project target (same result shape) ───────────────────────────────
+        let project = backlinks_for_entity(&pool, "proj-a")
+            .await
+            .expect("backlinks for project");
+        let proj_mentioned: Vec<&str> = project
+            .mentioned_in
+            .iter()
+            .map(|row| row.id.as_str())
+            .collect();
+        assert_eq!(
+            proj_mentioned,
+            vec!["je-newer", "je-proj"],
+            "distinct JEs mentioning the Project, newest-occurred first"
+        );
+        let proj_linked: Vec<&str> = project
+            .linked_todos
+            .iter()
+            .map(|row| row.id.as_str())
+            .collect();
+        assert_eq!(
+            proj_linked,
+            vec!["t-proj"],
+            "Project's linked todos via project_id"
+        );
+
+        // ── Todo target (Mentioned-in only; no linked todos) ─────────────────
+        let todo = backlinks_for_entity(&pool, "todo-standalone")
+            .await
+            .expect("backlinks for todo");
+        let todo_mentioned: Vec<&str> = todo
+            .mentioned_in
+            .iter()
+            .map(|row| row.id.as_str())
+            .collect();
+        assert_eq!(todo_mentioned, vec!["je-todo"], "the JE mentioning the Todo");
+        assert!(
+            todo.linked_todos.is_empty(),
+            "a Todo has no linked todos (Mentioned-in only)"
+        );
+
+        // ── Zero-backlink entity → both sets empty ───────────────────────────
+        let empty = backlinks_for_entity(&pool, "person-zero")
+            .await
+            .expect("backlinks for zero-backlink person");
+        assert!(
+            empty.mentioned_in.is_empty() && empty.linked_todos.is_empty(),
+            "a referenced-by-nothing entity yields empty sets"
+        );
     }
 }

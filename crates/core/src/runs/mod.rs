@@ -72,6 +72,9 @@ pub async fn dispatch(
         "entity/list" => {
             entity::handle_list(pool, req.id, req.params, out_tx).await;
         }
+        "entity/backlinks" => {
+            entity::handle_backlinks(pool, req.id, req.params, out_tx).await;
+        }
         "entity/mutate" => {
             entity::handle_mutate(pool, req.id, req.params, out_tx).await;
         }
