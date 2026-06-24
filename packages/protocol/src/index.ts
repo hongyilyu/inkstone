@@ -431,6 +431,22 @@ export type EntityRow = S.Schema.Type<typeof EntityRow>;
 export const EntityListResult = S.Struct({ entities: S.Array(EntityRow) });
 export type EntityListResult = S.Schema.Type<typeof EntityListResult>;
 
+/** `entity/backlinks` params (ADR-0050): the Entity whose reverse relations the detail Inspector wants. */
+export const EntityBacklinksParams = S.Struct({ entity_id: S.String });
+export type EntityBacklinksParams = S.Schema.Type<typeof EntityBacklinksParams>;
+
+/**
+ * `entity/backlinks` result (ADR-0050): the two reverse sets Core resolves for the
+ * detail Inspector — `mentioned_in` (distinct Journal Entries referencing this
+ * Entity) and `linked_todos` (Todos linked via `project_id` / `person_refs`).
+ * Both arrays are always present (possibly empty); reuses {@link EntityRow}.
+ */
+export const EntityBacklinksResult = S.Struct({
+	mentioned_in: S.Array(EntityRow),
+	linked_todos: S.Array(EntityRow),
+});
+export type EntityBacklinksResult = S.Schema.Type<typeof EntityBacklinksResult>;
+
 /**
  * `entity/mutate` params (ADR-0033): a user-initiated CRUD request. `payload` is the
  * same discriminated `{mutation_kind, payload}` envelope the Worker's

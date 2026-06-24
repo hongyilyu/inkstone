@@ -1,0 +1,44 @@
+{
+  "linked_todos": [
+    {
+      "created_at": 1700000000000,
+      "data": {
+        "title": "Buy milk"
+      },
+      "id": "0190d3c1-0000-7000-8000-000000000002",
+      "person_refs": [
+        {
+          "person_id": "0190d3c1-0000-7000-8000-000000000001",
+          "role": "waiting_on"
+        }
+      ],
+      "type": "todo",
+      "updated_at": 1700000000001
+    }
+  ],
+  "mentioned_in": [
+    {
+      "created_at": 1700000000000,
+      "data": {
+        "title": "Morning brain dump"
+      },
+      "id": "0190d3c1-0000-7000-8000-000000000001",
+      "refs": [
+        {
+          "id": "0190d3c1-0000-7000-8000-000000000002",
+          "label_snapshot": "Lead Ads",
+          "source_entity_id": "0190d3c1-0000-7000-8000-000000000001",
+          "target_entity_id": "0190d3c1-0000-7000-8000-000000000003",
+          "target_entity_type": "project",
+          "target_title": "Lead Ads"
+        }
+      ],
+      "source": {
+        "thread_id": "0190d3c1-0000-7000-8000-000000000001",
+        "thread_title": "Morning brain dump"
+      },
+      "type": "journal_entry",
+      "updated_at": 1700000000001
+    }
+  ]
+}
