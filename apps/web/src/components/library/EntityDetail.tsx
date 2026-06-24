@@ -683,9 +683,10 @@ function PersonBody({
 }
 
 /** The Project's People, derived from its Todos' Person References resolved against
- * `allEntities` (Project → Todo → TodoPersonRef → Person, ADR-0031). The same join
- * `peopleForProject` does, applied to the Core `linkedTodos` set (ADR-0050) — Core
- * resolves the reverse Todo lookup; the client keeps the cheap Person join it had. */
+ * `allEntities` (Project → Todo → TodoPersonRef → Person, ADR-0031), applied to the
+ * Core `linkedTodos` set (ADR-0050) — Core resolves the reverse Todo lookup; the
+ * client keeps the cheap Person join. Supersedes the old `peopleForProject`, which
+ * also did the Todo lookup the Core read now owns. */
 function peopleFromTodos(todos: Todo[], allEntities: LibraryItem[]): Person[] {
 	const personById = new Map(
 		allEntities

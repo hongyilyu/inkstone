@@ -721,6 +721,34 @@ describe("EntityDetail Core-sourced backlinks", () => {
 		// Mentioned-in has no client fallback, so it is simply absent on error.
 		expect(screen.queryByText(/Mentioned in/)).not.toBeInTheDocument();
 	});
+
+	it("falls back to allEntities-derived Todos and People on a Project read error", async () => {
+		// The Project error branch is a DISTINCT path from the Person one: it derives
+		// Todos via `todosForProject` then People/Progress via `peopleFromTodos` over
+		// the same fallback set. Cover it independently so dropping the Project
+		// fallback (e.g. rendering `linked_todos` empty on a Core-unreachable read)
+		// can't pass with only the Person error test green.
+		const alice = person("p_perr", "Alice");
+		const proj = project("pr_perr", "Daycare move");
+		const projectTodo = todoItem("t_perr", {
+			title: "Tour the new daycare",
+			projectId: "pr_perr",
+			personRefs: [{ personId: "p_perr", role: "related" }],
+		});
+		renderDetail(
+			<EntityDetail entity={proj} allEntities={[alice, proj, projectTodo]} />,
+			makeRuntime(undefined, () =>
+				Effect.fail(new WsRequestError({ reason: "core unreachable" })),
+			),
+		);
+
+		// Todos (todosForProject) and the People derived through them
+		// (peopleFromTodos) both survive a failed read — the relation never vanishes.
+		expect(await screen.findByText("Tour the new daycare")).toBeInTheDocument();
+		expect(screen.getByText("Alice")).toBeInTheDocument();
+		// Mentioned-in has no client fallback, so it is absent on error.
+		expect(screen.queryByText(/Mentioned in/)).not.toBeInTheDocument();
+	});
 });
 
 describe("EntityDetail Person delete", () => {
