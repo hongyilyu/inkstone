@@ -134,21 +134,25 @@ export function rejectAll(plan: readonly ResolvedNode[]): StagingBuffer {
 }
 
 /** Whether every node has an explicit accepted choice (no node left `reject`).
- * Used to label the commit button (full accept vs partial). */
+ * Used to label the commit button (full accept vs partial). `repoints` is consulted
+ * so a PICKED ambiguous node (default `accept`) counts as accepted. */
 export function allAccepted(
 	plan: readonly ResolvedNode[],
 	buffer: StagingBuffer,
+	repoints: RepointBuffer = {},
 ): boolean {
-	return plan.every((node) => stageFor(buffer, node) === "accept");
+	return plan.every((node) => stageFor(buffer, node, repoints) === "accept");
 }
 
 /** Whether every node is staged `reject` — the commit is effectively a reject-all
- * (Core declines the whole graph; nothing is written). */
+ * (Core declines the whole graph; nothing is written). `repoints` is consulted so a
+ * PICKED ambiguous node (default `accept`) is correctly NOT counted as rejected. */
 export function allRejected(
 	plan: readonly ResolvedNode[],
 	buffer: StagingBuffer,
+	repoints: RepointBuffer = {},
 ): boolean {
-	return plan.every((node) => stageFor(buffer, node) === "reject");
+	return plan.every((node) => stageFor(buffer, node, repoints) === "reject");
 }
 
 /**
