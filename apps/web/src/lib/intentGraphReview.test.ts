@@ -6,6 +6,7 @@ import {
 	allRejected,
 	buildDecisions,
 	buildEditedFields,
+	candidateSubtitle,
 	downgradeNotices,
 	draftLabel,
 	draftRequiredEmpty,
@@ -23,6 +24,7 @@ import {
 	seedNodeDraft,
 	setStage,
 	stageFor,
+	summarizeDecisions,
 } from "./intentGraphReview.js";
 
 const createTodo: ResolvedNode = {
@@ -279,6 +281,75 @@ describe("buildDecisions resolves a picked ambiguous node (the disambiguation pi
 	});
 });
 
+describe("summarizeDecisions — count/decision derived from the built vector", () => {
+	it("counts accepts and detects an all-reject vector", () => {
+		expect(summarizeDecisions(buildDecisions(PLAN, {}))).toEqual({
+			acceptedCount: 2, // @rodeo + @leadads accept; @morris (ambiguous) rejects
+			allRejected: false,
+		});
+		expect(summarizeDecisions(buildDecisions(PLAN, rejectAll(PLAN)))).toEqual({
+			acceptedCount: 0,
+			allRejected: true,
+		});
+	});
+
+	it("an empty vector is NOT all-rejected (no nodes to reject)", () => {
+		expect(summarizeDecisions([])).toEqual({
+			acceptedCount: 0,
+			allRejected: false,
+		});
+	});
+
+	// THE DESYNC GUARD (cross-engine finding): a stale-accept ambiguous node with no
+	// pick is coerced to reject by buildDecisions; the summary derived from that vector
+	// must therefore report all-rejected — NOT "Apply 1 item". Deriving the count from a
+	// parallel stageFor pass would disagree with the vector actually sent.
+	it("agrees with the coerced vector for a stale-accept ambiguous-only plan", () => {
+		const plan = [ambiguousPerson];
+		const staleBuffer: StagingBuffer = { "@morris": "accept" };
+		const decisions = buildDecisions(plan, staleBuffer, {}, new Map(), {});
+		expect(decisions).toEqual([{ handle: "@morris", decision: "reject" }]);
+		expect(summarizeDecisions(decisions)).toEqual({
+			acceptedCount: 0,
+			allRejected: true,
+		});
+	});
+
+	it("a picked ambiguous node counts as accepted", () => {
+		const decisions = buildDecisions([ambiguousPerson], {}, {}, new Map(), {
+			"@morris": "m1",
+		});
+		expect(summarizeDecisions(decisions)).toEqual({
+			acceptedCount: 1,
+			allRejected: false,
+		});
+	});
+});
+
+describe("candidateSubtitle — always a distinct disambiguator", () => {
+	it("appends a short id fragment to the resolved subtitle", () => {
+		expect(
+			candidateSubtitle("01900000-0000-7000-8000-0000000000m1", "Met at Rodeo"),
+		).toBe("Met at Rodeo · #01900000");
+	});
+
+	it("falls back to the id fragment alone when the subtitle is missing/blank", () => {
+		expect(candidateSubtitle("abc1234567", null)).toBe("#abc12345");
+		expect(candidateSubtitle("abc1234567", "   ")).toBe("#abc12345");
+	});
+
+	it("two same-named candidates with identical (or absent) subtitles never collide", () => {
+		// The exact failure mode: two People both render "Person" — the id suffix
+		// guarantees the two lines differ.
+		const a = candidateSubtitle("aaaaaaaa-1111", "Person");
+		const b = candidateSubtitle("bbbbbbbb-2222", "Person");
+		expect(a).not.toBe(b);
+		const c = candidateSubtitle("cccccccc-3333", null);
+		const d = candidateSubtitle("dddddddd-4444", null);
+		expect(c).not.toBe(d);
+	});
+});
+
 // A `create` node carrying near_matches (ADR-0042 amendment). The reported bug:
 // "Lead Ads testing" proposed New while "Lead Ads" exists.
 const nearMatchProject: ResolvedNode = {
@@ -414,6 +485,23 @@ describe("downgradeNotices", () => {
 	it("no notice when both endpoints are accepted", () => {
 		const plan = [createTodo, reuseProject];
 		expect(downgradeNotices(plan, links, acceptAll(plan))).toEqual([]);
+	});
+
+	// A Todo linked to an AMBIGUOUS person/project target: once the user picks a
+	// candidate, the target is acceptable and the link is KEPT at apply, so no
+	// downgrade notice may fire. Without threading `repoints`, `stageFor` returns the
+	// ambiguous node's pre-pick `reject` default and a SPURIOUS notice appears.
+	it("no notice when a Todo's ambiguous link target has been PICKED", () => {
+		// @rodeo (todo, accept default) links to @morris (ambiguous person).
+		const personLinks: GraphLink[] = [
+			{ kind: "todo_person", from: "@rodeo", to: "@morris" },
+		];
+		// Unpicked: @morris sits at its reject default → the link genuinely drops.
+		expect(downgradeNotices(PLAN, personLinks, {})).toHaveLength(1);
+		// Picked: @morris is acceptable (default accept) → the link is kept, no notice.
+		expect(
+			downgradeNotices(PLAN, personLinks, {}, { "@morris": "m1" }),
+		).toEqual([]);
 	});
 
 	it("no notice when the Todo itself is rejected", () => {

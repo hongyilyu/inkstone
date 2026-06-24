@@ -33,9 +33,9 @@ import {
 } from "@/lib/entityFields";
 import { useLibraryItems } from "@/lib/hooks/useLibraryItems";
 import {
-	allRejected,
 	buildDecisions,
 	buildEditedFields,
+	candidateSubtitle,
 	type DraftBuffer,
 	downgradeNotices,
 	draftLabel,
@@ -51,6 +51,7 @@ import {
 	seedNodeDraft,
 	setStage,
 	stageFor,
+	summarizeDecisions,
 } from "@/lib/intentGraphReview";
 import {
 	KIND_META,
@@ -1409,12 +1410,16 @@ function IntentGraphReviewCard({
 	const submitting = deciding || inFlight !== null;
 	const isError = status === "error";
 
-	const notices = downgradeNotices(plan, links, buffer);
-	const everythingRejected =
-		plan.length > 0 && allRejected(plan, buffer, repoints);
-	const acceptedCount = plan.filter(
-		(node) => stageFor(buffer, node, repoints) === "accept",
-	).length;
+	const notices = downgradeNotices(plan, links, buffer, repoints);
+	// The decision vector is the SINGLE source of truth for what Apply sends — build
+	// it once and derive the count + reject-all path from it (not a parallel `stageFor`
+	// pass), so the "Apply N items" label and the scalar decision can never disagree
+	// with the vector. `buildDecisions` is where the `ambiguous-without-pick → reject`
+	// coercion lives, so a separate count could otherwise show "Apply 1" on an
+	// all-reject vector.
+	const decisions = buildDecisions(plan, buffer, drafts, entities, repoints);
+	const { acceptedCount, allRejected: everythingRejected } =
+		summarizeDecisions(decisions);
 	// An ambiguous node is still UNRESOLVED while it has neither a pick (a repoint
 	// id) nor an EXPLICIT reject — it sits at its reject-only default awaiting a
 	// decision. This drives the dynamic guidance note; once every ambiguous node is
@@ -1431,11 +1436,12 @@ function IntentGraphReviewCard({
 
 	const commit = () => {
 		if (submitting) return;
-		// A vector that rejects every node is a reject-all (Core declines the whole
-		// graph); otherwise it is an accept carrying the per-node subset — each
-		// accepted create node folding in its `edited_fields` correction, or its
-		// near-match `entity_id` re-point (default-to-existing, ADR-0042 amendment).
-		const decisions = buildDecisions(plan, buffer, drafts, entities, repoints);
+		// `decisions` (built above) is the exact vector sent, and `everythingRejected`
+		// is derived from it via `summarizeDecisions`, so the scalar decision and the
+		// per-node vector are guaranteed consistent. A vector that rejects every node is
+		// a reject-all (Core declines the whole graph); otherwise it is an accept
+		// carrying the per-node subset — each accepted create node folding in its
+		// `edited_fields` correction, or its near-match/picked `entity_id` re-point.
 		const decision = everythingRejected ? "reject" : "accept";
 		setInFlight(everythingRejected ? "reject" : "commit");
 		onDecide(decision, undefined, decisions);
@@ -1942,7 +1948,14 @@ function GraphCandidatePicker({
 		>
 			{candidates.map((candidate) => {
 				const item = itemsById.get(candidate.entity_id);
-				const subtitle = item ? libraryItemSubtitle(item) : null;
+				// ALWAYS render a distinguishing line: the human-meaningful library
+				// subtitle when resolved, plus a short stable id fragment so two
+				// same-named candidates whose subtitles are absent (cache warming) or
+				// identical ("Person"/"Person") never render as byte-identical radios.
+				const subtitle = candidateSubtitle(
+					candidate.entity_id,
+					item ? libraryItemSubtitle(item) : null,
+				);
 				const picked = candidate.entity_id === pickedId;
 				return (
 					<label
@@ -1968,11 +1981,9 @@ function GraphCandidatePicker({
 							<span className="block truncate text-sm text-card-foreground">
 								{candidate.label}
 							</span>
-							{subtitle ? (
-								<span className="block truncate text-xs text-muted-foreground">
-									{subtitle}
-								</span>
-							) : null}
+							<span className="block truncate text-xs text-muted-foreground">
+								{subtitle}
+							</span>
 						</span>
 					</label>
 				);

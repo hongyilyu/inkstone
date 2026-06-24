@@ -8,12 +8,13 @@ import { parseAliases } from "@/lib/entityFields";
  * node, accumulating per-node accept/reject LOCALLY — nothing is written until
  * commit — then commits ONE `proposal/decide` carrying a `decisions[]` vector.
  *
- * This module owns the rules a card just renders: the per-node stage map, what
- * "accept all" can sweep (an `ambiguous` node has no picker yet — #181 — so it
- * BLOCKS accept-all and is reject-only), the per-node inline EDIT of a create node
- * (the `edited_fields` correction Core merges before minting), the decisions[] the
- * commit sends, and the reconcile notice when rejecting a node a surviving Todo
- * links to.
+ * This module owns the rules a card just renders: the per-node stage map, what a
+ * plain Apply sweeps (an UNPICKED `ambiguous` node is reject-only until the user
+ * picks one of its candidates — the disambiguation picker, #181 — which collapses it
+ * to reuse-that-id), the per-node inline EDIT of a create node (the `edited_fields`
+ * correction Core merges before minting), the decisions[] the commit sends (and the
+ * summary the count/decision derive from), and the reconcile notice when rejecting a
+ * node a surviving Todo links to.
  */
 
 /** A node's staged choice in the local buffer (component state, not the store). */
@@ -75,13 +76,12 @@ export function repointFor(
 	buffer: RepointBuffer,
 	node: ResolvedNode,
 ): string | null {
-	// `Object.hasOwn`, not `key in buffer`: `handle` is an unvalidated model-supplied
-	// wire string (protocol `ResolvedNode.handle` is a bare string, no `@` pattern), so
-	// a handle equal to a prototype key ("toString", "constructor", "__proto__") would
-	// make `in` true on an EMPTY buffer and return `Object.prototype.toString` — a
-	// function, not `string | null` — which would then ride to Core as a bogus
-	// `entity_id`. Same hardening the proposal-kind lookup already uses (ProposalCard).
-	if (Object.hasOwn(buffer, node.handle)) return buffer[node.handle];
+	// Read the explicit entry via `getOwn` (the shared prototype-key guard): a handle
+	// equal to a prototype key ("toString", "__proto__") must not surface an inherited
+	// member. An explicit entry — a string id OR `null` ("create new instead") — wins;
+	// `undefined` means absent, so fall through to the near-match default below.
+	const explicit = getOwn(buffer, node.handle);
+	if (explicit !== undefined) return explicit;
 	if (node.disposition !== "create") return null;
 	const near = node.near_matches ?? [];
 	return near.length === 1 ? near[0].entity_id : null;
@@ -413,6 +413,46 @@ export function buildDecisions(
 	});
 }
 
+/** The commit summary derived from the BUILT decision vector — the single source of
+ * truth for what Apply sends. The card's accepted-count label and reject-all path
+ * MUST come from here, not a parallel `stageFor` pass: `buildDecisions` is the only
+ * place the `ambiguous-without-pick → reject` coercion runs, so deriving the count
+ * anywhere else can disagree with the vector actually sent (show "Apply 1 item" while
+ * the vector is all-rejects). `acceptedCount` counts `accept` decisions; `allRejected`
+ * is true iff the vector has ≥1 node and every one is `reject`. */
+export interface DecisionSummary {
+	readonly acceptedCount: number;
+	readonly allRejected: boolean;
+}
+
+export function summarizeDecisions(
+	decisions: readonly NodeDecision[],
+): DecisionSummary {
+	const acceptedCount = decisions.filter((d) => d.decision === "accept").length;
+	return {
+		acceptedCount,
+		allRejected: decisions.length > 0 && acceptedCount === 0,
+	};
+}
+
+/** A GUARANTEED-distinct disambiguator line for one ambiguous-node candidate in the
+ * picker (#181). The candidates share an identical exact-name label (that is WHY the
+ * node is ambiguous), so the label alone can't tell two apart. Prefer the resolved
+ * library subtitle (person note / project outcome / todo due); but that can be absent
+ * (cache still warming) or itself collide (two People with no note both read
+ * "Person"), which would render visually identical radios the user could mis-pick. So
+ * ALWAYS append a short, stable id fragment as a last-resort distinguisher: the
+ * subtitle stays the human-meaningful line, the id suffix guarantees no two rows are
+ * byte-identical. `subtitle` is the resolved `libraryItemSubtitle(item)` or null. */
+export function candidateSubtitle(
+	entityId: string,
+	subtitle: string | null,
+): string {
+	const idTag = `#${entityId.slice(0, 8)}`;
+	const trimmed = subtitle?.trim();
+	return trimmed ? `${trimmed} · ${idTag}` : idTag;
+}
+
 /** A reconcile notice surfaced BEFORE commit (ADR-0042 "shows this downgrade
  * before Apply"): when a Todo is staged `accept` but a Project/Person it links to
  * is staged `reject`, the link drops and the Todo lands degraded. We derive the
@@ -446,20 +486,26 @@ export interface GraphLink {
 /** Compute the downgrade notices for the current staging (ADR-0042 reconcile): for
  * every `todo_project`/`todo_person` link whose `from` Todo is staged accept and
  * whose `to` target is staged reject, the link drops and the Todo lands standalone
- * — surfaced so the user sees the downgrade before Apply. */
+ * — surfaced so the user sees the downgrade before Apply.
+ *
+ * `repoints` is consulted (like every other staging read) so a PICKED ambiguous
+ * link target reads as `accept`, not its pre-pick `reject` default: a Todo linked to
+ * a person/project node the user disambiguated keeps that link at apply, so it must
+ * NOT surface a spurious "without its link" notice. */
 export function downgradeNotices(
 	plan: readonly ResolvedNode[],
 	links: readonly GraphLink[],
 	buffer: StagingBuffer,
+	repoints: RepointBuffer = {},
 ): DowngradeNotice[] {
 	const byHandle = new Map(plan.map((node) => [node.handle, node]));
 	const isAccepted = (handle: string): boolean => {
 		const node = byHandle.get(handle);
-		return node !== undefined && stageFor(buffer, node) === "accept";
+		return node !== undefined && stageFor(buffer, node, repoints) === "accept";
 	};
 	const isRejected = (handle: string): boolean => {
 		const node = byHandle.get(handle);
-		return node !== undefined && stageFor(buffer, node) === "reject";
+		return node !== undefined && stageFor(buffer, node, repoints) === "reject";
 	};
 
 	const notices: DowngradeNotice[] = [];
