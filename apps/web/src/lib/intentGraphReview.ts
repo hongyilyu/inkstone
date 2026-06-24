@@ -72,12 +72,6 @@ export function repointFor(
 	return near.length === 1 ? near[0].entity_id : null;
 }
 
-/** Whether the plan contains an `ambiguous` node — these block "accept all"
- * (ADR-0042: "Accept all cannot sweep past an unresolved ambiguity"). */
-export function hasAmbiguous(plan: readonly ResolvedNode[]): boolean {
-	return plan.some((node) => node.disposition === "ambiguous");
-}
-
 /** The effective stage for a node: its explicit entry, else its default — every
  * acceptable node defaults to `accept` (the common path is accept-everything),
  * while an UNPICKED `ambiguous` node defaults to `reject` (it cannot be accepted

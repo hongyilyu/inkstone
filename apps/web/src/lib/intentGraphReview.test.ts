@@ -11,7 +11,6 @@ import {
 	draftRequiredEmpty,
 	type GraphLink,
 	type GraphNodeDraft,
-	hasAmbiguous,
 	isAcceptable,
 	parseGraphEntities,
 	parseGraphLinks,
@@ -50,7 +49,7 @@ const ambiguousPerson: ResolvedNode = {
 
 const PLAN: ResolvedNode[] = [createTodo, reuseProject, ambiguousPerson];
 
-describe("isAcceptable / hasAmbiguous", () => {
+describe("isAcceptable", () => {
 	it("create and reuse are acceptable; an unpicked ambiguous is not", () => {
 		expect(isAcceptable(createTodo)).toBe(true);
 		expect(isAcceptable(reuseProject)).toBe(true);
@@ -69,11 +68,6 @@ describe("isAcceptable / hasAmbiguous", () => {
 	it("a create node's acceptability is unaffected by the repoint buffer", () => {
 		expect(isAcceptable(createTodo, {})).toBe(true);
 		expect(isAcceptable(createTodo, { "@rodeo": "x" })).toBe(true);
-	});
-
-	it("hasAmbiguous detects an ambiguous node", () => {
-		expect(hasAmbiguous(PLAN)).toBe(true);
-		expect(hasAmbiguous([createTodo, reuseProject])).toBe(false);
 	});
 });
 

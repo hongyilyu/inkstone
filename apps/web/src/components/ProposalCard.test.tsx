@@ -1801,6 +1801,13 @@ describe("ProposalCard", () => {
 		// The disambiguation picker (#181): an ambiguous node renders its candidates
 		// as an inline radio list; picking one collapses the node ambiguous → reuse.
 		describe("ambiguous candidate picker", () => {
+			// These tests seed the process-shared, module-level `libraryItems.current`
+			// (via seedTwoMorris / the fallback []); restore it after each so the m1/m2
+			// cache can't leak into sibling tests regardless of run order.
+			afterEach(() => {
+				libraryItems.current = [];
+			});
+
 			const ambiguousProposal: PendingProposal = {
 				...graphProposal,
 				payload: { links: [] },
@@ -1932,7 +1939,7 @@ describe("ProposalCard", () => {
 				).toHaveAttribute("aria-pressed", "true");
 			});
 
-			it("the dynamic note shows only while an ambiguous node is unpicked", () => {
+			it("the dynamic note disappears once the ambiguous node is PICKED", () => {
 				seedTwoMorris();
 				render(
 					<ProposalCard proposal={ambiguousProposal} onDecide={() => {}} />,
@@ -1942,6 +1949,23 @@ describe("ProposalCard", () => {
 				).toBeInTheDocument();
 				// Once picked, the guidance note disappears (the node is resolved).
 				fireEvent.click(screen.getAllByRole("radio")[0]);
+				expect(
+					screen.queryByText(/match more than one existing entry/i),
+				).not.toBeInTheDocument();
+			});
+
+			it("the dynamic note disappears once the ambiguous node is explicitly REJECTED", () => {
+				// The other way `unresolvedAmbiguous` goes false: an explicit reject of the
+				// sole ambiguous node resolves it (decline), so the "pick or reject" nag must
+				// also clear — not just on a pick.
+				seedTwoMorris();
+				render(
+					<ProposalCard proposal={ambiguousProposal} onDecide={() => {}} />,
+				);
+				expect(
+					screen.getByText(/match more than one existing entry/i),
+				).toBeInTheDocument();
+				fireEvent.click(screen.getByRole("button", { name: /reject morris/i }));
 				expect(
 					screen.queryByText(/match more than one existing entry/i),
 				).not.toBeInTheDocument();

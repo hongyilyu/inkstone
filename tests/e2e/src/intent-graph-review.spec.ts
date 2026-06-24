@@ -421,6 +421,12 @@ test("'Create new instead' overrides the near-match and mints the new Project", 
 
 const MORRIS_ONE_ID = "01900000-0000-7000-8000-00000000d001";
 const MORRIS_TWO_ID = "01900000-0000-7000-8000-00000000d002";
+// The two Morris People are told apart ONLY by their note — the disambiguating
+// subtitle the picker renders (libraryItemSubtitle). Asserting on these in the real
+// proposal/get → library cache → subtitle path pins the affordance that justifies
+// the picker (identical labels otherwise).
+const MORRIS_ONE_NOTE = "from the Rodeo sync";
+const MORRIS_TWO_NOTE = "the Lead Ads contact";
 const AMBIGUOUS_NOTE = "Synced with Morris on the Rodeo side";
 
 // A graph: a Todo linked to the ambiguous @morris person node (no project), so the
@@ -450,10 +456,10 @@ test("picking a candidate for an ambiguous node reuses the chosen existing entit
 	workspace,
 }) => {
 	const dbPath = dbPathFor(workspace.path);
-	// TWO accepted People named "Morris" — distinguished only by their note, so the
-	// @morris node resolves `ambiguous` with both as candidates.
-	seedAcceptedPerson(dbPath, MORRIS_ONE_ID, "Morris");
-	seedAcceptedPerson(dbPath, MORRIS_TWO_ID, "Morris");
+	// TWO accepted People named "Morris" with DISTINCT notes, so the @morris node
+	// resolves `ambiguous` and the picker can tell the candidates apart by subtitle.
+	seedAcceptedPerson(dbPath, MORRIS_ONE_ID, "Morris", MORRIS_ONE_NOTE);
+	seedAcceptedPerson(dbPath, MORRIS_TWO_ID, "Morris", MORRIS_TWO_NOTE);
 	seedParkedIntentGraphProposal(dbPath, {
 		graph: AMBIGUOUS_GRAPH,
 		title: AMBIGUOUS_NOTE,
@@ -469,12 +475,15 @@ test("picking a candidate for an ambiguous node reuses the chosen existing entit
 	// acceptable (accept disabled), so the Apply count covers only the Todo.
 	const morrisRow = card.locator('[data-graph-node="@morris"]');
 	await expect(morrisRow).toContainText("Needs disambiguation");
+	// Each candidate carries its disambiguating SUBTITLE, resolved through the REAL
+	// proposal/get → library cache → libraryItemSubtitle path (not a mocked hook) —
+	// the affordance that lets the user tell two identically-named People apart.
 	await expect(
 		morrisRow.locator(`[data-candidate="${MORRIS_ONE_ID}"]`),
-	).toBeVisible();
+	).toContainText(MORRIS_ONE_NOTE);
 	await expect(
 		morrisRow.locator(`[data-candidate="${MORRIS_TWO_ID}"]`),
-	).toBeVisible();
+	).toContainText(MORRIS_TWO_NOTE);
 	await expect(
 		card.getByRole("button", { name: /accept morris/i }),
 	).toBeDisabled();

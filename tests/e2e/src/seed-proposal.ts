@@ -64,17 +64,20 @@ export function seedAcceptedEntity(
 	);
 }
 
-/** Seed a single accepted Person (`create_person`) with a known id and name. */
+/** Seed a single accepted Person (`create_person`) with a known id and name, plus
+ * an optional `note` (the field `libraryItemSubtitle` renders, so two same-named
+ * People can be told apart in a disambiguation picker). */
 export function seedAcceptedPerson(
 	dbPath: string,
 	personId: string,
 	name: string,
+	note?: string,
 ): void {
 	seedAcceptedEntity(dbPath, {
 		id: personId,
 		type: "person",
 		mutationKind: "create_person",
-		payload: { name },
+		payload: note === undefined ? { name } : { name, note },
 	});
 }
 
