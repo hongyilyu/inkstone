@@ -72,7 +72,9 @@ type ResolvedNode =
   | { handle: string; type: EntityType; disposition: "ambiguous"; candidates: { entity_id: string; label: string }[] };
 ```
 
-An `ambiguous` node **has no silent fallback** — Core will neither guess one match nor mint a duplicate. Until the disambiguation picker ships (fast-follow, tracked separately), the only valid action on an ambiguous node is **reject** (don't link; the name stays plain text). "Accept all" cannot sweep past an unresolved ambiguity. When the picker ships, the user resolves it via the per-node `entity_id` override, which collapses `ambiguous → reuse`.
+An `ambiguous` node **has no silent fallback** — Core will neither guess one match nor mint a duplicate. The only fallback action on an ambiguous node is **reject** (don't link; the name stays plain text); a plain "accept everything" cannot sweep past an *unresolved* ambiguity. The user resolves it via the per-node `entity_id` override, which collapses `ambiguous → reuse`.
+
+> **As-built (disambiguation picker, #181).** The picker shipped. An ambiguous node renders its `candidates` as an always-visible inline radio list inside the proposal card; each row carries a disambiguating subtitle (the candidates share an identical exact-name label, so the label alone can't tell them apart). The system pre-selects **nothing** — the matches are equal and Core has no ranking signal (that is *why* the node is ambiguous), so an explicit pick is forced. Picking writes that candidate's `entity_id` as the per-node override (collapsing `ambiguous → reuse`, badge "Existing «…»"), which makes the node acceptable; an *unpicked* ambiguous node stays reject-only and is excluded from the accept set. "None of these" is the node's existing **reject** (the rest of the capture still applies); picking an arbitrary out-of-candidate entity is deferred. This is a web-only change riding the resolution machinery already specified — the same per-node `entity_id` override the near-match amendment uses; Core was unchanged.
 
 ### Near-match hints (amendment — narrows "Core does fuzzy matching")
 
