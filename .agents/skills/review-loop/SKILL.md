@@ -24,9 +24,17 @@ You are the orchestrator. You spawn verifier/reviewer subagents in parallel and 
 
 ## Inputs
 
-- A PR number (`/review-loop 187`) to start at Phase 1 directly (PR already open), or nothing — then run Phase 0 on the current branch's local diff first. With no arg, resolve any existing PR for the branch up front (`PR=$(gh pr view --json number -q .number 2>/dev/null)`); Phase 0's [Open the PR](#open-the-pr) step (re)captures `PR` before Phase 1 either way.
+- **Nothing (the default, and feature-flow's handoff shape):** run Phase 0 on the current branch's local diff, and **raise the PR only after Phase 0 is clean** (see the [PR-raise invariant](#the-pr-raise-invariant)). Resolve any already-open PR for the branch up front (`PR=$(gh pr view --json number -q .number 2>/dev/null)`) — but its presence does **not** skip Phase 0; Phase 0 still runs and its [Open the PR](#open-the-pr) step pushes the reviewed HEAD (re)capturing `PR` before Phase 1.
+- A PR number (`/review-loop 187`) — **the explicit opt-out**: the change was already reviewed locally, so start at Phase 1 (CodeRabbit) directly. Only pass this when Phase 0 genuinely already ran this session; otherwise omit the arg so the PR's HEAD is never advanced past an un-reviewed diff.
 - Optional `--max-rounds N` (default 3, matching feature-flow's iteration cap) — applies to *each* phase independently.
-- Optional `--skip-phase0` to jump straight to the CodeRabbit loop (e.g. the local review already ran this session).
+- Optional `--skip-phase0` — the same opt-out as a PR-number start, for when a PR isn't open yet but the local review already ran. Both bypasses share one rule: **never skip Phase 0 on a diff no reviewer has seen.**
+
+### The PR-raise invariant
+
+A push that creates or advances the PR happens **only** on a clean/quiescent Phase-0 exit. There is no path that opens a PR, or moves an open PR's HEAD, over a diff Phase 0 has not cleared:
+
+- Phase 0 **cap-hit** (confirmed-real findings still open) ⇒ **do not push, do not open the PR.** Stop and surface — the PR is the reward for a clean local review, not a checkpoint along the way.
+- The bypasses (`<pr-number>` / `--skip-phase0`) are an assertion *by the caller* that Phase 0 already ran; they do not relax the invariant, they shift the responsibility for honoring it onto the invocation. feature-flow therefore hands off an **un-pushed, PR-less** branch with **no** bypass, so Phase 0 always runs before the first push.
 
 ## The gate (shared by both phases)
 
@@ -74,11 +82,11 @@ The four streams (see [Spawning the reviewers](#spawning-the-reviewers-phase-0) 
 | c | deep-review (rubric) | cross engine (CLI) |
 | d | thermo-nuclear (rubric) | cross engine (CLI) |
 
-Exit per the [shared termination conditions](#termination-conditions-shared-by-both-phases) (clean / quiescent → open the PR; cap-hit → stop, do not open the PR).
+Exit per the [shared termination conditions](#termination-conditions-shared-by-both-phases) (clean / quiescent → open the PR; cap-hit → stop, do **not** open the PR). This exit is the *only* gate to the [Open the PR](#open-the-pr) step — there is no push before it (the [PR-raise invariant](#the-pr-raise-invariant)).
 
 ### Open the PR
 
-On a clean/quiescent Phase 0, push the branch, then resolve the PR — **capture its number into `PR`**, which Phase 1 needs for `await-review`/`findings`:
+Reached **only** on a clean/quiescent Phase-0 exit (the [PR-raise invariant](#the-pr-raise-invariant)) — this is the first and only point in the skill where the branch is pushed. Push the branch, then resolve the PR — **capture its number into `PR`**, which Phase 1 needs for `await-review`/`findings`:
 
 - **No PR yet:** create one **non-interactively** (bare `gh pr create` prompts and will hang an autonomous run). Write the dual-engine review summary (found / fixed / deferred) to a file and pass it:
   `git push -u origin HEAD && gh pr create --title "<subject>" --body-file <summary> && PR=$(gh pr view --json number -q .number)`

@@ -27,22 +27,15 @@ All run state lives under `.agents/runs/<slug>/`. The orchestrator owns this dir
 │   │   └── BLOCKED.md           # only if this slice halted the flow
 │   ├── 2/...
 │   └── N/...
-├── FINAL-REVIEWS/               # written by the Final review phase
-│   ├── 1/
-│   │   ├── correctness.md
-│   │   ├── integration.md
-│   │   ├── tests.md
-│   │   ├── adr.md
-│   │   └── deep-review.md       # verified findings from the deep-review pass (phase 2b)
-│   └── 2/                        # iteration 2 (only on final-review retry)
-├── FINAL-VERIFY/                # written by the Final review phase's deterministic gates
+├── FINAL-VERIFY/                # written by the Final gate phase's deterministic gates (per iteration)
 │   ├── 1.md
 │   └── 2.md
-├── FINAL-ADVISORY-DEFERRED.md   # feature-level advisories triaged as `defer` (optional)
-├── REPORT.md                    # written on full success, AFTER the Final review phase passes
-├── BLOCKED.md                   # written if any slice or the final review hit its retry cap
+├── REPORT.md                    # written after the Final gate phase passes + handoff to /review-loop
+├── BLOCKED.md                   # written if any slice or the final gate hit its retry cap
 └── SUMMARY.md                   # always written last; mechanical digest
 ```
+
+Feature-scope code review (the structured reviewers + deep-review + thermo-nuclear, across both engines) is **no longer** a feature-flow artifact — it is owned by [`/review-loop`](../review-loop/SKILL.md)'s Phase 0, which runs after feature-flow hands off the rebased, gate-green branch.
 
 Worktrees are created by the `Agent` tool's `isolation: "worktree"` mode. The harness picks the path. Record returned paths in `STATE.md`.
 
@@ -54,11 +47,11 @@ Append-only, newest at the bottom. One line per event. Format:
 <ISO-8601 timestamp>  <scope>  <event>  <detail>
 ```
 
-Scope is `flow` for top-level events, `slice-<n>` for slice-scoped events, or `final` for Final-review-phase events.
+Scope is `flow` for top-level events, `slice-<n>` for slice-scoped events, or `final` for Final-gate-phase events.
 
 Top-level events (scope `flow`):
 
-- `started` — detail includes `feature-base=<sha>` (the master SHA captured at flow start; the Final review phase reads it from here)
+- `started` — detail includes `feature-base=<sha>` (the master SHA captured at flow start; the Final gate phase reads it from here)
 - `done` — REPORT.md written
 - `blocked` — BLOCKED.md written
 - `summary-written` — SUMMARY.md written; final event
@@ -75,18 +68,14 @@ Slice events (scope `slice-<n>`):
 - `passed` (slice green and squashed onto `feature/<slug>`; detail includes the squashed commit SHA)
 - `blocked` (this slice hit retry cap)
 
-Final-review events (scope `final`):
+Final-gate events (scope `final`):
 
-- `gates-spawned` | `gates-pass` | `gates-fail`
-- `reviewers-spawned` | `reviewers-done`
-- `deep-review-done` (with severity counts + how many deep-review dropped in verification)
-- `advisory-triaged` (with `addressed=<n> deferred=<n>`)
-- `iter-end` (final-review retry)
-- `final-review-passed`
+- `final-gate-passed` (the full four-job CI mirror is green on the pre-rebase tip)
+- `iter-end` (final-gate retry — a deterministic gate failed and a `final-fix:` commit was squashed)
 - `rebased` (detail: the `origin/master` SHA rebased onto) | `rebase-conflict` (detail: conflicting paths → BLOCKED.md)
-- `local-ci-passed` (detail: the rebased commit SHA the full four-job gate passed on, before push)
-- `ci-passed` (detail: the commit SHA CI ran on) | `ci-failed` (detail: failing check name)
-- `blocked` (final review hit its retry cap, or CI stayed red past the cap)
+- `local-ci-passed` (detail: the rebased commit SHA the full four-job gate passed on)
+- `handed-off-to-review-loop` (the rebased, gate-green branch was handed to `/review-loop`; it owns the PR + both review phases)
+- `blocked` (final gate hit its retry cap, or a rebase conflict needed a design decision)
 
 ## Branch model
 
@@ -114,13 +103,13 @@ Per-slice details:
 - On gate pass, the orchestrator squashes the scratch branch into a single commit on `feature/<slug>` (`git merge --squash` + `git commit`). The scratch branch is kept for debugging but never built on again.
 - A retry iteration creates `flow/<slug>/slice-<n>-iter<m>` off `feature/<slug>`'s tip (i.e., not off the failing iteration). Failed iterations are kept for diff/debugging.
 - The contract phase, when present, branches off `feature/<slug>`'s tip and is merged into the slice's scratch branch before impl runs.
-- Final-review fixes are built on `flow/<slug>/final-iter<m>` and squashed onto `feature/<slug>` as `final-fix:` commits.
+- Final-gate fixes are built on `flow/<slug>/final-iter<m>` and squashed onto `feature/<slug>` as `final-fix:` commits.
 
-`feature/<slug>` opens a single PR after the final review passes. `/feature-flow` pushes the branch and opens the PR but never merges to `master` — the user owns the merge.
+`feature/<slug>` is left **rebased, locally gate-green, unpushed, and PR-less** by feature-flow. `/review-loop` (its handoff) pushes the branch, opens the single PR after its Phase 0 dual-engine review passes, and drives CodeRabbit — never merging to `master`; the user owns the merge.
 
 ## Cleanup
 
-On success: `feature/<slug>` holds the squashed, one-commit-per-slice history and a PR is open. Leave it and the scratch branches in place; the user reviews the PR and owns the merge.
+On success: `feature/<slug>` holds the squashed, one-commit-per-slice (+`final-fix:`) history, rebased and gate-green, ready for `/review-loop`. Leave it and the scratch branches in place.
 
 On `BLOCKED.md`: leave everything — `feature/<slug>`, scratch branches (including failed iterations), worktrees, logs. The user needs them to debug.
 

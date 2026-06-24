@@ -186,7 +186,7 @@ master
 
 Each slice is developed on a scratch branch `flow/<slug>/slice-<n>` cut from `feature/<slug>`'s tip, then squashed into a single commit on `feature/<slug>` once it passes its gate. See [ARTIFACTS.md](ARTIFACTS.md) for the branch model in full.
 
-`feature/<slug>` opens a single PR for review only after the final review passes — and the user owns the merge to `master`, not you.
+`feature/<slug>` is opened as a single PR by [`/review-loop`](../review-loop/SKILL.md) — after its Phase 0 dual-engine local review passes — not by feature-flow. The user owns the merge to `master`, not you.
 
 For each slice, in order:
 
@@ -202,7 +202,7 @@ For each slice, in order:
                 Any fail or unhandled-reasonable-advisory? loop slice (cap 3).
 ```
 
-After slice-N's gate passes, the **Final review phase** runs once over the whole `feature/<slug>` branch: feature-level gates (the full four-job CI mirror, run locally), feature-level reviewers, and a **deep-review pass** (the [deep-review](../deep-review/SKILL.md) skill). Every review finding must be addressed-or-reasoned; then the branch is **rebased onto the latest `master` and the local CI gate re-run on the rebased tree** before the PR is pushed, so it clears CI before opening. The PR is opened, **CI must go green**, and only then is `REPORT.md` written and the feature declared done.
+After slice-N's gate passes, the **Final gate phase** runs once over the whole `feature/<slug>` branch: the full four-job CI mirror run locally, then a **rebase onto the latest `master` and a re-run of that gate on the rebased tree**. feature-flow does **not** run its own structured reviewers or deep-review here — code review (deep-review + thermo-nuclear, across both engines) is owned by [`/review-loop`](../review-loop/SKILL.md)'s Phase 0, which feature-flow hands the rebased, gate-green branch to. review-loop runs that dual-engine review to convergence, opens the PR, and drives CodeRabbit. feature-flow's job ends at "rebased + locally gate-green + handed off."
 
 Slice failures don't block other slices from being attempted **only if** the failure is contained — which it almost never is, since each slice builds on the previous one's commit. In practice: a slice that fails its retry cap halts the whole flow.
 
@@ -213,7 +213,7 @@ Intake already validated the plan (grilling resolved the design with the user). 
 1. Verify working tree clean: `git status --porcelain`. If not, stop — don't risk WIP.
 2. Confirm `master` is the base branch.
 3. The run directory `.agents/runs/<slug>/` already exists (intake created it). Init `STATE.md`.
-4. Capture the flow's base SHA: `FEATURE_BASE := $(git rev-parse master)`. Record it in `STATE.md` alongside the `started` event — the Final review phase reads it from there.
+4. Capture the flow's base SHA: `FEATURE_BASE := $(git rev-parse master)`. Record it in `STATE.md` alongside the `started` event — the Final gate phase reads it from there.
 5. Create the durable feature branch off master: `git branch feature/<slug> master`. Every passing slice lands here as one squashed commit, and the final PR is opened from it. Don't check it out — the orchestrator stays on `master` and builds slices in worktrees.
 6. Append `started` to `STATE.md`.
 
@@ -349,13 +349,13 @@ The triage rule applies on every iteration that produces advisory findings, not 
 
 ## Done
 
-When slice-N passes verify, the per-slice loop is finished — but the feature is **not** declared shipped yet. Run the **Final review phase** below — feature-level gates, structured reviewers, deep-review, and a green CI run — before writing `REPORT.md`.
+When slice-N passes verify, the per-slice loop is finished — but the feature is **not** declared shipped yet. Run the **Final gate phase** below — the full four-job CI mirror locally, then a rebase onto latest `master` and a re-gate — then **hand off to `/review-loop`**, which owns code review (Phase 0) and the PR (Phase 1). Code review does **not** live in feature-flow anymore.
 
-## Final review phase
+## Final gate phase
 
-After slice-N's gate passes, before the landing step. The per-slice gates only assert what each slice promised; they do not assert the feature is coherent end-to-end or that unrelated tests still pass. This phase does both.
+After slice-N's gate passes, before the handoff. The per-slice gates only assert what each slice promised; they do not assert the feature is coherent end-to-end or that unrelated tests still pass. This phase asserts the feature is **deterministically green as a whole and rebased onto current `master`** — it does *not* do code review (that is review-loop's Phase 0; see [Handoff](#handoff-review-loop)).
 
-The phase runs on `feature/<slug>` — which now holds one squashed commit per slice. Capture two SHAs once on entry, before any subagent spawn:
+The phase runs on `feature/<slug>` — which now holds one squashed commit per slice. Capture two SHAs once on entry:
 
 ```
 FEATURE_BASE   := the master SHA recorded in STATE.md at flow start
@@ -363,11 +363,9 @@ FEATURE_BRANCH := feature/<slug>
 FEATURE_TIP    := $(git rev-parse FEATURE_BRANCH)   # snapshot the tip
 ```
 
-The diff scope for this phase is `git diff <FEATURE_BASE>..<FEATURE_TIP>` — the union of every slice.
-
 ### Final phase 1: feature-level deterministic gates
 
-This is the repo's [§6 CI gate](../../../.github/workflows/ci.yml) run **locally and in full** — the same four jobs (`lint-format`, `ts`, `rust`, `e2e`) the PR will face on a clean runner, in the same commands. Running it here, and again on the rebased tree before push (landing step 2), is how the feature clears CI *before* the PR opens rather than after. On `FEATURE_BRANCH`, run every gate top to bottom, capturing pass/fail per command:
+This is the repo's [§6 CI gate](../../../.github/workflows/ci.yml) run **locally and in full** — the same four jobs (`lint-format`, `ts`, `rust`, `e2e`) the PR will face on a clean runner, in the same commands. Running it here, and again on the rebased tree (Final phase 2), is how the feature clears CI *before* the PR opens rather than after. On `FEATURE_BRANCH`, run every gate top to bottom, capturing pass/fail per command:
 
 - `pnpm install --frozen-lockfile` if `pnpm-lock.yaml` changed across the feature — CI runs a frozen install before every job; a drifted lockfile fails there.
 - **`lint-format`** — `pnpm exec biome ci .` (format + lint + organizeImports, read-only — the exact CI command; `pnpm format` writes and `pnpm lint` only covers lint, so neither is the gate).
@@ -378,53 +376,13 @@ This is the repo's [§6 CI gate](../../../.github/workflows/ci.yml) run **locall
 
 Write `FINAL-VERIFY/<iteration>.md` with the command/status table.
 
-### Final phase 2: feature-level reviewers
+**Gate outcome.** Any command fails → diagnose which slice (or cross-slice seam) introduced it, respawn that impl agent on a scratch branch `flow/<slug>/final-iter<m>` cut from `feature/<slug>`'s tip with the failure in `PRIOR_FINDINGS`, let it run RED→GREEN, then squash one `final-fix:` commit onto `feature/<slug>` (`git merge --squash` + `git commit -m "final-fix: <brief>"`) and re-run Final phase 1. Cap: 3 final iterations; cap hit → write `BLOCKED.md` and stop. All green → append `final-gate-passed` to `STATE.md` and continue to Final phase 2.
 
-Spawn the four reviewers in parallel, each with `isolation: "worktree"` checking out `FEATURE_BRANCH`. The envelope mirrors slice review except:
+### Final phase 2: rebase onto latest `master` + re-gate
 
-```
-SLICE:        feature
-SLICE_BASE:   <FEATURE_BASE>
-SLICE_BRANCH: <FEATURE_BRANCH>
-OUTPUT_PATH:  <RUN_DIR>/FINAL-REVIEWS/<iteration>/<reviewer>.md
-PRIOR_FINDINGS: <RUN_DIR>/FINAL-REVIEWS/<iteration-1>/<reviewer>.md  (only on retry)
-```
+`feature/<slug>` is green against the `master` the flow started from (`FEATURE_BASE`), but `master` has likely advanced. Rebase onto its current tip and re-clear the gate **before** handing off — review-loop will push from this branch, and we never hand off a branch whose base is stale or whose local CI hasn't passed on the exact tree.
 
-Reviewers use the existing SOPs ([REVIEW-CORRECTNESS.md](REVIEW-CORRECTNESS.md), [REVIEW-INTEGRATION.md](REVIEW-INTEGRATION.md), [REVIEW-TESTS.md](REVIEW-TESTS.md), [REVIEW-ADR.md](REVIEW-ADR.md)) — they're already diff-scoped, so feeding the feature diff makes them feature-scoped. They catch what per-slice review can't: cross-slice integration drift, contract divergence between producer and consumer slices, ADR contradictions that only emerge from the full diff, missing tests for behavior introduced piecewise.
-
-Note for reviewers: when `SLICE: feature`, `feature/<slug>` carries one squashed commit per slice, so the RED→GREEN commit pattern is **not** visible here — it was already verified per slice in phase 4 on each scratch branch. The feature-level tests reviewer **skips** the commit-pattern check and asserts gates and union test coverage only.
-
-### Final phase 2b: deep-review pass
-
-After the four structured reviewers return, run the [deep-review](../deep-review/SKILL.md) skill in **RUN mode**, scoped to the whole feature diff (`git diff <FEATURE_BASE>..<FEATURE_TIP>`). It is a multi-agent fan-out (specialist lenses + adversarial verification + the learned rule base) that catches classes of bug the four structured reviewers don't — it complements them, it doesn't replace them.
-
-Invoke it from a worktree on `FEATURE_BRANCH`. Write its verified report to `<RUN_DIR>/FINAL-REVIEWS/<iteration>/deep-review.md`. deep-review already drops refuted findings in its own verification pass, so what lands in that file is the surviving, verified set.
-
-Fold the surviving findings into the Final phase 3 gate exactly like reviewer findings: **Blocking / Important** deep-review findings are blocking (treat like a reviewer `fail`); **Nit** findings are advisory. They are subject to the same address-or-reason rule below — no deep-review finding is silently dropped.
-
-Append `deep-review-done` to `STATE.md` (detail: counts by severity, and how many deep-review dropped in verification).
-
-### Final phase 3: gate
-
-Same three outcomes as a slice gate, applied at feature scope. The finding pool here is the union of the four structured reviewers **and** the deep-review pass (phase 2b).
-
-**Address-or-reason is mandatory.** No finding — from a structured reviewer or from deep-review — may advance past this gate unresolved. Each is either *addressed* (fixed in a `final-fix:` commit) or *reasoned* (recorded with a one-line justification for not acting now). "Reasoned" means a deliberate, written verdict, not silence. The same rule applies on every final iteration, not just the first.
-
-- **Hard fail.** Any feature-level gate failed OR any reviewer returned `fail` OR deep-review returned a Blocking/Important finding. Diagnose which slice (or cross-slice seam) introduced the problem, then respawn its impl agent on a scratch branch `flow/<slug>/final-iter<m>` cut from `feature/<slug>`'s tip, with `PRIOR_FINDINGS` listing the failures. It runs RED→GREEN there; when green, squash it into one commit on `feature/<slug>` (`git merge --squash` + `git commit -m "final-fix: <brief>"`). Re-run final phases 1–3. Cap: 3 final iterations. Iteration cap hit → write `BLOCKED.md` and stop.
-
-- **Polish.** All gates green, no reviewer `fail`, no Blocking/Important deep-review finding, but advisory findings exist (reviewer advisories and/or deep-review Nits). Triage **every** advisory with the "reasonable to address now" rule as a slice gate, scoped to the feature — each gets an `address` or `defer` verdict with a one-line reason. Reasonable feature-level fixes are developed on `flow/<slug>/final-iter<m>` and squashed into one `final-fix:` commit on `feature/<slug>`, same as a hard-fail iteration. Deferred findings (with their reasons) go into `RUN_DIR/FINAL-ADVISORY-DEFERRED.md`. After fixes, re-run final phases 1–3. Counts toward the 3 final-iteration cap.
-
-- **Pass.** All gates green, no reviewer `fail`, no Blocking/Important deep-review finding, and **every** remaining finding (reviewer or deep-review) has been triaged — addressed or deferred-with-a-reason. Nothing is left un-adjudicated. Append `final-review-passed` to `STATE.md`. Proceed to the landing step.
-
-Final-iteration fixes are squashed onto `feature/<slug>` as `final-fix:` commits, so the branch stays clean: N slice commits plus any final-fix commits.
-
-### Landing the feature: one PR
-
-`feature/<slug>` holds the whole feature — one commit per slice (plus any `final-fix:` commits), all green against the `master` the flow started from (`FEATURE_BASE`). But `master` has likely advanced since then. Rebase onto its current tip and re-clear the gate **before** pushing — never push a branch whose base is stale or whose local CI hasn't passed on the exact tree being pushed.
-
-Land it as a **single PR**. No Graphite, no stacked PRs.
-
-**Step 1 — rebase onto the latest `master`.** From the orchestrator's `master` checkout (working tree clean):
+**Step 1 — rebase.** From the orchestrator's `master` checkout (working tree clean):
 
 ```
 git fetch origin master
@@ -432,49 +390,29 @@ git checkout feature/<slug>
 git rebase origin/master
 ```
 
-- **Clean rebase** → the one-commit-per-slice (+`final-fix:`) history is now replayed on the current `master`. Append `rebased` to `STATE.md` (detail: the `origin/master` SHA). Continue to step 2.
-- **Conflicts** → resolve them in line with the slice that owns each hunk; `git rebase --continue` until clean. A conflict that can't be resolved without re-opening a design decision is a hard fail — append `rebase-conflict` (detail: the conflicting paths), write `BLOCKED.md`, and stop. Don't `-X ours`/`-X theirs` your way past a semantic clash.
+- **Clean rebase** → append `rebased` to `STATE.md` (detail: the `origin/master` SHA). Continue.
+- **Conflicts** → resolve in line with the slice that owns each hunk; `git rebase --continue` until clean. A conflict that can't be resolved without re-opening a design decision is a hard fail — append `rebase-conflict` (detail: conflicting paths), write `BLOCKED.md`, stop. Don't `-X ours`/`-X theirs` past a semantic clash.
 
-**Step 2 — re-run the full local CI gate on the rebased tip.** A clean rebase is not a green one: the new `master` can carry changes that break the feature (or vice-versa) with zero textual conflict. Re-run **Final phase 1** (the four-job CI mirror, in full) against the rebased `feature/<slug>`. Any failure → treat exactly as a Final phase 3 hard fail (fix on `flow/<slug>/final-iter<m>`, squash a `final-fix:` commit, counts toward the 3-iteration cap), then rebase-check again. Push only once the gate is green on the rebased tree; append `local-ci-passed` to `STATE.md` (detail: the rebased commit SHA).
+**Step 2 — re-gate the rebased tip.** A clean rebase is not a green one: the new `master` can break the feature (or vice-versa) with zero textual conflict. Re-run **Final phase 1** in full against the rebased branch. Any failure → treat as a Final phase 1 gate fail (fix on `flow/<slug>/final-iter<m>`, squash a `final-fix:` commit, counts toward the 3-iteration cap), then re-rebase-check. Once green on the rebased tree, append `local-ci-passed` to `STATE.md` (detail: the rebased commit SHA) and proceed to the handoff.
 
-**Step 3 — push and open the PR.** From the repo root:
+- **`gh` / remote unavailable** → can't fetch/rebase. Record in `REPORT.md` that the gate passed locally on the **pre-rebase** tip (rebase + CI unverified) and that the user must rebase, re-gate, and run `/review-loop` manually. Skip to the Summary phase.
 
-```
-git push -u origin feature/<slug>
-gh pr create --base master --head feature/<slug> \
-  --title "<feature title>" \
-  --body "<one-paragraph goal + slice-by-slice commit list>"
-```
+The branch stays clean throughout: N slice commits plus any `final-fix:` commits.
 
-Notes:
-- One PR, reviewed as a unit. The one-commit-per-slice history lets a reviewer walk the feature slice by slice.
-- The rebase is **non-destructive to `master`** — it only replays `feature/<slug>`'s own commits onto the fetched `origin/master`. It does not touch, fast-forward, or push `master`.
-- Pushing the feature branch and opening the PR is allowed; **merging to `master` is not** — the user owns the merge.
-- If the remote or `gh` isn't available, the rebase can't fetch and the push can't run: skip steps 1 and 3, record in `REPORT.md` that the gate passed locally on the **pre-rebase** tip (CI and rebase unverified), and write the three commands above as a copy-pasteable handoff. The user rebases, re-gates, and pushes.
+### Handoff: /review-loop
 
-Record the PR URL (or the handoff commands) in `REPORT.md`.
+feature-flow's job ends here — at a **rebased, locally-gate-green `feature/<slug>` that has NOT been pushed and has NO PR yet**. Code review and the PR are owned by [`/review-loop`](../review-loop/SKILL.md), which runs in two phases on exactly this state:
 
-### Wait for CI to go green
+- **Phase 0 (local, iterative) — the real dual-engine review feature-flow used to fake.** review-loop runs BOTH reviewers — `deep-review` (correctness) and `thermo-nuclear-code-quality-review` (maintainability) — across BOTH engines: Claude (parallel subagents) *and* the cross engine Codex (`codex exec` for the deep-review/thermo rubrics; the symmetric `claude -p` when the runner is Codex). It verifies findings adversarially, applies the real ones, re-gates, and **loops until all four reviewer streams are clean** — this is the only part that retriggers iteratively. Then it opens the PR.
+- **Phase 1 (post-PR) — CodeRabbit, triggered once.** review-loop awaits CodeRabbit's single auto-review of the opened PR, adversarially verifies each finding, fixes the real ones, replies/resolves, re-gates, and pushes the revision. It does not re-trigger CodeRabbit in a churn loop — the one review of HEAD is the pass.
 
-Opening the PR is not the finish line — **the feature is not done until CI passes.** The repo's GitHub Actions [§6 gate](../../../.github/workflows/ci.yml) runs four required checks on the PR (`lint-format`, `ts`, `rust`, `e2e`). The local final-phase gates mirror these, but CI runs them on a clean runner and can surface failures a local run masked (lockfile drift, OS-dep gaps, environment assumptions).
-
-After opening the PR, poll until the checks settle:
+Chain it explicitly once the rebase + re-gate are green:
 
 ```
-gh pr checks <pr-number> --watch
+/review-loop          # no PR arg → Phase 0 (dual-engine local review) first, then it opens the PR and runs Phase 1
 ```
 
-- **All checks pass** → append `ci-passed` to `STATE.md` (detail: the commit SHA CI ran on). Proceed to write `REPORT.md`.
-- **Any check fails** → this is a hard fail, identical to a Final phase 3 hard fail. Pull the failing job's logs (`gh run view <run-id> --log-failed`), diagnose, fix on a `flow/<slug>/final-iter<m>` branch, squash a `final-fix:` commit onto `feature/<slug>`, push, and re-poll. Counts toward the 3 final-iteration cap. Cap hit with CI still red → write `BLOCKED.md` and stop; the feature is **not** done.
-- **`gh` / remote unavailable** (handoff mode, no PR opened) → CI can't be polled. Record in `REPORT.md` that the §6 gate passed locally but CI was not verified, and that the user must confirm CI green before merging.
-
-Only once CI is green (or explicitly unverifiable in handoff mode) is the feature done.
-
-Then write `REPORT.md` listing each slice, its squashed commit on `feature/<slug>`, the final review's outcome (structured reviewers + deep-review), the CI status, and the PR URL (or handoff commands). Then run the **Summary phase** — see below.
-
-### Handoff: the CodeRabbit loop
-
-This skill's "done" is **CI green**; it stops before CodeRabbit's review lands, and the merge is yours. The natural next step is [`/review-loop <pr>`](../review-loop/SKILL.md), which waits for CodeRabbit, adversarially verifies each finding, fixes the real ones, replies-and-resolves the rest, re-gates, and pushes until CodeRabbit is quiet — still without merging. It's a separate skill on purpose (composable on any PR, not just feature-flow's), so chain it explicitly: feature-flow reports the PR URL, then run `/review-loop` on it.
+review-loop pushes the branch, opens the PR, drives both review phases, and **never merges** — the merge stays the user's. feature-flow does not push, open the PR, run reviewers, or poll CI; handing the green rebased branch to review-loop is the last step. Append `handed-off-to-review-loop` to `STATE.md`, then write `REPORT.md` (each slice + its squashed commit, the final-gate outcome, the rebased SHA, and the `/review-loop` handoff) and run the **Summary phase**.
 
 ## Summary phase (terminal)
 
@@ -483,12 +421,11 @@ Runs after `REPORT.md` (success) or `BLOCKED.md` (failure). Always runs. Output:
 ### Steps
 
 1. Walk `STATE.md`. Per slice: iteration count, outcome (`passed` / `blocked`).
-2. List every reviewer `fail` verdict (slice or `final`, iteration, reviewer, one-line finding). Include deep-review Blocking/Important findings (read `FINAL-REVIEWS/<iter>/deep-review.md`).
-3. Aggregate deferred advisory findings: read every `slices/<n>/ADVISORY-TRIAGE.md` (deferred entries only) and `FINAL-ADVISORY-DEFERRED.md` if present.
-4. Record final-review outcome: number of final iterations, gate results, deep-review severity counts, advisories addressed vs deferred.
-5. Record the CI outcome (from the `ci-passed` / `ci-failed` event, or "unverified — handoff mode").
-6. List every `BLOCKED.md` content verbatim.
-7. Append `summary-written` to `STATE.md`. This is the final event.
+2. List every slice-level reviewer `fail` verdict (slice, iteration, reviewer, one-line finding). (Code review at feature scope now lives in `/review-loop`, not here.)
+3. Aggregate deferred advisory findings: read every `slices/<n>/ADVISORY-TRIAGE.md` (deferred entries only).
+4. Record the final-gate outcome: number of final iterations, gate pass/fail, the rebased SHA, and whether the branch was handed off to `/review-loop` (or left for the user in handoff mode).
+5. List every `BLOCKED.md` content verbatim.
+6. Append `summary-written` to `STATE.md`. This is the final event.
 
 ### SUMMARY.md template
 
@@ -505,28 +442,24 @@ Outcome: success | blocked
 | 2 | ... | 2 | passed |
 | 3 | ... | 3 | blocked |
 
-## Final review
+## Final gate
 
 - Iterations: <n>
 - Gate: pass | fail (one-line summary)
-- Deep-review: <blocking>/<important>/<nit> findings (<dropped> dropped in verification)
-- Advisories addressed: <count>
-- Advisories deferred: <count>
-- CI: passed (<sha>) | failed (<check>) | unverified — handoff mode
+- Rebased onto master: <sha> | not rebased — handoff mode
+- Handed off to /review-loop: yes | no — user must run it manually
 
 ## Reviewer fails
 
-(One line per `fail` verdict across slice and final review. Empty if none.)
+(One line per slice-level `fail` verdict. Empty if none. Feature-scope code review lives in `/review-loop`.)
 
 - slice-<n> iter-<m> review-<role>: <verbatim one-line finding>
-- final iter-<m> review-<role>: <verbatim one-line finding>
 
 ## Deferred advisories
 
-(Triaged-but-not-addressed findings, slice and final. Empty if none.)
+(Triaged-but-not-addressed slice findings. Empty if none.)
 
 - slice-<n> review-<role>: <one-line finding> — <one-line reason for deferral>
-- final review-<role>: <one-line finding> — <one-line reason for deferral>
 
 ## Hard blocks
 
@@ -551,5 +484,5 @@ That's it. No interpretation, no "patterns" section, no friction-signal aggregat
 - Decompose detects unresolvable file overlap **between this slice and an earlier slice already squashed onto `feature/<slug>`** → stop, the plan has bad slice ordering.
 - Iteration cap hit on any slice → write `BLOCKED.md`, surface to user.
 - Verify fails with the same error two iterations in a row on the same slice → stop, the loop is not converging.
-- Final review iteration cap hit → write `BLOCKED.md`, surface to user. `feature/<slug>` and the scratch branches are intact for human inspection; the unresolved findings are in `RUN_DIR/FINAL-REVIEWS/<last-iter>/`.
-- CI stays red after the final-iteration cap → write `BLOCKED.md`. The PR is open with a failing gate; the feature is not done until the user-owned CI checks are green.
+- Final-gate iteration cap hit (deterministic gate or rebase re-gate stays red) → write `BLOCKED.md`, surface to user. `feature/<slug>` and the scratch branches are intact for human inspection; the failing commands are in `RUN_DIR/FINAL-VERIFY/<last-iter>.md`.
+- Rebase conflict that needs a design decision → write `BLOCKED.md` (don't `-X ours`/`-X theirs` past a semantic clash).
