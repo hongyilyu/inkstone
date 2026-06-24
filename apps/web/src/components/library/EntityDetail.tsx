@@ -1,11 +1,5 @@
 import { useNavigate } from "@tanstack/react-router";
-import {
-	ArrowUpRight,
-	BookOpenText,
-	MessageSquareText,
-	Pencil,
-	Trash2,
-} from "lucide-react";
+import { ArrowUpRight, MessageSquareText, Pencil, Trash2 } from "lucide-react";
 import { Fragment, type ReactNode, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button.js";
@@ -102,14 +96,11 @@ const DELETE_KIND: Record<LibraryItemKind, string> = {
  */
 function InspectorShell({
 	entity,
-	allEntities = [],
 	confirmCopy,
 	renderBody,
 	renderEditor,
 }: {
 	entity: LibraryItem;
-	/** Loaded Library items, used to resolve a Journal-Entry source's title. */
-	allEntities?: LibraryItem[];
 	confirmCopy: string;
 	renderBody: (onOpen: (e: LibraryItem) => void) => ReactNode;
 	renderEditor: (onDone: () => void, onCancel: () => void) => ReactNode;
@@ -181,8 +172,6 @@ function InspectorShell({
 				{renderBody(goToEntity)}
 				<CapturedFrom
 					entity={entity}
-					allEntities={allEntities}
-					onOpenEntity={goToEntity}
 					onOpenThread={(threadId) =>
 						navigate({ to: "/thread/$threadId", params: { threadId } })
 					}
@@ -250,7 +239,6 @@ function TodoDetail({
 	return (
 		<InspectorShell
 			entity={todo}
-			allEntities={allEntities}
 			confirmCopy="Delete this Todo?"
 			renderBody={(onOpen) => (
 				<TodoBody todo={todo} allEntities={allEntities} onOpen={onOpen} />
@@ -279,7 +267,6 @@ function PersonDetail({
 	return (
 		<InspectorShell
 			entity={person}
-			allEntities={allEntities}
 			confirmCopy="Delete this Person?"
 			renderBody={(onOpen) => (
 				<PersonBody person={person} allEntities={allEntities} onOpen={onOpen} />
@@ -311,7 +298,6 @@ function ProjectDetail({
 	return (
 		<InspectorShell
 			entity={project}
-			allEntities={allEntities}
 			confirmCopy="Delete this Project? Its Todos lose their project."
 			renderBody={(onOpen) => (
 				<ProjectBody
@@ -346,7 +332,6 @@ function JournalEntryDetail({
 	return (
 		<InspectorShell
 			entity={journalEntry}
-			allEntities={allEntities}
 			confirmCopy="Delete this Journal Entry?"
 			renderBody={(onOpen) => (
 				<JournalEntryBody
@@ -394,48 +379,24 @@ function BookmarkDetail({ bookmark }: { bookmark: Bookmark }) {
 }
 
 /**
- * The Inspector's "Captured from" provenance footer (ADR-0030). Rendered ONLY
- * when the Entity's origin resolves to a working link — a Thread source (link
- * back to the originating chat) or a Journal-Entry source still present in the
- * Library (link to that entry). Everything else renders nothing: a user-authored
- * Entity has no source, and an extracted Entity whose source row was removed
- * (the source Journal Entry/Message was deleted — `entity_sources` cascades) can
- * no longer point anywhere, so a dead "captured from …" line would mislead. The
- * signature magenta is reserved for the link title (a rationed "captured-from
- * link", per DESIGN.md); the footer reads as quiet metadata, not a CTA.
+ * The Inspector's "Captured from" provenance footer (ADR-0030). The chat-origin
+ * link only: a Thread-sourced Entity links back to the originating chat, which
+ * DESIGN.md pins as an Inspector signature (the chat→knowledge origin). A
+ * Journal-Entry-sourced Entity renders nothing here — its relationship surfaces
+ * canonically under "Mentioned in" via backlinks (ADR-0050) — and a user-authored
+ * Entity has no source at all. The `entity_sources` row is never touched; this is
+ * display only. The signature magenta is reserved for the link title (a rationed
+ * "captured-from link", per DESIGN.md); the footer reads as quiet metadata, not a CTA.
  */
 function CapturedFrom({
 	entity,
-	allEntities,
-	onOpenEntity,
 	onOpenThread,
 }: {
 	entity: LibraryItem;
-	allEntities: LibraryItem[];
-	onOpenEntity: (e: LibraryItem) => void;
 	onOpenThread: (threadId: string) => void;
 }) {
 	const source = entity.source;
-	if (!source) return null;
-
-	if (source.kind === "journal_entry") {
-		const target = allEntities.find((e) => e.id === source.journalEntryId);
-		// The source entry is gone (deleted): no resolvable link, so render nothing
-		// rather than a dead row.
-		if (!target) return null;
-		return (
-			<ProvenanceFrame>
-				<ProvenanceLink
-					icon={<BookOpenText className="size-4 shrink-0" aria-hidden />}
-					// A text-only entry's title is its body text; fall back so the link
-					// always has an accessible name (mirrors the Thread branch below).
-					title={libraryItemTitle(target) || "Untitled journal entry"}
-					date={entity.createdAt}
-					onClick={() => onOpenEntity(target)}
-				/>
-			</ProvenanceFrame>
-		);
-	}
+	if (!source || source.kind !== "thread") return null;
 
 	return (
 		<ProvenanceFrame>

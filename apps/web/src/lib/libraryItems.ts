@@ -389,26 +389,6 @@ export function projectsForPerson(
 	return projects;
 }
 
-/**
- * Journal Entries that inline-reference `target` via an Entity Reference
- * (ADR-0031 "Mentioned in"). Newest occurred first.
- */
-export function journalEntriesMentioning(
-	all: LibraryItem[],
-	target: LibraryItem,
-): JournalEntry[] {
-	return all
-		.filter(
-			(e): e is JournalEntry =>
-				e.kind === "journal_entry" &&
-				e.body.some(
-					(node) =>
-						node.type === "entity_ref" && node.targetEntityId === target.id,
-				),
-		)
-		.sort((a, b) => b.occurredAt.localeCompare(a.occurredAt));
-}
-
 export function projectForTodo(
 	all: LibraryItem[],
 	todo: Todo,

@@ -884,8 +884,10 @@ describe("EntityDetail Captured from", () => {
 		});
 	});
 
-	it("links a Journal-Entry-sourced Entity to that entry in the Library", async () => {
-		const user = userEvent.setup();
+	it("renders no footer for a Journal-Entry-sourced Entity (its origin surfaces under 'Mentioned in', ADR-0050)", () => {
+		// The legacy JE-anchored-create footer branch is retired: a graph/JE-sourced
+		// Entity surfaces its relationship canonically under "Mentioned in", not the
+		// footer. Even with the source entry loaded, no "Captured from" line renders.
 		const entry: JournalEntry = {
 			id: "je_1",
 			kind: "journal_entry",
@@ -900,19 +902,8 @@ describe("EntityDetail Captured from", () => {
 		});
 		renderDetail(<EntityDetail entity={todo} allEntities={[todo, entry]} />);
 
-		// The chip title resolves from the loaded JE (libraryItemTitle of a
-		// text-only entry is its body text).
-		await user.click(screen.getByRole("button", { name: /Standup notes/ }));
-
-		expect(navigate).toHaveBeenCalledWith({
-			to: "/library/$kind",
-			params: { kind: "journal" },
-			search: { id: "je_1" },
-		});
-		// A Journal-Entry source never routes to a Thread.
-		expect(navigate).not.toHaveBeenCalledWith(
-			expect.objectContaining({ to: "/thread/$threadId" }),
-		);
+		expect(screen.queryByText(/Captured from/)).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: /Standup notes/ })).toBeNull();
 	});
 
 	it("renders no footer for a user-authored Entity (no source)", () => {
@@ -928,36 +919,15 @@ describe("EntityDetail Captured from", () => {
 		expect(screen.queryByText(/Created in Library/)).not.toBeInTheDocument();
 	});
 
-	it("renders no footer when the source entry is gone (cascade-deleted)", () => {
+	it("renders no footer for a Journal-Entry source whose entry is gone (cascade-deleted)", () => {
 		const todo = todoItem("t_orphan", {
 			title: "Orphaned",
 			source: { kind: "journal_entry", journalEntryId: "missing_je" },
 		});
-		// allEntities lacks `missing_je` → no resolvable target → no dead row.
+		// A Journal-Entry source never renders the footer (ADR-0050), whether or not
+		// the entry is still loaded.
 		renderDetail(<EntityDetail entity={todo} allEntities={[todo]} />);
 
 		expect(screen.queryByText(/Captured from/)).not.toBeInTheDocument();
-	});
-
-	it("falls back to a label when the source Journal Entry has empty body text", () => {
-		// A text-only entry's title is its body text; an empty body would leave the
-		// link with no accessible name, so the JE branch falls back like the Thread.
-		const entry: JournalEntry = {
-			id: "je_blank",
-			kind: "journal_entry",
-			occurredAt: "2026-06-10T10:30:00",
-			body: [],
-			createdAt: "fixture",
-			recency: 1,
-		};
-		const todo = todoItem("t_blank_je", {
-			title: "From a blank entry",
-			source: { kind: "journal_entry", journalEntryId: "je_blank" },
-		});
-		renderDetail(<EntityDetail entity={todo} allEntities={[todo, entry]} />);
-
-		expect(
-			screen.getByRole("button", { name: /Untitled journal entry/ }),
-		).toBeInTheDocument();
 	});
 });
