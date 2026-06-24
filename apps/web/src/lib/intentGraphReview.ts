@@ -23,11 +23,22 @@ export type NodeStage = "accept" | "reject";
  * "undecided" — the user has not stepped past it yet. */
 export type StagingBuffer = Readonly<Record<string, NodeStage>>;
 
-/** Whether a node's disposition forbids `accept` until the picker ships (#181):
- * an `ambiguous` node has no silent fallback and cannot be linked, so it is
- * reject-only (ADR-0042). `create`/`reuse` are freely acceptable. */
-export function isAcceptable(node: ResolvedNode): boolean {
-	return node.disposition !== "ambiguous";
+/** Whether a node's disposition permits `accept`. `create`/`reuse` are freely
+ * acceptable. An `ambiguous` node has no silent fallback (ADR-0042), so it is
+ * reject-only UNTIL the user picks one of its candidates: a pick is recorded as
+ * that candidate's `entity_id` in the repoint buffer ({@link repointFor}), which
+ * collapses the node `ambiguous → reuse` at decide. So an ambiguous node is
+ * acceptable iff a candidate has been picked (#181 disambiguation picker).
+ *
+ * `repoints` defaults to `{}` so a caller that only has a node (no pick context)
+ * still reads the pre-pick truth: a create/reuse node is acceptable, an ambiguous
+ * one is not. */
+export function isAcceptable(
+	node: ResolvedNode,
+	repoints: RepointBuffer = {},
+): boolean {
+	if (node.disposition !== "ambiguous") return true;
+	return repointFor(repoints, node) !== null;
 }
 
 /** The per-handle re-point buffer (component state) for the near-match
@@ -69,32 +80,46 @@ export function hasAmbiguous(plan: readonly ResolvedNode[]): boolean {
 
 /** The effective stage for a node: its explicit entry, else its default — every
  * acceptable node defaults to `accept` (the common path is accept-everything),
- * while an `ambiguous` node defaults to `reject` (it cannot be accepted yet). */
-export function stageFor(buffer: StagingBuffer, node: ResolvedNode): NodeStage {
-	return buffer[node.handle] ?? (isAcceptable(node) ? "accept" : "reject");
+ * while an UNPICKED `ambiguous` node defaults to `reject` (it cannot be accepted
+ * yet). A picked ambiguous node is acceptable, so it defaults to `accept` and a
+ * plain Apply sweeps it in like any reuse — hence `repoints` is consulted. */
+export function stageFor(
+	buffer: StagingBuffer,
+	node: ResolvedNode,
+	repoints: RepointBuffer = {},
+): NodeStage {
+	return (
+		buffer[node.handle] ?? (isAcceptable(node, repoints) ? "accept" : "reject")
+	);
 }
 
 /** Toggle one node's stage, respecting the ambiguous accept-block: a request to
- * `accept` an unacceptable node is ignored (it stays reject-only). Returns a NEW
- * buffer (the caller holds it in component state). */
+ * `accept` an unacceptable node is ignored (it stays reject-only). A picked
+ * ambiguous node IS acceptable, so its accept is honored — hence `repoints` is
+ * consulted. Returns a NEW buffer (the caller holds it in component state). */
 export function setStage(
 	buffer: StagingBuffer,
 	node: ResolvedNode,
 	stage: NodeStage,
+	repoints: RepointBuffer = {},
 ): StagingBuffer {
-	if (stage === "accept" && !isAcceptable(node)) {
+	if (stage === "accept" && !isAcceptable(node, repoints)) {
 		return buffer;
 	}
 	return { ...buffer, [node.handle]: stage };
 }
 
-/** Stage EVERY acceptable node `accept` (ambiguous nodes stay `reject`) — the
- * "Accept all" affordance. Ambiguous nodes are explicitly rejected so the commit
- * vector is total and unambiguous. */
-export function acceptAll(plan: readonly ResolvedNode[]): StagingBuffer {
+/** Stage EVERY acceptable node `accept` (an UNPICKED ambiguous node stays
+ * `reject`) — the "Accept all" affordance. A picked ambiguous node is acceptable
+ * (its candidate is chosen), so it is swept into `accept`; unpicked ambiguous
+ * nodes are explicitly rejected so the commit vector is total and unambiguous. */
+export function acceptAll(
+	plan: readonly ResolvedNode[],
+	repoints: RepointBuffer = {},
+): StagingBuffer {
 	const next: Record<string, NodeStage> = {};
 	for (const node of plan) {
-		next[node.handle] = isAcceptable(node) ? "accept" : "reject";
+		next[node.handle] = isAcceptable(node, repoints) ? "accept" : "reject";
 	}
 	return next;
 }
@@ -337,19 +362,36 @@ export function buildDecisions(
 	repoints: RepointBuffer = {},
 ): NodeDecision[] {
 	return plan.map((node) => {
-		const decision = stageFor(buffer, node);
-		if (decision === "accept" && node.disposition === "create") {
-			// A near-match re-point reuses an existing entity — it takes precedence
-			// over an edit draft (mutually exclusive: reuse vs mint).
+		const decision = stageFor(buffer, node, repoints);
+		if (decision === "accept") {
 			const repoint = repointFor(repoints, node);
-			if (repoint !== null) {
-				return { handle: node.handle, decision, entity_id: repoint };
+			// An accepted `ambiguous` node is reuse-only: it is acceptable SOLELY
+			// because a candidate was picked, and that pick rides as the `entity_id`
+			// override Core collapses ambiguous → reuse (#181). Self-defend the
+			// no-bare-ambiguous-accept invariant HERE, in the module, rather than
+			// trusting the caller: if an accept survived in the buffer but the pick was
+			// since cleared (a stale-buffer desync a future "clear pick" UI could
+			// produce), `repoint` is null — emit a plain reject, NEVER a bare ambiguous
+			// accept (Core fails the whole atomic apply on one).
+			if (node.disposition === "ambiguous") {
+				return repoint !== null
+					? { handle: node.handle, decision, entity_id: repoint }
+					: { handle: node.handle, decision: "reject" };
 			}
-			const draft = drafts[node.handle];
-			if (draft !== undefined) {
-				const edited = buildEditedFields(entities.get(node.handle), draft);
-				if (edited !== undefined) {
-					return { handle: node.handle, decision, edited_fields: edited };
+			// A `create` node's near-match RE-POINT (ADR-0042 amendment) reuses an
+			// existing entity by id, riding the same `entity_id` override and taking
+			// precedence over an edit draft (mutually exclusive: reuse what you
+			// re-point, edit what you mint).
+			if (node.disposition === "create") {
+				if (repoint !== null) {
+					return { handle: node.handle, decision, entity_id: repoint };
+				}
+				const draft = drafts[node.handle];
+				if (draft !== undefined) {
+					const edited = buildEditedFields(entities.get(node.handle), draft);
+					if (edited !== undefined) {
+						return { handle: node.handle, decision, edited_fields: edited };
+					}
 				}
 			}
 		}
