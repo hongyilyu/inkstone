@@ -114,6 +114,71 @@ closed the impeccable-critique "Applied." context-free hole). Since this ADR fol
   Library link is the "record + a way back" after commit; a true reversal verb stays
   deferred.
 
+### Amendment: the reasoning segment (#202)
+
+The union's reserved `reasoning` kind is now realized — the model's thinking renders as
+a fourth segment kind, default-collapsed, so the user can inspect *why* before approving
+a Proposal without the trace ever competing with the reply or the approval.
+
+- **`Segment` gains `Reasoning { text, duration_ms: Option<i64> }`** — `{ kind:"reasoning",
+  text, duration_ms? }`. `text` is the streamed thinking; `duration_ms` is how long the
+  model thought (omitted, not null, when unknown). It rides transitively in the
+  `thread_get_result.json` parity fixture, so the Rust serde mirror, the Effect schema, and
+  the fixture move as one atomic slice — the gate reds otherwise.
+
+- **Reasoning is a typed `message_parts` row on the EXISTING `message` step.** A new
+  `message_parts.type='reasoning'` (the one widened CHECK) opened/appended/sealed by the
+  same open-on-first-delta machine as text, sequenced by `run_steps.kind='message'` →
+  `(message_id, part_seq)`. **No new `run_steps` kind**, no change to the three-branch
+  exclusivity CHECK: reasoning is "a contiguous run of assistant content" exactly like text,
+  so the sequencer already orders it by `seq`. `segment_timeline` selects `mp.type` and the
+  read assembly switches the message branch on it (text vs reasoning). An empty/whitespace
+  reasoning part emits no segment, mirroring the empty-text-part skip.
+
+- **The run loop tracks two open part-slots.** pi gives NO delta-contiguity guarantee
+  (a provider may interleave `text_delta, thinking_delta, text_delta` with no tool
+  boundary), so `open_part` splits into `open_text_part` + `open_reasoning_part`: a delta
+  opens/appends its own-type slot; a delta of the *other* type seals the prior slot first; a
+  tool request / park seals **both**. Each `message_parts` row stays a contiguous run of one
+  type.
+
+- **The Worker maps pi's `thinking_delta` → `WorkerStdout::ReasoningDelta` → Core; Core
+  republishes `RunEvent::ReasoningDelta`.** Start is derived from the first reasoning delta
+  after a boundary (like text — no `thinking_start`/`_end` wire variants). `thinking_level=
+  "off"` already omits pi's reasoning param and pi emits zero thinking events when off, so
+  "off" yields no reasoning segment **by construction** — nothing to gate. Redacted/encrypted
+  reasoning (Anthropic's `[Reasoning redacted]` placeholder) is **dropped at the Worker
+  seam**: the real content is in a signature we don't persist (v1), so a collapsed "Thought"
+  that expands to a placeholder string is noise.
+
+- **Duration is Core-computed at read, never on the delta stream.** `segment_rows_for_run`
+  derives `duration_ms` from the reasoning step's `created_at` to the next step's `created_at`
+  (or `run.ended_at` when reasoning is the last step). Live, the Web Client clocks its own
+  (open→seal); both round to whole seconds with the same `<1s → "Thought"` / `≥1s → "Thought
+  for Ns"` rule, so the reloaded label matches the live one. No Worker timing, no new column.
+
+- **Display-only: reasoning is NEVER replayed into the worker transcript (v1).** Replaying
+  thinking *without its provider signature* is a live correctness hazard — Anthropic
+  downgrades a signature-less thinking block to plain text, OpenAI Responses and DeepSeek
+  return replay `400`s. Since v1 does not persist the signature, `read_run_timeline` /
+  `run_timeline` **must exclude `type='reasoning'` parts** (a correctness-critical change:
+  reasoning is now a `message` step, so without the exclusion it would silently replay as
+  assistant text). The model re-derives reasoning fresh on a resumed turn; nothing
+  user-visible is lost (the prior turn's reasoning still renders from the read path). The
+  signature column + same-model signed round-trip (and cross-model drop-to-text per pi's
+  `transform-messages` rule) are **deferred to #201**.
+
+- **The Web Client renders it default-collapsed and stays collapsed while streaming.** A
+  muted disclosure (live "Thinking…" → done "Thought for Ns"), one click to expand, visually
+  subordinate to the reply. This deliberately diverges from the stream-then-collapse default
+  (AI SDK Elements / ChatGPT / Claude.ai): auto-expanding mid-stream reflows the layout and
+  pushes the approval down at the decision moment — the opposite of a calm, approval-sacred
+  surface. `concatText` stays text-only **by construction** (reasoning is a new kind it does
+  not match), so the trace never leaks into the copy button, ⌘K search, or typing indicator;
+  the existing `type='text'` filter on the subscribe-snapshot / `read_thread` SQL excludes it
+  for free. The expand transition gates behind `motion-safe:` (the repo's reduced-motion
+  convention — instant toggle by default).
+
 ## Consequences
 
 - The screenshot scenario (`search → propose → accept → reply`) renders as
@@ -167,5 +232,6 @@ closed the impeccable-critique "Applied." context-free hole). Since this ADR fol
 - [ADR-0025](./0025-proposal-park-and-resume.md) — park writes the Proposal as a
   `tool_call` `run_steps` row, which is what gives the `proposal` segment its position
   for free; resume reconstruction now reads per-part text.
-- Deferred: #201 (resume transcript text-interleaving fidelity), #202 (reasoning as a
-  fourth segment kind).
+- #202 (reasoning as a fourth segment kind) — **realized** in the reasoning-segment
+  amendment above. Deferred: #201 (resume transcript text-interleaving fidelity, and the
+  reasoning-signature round-trip the amendment's display-only posture leaves open).
