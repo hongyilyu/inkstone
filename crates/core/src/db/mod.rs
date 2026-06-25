@@ -1201,6 +1201,16 @@ pub async fn journal_entry_target_is_valid(
     queries::journal_entry_target_is_valid(pool, run_id, entity_id).await
 }
 
+/// The origin Thread a `journal_entry` was `created_from` (ADR-0042) — the
+/// destination a `journal_entry/rescan` Run starts in. `None` if `je_id` names
+/// no `journal_entry` or has no resolvable origin Thread.
+pub async fn journal_entry_origin_thread_id(
+    pool: &SqlitePool,
+    je_id: &str,
+) -> sqlx::Result<Option<String>> {
+    queries::journal_entry_origin_thread_id(pool, je_id).await
+}
+
 /// The Entity Type of an accepted Entity, parsed into [`crate::mutation::EntityType`].
 /// `None` means the row is genuinely absent (→ a target-gone `TargetMissing` on the
 /// agent path, ADR-0033). A row whose stored `type` string fails to parse — the
@@ -2822,6 +2832,67 @@ mod tests {
         assert_eq!(
             rows[0].data.get("title").and_then(|v| v.as_str()),
             Some("ok")
+        );
+    }
+
+    /// `journal_entry_origin_thread_id` resolves the Thread a Journal Entry was
+    /// `created_from` (the origin user Message's Thread), the destination a re-scan
+    /// Run starts in. A non-existent id, or an id naming a non-`journal_entry`
+    /// Entity, resolves to `None` — so the rescan handler errors instead of
+    /// spawning into the wrong Thread.
+    #[tokio::test]
+    async fn journal_entry_origin_thread_id_resolves_je_origin_only() {
+        let pool = memory_pool().await;
+        seed_thread_message(&pool, "thr-origin", "Morning dump", "msg-origin").await;
+
+        // (a) A Journal Entry `created_from` the user Message in thr-origin.
+        seed_entity(&pool, "je-1", "journal_entry", r#"{"occurred_at":"x"}"#).await;
+        seed_source(
+            &pool,
+            "src-je",
+            "je-1",
+            Some("msg-origin"),
+            None,
+            "created_from",
+            10,
+        )
+        .await;
+
+        // (b) A non-`journal_entry` Entity that ALSO has a created_from message
+        // source — the query must reject it on the type guard, not resolve its
+        // Thread.
+        seed_entity(&pool, "t-1", "todo", r#"{"title":"Buy milk"}"#).await;
+        seed_source(
+            &pool,
+            "src-todo",
+            "t-1",
+            Some("msg-origin"),
+            None,
+            "created_from",
+            10,
+        )
+        .await;
+
+        assert_eq!(
+            journal_entry_origin_thread_id(&pool, "je-1")
+                .await
+                .expect("query runs"),
+            Some("thr-origin".to_string()),
+            "a journal_entry resolves its created_from origin Thread"
+        );
+        assert_eq!(
+            journal_entry_origin_thread_id(&pool, "missing")
+                .await
+                .expect("query runs"),
+            None,
+            "an unknown id resolves to None"
+        );
+        assert_eq!(
+            journal_entry_origin_thread_id(&pool, "t-1")
+                .await
+                .expect("query runs"),
+            None,
+            "a non-journal_entry Entity resolves to None even with a created_from source"
         );
     }
 

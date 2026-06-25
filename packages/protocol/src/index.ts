@@ -465,6 +465,27 @@ export const EntityMutateResult = S.Struct({
 });
 export type EntityMutateResult = S.Schema.Type<typeof EntityMutateResult>;
 
+/**
+ * `journal_entry/rescan` params (ADR-0042): the Journal Entry to re-scan for
+ * people/projects/tasks mentioned but not yet captured. Core resolves the JE's
+ * origin Thread and starts an ordinary agent Run there.
+ */
+export const JournalEntryRescanParams = S.Struct({
+	je_id: S.String,
+});
+export type JournalEntryRescanParams = S.Schema.Type<
+	typeof JournalEntryRescanParams
+>;
+
+/** `journal_entry/rescan` result: the spawned Run and the origin Thread it runs in (the Client follows `run/subscribe(run_id)` and can navigate to the Thread). */
+export const JournalEntryRescanResult = S.Struct({
+	run_id: S.String,
+	thread_id: S.String,
+});
+export type JournalEntryRescanResult = S.Schema.Type<
+	typeof JournalEntryRescanResult
+>;
+
 // message/* (ADR-0035): full-text search over completed Message text, surfaced in ⌘K.
 
 /** One message-search hit (ADR-0035): a completed Message matching the substring query, with a SQL-rendered snippet and its Thread title for navigation. */
