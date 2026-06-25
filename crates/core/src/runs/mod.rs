@@ -14,6 +14,7 @@ mod message;
 mod post_message;
 mod proposal;
 mod provider;
+mod recurrence_preview;
 // `pub(crate)` so the non-Run titler (`crate::worker::title`) can frame a
 // `thread/titled` notification onto its connection (ADR-0047); the request
 // handlers reach it as `super::reply`.
@@ -65,6 +66,9 @@ pub async fn dispatch(
         }
         "run/get_history" => {
             run_history::handle(pool, req.id, req.params, out_tx).await;
+        }
+        "recurrence/preview" => {
+            recurrence_preview::handle(pool, req.id, req.params, out_tx).await;
         }
         "thread/get" => {
             // The combinator (ADR-0029) owns decode + framing; pass raw params.

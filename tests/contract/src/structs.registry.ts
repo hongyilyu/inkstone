@@ -42,6 +42,8 @@ import {
 	ProviderLoginStartParams,
 	ProviderLoginStartResult,
 	ProviderStatusResult,
+	RecurrencePreviewParams,
+	RecurrencePreviewResult,
 	RunCancelParams,
 	RunCancelResult,
 	RunEvent,
@@ -161,6 +163,21 @@ export const fixtures: readonly FixtureEntry[] = [
 		message: "RunGetHistoryParams",
 		file: "run_get_history_params.bare.json",
 		schema: RunGetHistoryParams,
+		dir: "authored",
+	},
+	// RecurrencePreviewParams (#227): maximal (both anchors + end) + bare (one
+	// anchor, no end). `recurrence` is opaque (S.Unknown) — the rule's own shape
+	// is gated by the payload schemas, not this read param.
+	{
+		message: "RecurrencePreviewParams",
+		file: "recurrence_preview_params.json",
+		schema: RecurrencePreviewParams,
+		dir: "authored",
+	},
+	{
+		message: "RecurrencePreviewParams",
+		file: "recurrence_preview_params.bare.json",
+		schema: RecurrencePreviewParams,
 		dir: "authored",
 	},
 	{
@@ -303,6 +320,20 @@ export const fixtures: readonly FixtureEntry[] = [
 		message: "RunHistoryResult",
 		file: "run_history_result.json",
 		schema: RunHistoryResult,
+		dir: "emitted",
+	},
+	// RecurrencePreviewResult (#227): continuing (ended:false, both dates) + ended
+	// (ended:true, dates omitted — the skip_serializing_if None branch).
+	{
+		message: "RecurrencePreviewResult",
+		file: "recurrence_preview_result.json",
+		schema: RecurrencePreviewResult,
+		dir: "emitted",
+	},
+	{
+		message: "RecurrencePreviewResult",
+		file: "recurrence_preview_result.ended.json",
+		schema: RecurrencePreviewResult,
 		dir: "emitted",
 	},
 	// EntityListResult: maximal row (refs + person_refs + message-source) + bare
@@ -538,6 +569,7 @@ export const CANONICAL_MESSAGES: readonly string[] = [
 	"ProposalDecideParams",
 	"ThreadCreateParams",
 	"RunGetHistoryParams",
+	"RecurrencePreviewParams",
 	"EntityListParams",
 	"EntityBacklinksParams",
 	"EntityMutateParams",
@@ -558,6 +590,7 @@ export const CANONICAL_MESSAGES: readonly string[] = [
 	"ThreadCreateResult",
 	"ThreadListResult",
 	"RunHistoryResult",
+	"RecurrencePreviewResult",
 	"EntityListResult",
 	"EntityBacklinksResult",
 	"EntityMutateResult",
