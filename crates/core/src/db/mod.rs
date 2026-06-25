@@ -1006,6 +1006,51 @@ pub async fn append_assistant_text(
         .map(|rows| rows == 1)
 }
 
+/// A reasoning twin of [`open_assistant_text_part`] (ADR-0045 reasoning
+/// amendment, #202): identical tx shape and `streaming` guard, but inserts a
+/// `type='reasoning'` part. The `run_steps` row is still `kind='message'` — only
+/// the part TYPE distinguishes reasoning from text. The run loop tracks a
+/// SEPARATE open slot for reasoning (pi gives no delta-contiguity guarantee).
+pub async fn open_assistant_reasoning_part(
+    pool: &SqlitePool,
+    run_id: Uuid,
+    assistant_message_id: Uuid,
+    delta: &str,
+    now_ms: i64,
+) -> sqlx::Result<Option<i64>> {
+    let mut tx = pool.begin().await?;
+    if !queries::message_is_streaming(&mut *tx, assistant_message_id).await? {
+        return Ok(None);
+    }
+    let part_seq = queries::next_message_part_seq(&mut *tx, assistant_message_id).await?;
+    let step_seq = queries::next_run_step_seq(&mut *tx, run_id).await?;
+    queries::insert_reasoning_part(&mut *tx, assistant_message_id, part_seq, delta).await?;
+    queries::insert_message_run_step(
+        &mut *tx,
+        run_id,
+        step_seq,
+        assistant_message_id,
+        part_seq,
+        now_ms,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(Some(part_seq))
+}
+
+/// Append a streaming `reasoning_delta` to the open reasoning segment at
+/// `part_seq` (ADR-0045 reasoning amendment). The append SQL is type-agnostic
+/// (it filters on streaming status, not `type`), so this delegates to
+/// [`append_assistant_text`] — the open slot already targets a reasoning part.
+pub async fn append_assistant_reasoning_text(
+    pool: &SqlitePool,
+    assistant_message_id: Uuid,
+    part_seq: i64,
+    delta: &str,
+) -> sqlx::Result<bool> {
+    append_assistant_text(pool, assistant_message_id, part_seq, delta).await
+}
+
 /// Persist an incoming Tool Request (ADR-0017/0018): a `pending` `tool_calls`
 /// row plus its `run_steps` timeline entry in one transaction, so the timeline
 /// never holds a tool call unaddressable via `run_steps`. `tool_call_id` is the

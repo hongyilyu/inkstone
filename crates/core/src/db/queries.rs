@@ -1532,6 +1532,30 @@ where
         .map(|_| ())
 }
 
+/// A reasoning twin of [`insert_text_part`] (ADR-0045 reasoning amendment): a
+/// `type='reasoning'` part seeded with `text`. The `append`/`next_message_part_seq`/
+/// `insert_message_run_step` helpers are type-agnostic, so reasoning streams on the
+/// same machine — only the part TYPE distinguishes it.
+pub(super) async fn insert_reasoning_part<'e, E>(
+    executor: E,
+    message_id: Uuid,
+    seq: i64,
+    text: &str,
+) -> sqlx::Result<()>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query(
+        "INSERT INTO message_parts (message_id, seq, type, text) VALUES (?, ?, 'reasoning', ?)",
+    )
+    .bind(message_id.to_string())
+    .bind(seq)
+    .bind(text)
+    .execute(executor)
+    .await
+    .map(|_| ())
+}
+
 pub(super) async fn append_text_part<'e, E>(
     executor: E,
     message_id: Uuid,

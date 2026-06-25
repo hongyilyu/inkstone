@@ -40,12 +40,17 @@ pub(super) async fn run_loop<P: WorkerPort + Send>(
     let mut worker_error: Option<String> = None;
     let mut parked = false;
     let mut cancelled_by_core = false;
-    // The currently-open assistant text segment's `part_seq` (ADR-0045), or
-    // `None` at a boundary (run start / after a tool / after a park). The first
-    // delta after a boundary opens a fresh part + run step; subsequent deltas
-    // append into it; a tool/park seals it back to `None`. Resume starts here at
-    // `None`, so the post-resume reply opens its own segment.
-    let mut open_part: Option<i64> = None;
+    // The two currently-open assistant segment slots (ADR-0045 reasoning
+    // amendment, #202): the open `text` part's `part_seq` and the open
+    // `reasoning` part's, each `None` at a boundary. pi gives NO delta-contiguity
+    // guarantee — a provider may interleave `text, thinking, text` with no tool
+    // boundary (README:596) — so a delta opens/appends ITS-OWN-type slot and seals
+    // the OTHER (a contiguous run of one type per `message_parts` row). The first
+    // delta after a boundary opens a fresh part + run step; subsequent same-type
+    // deltas append into it; a tool/park seals BOTH back to `None`. Resume starts
+    // both at `None`, so the post-resume reply opens its own segment.
+    let mut open_text_part: Option<i64> = None;
+    let mut open_reasoning_part: Option<i64> = None;
 
     if *cancel_rx.borrow() {
         worker.shutdown().await;
@@ -78,13 +83,16 @@ pub(super) async fn run_loop<P: WorkerPort + Send>(
             // `run/subscribe` sees this delta wholly in the snapshot or wholly
             // in the tail, never split or duplicated.
             WorkerStdout::TextDelta { delta } => {
+                // A text delta seals any open reasoning segment (ADR-0045): the
+                // next reasoning delta opens a fresh part sequenced AFTER this text.
+                open_reasoning_part = None;
                 let guard = gate.lock().await;
                 // Open a fresh segment on the first delta after a boundary
                 // (ADR-0045), else append into the open one. Either path advances
                 // only which part is "open" — the gate's critical section is
-                // unchanged (ADR-0022). `open_part` caches the open seq so steady
-                // streaming is one UPDATE per delta, the part opening only once.
-                let written = match open_part {
+                // unchanged (ADR-0022). `open_text_part` caches the open seq so
+                // steady streaming is one UPDATE per delta, the part opening once.
+                let written = match open_text_part {
                     Some(part_seq) => {
                         db::append_assistant_text(&pool, assistant_message_id, part_seq, &delta)
                             .await
@@ -99,7 +107,7 @@ pub(super) async fn run_loop<P: WorkerPort + Send>(
                     .await
                     {
                         Ok(seq) => {
-                            open_part = seq;
+                            open_text_part = seq;
                             Ok(seq.is_some())
                         }
                         Err(e) => Err(e),
@@ -121,12 +129,57 @@ pub(super) async fn run_loop<P: WorkerPort + Send>(
                 }
                 drop(guard);
             }
-            // Reasoning (thinking) deltas (ADR-0045 reasoning amendment, #202): the
-            // contract variant lands in slice 1; the open/append/republish producer
-            // (the open_reasoning_part slot + RunEvent::ReasoningDelta) lands in
-            // slice 3. Until then the delta is dropped so the run loop compiles
-            // exhaustively without faking slice-3 behavior here.
-            WorkerStdout::ReasoningDelta { .. } => {}
+            // Reasoning (thinking) deltas (ADR-0045 reasoning amendment, #202):
+            // mirror `TextDelta` exactly into the SEPARATE reasoning slot. A
+            // reasoning delta seals any open text segment first, then opens (first
+            // delta after a boundary) or appends the `type='reasoning'` part under
+            // the SAME per-run gate critical section (ADR-0022 exactly-once), and
+            // republishes `RunEvent::ReasoningDelta` on a successful write.
+            WorkerStdout::ReasoningDelta { delta } => {
+                open_text_part = None;
+                let guard = gate.lock().await;
+                let written = match open_reasoning_part {
+                    Some(part_seq) => {
+                        db::append_assistant_reasoning_text(
+                            &pool,
+                            assistant_message_id,
+                            part_seq,
+                            &delta,
+                        )
+                        .await
+                    }
+                    None => match db::open_assistant_reasoning_part(
+                        &pool,
+                        run_id,
+                        assistant_message_id,
+                        &delta,
+                        db::now_ms(),
+                    )
+                    .await
+                    {
+                        Ok(seq) => {
+                            open_reasoning_part = seq;
+                            Ok(seq.is_some())
+                        }
+                        Err(e) => Err(e),
+                    },
+                };
+                match written {
+                    Ok(true) => {
+                        let _ = tx.send(RunEvent::ReasoningDelta { delta });
+                    }
+                    Ok(false) => {}
+                    Err(e) => {
+                        tracing::error!(
+                            event = "worker.reasoning_delta_append_failed",
+                            %run_id,
+                            %assistant_message_id,
+                            error = ?e
+                        );
+                    }
+                }
+                drop(guard);
+            }
             // Terminal events: record a flag, publish AFTER the terminal tx
             // commits (below). Shutdown sends EOF so stdout closes and the loop
             // breaks.
@@ -149,11 +202,12 @@ pub(super) async fn run_loop<P: WorkerPort + Send>(
                 params,
                 ..
             } => {
-                // Seal the open text segment (ADR-0045): the tool's own
-                // `run_steps` row lands at the next seq, so the next delta opens a
-                // fresh segment sequenced AFTER this tool. Holds for both the park
+                // Seal BOTH open segments (ADR-0045): the tool's own `run_steps`
+                // row lands at the next seq, so the next delta of either type opens
+                // a fresh segment sequenced AFTER this tool. Holds for both the park
                 // and dispatch branches below.
-                open_part = None;
+                open_text_part = None;
+                open_reasoning_part = None;
                 if crate::tools::is_proposal(&name) && !db::should_auto_approve() {
                     let guard = gate.lock().await;
                     parked = park_on_proposal(&pool, run_id, &tool_call_id, &name, &params).await;
@@ -807,6 +861,199 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(snap.text, "let me look found it");
+    }
+
+    /// One `run_steps` `message` row resolved to `(message_parts.type, text)`,
+    /// ordered by `seq`. Like [`run_steps_kinds_and_content`] but exposes each
+    /// message step's part TYPE so a test can assert text vs reasoning landed in
+    /// distinct, correctly-typed parts (ADR-0045 reasoning amendment). Skips
+    /// `tool_call` steps (they have no part).
+    async fn message_steps_type_and_text(pool: &SqlitePool, run_id: Uuid) -> Vec<(String, String)> {
+        let rows: Vec<(String, String, i64)> = sqlx::query_as(
+            "SELECT rs.kind, rs.message_id, rs.part_seq \
+             FROM run_steps rs \
+             WHERE rs.run_id = ?1 AND rs.kind = 'message' ORDER BY rs.seq",
+        )
+        .bind(run_id.to_string())
+        .fetch_all(pool)
+        .await
+        .expect("read message run_steps");
+
+        let mut out = Vec::with_capacity(rows.len());
+        for (_kind, message_id, part_seq) in rows {
+            let (ty, text): (String, String) = sqlx::query_as(
+                "SELECT type, text FROM message_parts WHERE message_id = ?1 AND seq = ?2",
+            )
+            .bind(&message_id)
+            .bind(part_seq)
+            .fetch_one(pool)
+            .await
+            .expect("message step's part exists");
+            out.push((ty, text));
+        }
+        out
+    }
+
+    /// Reasoning (thinking) deltas open their OWN `message_parts.type='reasoning'`
+    /// part, distinct from text, on the same `run_steps.kind='message'` machine
+    /// (ADR-0045 reasoning amendment, #202). A scripted Run interleaves
+    /// `text → reasoning → tool → reasoning → text`: each contiguous run of one
+    /// type is its own correctly-typed part, the tool seals both open slots, and
+    /// Core republishes a `RunEvent::ReasoningDelta` per reasoning delta. The
+    /// text-only concat read (snapshot) is unchanged — reasoning never leaks into
+    /// it.
+    #[tokio::test]
+    async fn reasoning_deltas_persist_as_typed_parts_and_republish() {
+        let pool = memory_pool().await;
+        let wf = test_workflow(&["read_thread"]);
+        let (run_id, thread_id, amid) = seed_run(&pool, &wf).await;
+        let (hubs, run_hub) = fixtures(run_id);
+        let mut rx = run_hub.tx.subscribe();
+        let (worker, _sent, _sd) = ScriptedWorker::new(vec![
+            WorkerStdout::TextDelta {
+                delta: "Plan: ".to_string(),
+            },
+            WorkerStdout::ReasoningDelta {
+                delta: "thinking…".to_string(),
+            },
+            WorkerStdout::ToolRequest {
+                run_id: String::new(),
+                tool_call_id: "tc-look".to_string(),
+                name: "read_thread".to_string(),
+                params: serde_json::json!({ "thread_id": thread_id.to_string() }),
+            },
+            WorkerStdout::ReasoningDelta {
+                delta: "more".to_string(),
+            },
+            WorkerStdout::TextDelta {
+                delta: "Done".to_string(),
+            },
+            WorkerStdout::Done,
+        ]);
+
+        let exit = run_loop(
+            worker,
+            run_id,
+            wf,
+            pool.clone(),
+            amid,
+            hubs,
+            run_hub.tx.clone(),
+            run_hub.gate.clone(),
+            run_hub.cancel_rx(),
+        )
+        .await;
+
+        assert_eq!(exit, Exit::Done);
+
+        // (a) The reasoning deltas were republished as Run Events, in order.
+        let events = drain(&mut rx);
+        let reasoning: Vec<&str> = events
+            .iter()
+            .filter_map(|e| match e {
+                RunEvent::ReasoningDelta { delta } => Some(delta.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            reasoning,
+            vec!["thinking…", "more"],
+            "each reasoning delta is republished as RunEvent::ReasoningDelta"
+        );
+
+        // (b)+(c) The durable timeline keeps text and reasoning in distinct,
+        // correctly-typed parts, each contiguous, sequenced around the tool: the
+        // initial text seals when the reasoning delta opens; the tool seals the
+        // reasoning slot; the post-tool reasoning seals when "Done" text opens.
+        let message_steps = message_steps_type_and_text(&pool, run_id).await;
+        assert_eq!(
+            message_steps,
+            vec![
+                ("text".to_string(), "prompt".to_string()),
+                ("text".to_string(), "Plan: ".to_string()),
+                ("reasoning".to_string(), "thinking…".to_string()),
+                ("reasoning".to_string(), "more".to_string()),
+                ("text".to_string(), "Done".to_string()),
+            ],
+            "text and reasoning land as separate, correctly-typed, contiguous parts"
+        );
+
+        // The text-only concat read (snapshot) excludes reasoning entirely.
+        let snap = db::select_run_snapshot(&pool, run_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(snap.text, "Plan: Done");
+    }
+
+    /// `text → reasoning → text → reasoning` with NO tool between: the type-switch
+    /// alone must seal the open slot in BOTH directions, so the run produces four
+    /// distinct contiguous parts rather than merging like-typed runs across the
+    /// opposite type. The tool boundary in
+    /// `reasoning_deltas_persist_as_typed_parts_and_republish` seals both slots
+    /// regardless, so this is the only test exercising each arm's own seal: dropping
+    /// the reasoning-arm's text-seal merges "A"+"C" → "AC"; dropping the text-arm's
+    /// reasoning-seal merges "B"+"D" → "BD". Either ships undetected without this case.
+    #[tokio::test]
+    async fn type_switch_alone_seals_the_open_part() {
+        let pool = memory_pool().await;
+        let wf = test_workflow(&["read_thread"]);
+        let (run_id, _thread_id, amid) = seed_run(&pool, &wf).await;
+        let (hubs, run_hub) = fixtures(run_id);
+        let (worker, _sent, _sd) = ScriptedWorker::new(vec![
+            WorkerStdout::TextDelta {
+                delta: "A".to_string(),
+            },
+            WorkerStdout::ReasoningDelta {
+                delta: "B".to_string(),
+            },
+            WorkerStdout::TextDelta {
+                delta: "C".to_string(),
+            },
+            WorkerStdout::ReasoningDelta {
+                delta: "D".to_string(),
+            },
+            WorkerStdout::Done,
+        ]);
+
+        let exit = run_loop(
+            worker,
+            run_id,
+            wf,
+            pool.clone(),
+            amid,
+            hubs,
+            run_hub.tx.clone(),
+            run_hub.gate.clone(),
+            run_hub.cancel_rx(),
+        )
+        .await;
+
+        assert_eq!(exit, Exit::Done);
+
+        // Four separate parts. Each arm seals the OTHER slot on a type switch:
+        // - reasoning "B" seals text "A" (else "C" appends → "AC");
+        // - text "C" seals reasoning "B" (else "D" appends → "BD");
+        // - reasoning "D" seals text "C".
+        let message_steps = message_steps_type_and_text(&pool, run_id).await;
+        assert_eq!(
+            message_steps,
+            vec![
+                ("text".to_string(), "prompt".to_string()),
+                ("text".to_string(), "A".to_string()),
+                ("reasoning".to_string(), "B".to_string()),
+                ("text".to_string(), "C".to_string()),
+                ("reasoning".to_string(), "D".to_string()),
+            ],
+            "a type switch alone (no tool) seals the open part both ways: A|B|C|D stay distinct"
+        );
+
+        // Reply text is the two text runs concatenated; reasoning excluded.
+        let snap = db::select_run_snapshot(&pool, run_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(snap.text, "AC");
     }
 
     #[tokio::test]

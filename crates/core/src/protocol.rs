@@ -626,8 +626,6 @@ pub enum RunEvent {
     /// A reasoning (thinking) delta, mirroring `TextDelta` (ADR-0045 reasoning
     /// amendment, #202): Core republishes it from `WorkerStdout::ReasoningDelta`. The
     /// segment boundary is inferred from the interleaved stream — no position field.
-    // dead-code allow removed when slice-3 run loop publishes RunEvent::ReasoningDelta
-    #[allow(dead_code)]
     ReasoningDelta {
         delta: String,
     },
@@ -707,9 +705,6 @@ pub enum WorkerStdout {
     /// A reasoning (thinking) delta the Worker maps from pi's `thinking_delta`
     /// (ADR-0045 reasoning amendment, #202). Core opens/appends the open reasoning
     /// part and republishes it as `RunEvent::ReasoningDelta`.
-    // dead-code allow removed when slice-3 run loop reads `delta` (the run.rs arm
-    // currently ignores it via `ReasoningDelta { .. }` until the producer lands).
-    #[allow(dead_code)]
     ReasoningDelta {
         delta: String,
     },

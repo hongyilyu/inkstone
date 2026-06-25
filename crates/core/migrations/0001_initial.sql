@@ -46,8 +46,8 @@ CREATE INDEX idx_messages_run            ON messages(run_id);
 CREATE TABLE message_parts (
   message_id  TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
   seq         INTEGER NOT NULL,
-  type        TEXT NOT NULL CHECK (type IN ('text','attachment')),
-  text        TEXT NOT NULL DEFAULT '',           -- mutated during streaming for text parts (UPSERT)
+  type        TEXT NOT NULL CHECK (type IN ('text','attachment','reasoning')),
+  text        TEXT NOT NULL DEFAULT '',           -- mutated during streaming for text/reasoning parts (UPSERT)
   data        TEXT,                                -- JSON sidecar (attachment metadata, …)
   PRIMARY KEY (message_id, seq)
 );
