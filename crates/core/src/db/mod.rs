@@ -602,6 +602,11 @@ pub enum MessageSegment {
         status: String,
         entity_id: Option<String>,
     },
+    /// A reasoning/thinking segment (ADR-0045 reasoning amendment, #202): the
+    /// streamed thinking text plus Core-computed think duration (next-step
+    /// created_at − this step's, or run.ended_at when last; None when unknown).
+    /// Display-only — never replayed into the worker transcript (resume excludes it).
+    Reasoning { text: String, duration_ms: Option<i64> },
 }
 
 /// One Message in a `thread/get` read. `segments` is the assistant turn's ordered
@@ -715,20 +720,31 @@ async fn segment_rows_for_run(
     // rehydrates, so a multi-park Run surfaces one indicator (its most-recent
     // decision), matching the live store and the superseded ADR-0044 read.
     let last_decided_proposal = rows.iter().rposition(
-        |(kind, _, _, _, _, proposal_id, _, proposal_status)| {
+        |(kind, _, _, _, _, proposal_id, _, proposal_status, _, _)| {
             kind == "tool_call"
                 && proposal_id.is_some()
                 && matches!(proposal_status.as_deref(), Some("accepted" | "rejected"))
         },
     );
     let mut segments = Vec::with_capacity(rows.len());
-    for (idx, (kind, part_text, tc_name, tc_status, request_payload, proposal_id, mutation_kind, proposal_status)) in
+    for (idx, (kind, part_text, tc_name, tc_status, request_payload, proposal_id, mutation_kind, proposal_status, part_type, duration_ms)) in
         rows.into_iter().enumerate()
     {
         match kind.as_str() {
             "message" => {
                 let text = part_text.unwrap_or_default();
-                if !text.is_empty() {
+                if text.is_empty() {
+                    // An empty part renders nothing — for either text or
+                    // reasoning (a thinking block that streamed no content).
+                    continue;
+                }
+                // The part TYPE distinguishes a reasoning segment from text
+                // (ADR-0045 reasoning amendment): both are `kind='message'` steps;
+                // only `message_parts.type` tells them apart. `duration_ms` is the
+                // Core-computed think span (None for text rows or when unknown).
+                if part_type.as_deref() == Some("reasoning") {
+                    segments.push(MessageSegment::Reasoning { text, duration_ms });
+                } else {
                     segments.push(MessageSegment::Text { text });
                 }
             }
@@ -3512,6 +3528,338 @@ mod tests {
             .expect("rejected Proposal rehydrates as a proposal segment");
         assert_eq!(proposal.1, "rejected");
         assert_eq!(proposal.0, "create_journal_entry");
+    }
+
+    /// ADR-0045 reasoning amendment (#202): `thread/get` rehydrates a
+    /// `type='reasoning'` part as a `MessageSegment::Reasoning` in `run_steps`
+    /// order, carrying the streamed thinking text and a Core-computed
+    /// `duration_ms` (the reasoning step's `created_at` to the NEXT step's), and
+    /// the surrounding text segments are unaffected. The seeded timeline is
+    /// `[text@t=10, reasoning@t=20, text@t=35]` — duration of the middle reasoning
+    /// step is `35 - 20 = 15`. Reasoning text never folds into the reply text.
+    #[tokio::test]
+    async fn thread_get_rehydrates_reasoning_segment_with_duration() {
+        let pool = memory_pool().await;
+        let thread_id = Uuid::now_v7();
+        let run_id = Uuid::now_v7();
+        let assistant_id = Uuid::now_v7();
+
+        let mut tx = pool.begin().await.expect("begin");
+        queries::insert_thread(&mut *tx, thread_id, "T", 1)
+            .await
+            .expect("thread");
+        sqlx::query(
+            "INSERT INTO runs \
+             (id, thread_id, workflow_name, workflow_version, provider, model, \
+              thinking_level, user_message_id, status, started_at) \
+             VALUES (?, ?, 'w', '1', 'p', 'm', 'medium', ?, 'completed', 1)",
+        )
+        .bind(run_id.to_string())
+        .bind(thread_id.to_string())
+        .bind(assistant_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .expect("run");
+        queries::insert_message(
+            &mut *tx,
+            assistant_id,
+            thread_id,
+            run_id,
+            "assistant",
+            "completed",
+            1,
+        )
+        .await
+        .expect("assistant message");
+        // Three contiguous parts, each its own message_parts + run_steps row, the
+        // `created_at` of each step driving the duration window:
+        //   seq 0  text       @ created_at=10
+        //   seq 1  reasoning   @ created_at=20  → duration = 35 - 20 = 15
+        //   seq 2  text        @ created_at=35
+        queries::insert_text_part(&mut *tx, assistant_id, 0, "Let me check.")
+            .await
+            .expect("text part 0");
+        queries::insert_message_run_step(&mut *tx, run_id, 0, assistant_id, 0, 10)
+            .await
+            .expect("text step 0");
+        queries::insert_reasoning_part(&mut *tx, assistant_id, 1, "The user wants X.")
+            .await
+            .expect("reasoning part 1");
+        queries::insert_message_run_step(&mut *tx, run_id, 1, assistant_id, 1, 20)
+            .await
+            .expect("reasoning step 1");
+        queries::insert_text_part(&mut *tx, assistant_id, 2, "Done.")
+            .await
+            .expect("text part 2");
+        queries::insert_message_run_step(&mut *tx, run_id, 2, assistant_id, 2, 35)
+            .await
+            .expect("text step 2");
+        tx.commit().await.expect("commit seed");
+
+        let (_title, rows) = get_thread_with_messages(&pool, thread_id)
+            .await
+            .expect("read ok")
+            .expect("thread exists");
+        let assistant = rows
+            .iter()
+            .find(|m| m.role == "assistant")
+            .expect("assistant row");
+
+        assert_eq!(
+            assistant.segments.len(),
+            3,
+            "text, reasoning, text — in run_steps order"
+        );
+        match &assistant.segments[0] {
+            MessageSegment::Text { text } => assert_eq!(text, "Let me check."),
+            other => panic!("segment[0] is the leading text, got {other:?}"),
+        }
+        match &assistant.segments[1] {
+            MessageSegment::Reasoning { text, duration_ms } => {
+                assert_eq!(text, "The user wants X.");
+                assert_eq!(
+                    *duration_ms,
+                    Some(15),
+                    "duration = next step created_at (35) - this step's (20)"
+                );
+            }
+            other => panic!("segment[1] is the reasoning segment, got {other:?}"),
+        }
+        match &assistant.segments[2] {
+            MessageSegment::Text { text } => assert_eq!(text, "Done."),
+            other => panic!("segment[2] is the trailing text, got {other:?}"),
+        }
+        // The reasoning text never leaks into the Message's flat reply text.
+        assert_eq!(
+            assistant.text(),
+            "Let me check.Done.",
+            "concatenated reply text excludes reasoning"
+        );
+    }
+
+    /// ADR-0045 reasoning amendment: a reasoning step that is the LAST step of the
+    /// Run draws its duration end from `runs.ended_at` (no next step). Seeded as a
+    /// lone reasoning step @ created_at=20 with `runs.ended_at=50` → duration 30.
+    #[tokio::test]
+    async fn thread_get_reasoning_duration_uses_run_ended_at_when_last() {
+        let pool = memory_pool().await;
+        let thread_id = Uuid::now_v7();
+        let run_id = Uuid::now_v7();
+        let assistant_id = Uuid::now_v7();
+
+        let mut tx = pool.begin().await.expect("begin");
+        queries::insert_thread(&mut *tx, thread_id, "T", 1)
+            .await
+            .expect("thread");
+        sqlx::query(
+            "INSERT INTO runs \
+             (id, thread_id, workflow_name, workflow_version, provider, model, \
+              thinking_level, user_message_id, status, started_at, ended_at) \
+             VALUES (?, ?, 'w', '1', 'p', 'm', 'medium', ?, 'completed', 1, 50)",
+        )
+        .bind(run_id.to_string())
+        .bind(thread_id.to_string())
+        .bind(assistant_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .expect("run");
+        queries::insert_message(
+            &mut *tx,
+            assistant_id,
+            thread_id,
+            run_id,
+            "assistant",
+            "completed",
+            1,
+        )
+        .await
+        .expect("assistant message");
+        queries::insert_reasoning_part(&mut *tx, assistant_id, 0, "Thinking it through.")
+            .await
+            .expect("reasoning part");
+        queries::insert_message_run_step(&mut *tx, run_id, 0, assistant_id, 0, 20)
+            .await
+            .expect("reasoning step");
+        tx.commit().await.expect("commit seed");
+
+        let (_title, rows) = get_thread_with_messages(&pool, thread_id)
+            .await
+            .expect("read ok")
+            .expect("thread exists");
+        let assistant = rows
+            .iter()
+            .find(|m| m.role == "assistant")
+            .expect("assistant row");
+        match assistant.segments.as_slice() {
+            [MessageSegment::Reasoning { text, duration_ms }] => {
+                assert_eq!(text, "Thinking it through.");
+                assert_eq!(
+                    *duration_ms,
+                    Some(30),
+                    "last reasoning step's duration = run.ended_at (50) - created_at (20)"
+                );
+            }
+            other => panic!("expected a lone reasoning segment, got {other:?}"),
+        }
+    }
+
+    /// ADR-0045 reasoning amendment: an empty-text reasoning part yields NO
+    /// segment, mirroring the empty-text-part skip — a provider that opens a
+    /// thinking block but emits no content never renders a "Thought" row.
+    #[tokio::test]
+    async fn thread_get_skips_empty_reasoning_part() {
+        let pool = memory_pool().await;
+        let thread_id = Uuid::now_v7();
+        let run_id = Uuid::now_v7();
+        let assistant_id = Uuid::now_v7();
+
+        let mut tx = pool.begin().await.expect("begin");
+        queries::insert_thread(&mut *tx, thread_id, "T", 1)
+            .await
+            .expect("thread");
+        sqlx::query(
+            "INSERT INTO runs \
+             (id, thread_id, workflow_name, workflow_version, provider, model, \
+              thinking_level, user_message_id, status, started_at, ended_at) \
+             VALUES (?, ?, 'w', '1', 'p', 'm', 'medium', ?, 'completed', 1, 50)",
+        )
+        .bind(run_id.to_string())
+        .bind(thread_id.to_string())
+        .bind(assistant_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .expect("run");
+        queries::insert_message(
+            &mut *tx,
+            assistant_id,
+            thread_id,
+            run_id,
+            "assistant",
+            "completed",
+            1,
+        )
+        .await
+        .expect("assistant message");
+        // An empty reasoning part (seq 0) then a real reply text (seq 1).
+        queries::insert_reasoning_part(&mut *tx, assistant_id, 0, "")
+            .await
+            .expect("empty reasoning part");
+        queries::insert_message_run_step(&mut *tx, run_id, 0, assistant_id, 0, 20)
+            .await
+            .expect("reasoning step");
+        queries::insert_text_part(&mut *tx, assistant_id, 1, "Here you go.")
+            .await
+            .expect("text part");
+        queries::insert_message_run_step(&mut *tx, run_id, 1, assistant_id, 1, 30)
+            .await
+            .expect("text step");
+        tx.commit().await.expect("commit seed");
+
+        let (_title, rows) = get_thread_with_messages(&pool, thread_id)
+            .await
+            .expect("read ok")
+            .expect("thread exists");
+        let assistant = rows
+            .iter()
+            .find(|m| m.role == "assistant")
+            .expect("assistant row");
+        assert!(
+            !assistant
+                .segments
+                .iter()
+                .any(|s| matches!(s, MessageSegment::Reasoning { .. })),
+            "an empty reasoning part must not rehydrate as a segment"
+        );
+        match assistant.segments.as_slice() {
+            [MessageSegment::Text { text }] => assert_eq!(text, "Here you go."),
+            other => panic!("only the reply text segment survives, got {other:?}"),
+        }
+    }
+
+    /// ADR-0045 reasoning amendment (correctness-critical): a reasoning part is
+    /// DISPLAY-ONLY — `read_run_timeline` (the resume transcript reader) must NEVER
+    /// surface it as a `TimelineStep::Message`. Replaying thinking without its
+    /// provider signature is a live correctness hazard (#201 defers the signed
+    /// round-trip), so the resume transcript carries only the surrounding text.
+    #[tokio::test]
+    async fn read_run_timeline_excludes_reasoning_parts() {
+        let pool = memory_pool().await;
+        let thread_id = Uuid::now_v7();
+        let run_id = Uuid::now_v7();
+        let assistant_id = Uuid::now_v7();
+
+        let mut tx = pool.begin().await.expect("begin");
+        queries::insert_thread(&mut *tx, thread_id, "T", 1)
+            .await
+            .expect("thread");
+        sqlx::query(
+            "INSERT INTO runs \
+             (id, thread_id, workflow_name, workflow_version, provider, model, \
+              thinking_level, user_message_id, status, started_at) \
+             VALUES (?, ?, 'w', '1', 'p', 'm', 'medium', ?, 'parked', 1)",
+        )
+        .bind(run_id.to_string())
+        .bind(thread_id.to_string())
+        .bind(assistant_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .expect("run");
+        queries::insert_message(
+            &mut *tx,
+            assistant_id,
+            thread_id,
+            run_id,
+            "assistant",
+            "completed",
+            1,
+        )
+        .await
+        .expect("assistant message");
+        // text @ seq 0, reasoning @ seq 1, text @ seq 2 — the reasoning must drop
+        // from the resume transcript while the two text steps replay verbatim.
+        queries::insert_text_part(&mut *tx, assistant_id, 0, "Replying now.")
+            .await
+            .expect("text part 0");
+        queries::insert_message_run_step(&mut *tx, run_id, 0, assistant_id, 0, 10)
+            .await
+            .expect("text step 0");
+        queries::insert_reasoning_part(&mut *tx, assistant_id, 1, "SECRET-REASONING")
+            .await
+            .expect("reasoning part 1");
+        queries::insert_message_run_step(&mut *tx, run_id, 1, assistant_id, 1, 20)
+            .await
+            .expect("reasoning step 1");
+        queries::insert_text_part(&mut *tx, assistant_id, 2, "All set.")
+            .await
+            .expect("text part 2");
+        queries::insert_message_run_step(&mut *tx, run_id, 2, assistant_id, 2, 30)
+            .await
+            .expect("text step 2");
+        tx.commit().await.expect("commit seed");
+
+        let steps = read_run_timeline(&pool, run_id).await.expect("timeline");
+
+        // No step's text equals the reasoning text — it never replays.
+        assert!(
+            !steps.iter().any(|s| matches!(
+                s,
+                TimelineStep::Message { text, .. } if text == "SECRET-REASONING"
+            )),
+            "a reasoning part must never become a resume transcript Message step"
+        );
+        // The surrounding text steps still resolve.
+        let texts: Vec<&str> = steps
+            .iter()
+            .filter_map(|s| match s {
+                TimelineStep::Message { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            texts,
+            vec!["Replying now.", "All set."],
+            "text steps replay verbatim, reasoning is dropped"
+        );
     }
 
     /// ADR-0044 (entity_id amendment, re-landed on the ADR-0045 segment timeline):

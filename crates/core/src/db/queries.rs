@@ -1824,6 +1824,15 @@ where
 /// `MessageRow`, not the assistant turn — including it would prepend the prompt to
 /// the assistant's segments. `tool_call` steps have no `message_id`, so they pass
 /// the filter and stay in seq order between the assistant text segments.
+///
+/// Two columns join the original 8 for the ADR-0045 reasoning amendment (#202):
+/// `mp.type` (the caller switches the `message` branch on it — `text` vs
+/// `reasoning`) and a Core-computed `duration_ms` for reasoning. Duration is the
+/// span from this step's `created_at` to the NEXT step's `created_at` (the
+/// earliest later seq in the SAME Run — a correlated subquery, so the WHERE
+/// filter that drops the user-Message step never widens the window), COALESCE'd
+/// to `runs.ended_at` when this is the last step. A negative span (clock skew) or
+/// an unknown end yields `NULL`; the caller only reads it for reasoning rows.
 #[allow(clippy::type_complexity)]
 pub(super) async fn segment_timeline<'e, E>(
     executor: E,
@@ -1839,6 +1848,8 @@ pub(super) async fn segment_timeline<'e, E>(
         Option<String>,
         Option<String>,
         Option<String>,
+        Option<String>,
+        Option<i64>,
     )>,
 >
 where
@@ -1847,7 +1858,19 @@ where
     sqlx::query_as(
         "SELECT rs.kind, mp.text, \
                 tc.name, tc.status, tc.request_payload, \
-                p.id, p.mutation_kind, p.status \
+                p.id, p.mutation_kind, p.status, \
+                mp.type, \
+                ( \
+                  SELECT MIN(nxt.created_at) - rs.created_at \
+                  FROM run_steps nxt \
+                  WHERE nxt.run_id = rs.run_id AND nxt.seq > rs.seq \
+                ) \
+                AS duration_to_next, \
+                ( \
+                  SELECT ended_at FROM runs WHERE id = rs.run_id \
+                ) \
+                AS run_ended_at, \
+                rs.created_at \
          FROM run_steps rs \
          LEFT JOIN message_parts mp \
            ON mp.message_id = rs.message_id AND mp.seq = rs.part_seq \
@@ -1861,6 +1884,45 @@ where
     .bind(assistant_message_id)
     .fetch_all(executor)
     .await
+    .map(|rows: Vec<(_, _, _, _, _, _, _, _, _, Option<i64>, Option<i64>, i64)>| {
+        rows.into_iter()
+            .map(
+                |(
+                    kind,
+                    part_text,
+                    tc_name,
+                    tc_status,
+                    request_payload,
+                    proposal_id,
+                    mutation_kind,
+                    proposal_status,
+                    part_type,
+                    duration_to_next,
+                    run_ended_at,
+                    step_created_at,
+                )| {
+                    // Resolve the reasoning span at the seam: the next step's
+                    // delta if there is one, else `run.ended_at − created_at`.
+                    // A negative span (clock skew) or an unknown end → None.
+                    let duration_ms = duration_to_next
+                        .or_else(|| run_ended_at.map(|end| end - step_created_at))
+                        .filter(|&d| d >= 0);
+                    (
+                        kind,
+                        part_text,
+                        tc_name,
+                        tc_status,
+                        request_payload,
+                        proposal_id,
+                        mutation_kind,
+                        proposal_status,
+                        part_type,
+                        duration_ms,
+                    )
+                },
+            )
+            .collect()
+    })
 }
 
 /// Read a Run's ordered timeline for resume transcript reconstruction
@@ -1870,6 +1932,14 @@ where
 /// `seq` order rather than lumping a message's parts onto one step. Returns
 /// `(kind, message_id, role, part_text, tool_call_id, tc_name, request_payload,
 /// result_payload)` tuples.
+///
+/// `type='reasoning'` message steps are EXCLUDED (ADR-0045 reasoning amendment,
+/// #202): reasoning is display-only and never replayed into the worker
+/// transcript — replaying a thinking block without its provider signature is a
+/// live correctness hazard (#201 defers the signed round-trip). The filter is a
+/// WHERE condition so a reasoning step yields no row at all (it never becomes a
+/// `TimelineStep::Message`); text/attachment message steps and all tool steps
+/// pass unchanged.
 #[allow(clippy::type_complexity)]
 pub(super) async fn run_timeline<'e, E>(
     executor: E,
@@ -1898,6 +1968,7 @@ where
            ON mp.message_id = rs.message_id AND mp.seq = rs.part_seq \
          LEFT JOIN tool_calls tc ON tc.id = rs.tool_call_id \
          WHERE rs.run_id = ?1 \
+           AND (rs.kind = 'tool_call' OR mp.type IS NULL OR mp.type <> 'reasoning') \
          ORDER BY rs.seq",
     )
     .bind(run_id.to_string())

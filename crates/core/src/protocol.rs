@@ -552,8 +552,6 @@ pub enum Segment {
     /// `duration_ms` how long the model thought — Core-computed at read from the
     /// reasoning step's span, omitted (not `null`, matching the TS `S.optional`) when
     /// unknown. Renders default-collapsed; never replayed into the worker transcript.
-    // dead-code allow removed when slice-4 wires MessageSegment::Reasoning -> Segment::Reasoning
-    #[allow(dead_code)]
     Reasoning {
         text: String,
         #[serde(skip_serializing_if = "Option::is_none")]
