@@ -7,6 +7,7 @@ import {
 	TriangleAlert,
 } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { assertNever } from "@/lib/assertNever";
 import { cn } from "@/lib/utils";
 import { useRuntime } from "@/runtime";
 import {
@@ -444,16 +445,11 @@ function toRenderGroups(segments: readonly Segment[]): RenderGroup[] {
 				groups.push({ kind: "proposal", runId: seg.runId });
 				break;
 			default:
-				assertNeverSegment(seg);
+				// A new Segment kind is a compile error here until handled (ADR-0045).
+				assertNever(seg, "segment kind");
 		}
 	}
 	return groups;
-}
-
-/** Exhaustiveness guard: a new {@link Segment} kind that reaches here is a compile
- * error (the param is `never` only if every kind is handled above). */
-function assertNeverSegment(seg: never): never {
-	throw new Error(`unhandled segment kind: ${JSON.stringify(seg)}`);
 }
 
 function AssistantBubble({

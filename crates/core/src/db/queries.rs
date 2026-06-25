@@ -1526,10 +1526,11 @@ where
     insert_message_part(executor, message_id, seq, PartType::Text, text).await
 }
 
-/// Insert a reasoning part (ADR-0045 reasoning amendment): a `type='reasoning'`
-/// row seeded with `text`. The `append`/`next_message_part_seq`/
-/// `insert_message_run_step` helpers are type-agnostic, so reasoning streams on the
-/// same machine — only the part TYPE distinguishes it.
+/// A `type='reasoning'`-seeding face for TEST seeds only — production opens reasoning
+/// parts through [`super::open_assistant_part`], which calls [`insert_message_part`]
+/// with the `PartType` it holds. Kept as a named convenience for the rehydration tests
+/// that build a timeline row-by-row (ADR-0045 reasoning amendment).
+#[cfg(test)]
 pub(super) async fn insert_reasoning_part<'e, E>(
     executor: E,
     message_id: Uuid,
@@ -1563,9 +1564,10 @@ impl PartType {
 }
 
 /// Insert one `message_parts` row of `part_type`, seeded with `text`. The sole
-/// writer of a streamed part; [`insert_text_part`]/[`insert_reasoning_part`] are
-/// thin typed faces over it so callers name the kind, not the literal.
-async fn insert_message_part<'e, E>(
+/// writer of a streamed part: the open path ([`super::open_assistant_part`]) calls it
+/// directly with the `PartType` it holds, while [`insert_text_part`]/
+/// [`insert_reasoning_part`] are thin literal-named faces for the seed/test callers.
+pub(super) async fn insert_message_part<'e, E>(
     executor: E,
     message_id: Uuid,
     seq: i64,

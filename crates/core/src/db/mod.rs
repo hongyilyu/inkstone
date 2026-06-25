@@ -1005,14 +1005,9 @@ pub async fn open_assistant_part(
     }
     let part_seq = queries::next_message_part_seq(&mut *tx, assistant_message_id).await?;
     let step_seq = queries::next_run_step_seq(&mut *tx, run_id).await?;
-    match part_type {
-        PartType::Text => {
-            queries::insert_text_part(&mut *tx, assistant_message_id, part_seq, delta).await?
-        }
-        PartType::Reasoning => {
-            queries::insert_reasoning_part(&mut *tx, assistant_message_id, part_seq, delta).await?
-        }
-    }
+    // We already hold the `PartType`, so write through the type-agnostic inserter
+    // directly rather than round-tripping the enum back into a literal-named face.
+    queries::insert_message_part(&mut *tx, assistant_message_id, part_seq, part_type, delta).await?;
     queries::insert_message_run_step(
         &mut *tx,
         run_id,
