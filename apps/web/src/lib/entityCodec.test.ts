@@ -602,7 +602,7 @@ describe("entityCodec build — todo create", () => {
 				draft: draft({
 					title: "Get the schedule",
 					projectId: "proj_1",
-					waitingPersonId: "p_a",
+					personRefs: [{ personId: "p_a", role: "waiting_on" }],
 				}),
 			}),
 		).toEqual({
@@ -612,6 +612,38 @@ describe("entityCodec build — todo create", () => {
 				person_refs: [{ person_id: "p_a", role: "waiting_on" }],
 			},
 		});
+	});
+
+	it("emits person_refs for BOTH a waiting_on and a related row", () => {
+		expect(
+			buildTodo({
+				mode: "create",
+				draft: draft({
+					title: "Get the schedule",
+					personRefs: [
+						{ personId: "p_a", role: "waiting_on" },
+						{ personId: "p_b", role: "related" },
+					],
+				}),
+			}),
+		).toEqual({
+			mutation_kind: "create_todo",
+			payload: {
+				todo: { title: "Get the schedule" },
+				person_refs: [
+					{ person_id: "p_a", role: "waiting_on" },
+					{ person_id: "p_b", role: "related" },
+				],
+			},
+		});
+	});
+
+	it("omits person_refs when no person is linked", () => {
+		const params = buildTodo({
+			mode: "create",
+			draft: draft({ title: "Solo task" }),
+		});
+		expect(params?.payload).not.toHaveProperty("person_refs");
 	});
 
 	it("sets status + matching timestamp (completed) and never dropped_at on create", () => {
@@ -764,18 +796,121 @@ describe("entityCodec build — todo update", () => {
 		});
 	});
 
-	it("rebuilds set_person_refs with kept refs snake_cased when the waiting link changes", () => {
+	// CANONICAL RED: a Todo carrying BOTH a waiting_on AND a related ref round-trips
+	// through todoDraftFromVm with both kept, and an unchanged edit returns null —
+	// the related ref is NOT dropped (the old waiting_on-only read lost it).
+	it("round-trips a Todo's full ref set (waiting_on + related); a no-op edit returns null", () => {
+		const withBoth: Todo = {
+			...existing,
+			personRefs: [
+				{ personId: "p_a", role: "waiting_on" },
+				{ personId: "p_b", role: "related" },
+			],
+		};
+		const baseline = todoDraftFromVm(withBoth);
+		expect(baseline.personRefs).toEqual([
+			{ personId: "p_a", role: "waiting_on" },
+			{ personId: "p_b", role: "related" },
+		]);
+		// The unchanged draft must produce no write — the related ref survives.
+		expect(edit(withBoth, {})).toBeNull();
+	});
+
+	it("emits the full new set in set_person_refs when a person is added", () => {
 		const withRelated: Todo = {
 			...existing,
 			personRefs: [{ personId: "p_b", role: "related" }],
 		};
-		const params = edit(withRelated, { waitingPersonId: "p_a" });
+		const params = edit(withRelated, {
+			personRefs: [
+				{ personId: "p_b", role: "related" },
+				{ personId: "p_a", role: "waiting_on" },
+			],
+		});
+		expect(params).toEqual({
+			mutation_kind: "update_todo",
+			payload: {
+				todo_id: "t_c1",
+				set_person_refs: [
+					{ person_id: "p_b", role: "related" },
+					{ person_id: "p_a", role: "waiting_on" },
+				],
+			},
+		});
+	});
+
+	it("carries the new role when a row's role changes (related→waiting_on)", () => {
+		const withRelated: Todo = {
+			...existing,
+			personRefs: [{ personId: "p_a", role: "related" }],
+		};
+		const params = edit(withRelated, {
+			personRefs: [{ personId: "p_a", role: "waiting_on" }],
+		});
 		const refs = (params?.payload as { set_person_refs: unknown[] })
 			.set_person_refs;
-		expect(refs).toEqual([
-			{ person_id: "p_b", role: "related" },
+		expect(refs).toEqual([{ person_id: "p_a", role: "waiting_on" }]);
+	});
+
+	it("drops a removed person from set_person_refs (no remove/add keys)", () => {
+		const withTwo: Todo = {
+			...existing,
+			personRefs: [
+				{ personId: "p_a", role: "waiting_on" },
+				{ personId: "p_b", role: "related" },
+			],
+		};
+		const params = edit(withTwo, {
+			personRefs: [{ personId: "p_a", role: "waiting_on" }],
+		});
+		const payload = params?.payload as Record<string, unknown>;
+		expect(payload.set_person_refs).toEqual([
 			{ person_id: "p_a", role: "waiting_on" },
 		]);
+		expect(JSON.stringify(payload.set_person_refs)).not.toContain("p_b");
+		expect(payload).not.toHaveProperty("remove_person_ids");
+		expect(payload).not.toHaveProperty("add_person_refs");
+	});
+
+	it("emits set_person_refs:[] when all refs are cleared", () => {
+		const withOne: Todo = {
+			...existing,
+			personRefs: [{ personId: "p_a", role: "waiting_on" }],
+		};
+		expect(edit(withOne, { personRefs: [] })).toEqual({
+			mutation_kind: "update_todo",
+			payload: { todo_id: "t_c1", set_person_refs: [] },
+		});
+	});
+
+	it("omits the set_person_refs key when the ref set is unchanged", () => {
+		const withOne: Todo = {
+			...existing,
+			personRefs: [{ personId: "p_a", role: "waiting_on" }],
+		};
+		const params = edit(withOne, { title: "Renamed" });
+		const payload = params?.payload as Record<string, unknown>;
+		expect(payload).not.toHaveProperty("set_person_refs");
+		expect(payload.todo).toEqual({ title: "Renamed" });
+	});
+
+	it("omits set_person_refs when the same refs are merely reordered (order-insensitive)", () => {
+		const withTwo: Todo = {
+			...existing,
+			personRefs: [
+				{ personId: "p_a", role: "waiting_on" },
+				{ personId: "p_b", role: "related" },
+			],
+		};
+		// Same set, reversed order in the draft → no change.
+		expect(
+			edit(withTwo, {
+				personRefs: [
+					{ personId: "p_b", role: "related" },
+					{ personId: "p_a", role: "waiting_on" },
+				],
+			}),
+		).toBeNull();
 	});
 
 	const recurring: Todo = {

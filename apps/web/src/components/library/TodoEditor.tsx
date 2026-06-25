@@ -10,11 +10,18 @@ import {
 	RECURRENCE_UNIT_OPTIONS,
 	type RecurAnchor,
 	type RecurrenceUnit,
+	TODO_PERSON_ROLE_OPTIONS,
 	TODO_STATUS_OPTIONS,
 	type TodoStatus,
 } from "@/lib/entityFields";
 import { useEntityMutation } from "@/lib/hooks/useEntityMutation";
-import type { LibraryItem, Person, Project, Todo } from "@/lib/libraryItems";
+import type {
+	LibraryItem,
+	Person,
+	Project,
+	Todo,
+	TodoPersonRole,
+} from "@/lib/libraryItems";
 import {
 	EditorField,
 	EditorInput,
@@ -22,6 +29,28 @@ import {
 	EditorTextarea,
 	EntityEditorFrame,
 } from "./EntityEditor.js";
+
+// A monotonically increasing counter mints a STABLE React key per person row —
+// the row identity must survive add/remove/reorder, so it can't be the array
+// index (which would re-key surviving rows on a removal). Module-level so the
+// sequence is unique across the component's lifetime.
+let nextPersonRowKey = 0;
+
+/** One editable person-reference row: a stable key plus the draftable fields. */
+interface PersonRow {
+	key: number;
+	personId: string;
+	role: TodoPersonRole;
+}
+
+/** Seed the rows from a draft's ref set (one row per stored ref), minting keys. */
+function seedPersonRows(refs: TodoDraft["personRefs"]): PersonRow[] {
+	return refs.map((r) => ({
+		key: nextPersonRowKey++,
+		personId: r.personId,
+		role: r.role,
+	}));
+}
 
 type Props = (
 	| { mode: "create"; todo?: undefined }
@@ -38,6 +67,13 @@ export function TodoEditor({ allEntities, onDone, onCancel, ...m }: Props) {
 	const existing = m.mode === "edit" ? m.todo : undefined;
 	const baseline = todoDraftFromVm(existing);
 	const [draft, setDraft] = useState<TodoDraft>(baseline);
+	// The person-reference ROWS are the UI source of truth (they hold blank,
+	// not-yet-chosen rows the codec must not see); `draft.personRefs` is derived
+	// from them on every mutation, filtering empty rows out. Seeded once from the
+	// baseline so an existing Todo opens with one row per stored ref.
+	const [personRows, setPersonRows] = useState<PersonRow[]>(() =>
+		seedPersonRows(baseline.personRefs),
+	);
 	const mutation = useEntityMutation();
 
 	const ids = {
@@ -47,7 +83,6 @@ export function TodoEditor({ allEntities, onDone, onCancel, ...m }: Props) {
 		project: useId(),
 		due: useId(),
 		defer: useId(),
-		waiting: useId(),
 		recurs: useId(),
 		recurInterval: useId(),
 		recurUnit: useId(),
@@ -61,6 +96,37 @@ export function TodoEditor({ allEntities, onDone, onCancel, ...m }: Props) {
 
 	const set = <K extends keyof TodoDraft>(key: K, value: TodoDraft[K]) =>
 		setDraft((d) => ({ ...d, [key]: value }));
+
+	// Apply a rows transform and re-derive the draft's ref set from it — blank
+	// (no-person) rows live only in the UI and are filtered out so the codec never
+	// emits a `person_id: ""` Core would reject.
+	const updatePersonRows = (next: (rows: PersonRow[]) => PersonRow[]) =>
+		setPersonRows((rows) => {
+			const updated = next(rows);
+			set(
+				"personRefs",
+				updated
+					.filter((r) => r.personId !== "")
+					.map((r) => ({ personId: r.personId, role: r.role })),
+			);
+			return updated;
+		});
+
+	// A new row defaults to `related` and no person yet; the user picks the person.
+	const addPersonRow = () =>
+		updatePersonRows((rows) => [
+			...rows,
+			{ key: nextPersonRowKey++, personId: "", role: "related" },
+		]);
+	const updatePersonRow = (
+		key: number,
+		patch: Partial<Omit<PersonRow, "key">>,
+	) =>
+		updatePersonRows((rows) =>
+			rows.map((r) => (r.key === key ? { ...r, ...patch } : r)),
+		);
+	const removePersonRow = (key: number) =>
+		updatePersonRows((rows) => rows.filter((r) => r.key !== key));
 
 	// Toggling Repeats on defaults the anchor to whichever date the Todo already
 	// has (due preferred), so the emitted rule's anchor date is present (ADR-0037).
@@ -254,20 +320,76 @@ export function TodoEditor({ allEntities, onDone, onCancel, ...m }: Props) {
 				) : null}
 			</div>
 
-			<EditorField label="Waiting on" htmlFor={ids.waiting}>
-				<EditorSelect
-					id={ids.waiting}
-					value={draft.waitingPersonId}
-					onChange={(e) => set("waitingPersonId", e.target.value)}
+			<div className="flex flex-col gap-3">
+				<span className="font-medium text-muted-foreground text-xs">
+					People
+				</span>
+				{personRows.map((row, index) => {
+					// Dedupe is structural: this row's picker offers people NOT chosen
+					// in any OTHER row, so a Person can be referenced at most once. The
+					// row's own current selection always stays selectable.
+					const takenElsewhere = new Set(
+						personRows
+							.filter((r) => r.key !== row.key && r.personId !== "")
+							.map((r) => r.personId),
+					);
+					const offered = people.filter(
+						(p) => p.id === row.personId || !takenElsewhere.has(p.id),
+					);
+					return (
+						<div key={row.key} className="flex items-end gap-2">
+							<div className="min-w-0 flex-1">
+								<EditorSelect
+									aria-label="Person"
+									value={row.personId}
+									onChange={(e) =>
+										updatePersonRow(row.key, { personId: e.target.value })
+									}
+								>
+									<option value="">Choose a person</option>
+									{offered.map((p) => (
+										<option key={p.id} value={p.id}>
+											{p.name}
+										</option>
+									))}
+								</EditorSelect>
+							</div>
+							<div className="w-32 shrink-0">
+								<EditorSelect
+									aria-label="Role"
+									value={row.role}
+									onChange={(e) =>
+										updatePersonRow(row.key, {
+											role: e.target.value as TodoPersonRole,
+										})
+									}
+								>
+									{TODO_PERSON_ROLE_OPTIONS.map((o) => (
+										<option key={o.value} value={o.value}>
+											{o.label}
+										</option>
+									))}
+								</EditorSelect>
+							</div>
+							<button
+								type="button"
+								onClick={() => removePersonRow(row.key)}
+								aria-label={`Remove person row ${index + 1}`}
+								className="h-10 shrink-0 rounded-lg border border-input px-3 text-muted-foreground text-sm transition-colors hover:bg-secondary/50 hover:text-foreground"
+							>
+								Remove
+							</button>
+						</div>
+					);
+				})}
+				<button
+					type="button"
+					onClick={addPersonRow}
+					className="self-start rounded-lg border border-input px-3.5 py-1.5 font-medium text-foreground/80 text-sm transition-colors hover:bg-secondary/50 hover:text-foreground"
 				>
-					<option value="">No one</option>
-					{people.map((p) => (
-						<option key={p.id} value={p.id}>
-							{p.name}
-						</option>
-					))}
-				</EditorSelect>
-			</EditorField>
+					Add person
+				</button>
+			</div>
 		</EntityEditorFrame>
 	);
 }

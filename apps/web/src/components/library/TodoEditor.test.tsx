@@ -185,7 +185,10 @@ describe("TodoEditor create", () => {
 
 		await user.type(screen.getByLabelText(/title/i), "Get the schedule");
 		await user.selectOptions(screen.getByLabelText(/project/i), project.id);
-		await user.selectOptions(screen.getByLabelText(/waiting on/i), alice.id);
+		// Add a person row, then flip its default `related` role to waiting_on.
+		await user.click(screen.getByRole("button", { name: /add person/i }));
+		await user.selectOptions(screen.getByLabelText(/^person$/i), alice.id);
+		await user.selectOptions(screen.getByLabelText(/^role$/i), "waiting_on");
 		await user.click(screen.getByRole("button", { name: /^save$/i }));
 
 		await waitFor(() => expect(seen).toHaveLength(1));
@@ -194,6 +197,34 @@ describe("TodoEditor create", () => {
 			payload: {
 				todo: { title: "Get the schedule", project_id: project.id },
 				person_refs: [{ person_id: alice.id, role: "waiting_on" }],
+			},
+		});
+	});
+
+	it("adds a person row defaulting to the related role", async () => {
+		const user = userEvent.setup();
+		const seen: EntityMutateParams[] = [];
+		renderEditor(
+			{ mode: "create", allEntities, onDone: () => {}, onCancel: () => {} },
+			(params) => {
+				seen.push(params);
+				return Effect.succeed({
+					entity_id: "01900000-0000-7000-8000-000000000099",
+				});
+			},
+		);
+
+		await user.type(screen.getByLabelText(/title/i), "Loop Alice in");
+		await user.click(screen.getByRole("button", { name: /add person/i }));
+		await user.selectOptions(screen.getByLabelText(/^person$/i), alice.id);
+		await user.click(screen.getByRole("button", { name: /^save$/i }));
+
+		await waitFor(() => expect(seen).toHaveLength(1));
+		expect(seen[0]).toEqual({
+			mutation_kind: "create_todo",
+			payload: {
+				todo: { title: "Loop Alice in" },
+				person_refs: [{ person_id: alice.id, role: "related" }],
 			},
 		});
 	});
@@ -228,7 +259,7 @@ describe("TodoEditor edit", () => {
 		await waitFor(() => expect(onDone).toHaveBeenCalledWith(existing.id));
 	});
 
-	it("emits a person-ref add op when linking a new person", async () => {
+	it("emits set_person_refs when linking a new person", async () => {
 		const user = userEvent.setup();
 		const seen: EntityMutateParams[] = [];
 		renderEditor(
@@ -245,7 +276,9 @@ describe("TodoEditor edit", () => {
 			},
 		);
 
-		await user.selectOptions(screen.getByLabelText(/waiting on/i), alice.id);
+		await user.click(screen.getByRole("button", { name: /add person/i }));
+		await user.selectOptions(screen.getByLabelText(/^person$/i), alice.id);
+		await user.selectOptions(screen.getByLabelText(/^role$/i), "waiting_on");
 		await user.click(screen.getByRole("button", { name: /^save$/i }));
 
 		await waitFor(() => expect(seen).toHaveLength(1));
@@ -371,16 +404,18 @@ describe("TodoEditor edit", () => {
 		});
 	});
 
+	const bob: Person = {
+		id: "01900000-0000-7000-8000-0000000000a2",
+		kind: "person",
+		name: "Bob",
+		recency: 1,
+		createdAt: "fixture",
+	};
+
 	// Rebuilding the ref set must map ALL kept refs to snake_case `person_id`; a
-	// leaked camelCase `personId` is rejected by Core's validate_person_ref.
-	it("preserves other refs as snake_case when changing the waiting_on link", async () => {
-		const bob: Person = {
-			id: "01900000-0000-7000-8000-0000000000a2",
-			kind: "person",
-			name: "Bob",
-			recency: 1,
-			createdAt: "fixture",
-		};
+	// leaked camelCase `personId` is rejected by Core's validate_person_ref. Adding
+	// a second person preserves the first row's ref and snake_cases the whole set.
+	it("preserves other refs as snake_case when adding a person", async () => {
 		const withRelated: Todo = {
 			...existing,
 			personRefs: [{ personId: bob.id, role: "related" }],
@@ -401,7 +436,12 @@ describe("TodoEditor edit", () => {
 			},
 		);
 
-		await user.selectOptions(screen.getByLabelText(/waiting on/i), alice.id);
+		// Bob's existing row is index 0; add a second row for Alice as waiting_on.
+		await user.click(screen.getByRole("button", { name: /add person/i }));
+		const personSelects = screen.getAllByLabelText(/^person$/i);
+		await user.selectOptions(personSelects[1], alice.id);
+		const roleSelects = screen.getAllByLabelText(/^role$/i);
+		await user.selectOptions(roleSelects[1], "waiting_on");
 		await user.click(screen.getByRole("button", { name: /^save$/i }));
 
 		await waitFor(() => expect(seen).toHaveLength(1));
@@ -411,6 +451,103 @@ describe("TodoEditor edit", () => {
 			{ person_id: bob.id, role: "related" },
 			{ person_id: alice.id, role: "waiting_on" },
 		]);
+	});
+
+	it("carries the new role when an existing row's role changes", async () => {
+		const withRelated: Todo = {
+			...existing,
+			personRefs: [{ personId: alice.id, role: "related" }],
+		};
+		const user = userEvent.setup();
+		const seen: EntityMutateParams[] = [];
+		renderEditor(
+			{
+				mode: "edit",
+				todo: withRelated,
+				allEntities,
+				onDone: () => {},
+				onCancel: () => {},
+			},
+			(params) => {
+				seen.push(params);
+				return Effect.succeed({ entity_id: withRelated.id });
+			},
+		);
+
+		await user.selectOptions(screen.getByLabelText(/^role$/i), "waiting_on");
+		await user.click(screen.getByRole("button", { name: /^save$/i }));
+
+		await waitFor(() => expect(seen).toHaveLength(1));
+		expect(
+			(seen[0].payload as { set_person_refs: unknown[] }).set_person_refs,
+		).toEqual([{ person_id: alice.id, role: "waiting_on" }]);
+	});
+
+	it("drops a removed person's row from the emitted set", async () => {
+		const withTwo: Todo = {
+			...existing,
+			personRefs: [
+				{ personId: alice.id, role: "waiting_on" },
+				{ personId: bob.id, role: "related" },
+			],
+		};
+		const user = userEvent.setup();
+		const seen: EntityMutateParams[] = [];
+		renderEditor(
+			{
+				mode: "edit",
+				todo: withTwo,
+				allEntities: [...allEntities, bob],
+				onDone: () => {},
+				onCancel: () => {},
+			},
+			(params) => {
+				seen.push(params);
+				return Effect.succeed({ entity_id: withTwo.id });
+			},
+		);
+
+		// Remove the first row (Alice).
+		const removes = screen.getAllByRole("button", { name: /remove person/i });
+		await user.click(removes[0]);
+		await user.click(screen.getByRole("button", { name: /^save$/i }));
+
+		await waitFor(() => expect(seen).toHaveLength(1));
+		const refs = (seen[0].payload as { set_person_refs: unknown[] })
+			.set_person_refs;
+		expect(refs).toEqual([{ person_id: bob.id, role: "related" }]);
+		expect(JSON.stringify(refs)).not.toContain(alice.id);
+	});
+
+	// At-most-once per person is enforced structurally: a person chosen in one row
+	// is not offered by any OTHER row's picker (its own row keeps it selectable).
+	it("does not offer an already-chosen person in another row's picker", async () => {
+		const user = userEvent.setup();
+		renderEditor({
+			mode: "edit",
+			todo: existing,
+			allEntities: [...allEntities, bob],
+			onDone: () => {},
+			onCancel: () => {},
+		});
+
+		// Row 0 → Alice.
+		await user.click(screen.getByRole("button", { name: /add person/i }));
+		await user.selectOptions(screen.getByLabelText(/^person$/i), alice.id);
+
+		// Row 1's person picker must omit Alice (still offers Bob).
+		await user.click(screen.getByRole("button", { name: /add person/i }));
+		const personSelects = screen.getAllByLabelText(/^person$/i);
+		const row1Options = Array.from(
+			personSelects[1].querySelectorAll("option"),
+		).map((o) => (o as HTMLOptionElement).value);
+		expect(row1Options).not.toContain(alice.id);
+		expect(row1Options).toContain(bob.id);
+		// Row 0 still offers its own selection.
+		const row0Options = Array.from(
+			personSelects[0].querySelectorAll("option"),
+		).map((o) => (o as HTMLOptionElement).value);
+		expect(row0Options).toContain(alice.id);
 	});
 });
 

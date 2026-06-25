@@ -38,6 +38,18 @@ export const RECUR_ANCHORS = [
 	{ value: "due_at", label: "Due date" },
 ] as const;
 
+/**
+ * The Todo Person-Reference role domain, value + display label (ADR-0031/0032).
+ * `TodoPersonRole` stays the canonical type in `libraryItems.ts`; this pure leaf
+ * imports nothing, so the `satisfies` pins only the `{value,label}` SHAPE — the
+ * two role strings must match the `TodoPersonRole` union by hand (keep them in
+ * sync if a role is ever added).
+ */
+export const TODO_PERSON_ROLES = [
+	{ value: "waiting_on", label: "Waiting on" },
+	{ value: "related", label: "Related" },
+] as const satisfies readonly { value: string; label: string }[];
+
 export type TodoStatus = (typeof TODO_STATUSES)[number]["value"];
 export type ProjectStatus = (typeof PROJECT_STATUSES)[number]["value"];
 export type RecurrenceUnit = (typeof RECURRENCE_UNITS)[number]["value"];
@@ -50,6 +62,7 @@ export const TODO_STATUS_OPTIONS = TODO_STATUSES;
 export const PROJECT_STATUS_OPTIONS = PROJECT_STATUSES;
 export const RECURRENCE_UNIT_OPTIONS = RECURRENCE_UNITS;
 export const RECUR_ANCHOR_OPTIONS = RECUR_ANCHORS;
+export const TODO_PERSON_ROLE_OPTIONS = TODO_PERSON_ROLES;
 
 /** Parse a comma-separated aliases/field string into a trimmed, non-empty `string[]`. */
 export function parseAliases(raw: string): string[] {
