@@ -20,7 +20,7 @@ import {
 	localNowString,
 	type Person,
 	type Project,
-	peopleForProject,
+	todosForProject,
 } from "./libraryItems";
 
 /** The three facet kinds this feature ships (GTD-core). */
@@ -154,17 +154,27 @@ function statusOf(item: LibraryItem): string | undefined {
 
 /** The Person ids a row is associated with, by kind:
  *  - todo: its `personRefs` (direct, ADR-0032)
- *  - project: derived through the Project's Todos (`peopleForProject`, ADR-0031)
- *  - everything else: none. */
+ *  - project: derived through the Project's Todos' Person References (Project →
+ *    Todo → TodoPersonRef, ADR-0031). Distinct ids — a Person linked through
+ *    several of the Project's Todos counts once.
+ *  - everything else: none.
+ *
+ * (ADR-0050 retired `peopleForProject`; this keeps the same client-side
+ * Project → Todo → Person join over `todosForProject`, which is still exported.) */
 function associatedPersonIds(
 	item: LibraryItem,
 	allItems: readonly LibraryItem[],
 ): string[] {
 	if (item.kind === "todo") return item.personRefs.map((r) => r.personId);
 	if (item.kind === "project") {
-		return peopleForProject(allItems as LibraryItem[], item as Project).map(
-			(p) => p.id,
-		);
+		const ids = new Set<string>();
+		for (const todo of todosForProject(
+			allItems as LibraryItem[],
+			item as Project,
+		)) {
+			for (const ref of todo.personRefs) ids.add(ref.personId);
+		}
+		return [...ids];
 	}
 	return [];
 }
