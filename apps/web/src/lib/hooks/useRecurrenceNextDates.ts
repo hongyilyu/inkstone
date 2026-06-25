@@ -38,13 +38,15 @@ export function useRecurrenceNextDates(
 		queryKey: ["recurrence-next", params],
 		enabled: params !== null,
 		queryFn: async () => {
-			// `enabled` guarantees params is non-null when the query runs.
+			// `enabled` guarantees params is non-null when the query runs; narrow it
+			// here so `recurrencePreview` gets the concrete RecurrencePreviewParams
+			// the codec built (no loose cast — the wire shape is type-checked).
+			if (params === null)
+				throw new Error("unreachable: query gated on params");
 			const result = await runtime.runPromise(
 				Effect.gen(function* () {
 					const client = yield* WsClient;
-					return yield* client.recurrencePreview(
-						params as NonNullable<typeof params>,
-					);
+					return yield* client.recurrencePreview(params);
 				}),
 			);
 			return {
@@ -54,5 +56,9 @@ export function useRecurrenceNextDates(
 			} satisfies RecurrenceNextDates;
 		},
 	});
+	// Hide stale data on a failed refetch: react-query keeps the last successful
+	// `data` after an error, which would render outdated next-occurrence dates.
+	// The preview is advisory, so a failed read shows nothing rather than a lie.
+	if (query.isError) return null;
 	return query.data ?? null;
 }

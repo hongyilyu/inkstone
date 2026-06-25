@@ -1,7 +1,6 @@
 import type {
 	EntityMutateParams,
 	EntityMutateResult,
-	RecurrencePreviewResult,
 } from "@inkstone/protocol";
 import { WsClient, type WsError } from "@inkstone/ui-sdk";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -20,10 +19,8 @@ function makeRuntime(
 	entityMutate: (
 		params: EntityMutateParams,
 	) => Effect.Effect<EntityMutateResult, WsError>,
-	recurrencePreview: () => Effect.Effect<
-		RecurrencePreviewResult,
-		WsError
-	> = () => Effect.die("not exercised in this test"),
+	recurrencePreview: WsClient["Type"]["recurrencePreview"] = () =>
+		Effect.die("not exercised in this test"),
 ) {
 	const unused = Effect.die("not exercised in this test");
 	const stub = WsClient.of({
@@ -58,7 +55,7 @@ function renderEditor(
 		params: EntityMutateParams,
 	) => Effect.Effect<EntityMutateResult, WsError> = () =>
 		Effect.succeed({ entity_id: "01900000-0000-7000-8000-000000000099" }),
-	recurrencePreview?: () => Effect.Effect<RecurrencePreviewResult, WsError>,
+	recurrencePreview?: WsClient["Type"]["recurrencePreview"],
 ) {
 	const runtime = makeRuntime(entityMutate, recurrencePreview);
 	const client = new QueryClient({
@@ -105,6 +102,14 @@ const existing: Todo = {
 const allEntities: LibraryItem[] = [alice, project, existing];
 
 afterEach(cleanup);
+
+// Deterministic flush for the negative preview assertions: drain pending
+// microtasks (react-query schedules its queryFn on the microtask queue, never a
+// timer), so "no read fired" is proven without a wall-clock sleep. A disabled
+// query never schedules at all; this just gives any erroneous schedule a turn.
+const flushMicrotasks = async () => {
+	for (let i = 0; i < 3; i++) await Promise.resolve();
+};
 
 describe("TodoEditor Save gate", () => {
 	// The compound guard surfaces to the frame: an empty title leaves Save disabled.
@@ -1034,8 +1039,8 @@ describe("TodoEditor next-occurrence preview", () => {
 		// End defaults to Never: no preview, and the read never fires.
 		expect(screen.queryByText(/dates for next occurrence/i)).toBeNull();
 		expect(screen.queryByText(/this is the last one/i)).toBeNull();
-		// Give any erroneous query a tick to fire; it must not.
-		await new Promise((r) => setTimeout(r, 20));
+		// No read should ever fire (query disabled); prove it deterministically.
+		await flushMicrotasks();
 		expect(seen).toHaveLength(0);
 	});
 
@@ -1060,7 +1065,7 @@ describe("TodoEditor next-occurrence preview", () => {
 		await user.selectOptions(screen.getByLabelText(/^end$/i), "after");
 		// Count left blank → incomplete end → no preview, no read.
 		expect(screen.queryByText(/dates for next occurrence/i)).toBeNull();
-		await new Promise((r) => setTimeout(r, 20));
+		await flushMicrotasks();
 		expect(seen).toHaveLength(0);
 	});
 
@@ -1094,4 +1099,7 @@ describe("TodoEditor next-occurrence preview", () => {
 		const previewBlock = heading.parentElement as HTMLElement;
 		expect(previewBlock.textContent).toMatch(/Defer .*\d{1,2}:\d{2}/);
 	});
+	// The stale-data-on-error guard is pinned at the hook level
+	// (useRecurrenceNextDates.test.tsx) where the success-then-refetch-failure
+	// path is reproducible; a cold component failure has no retained data to test.
 });

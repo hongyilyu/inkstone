@@ -1,5 +1,6 @@
 import {
 	type EntityMutateParams,
+	type RecurrencePreviewParams,
 	readBookmarkData,
 	readJournalEntryData,
 	readPersonData,
@@ -563,11 +564,9 @@ function wirePersonRefs(
  * the previewed rule is byte-identical to what a save emits; the current anchor
  * dates ride alongside (day granularity, like the build path).
  */
-function buildRecurrencePreviewParams(d: TodoDraft): {
-	recurrence: Record<string, unknown>;
-	defer_at?: string;
-	due_at?: string;
-} | null {
+function buildRecurrencePreviewParams(
+	d: TodoDraft,
+): RecurrencePreviewParams | null {
 	if (
 		!recurActive(d) ||
 		!recurIntervalValid(d) ||
@@ -575,14 +574,17 @@ function buildRecurrencePreviewParams(d: TodoDraft): {
 		!recurEndComplete(d)
 	)
 		return null;
-	const params: {
-		recurrence: Record<string, unknown>;
-		defer_at?: string;
-		due_at?: string;
-	} = { recurrence: buildRecurrence(d) };
-	if (d.deferDay) params.defer_at = dayToLocal(d.deferDay);
-	if (d.dueDay) params.due_at = dayToLocal(d.dueDay);
-	return params;
+	// Returning the concrete RPC type (not a loose Record) makes the compiler
+	// enforce parity with WsClient.recurrencePreview, so a field-name drift in the
+	// params wrapper fails to compile rather than at runtime (#227 review-fix). The
+	// fields are built inline (the schema type is readonly — no post-assignment);
+	// the rule object stays the shared snake_case Record from buildRecurrence, which
+	// RecurrencePreviewParams.recurrence (`unknown`) accepts.
+	return {
+		recurrence: buildRecurrence(d),
+		...(d.deferDay ? { defer_at: dayToLocal(d.deferDay) } : {}),
+		...(d.dueDay ? { due_at: dayToLocal(d.dueDay) } : {}),
+	};
 }
 
 /**
