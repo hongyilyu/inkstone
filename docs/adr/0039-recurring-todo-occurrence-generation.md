@@ -162,9 +162,16 @@ clamp, overflow guards, and inclusive-`until` semantics are subtle), the preview
   the stored time-of-day — the preview shows the date, matching Core exactly with
   no time-preservation logic. The preview block shows only when **End ≠ Never**
   (a bounded series is where "when does it stop / what's next" is meaningful).
-- **`until` granularity.** The editor's `On date` writes `until` at day
-  granularity (`YYYY-MM-DDT00:00:00`), consistent with the date-only `due_at` /
-  `defer_at` it sits beside. Core's inclusive-`until` bound and string compare
+- **`until` granularity.** A freshly chosen or day-changed `On date` writes
+  `until` at day granularity (`YYYY-MM-DDT00:00:00`), consistent with the
+  date-only `due_at` / `defer_at` it sits beside. But a Todo whose stored `until`
+  carries a non-midnight time (an agent/proposal can author one — Core's
+  `until` compare is a full wall-clock string, so the time-of-day is
+  significant) **round-trips that bound verbatim** through an edit that doesn't
+  touch the day: the editor holds the full stored string and only re-folds to
+  `T00:00:00` when the user actually changes the day, so an unrelated edit can't
+  silently move the bound back to midnight (and, since `until` is inclusive, drop
+  the final occurrence). Core's inclusive-`until` bound and string compare
   (above) are unchanged.
 
 No change to the write path, the rule shape, or `next_occurrence` itself — this

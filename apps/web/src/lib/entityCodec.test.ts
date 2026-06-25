@@ -16,6 +16,7 @@ import {
 	buildJournalReference,
 	buildPerson,
 	buildProject,
+	buildRecurrencePreviewParams,
 	buildTodo,
 	type JournalDraft,
 	journalDraftFromVm,
@@ -1144,6 +1145,132 @@ describe("entityCodec build — todo update", () => {
 					},
 				},
 			},
+		});
+	});
+
+	// A stored NON-MIDNIGHT `until` (an agent can author one — Core's until compare
+	// is a full wall-clock string) must round-trip VERBATIM through an unrelated
+	// edit; the editor only edits the day, so an untouched day must not silently
+	// fold the bound to midnight and (since until is inclusive) drop the last
+	// occurrence. Pins the recurUntilStored verbatim-re-emit branch.
+	const recurringUntilNonMidnight: Todo = {
+		...existing,
+		deferAt: "2026-07-01T00:00:00",
+		recurrence: {
+			interval: 1,
+			unit: "week",
+			anchor: "defer_at",
+			end: { until: "2026-12-31T23:59:59" },
+		},
+	};
+
+	it("round-trips a non-midnight `until` verbatim through an unrelated edit", () => {
+		expect(
+			edit(recurringUntilNonMidnight, { title: "Renamed but still bounded" }),
+		).toEqual({
+			mutation_kind: "update_todo",
+			payload: {
+				todo_id: "t_c1",
+				// Only the title diffs; the untouched recurrence is NOT re-emitted
+				// (rule unchanged), so the stored until is preserved by omission.
+				todo: { title: "Renamed but still bounded" },
+			},
+		});
+	});
+
+	it("folds `until` to midnight only when the day actually changes", () => {
+		expect(
+			edit(recurringUntilNonMidnight, { recurUntilDay: "2027-01-15" }),
+		).toEqual({
+			mutation_kind: "update_todo",
+			payload: {
+				todo_id: "t_c1",
+				todo: {
+					recurrence: {
+						interval: 1,
+						unit: "week",
+						anchor: "defer_at",
+						end: { until: "2027-01-15T00:00:00" },
+					},
+				},
+			},
+		});
+	});
+
+	// Editing an unrelated field (interval) while the day is untouched re-emits the
+	// whole rule — and the stored non-midnight until must survive verbatim in it.
+	it("preserves the stored non-midnight `until` when another rule field changes", () => {
+		const params = edit(recurringUntilNonMidnight, { recurInterval: "2" });
+		const todo = (params?.payload as { todo: Record<string, unknown> }).todo;
+		expect(todo.recurrence).toEqual({
+			interval: 2,
+			unit: "week",
+			anchor: "defer_at",
+			end: { until: "2026-12-31T23:59:59" },
+		});
+	});
+});
+
+// The preview-params gate (#227 review-fix): the editor only previews a bounded
+// series whose end (and interval) are COMPLETE, so the preview can't show a
+// "next occurrence" for a rule buildRecurrence would emit unbounded mid-entry.
+describe("buildRecurrencePreviewParams gate", () => {
+	const draft = (over: Partial<TodoDraft> = {}): TodoDraft => ({
+		...todoDraftFromVm(undefined),
+		deferDay: "2026-07-01",
+		recurs: true,
+		recurAnchor: "defer_at",
+		...over,
+	});
+
+	it("returns null when End is never (unbounded — nothing to preview)", () => {
+		expect(
+			buildRecurrencePreviewParams(draft({ recurEnd: "never" })),
+		).toBeNull();
+	});
+
+	it("returns null for End=after with a blank or non-positive count", () => {
+		expect(
+			buildRecurrencePreviewParams(
+				draft({ recurEnd: "after", recurAfterCount: "" }),
+			),
+		).toBeNull();
+		expect(
+			buildRecurrencePreviewParams(
+				draft({ recurEnd: "after", recurAfterCount: "0" }),
+			),
+		).toBeNull();
+	});
+
+	it("returns null for End=until with a blank date", () => {
+		expect(
+			buildRecurrencePreviewParams(
+				draft({ recurEnd: "until", recurUntilDay: "" }),
+			),
+		).toBeNull();
+	});
+
+	it("returns null when the interval is blank or non-positive", () => {
+		expect(
+			buildRecurrencePreviewParams(
+				draft({ recurEnd: "after", recurAfterCount: "5", recurInterval: "" }),
+			),
+		).toBeNull();
+	});
+
+	it("returns params with the folded rule once the end is complete", () => {
+		expect(
+			buildRecurrencePreviewParams(
+				draft({ recurEnd: "after", recurAfterCount: "5" }),
+			),
+		).toEqual({
+			recurrence: {
+				interval: 1,
+				unit: "week",
+				anchor: "defer_at",
+				end: { after_count: 5 },
+			},
+			defer_at: "2026-07-01T00:00:00",
 		});
 	});
 });

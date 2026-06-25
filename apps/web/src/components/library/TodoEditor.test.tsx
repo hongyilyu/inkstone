@@ -1038,4 +1038,60 @@ describe("TodoEditor next-occurrence preview", () => {
 		await new Promise((r) => setTimeout(r, 20));
 		expect(seen).toHaveLength(0);
 	});
+
+	// End chosen but its value not yet entered (After with a blank count): the
+	// preview must NOT fire — otherwise it would show a "next occurrence" for the
+	// unbounded rule buildRecurrence emits mid-entry (#227 review-fix gate).
+	it("does not fire the preview while the End value is incomplete", async () => {
+		const user = userEvent.setup();
+		const seen: unknown[] = [];
+		renderEditor(
+			{ mode: "create", allEntities, onDone: () => {}, onCancel: () => {} },
+			noMutate,
+			() => {
+				seen.push("called");
+				return Effect.succeed({ ended: false });
+			},
+		);
+
+		await user.type(screen.getByLabelText(/title/i), "Half-entered");
+		await user.type(screen.getByLabelText(/defer until/i), "2026-07-01");
+		await user.click(screen.getByLabelText(/repeats/i));
+		await user.selectOptions(screen.getByLabelText(/^end$/i), "after");
+		// Count left blank → incomplete end → no preview, no read.
+		expect(screen.queryByText(/dates for next occurrence/i)).toBeNull();
+		await new Promise((r) => setTimeout(r, 20));
+		expect(seen).toHaveLength(0);
+	});
+
+	// A sub-day cadence (hour/minute) advances by a time span, so the preview must
+	// render WITH the time — date-only would print the same date for two
+	// consecutive occurrences (#227 review-fix: formatNextDate).
+	it("renders the next occurrence WITH a time for an hourly cadence", async () => {
+		const user = userEvent.setup();
+		renderEditor(
+			{ mode: "create", allEntities, onDone: () => {}, onCancel: () => {} },
+			noMutate,
+			() =>
+				Effect.succeed({
+					ended: false,
+					defer_at: "2026-07-01T13:00:00",
+					due_at: undefined,
+				}),
+		);
+
+		await user.type(screen.getByLabelText(/title/i), "Hourly ping");
+		await user.type(screen.getByLabelText(/defer until/i), "2026-07-01");
+		await user.click(screen.getByLabelText(/repeats/i));
+		await user.selectOptions(screen.getByLabelText(/^unit$/i), "hour");
+		await user.selectOptions(screen.getByLabelText(/^end$/i), "after");
+		await user.type(screen.getByLabelText(/^times$/i), "5");
+
+		// The preview renders the successor WITH a time component (e.g. "1:00 PM"),
+		// which the date-only formatter would have dropped. Scope to the preview
+		// block (the heading's container) to avoid the "Defer until" field label.
+		const heading = await screen.findByText(/dates for next occurrence/i);
+		const previewBlock = heading.parentElement as HTMLElement;
+		expect(previewBlock.textContent).toMatch(/Defer .*\d{1,2}:\d{2}/);
+	});
 });

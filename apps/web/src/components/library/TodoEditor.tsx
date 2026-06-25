@@ -17,6 +17,7 @@ import {
 import { useEntityMutation } from "@/lib/hooks/useEntityMutation";
 import { useRecurrenceNextDates } from "@/lib/hooks/useRecurrenceNextDates";
 import {
+	formatDateTime,
 	formatDay,
 	type LibraryItem,
 	type Person,
@@ -72,6 +73,18 @@ type Props = (
 	onDone: (id: string) => void;
 	onCancel: () => void;
 };
+
+/**
+ * Format a previewed next-occurrence date for the recurrence unit. minute/hour
+ * cadences advance by a sub-day span, so the time is meaningful (two occurrences
+ * can share a date) → show date+time; day-and-up units land at midnight, so
+ * date-only reads cleaner (#227).
+ */
+function formatNextDate(value: string, unit: RecurrenceUnit): string {
+	return unit === "minute" || unit === "hour"
+		? formatDateTime(value)
+		: formatDay(value);
+}
 
 /** Create / edit a Todo inline in the Library rail (ADR-0033). */
 export function TodoEditor({ allEntities, onDone, onCancel, ...m }: Props) {
@@ -393,8 +406,11 @@ export function TodoEditor({ allEntities, onDone, onCancel, ...m }: Props) {
 						{/* Next-occurrence preview (#227): shown only for a bounded
 						    series (End != Never → nextDates is non-null), computed by
 						    Core's own date math. An ended series names itself; otherwise
-						    the successor's defer/due dates (date-only — the editor edits
-						    days, and every unit advances by whole days). */}
+						    the successor's defer/due dates. Sub-day cadences (minute/hour)
+						    advance by a time span, so they render WITH the time —
+						    formatDay alone would print the same date for two consecutive
+						    occurrences. Day-and-up units render date-only (time is always
+						    midnight, the editor edits days). */}
 						{nextDates ? (
 							<div className="flex flex-col gap-1.5 rounded-lg border border-input bg-card/40 px-3 py-2.5">
 								{nextDates.ended ? (
@@ -408,12 +424,13 @@ export function TodoEditor({ allEntities, onDone, onCancel, ...m }: Props) {
 										</p>
 										{nextDates.deferAt ? (
 											<p className="text-foreground text-sm">
-												Defer {formatDay(nextDates.deferAt)}
+												Defer{" "}
+												{formatNextDate(nextDates.deferAt, draft.recurUnit)}
 											</p>
 										) : null}
 										{nextDates.dueAt ? (
 											<p className="text-foreground text-sm">
-												Due {formatDay(nextDates.dueAt)}
+												Due {formatNextDate(nextDates.dueAt, draft.recurUnit)}
 											</p>
 										) : null}
 									</>
