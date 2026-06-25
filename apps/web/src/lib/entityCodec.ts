@@ -529,6 +529,9 @@ function buildUpdateParams(
 	// (todoDraftFromVm), so a trimmed-vs-untrimmed compare would emit a spurious
 	// title/note on an edit that never touched them — e.g. a quick-defer of a Todo
 	// whose stored title carries surrounding whitespace (silent re-title + note clear).
+	// (The Person/Project/Bookmark builders below carry the same untrimmed-prev
+	// compare, but they full-REPLACE rather than partial-merge, so a false diff only
+	// re-sends the already-correct value — harmless. Trimmed here only where it bites.)
 	if (next.title.trim() !== prev.title.trim())
 		partial.title = next.title.trim();
 	if (next.note.trim() !== prev.note.trim())
