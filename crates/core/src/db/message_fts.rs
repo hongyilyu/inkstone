@@ -311,13 +311,14 @@ mod tests {
             .expect("run has an assistant message");
         // Open the first assistant text segment (ADR-0045: text now opens
         // on-first-delta, no eager seq-0 part). One delta is one segment here.
-        // `open_assistant_text_part` returns `None` if the Message isn't `streaming`;
+        // `open_assistant_part` returns `None` if the Message isn't `streaming`;
         // this seed leaves it streaming, so assert a part actually opened rather than
         // silently accept `Ok(None)` and seed a broken (partless) state.
-        let opened = crate::db::open_assistant_text_part(
+        let opened = crate::db::open_assistant_part(
             pool,
             run_id,
             assistant_message_id,
+            crate::db::PartType::Text,
             assistant_text,
             crate::db::now_ms(),
         )

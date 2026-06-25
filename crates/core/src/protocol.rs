@@ -547,6 +547,16 @@ pub enum Segment {
         #[serde(skip_serializing_if = "Option::is_none")]
         entity_id: Option<String>,
     },
+    /// The model's thinking trace (ADR-0045 reasoning amendment, #202): `text` is
+    /// the streamed reasoning (one `message_parts.type='reasoning'` row), and
+    /// `duration_ms` how long the model thought — Core-computed at read from the
+    /// reasoning step's span, omitted (not `null`, matching the TS `S.optional`) when
+    /// unknown. Renders default-collapsed; never replayed into the worker transcript.
+    Reasoning {
+        text: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        duration_ms: Option<i64>,
+    },
 }
 
 /// A Message in a `thread/get` result. `run_id` lets a refreshed Client resubscribe
@@ -610,6 +620,12 @@ pub enum RunEvent {
     Cancelled,
     Error {
         message: String,
+    },
+    /// A reasoning (thinking) delta, mirroring `TextDelta` (ADR-0045 reasoning
+    /// amendment, #202): Core republishes it from `WorkerStdout::ReasoningDelta`. The
+    /// segment boundary is inferred from the interleaved stream — no position field.
+    ReasoningDelta {
+        delta: String,
     },
 }
 
@@ -682,6 +698,12 @@ pub struct ToolResult {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum WorkerStdout {
     TextDelta {
+        delta: String,
+    },
+    /// A reasoning (thinking) delta the Worker maps from pi's `thinking_delta`
+    /// (ADR-0045 reasoning amendment, #202). Core opens/appends the open reasoning
+    /// part and republishes it as `RunEvent::ReasoningDelta`.
+    ReasoningDelta {
         delta: String,
     },
     Done,
@@ -1916,8 +1938,9 @@ mod parity_fixtures {
             // Maximal: an assistant turn whose ORDERED segments are the screenshot
             // order (ADR-0045) — two tool_call segments (one with arg, one without —
             // covers Segment::ToolCall optional arg), then the decided proposal
-            // segment (Segment::Proposal), then the reply text (Segment::Text). All
-            // three Segment variants are thus covered transitively here.
+            // segment (Segment::Proposal), then a reasoning segment (Segment::Reasoning,
+            // ADR-0045 reasoning amendment), then the reply text (Segment::Text). All
+            // four Segment variants are thus covered transitively here.
             fx!(
                 "thread_get_result.json",
                 ThreadGetResult {
@@ -1947,6 +1970,10 @@ mod parity_fixtures {
                                 // (ADR-0044 entity_id amendment) — the decided card
                                 // names + deep-links it. Omitted when absent (S.optional).
                                 entity_id: Some(UUID_B.to_string()),
+                            },
+                            Segment::Reasoning {
+                                text: "Checking the journal schema…".to_string(),
+                                duration_ms: Some(1500),
                             },
                             Segment::Text {
                                 text: "Logged.".to_string(),
@@ -2066,6 +2093,14 @@ mod parity_fixtures {
                 "run_event.error.json",
                 RunEvent::Error {
                     message: "boom".to_string(),
+                }
+            ),
+            // reasoning_delta (ADR-0045 reasoning amendment, #202): the thinking
+            // delta Core republishes from WorkerStdout::ReasoningDelta.
+            fx!(
+                "run_event.reasoning_delta.json",
+                RunEvent::ReasoningDelta {
+                    delta: "Checking the journal schema…".to_string(),
                 }
             ),
             // ToolResult (ser-only, Core → Worker): the ok / err arms of the
@@ -2245,6 +2280,7 @@ mod parity_fixtures {
             "run_event.done.json",
             "run_event.cancelled.json",
             "run_event.error.json",
+            "run_event.reasoning_delta.json",
             "tool_result.ok.json",
             "tool_result.err.json",
             "worker_manifest.json",
@@ -2319,12 +2355,13 @@ mod parity_fixtures {
         parses!(SettingsSetParams, "settings_set_params.json");
         parses!(SettingsSetParams, "settings_set_params.bare.json");
 
-        // WorkerStdout (deser-only): the 4 variants Core reads off the Worker's
+        // WorkerStdout (deser-only): the 5 variants Core reads off the Worker's
         // stdout. Hand-authored because Core never serializes them.
         parses!(WorkerStdout, "worker_stdout.text_delta.json");
         parses!(WorkerStdout, "worker_stdout.done.json");
         parses!(WorkerStdout, "worker_stdout.error.json");
         parses!(WorkerStdout, "worker_stdout.tool_request.json");
+        parses!(WorkerStdout, "worker_stdout.reasoning_delta.json");
 
         // Spot-check the maximal ProposalDecideParams carries every per-node form,
         // so a future fixture edit can't silently drop the rich graph shape.

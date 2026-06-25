@@ -103,6 +103,27 @@ export function runInterpreter(
 				emit({ kind: "text_delta", delta: event.assistantMessageEvent.delta });
 				return;
 			}
+			if (
+				event.type === "message_update" &&
+				event.assistantMessageEvent.type === "thinking_delta"
+			) {
+				// Reasoning/thinking deltas (ADR-0045 reasoning amendment, #202) stream as a
+				// distinct Run Event so the Client renders them as a collapsed reasoning
+				// segment, never folded into reply text.
+				//
+				// Redacted reasoning is already excluded by ARCHITECTURE, not by this guard:
+				// pi surfaces Anthropic's redacted_thinking as a `thinking_start` carrying the
+				// "[Reasoning redacted]" placeholder with NO following `thinking_delta` (the
+				// block has nothing to stream), and we listen only for `thinking_delta`. The
+				// literal-string check is a cheap best-effort backstop for a hypothetical
+				// future provider that streams the placeholder as a delta — not the redaction
+				// boundary itself.
+				const delta = event.assistantMessageEvent.delta;
+				if (delta.trim() !== "[Reasoning redacted]") {
+					emit({ kind: "reasoning_delta", delta });
+				}
+				return;
+			}
 			if (event.type === "message_end") {
 				const msg = event.message;
 				if (

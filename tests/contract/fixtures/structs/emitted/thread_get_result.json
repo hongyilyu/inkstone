@@ -24,6 +24,11 @@
           "status": "accepted"
         },
         {
+          "duration_ms": 1500,
+          "kind": "reasoning",
+          "text": "Checking the journal schema…"
+        },
+        {
           "kind": "text",
           "text": "Logged."
         }

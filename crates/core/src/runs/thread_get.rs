@@ -54,6 +54,9 @@ pub(super) async fn handle(
                             status,
                             entity_id,
                         },
+                        MessageSegment::Reasoning { text, duration_ms } => {
+                            Segment::Reasoning { text, duration_ms }
+                        }
                     })
                     .collect(),
             })

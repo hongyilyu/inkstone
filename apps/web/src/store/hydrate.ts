@@ -57,6 +57,14 @@ function toSegment(
 			};
 		case "proposal":
 			return { kind: "proposal", runId };
+		case "reasoning":
+			// The model's thinking trace (ADR-0045 amendment): the wire carries Core's
+			// computed `duration_ms`; store it as `durationMs`. Excluded from concatText.
+			return {
+				kind: "reasoning",
+				text: segment.text,
+				durationMs: segment.duration_ms,
+			};
 	}
 }
 

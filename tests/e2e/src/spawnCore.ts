@@ -141,6 +141,8 @@ export interface SpawnCoreOptions {
 	readonly providerLoginCmd?: string;
 	/** Canned faux-provider response (`INKSTONE_FAUX_RESPONSE`); with `FAUX_WORKER_CMD` drives a real offline interpreter completion. */
 	readonly fauxResponse?: string;
+	/** Faux thinking trace (`INKSTONE_FAUX_THINKING`, ADR-0045 reasoning amendment); one turn emits this reasoning block then a fixed reply, so the Client renders a collapsed reasoning segment that survives reload. */
+	readonly fauxThinking?: string;
 	/** Makes the faux provider fail the turn with this message (`INKSTONE_FAUX_ERROR`), producing a real `error` Run Event. */
 	readonly fauxError?: string;
 	/** Drive the faux provider in `read_thread` tool-call mode (`INKSTONE_FAUX_TOOL_CALL`), exercising the full Tool Protocol round-trip. */
@@ -269,6 +271,7 @@ export async function spawnCore(
 	// Strip inherited INKSTONE_FAUX_* so an ambient value can't leak one test's mode into another.
 	for (const key of [
 		"INKSTONE_FAUX_RESPONSE",
+		"INKSTONE_FAUX_THINKING",
 		"INKSTONE_FAUX_ERROR",
 		"INKSTONE_FAUX_TOOL_CALL",
 		"INKSTONE_FAUX_LOAD_SKILL",
@@ -363,6 +366,7 @@ export async function spawnCore(
 	// Faux-interpreter mode: write a provider="faux" Workflow and feed the canned response/error/mode to the faux provider (ADR-0019 faux seam).
 	if (
 		opts.fauxResponse !== undefined ||
+		opts.fauxThinking !== undefined ||
 		opts.fauxError !== undefined ||
 		opts.fauxToolCall ||
 		opts.fauxLoadSkill !== undefined ||
@@ -412,6 +416,8 @@ export async function spawnCore(
 			}
 		} else if (opts.fauxError !== undefined) {
 			env.INKSTONE_FAUX_ERROR = opts.fauxError;
+		} else if (opts.fauxThinking !== undefined) {
+			env.INKSTONE_FAUX_THINKING = opts.fauxThinking;
 		} else if (opts.fauxResponse !== undefined) {
 			env.INKSTONE_FAUX_RESPONSE = opts.fauxResponse;
 		}

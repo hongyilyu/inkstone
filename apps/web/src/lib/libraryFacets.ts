@@ -13,6 +13,7 @@
 // Date presets are PURELY date-based, independent of status, so Date ⟂ Status
 // compose honestly (a completed-yet-overdue todo is still "overdue").
 
+import { assertNever } from "./assertNever";
 import { PROJECT_STATUSES, TODO_STATUSES } from "./entityFields";
 import {
 	type LibraryItem,
@@ -57,14 +58,6 @@ export const EMPTY_FACETS: ActiveFacets = {
 	people: new Set(),
 };
 
-/** Exhaustiveness guard for the per-facet dispatches below. A `FacetKey` no branch
- * handled is a compile error here, so adding a 4th facet fails to type-check at every
- * dispatch site until handled — rather than silently falling through to the `person`
- * branch (the prior shape). Throws if ever reached at runtime. */
-function assertNever(key: never): never {
-	throw new Error(`Unhandled facet key: ${key as string}`);
-}
-
 /** Is `value` currently selected under facet `key`? (For rendering a chip's
  * pressed state.) */
 export function isFacetActive(
@@ -75,7 +68,7 @@ export function isFacetActive(
 	if (key === "status") return active.statuses.has(value);
 	if (key === "date") return active.date === value;
 	if (key === "person") return active.people.has(value);
-	return assertNever(key);
+	return assertNever(key, "facet key");
 }
 
 /** Whether any facet at all is selected (drives the inline Clear affordance). */
@@ -99,7 +92,8 @@ export function toggleFacet(
 			date: active.date === value ? null : (value as DatePreset),
 		};
 	}
-	if (key !== "status" && key !== "person") return assertNever(key);
+	if (key !== "status" && key !== "person")
+		return assertNever(key, "facet key");
 	const field = key === "status" ? "statuses" : "people";
 	const next = new Set(active[field]);
 	if (next.has(value)) next.delete(value);
@@ -235,7 +229,7 @@ function withoutOwn(active: ActiveFacets, key: FacetKey): ActiveFacets {
 	if (key === "status") return { ...active, statuses: new Set() };
 	if (key === "date") return { ...active, date: null };
 	if (key === "person") return { ...active, people: new Set() };
-	return assertNever(key);
+	return assertNever(key, "facet key");
 }
 
 /** The value(s) of `item` under one facet key (a row can carry several people but
@@ -255,7 +249,7 @@ function valuesOf(
 		return b == null ? [] : [b];
 	}
 	if (key === "person") return associatedPersonIds(item, allItems);
-	return assertNever(key);
+	return assertNever(key, "facet key");
 }
 
 /** Leave-one-out, context-aware counts for one facet's chips: how many rows would
@@ -359,7 +353,7 @@ export function deriveFacets(
 					? presentDateValues(ofKind, now)
 					: key === "person"
 						? presentPersonValues(ofKind, allItems)
-						: assertNever(key);
+						: assertNever(key, "facet key");
 		if (values.length >= 2) {
 			groups.push({ key, label: GROUP_LABEL[key], values });
 		}

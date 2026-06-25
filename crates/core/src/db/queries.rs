@@ -1523,13 +1523,68 @@ pub(super) async fn insert_text_part<'e, E>(
 where
     E: Executor<'e, Database = Sqlite>,
 {
-    sqlx::query("INSERT INTO message_parts (message_id, seq, type, text) VALUES (?, ?, 'text', ?)")
+    insert_message_part(executor, message_id, seq, PartType::Text, text).await
+}
+
+/// A `type='reasoning'`-seeding face for TEST seeds only — production opens reasoning
+/// parts through [`super::open_assistant_part`], which calls [`insert_message_part`]
+/// with the `PartType` it holds. Kept as a named convenience for the rehydration tests
+/// that build a timeline row-by-row (ADR-0045 reasoning amendment).
+#[cfg(test)]
+pub(super) async fn insert_reasoning_part<'e, E>(
+    executor: E,
+    message_id: Uuid,
+    seq: i64,
+    text: &str,
+) -> sqlx::Result<()>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    insert_message_part(executor, message_id, seq, PartType::Reasoning, text).await
+}
+
+/// The `message_parts.type` discriminant for a streamed assistant part (ADR-0045).
+/// `text` is the reply prose; `reasoning` is the thinking trace (#202). Both ride the
+/// same open-on-first-delta / append machine — only this tag distinguishes them, and
+/// only the read (`segment_timeline`) and resume filter (`run_timeline`) branch on it.
+/// Re-exported from `db` ([`super::PartType`]) so the run loop names the kind it opens.
+#[derive(Clone, Copy)]
+pub(crate) enum PartType {
+    Text,
+    Reasoning,
+}
+
+impl PartType {
+    fn as_str(self) -> &'static str {
+        match self {
+            PartType::Text => "text",
+            PartType::Reasoning => "reasoning",
+        }
+    }
+}
+
+/// Insert one `message_parts` row of `part_type`, seeded with `text`. The sole
+/// writer of a streamed part: the open path ([`super::open_assistant_part`]) calls it
+/// directly with the `PartType` it holds, while [`insert_text_part`]/
+/// [`insert_reasoning_part`] are thin literal-named faces for the seed/test callers.
+pub(super) async fn insert_message_part<'e, E>(
+    executor: E,
+    message_id: Uuid,
+    seq: i64,
+    part_type: PartType,
+    text: &str,
+) -> sqlx::Result<()>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query("INSERT INTO message_parts (message_id, seq, type, text) VALUES (?, ?, ?, ?)")
         .bind(message_id.to_string())
         .bind(seq)
+        .bind(part_type.as_str())
         .bind(text)
         .execute(executor)
-        .await
-        .map(|_| ())
+    .await
+    .map(|_| ())
 }
 
 pub(super) async fn append_text_part<'e, E>(
@@ -1800,30 +1855,44 @@ where
 /// `MessageRow`, not the assistant turn — including it would prepend the prompt to
 /// the assistant's segments. `tool_call` steps have no `message_id`, so they pass
 /// the filter and stay in seq order between the assistant text segments.
-#[allow(clippy::type_complexity)]
+///
+/// Two columns join the original 8 for the ADR-0045 reasoning amendment (#202):
+/// `mp.type` (the caller switches the `message` branch on it — `text` vs
+/// `reasoning`) and a Core-computed `duration_ms` for reasoning. Duration is the
+/// span from this step's `created_at` to the IMMEDIATE NEXT step's `created_at`
+/// (the lowest later `seq` in the SAME Run — a correlated subquery ordered by
+/// `seq`, NOT `MIN(created_at)`: a later step stamped at an earlier time, e.g.
+/// same-ms or clock skew, must not be mistaken for the next one; the subquery also
+/// dodges the WHERE filter that drops the user-Message step, so it never widens the
+/// window), COALESCE'd to `runs.ended_at` when this is the last step. A negative
+/// span (clock skew) or an unknown end yields `NULL`; the caller only reads it for
+/// reasoning rows.
 pub(super) async fn segment_timeline<'e, E>(
     executor: E,
     run_id: Uuid,
     assistant_message_id: &str,
-) -> sqlx::Result<
-    Vec<(
-        String,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-    )>,
->
+) -> sqlx::Result<Vec<SegmentTimelineRow>>
 where
     E: Executor<'e, Database = Sqlite>,
 {
     sqlx::query_as(
         "SELECT rs.kind, mp.text, \
                 tc.name, tc.status, tc.request_payload, \
-                p.id, p.mutation_kind, p.status \
+                p.id, p.mutation_kind, p.status, \
+                mp.type, \
+                ( \
+                  SELECT nxt.created_at - rs.created_at \
+                  FROM run_steps nxt \
+                  WHERE nxt.run_id = rs.run_id AND nxt.seq > rs.seq \
+                  ORDER BY nxt.seq \
+                  LIMIT 1 \
+                ) \
+                AS duration_to_next, \
+                ( \
+                  SELECT ended_at FROM runs WHERE id = rs.run_id \
+                ) \
+                AS run_ended_at, \
+                rs.created_at \
          FROM run_steps rs \
          LEFT JOIN message_parts mp \
            ON mp.message_id = rs.message_id AND mp.seq = rs.part_seq \
@@ -1837,6 +1906,64 @@ where
     .bind(assistant_message_id)
     .fetch_all(executor)
     .await
+    .map(|rows: Vec<(_, _, _, _, _, _, _, _, _, Option<i64>, Option<i64>, i64)>| {
+        rows.into_iter()
+            .map(
+                |(
+                    kind,
+                    part_text,
+                    tc_name,
+                    tc_status,
+                    request_payload,
+                    proposal_id,
+                    mutation_kind,
+                    proposal_status,
+                    part_type,
+                    duration_to_next,
+                    run_ended_at,
+                    step_created_at,
+                )| {
+                    // Resolve the reasoning span at the seam: the next step's
+                    // delta if there is one, else `run.ended_at − created_at`.
+                    // A negative span (clock skew) or an unknown end → None.
+                    let duration_ms = duration_to_next
+                        .or_else(|| run_ended_at.map(|end| end - step_created_at))
+                        .filter(|&d| d >= 0);
+                    SegmentTimelineRow {
+                        kind,
+                        part_text,
+                        part_type,
+                        tc_name,
+                        tc_status,
+                        request_payload,
+                        proposal_id,
+                        mutation_kind,
+                        proposal_status,
+                        duration_ms,
+                    }
+                },
+            )
+            .collect()
+    })
+}
+
+/// One row of the [`segment_timeline`] walk, named so the caller
+/// ([`super::segment_rows_for_run`]) reads it by field instead of unpacking a
+/// 10-wide positional tuple with `_` holes (ADR-0045). The raw SQL still selects a
+/// wide tuple; this is the resolved, caller-facing shape (duration already folded
+/// from the next-step/`ended_at` seam). `part_type` is the `message_parts.type`
+/// (text/reasoning); `duration_ms` is meaningful only for reasoning rows.
+pub(super) struct SegmentTimelineRow {
+    pub kind: String,
+    pub part_text: Option<String>,
+    pub part_type: Option<String>,
+    pub tc_name: Option<String>,
+    pub tc_status: Option<String>,
+    pub request_payload: Option<String>,
+    pub proposal_id: Option<String>,
+    pub mutation_kind: Option<String>,
+    pub proposal_status: Option<String>,
+    pub duration_ms: Option<i64>,
 }
 
 /// Read a Run's ordered timeline for resume transcript reconstruction
@@ -1846,6 +1973,14 @@ where
 /// `seq` order rather than lumping a message's parts onto one step. Returns
 /// `(kind, message_id, role, part_text, tool_call_id, tc_name, request_payload,
 /// result_payload)` tuples.
+///
+/// `type='reasoning'` message steps are EXCLUDED (ADR-0045 reasoning amendment,
+/// #202): reasoning is display-only and never replayed into the worker
+/// transcript — replaying a thinking block without its provider signature is a
+/// live correctness hazard (#201 defers the signed round-trip). The filter is a
+/// WHERE condition so a reasoning step yields no row at all (it never becomes a
+/// `TimelineStep::Message`); text/attachment message steps and all tool steps
+/// pass unchanged.
 #[allow(clippy::type_complexity)]
 pub(super) async fn run_timeline<'e, E>(
     executor: E,
@@ -1874,6 +2009,7 @@ where
            ON mp.message_id = rs.message_id AND mp.seq = rs.part_seq \
          LEFT JOIN tool_calls tc ON tc.id = rs.tool_call_id \
          WHERE rs.run_id = ?1 \
+           AND (rs.kind = 'tool_call' OR mp.type IS NULL OR mp.type <> 'reasoning') \
          ORDER BY rs.seq",
     )
     .bind(run_id.to_string())

@@ -1,5 +1,7 @@
 import {
 	fauxAssistantMessage,
+	fauxText,
+	fauxThinking,
 	registerFauxProvider,
 	streamSimple,
 } from "@earendil-works/pi-ai";
@@ -256,5 +258,99 @@ describe("generic interpreter (faux provider)", () => {
 
 		expect(seenUserTexts).toContain("earlier question");
 		expect(seenUserTexts).toContain("current question");
+	});
+
+	it("emits thinking as reasoning_delta, distinct from text", async () => {
+		// Faux chunks deltas (tokenSize) like the resume test — join reasoning_delta deltas to compare.
+		const faux = registerFauxProvider({
+			provider: "faux",
+			tokenSize: { min: 1, max: 2 },
+		});
+		registrations.push(faux);
+		faux.setResponses([
+			fauxAssistantMessage([
+				fauxThinking("Let me check the schema."),
+				fauxText("Done."),
+			]),
+		]);
+
+		const deps: InterpreterDeps = {
+			resolveModel: () => faux.getModel(),
+			streamFn: streamSimple,
+		};
+
+		const events = await runChat(fauxManifest(), deps);
+
+		const reasoning = events
+			.filter(
+				(e): e is { kind: "reasoning_delta"; delta: string } =>
+					e.kind === "reasoning_delta",
+			)
+			.map((e) => e.delta)
+			.join("");
+		expect(reasoning).toBe("Let me check the schema.");
+
+		const text = events
+			.filter(
+				(e): e is { kind: "text_delta"; delta: string } =>
+					e.kind === "text_delta",
+			)
+			.map((e) => e.delta)
+			.join("");
+		expect(text).toBe("Done.");
+
+		expect(events[events.length - 1]).toEqual({ kind: "done" });
+	});
+
+	it("emits no reasoning_delta when there is no thinking block", async () => {
+		const faux = registerFauxProvider({ provider: "faux" });
+		registrations.push(faux);
+		faux.setResponses([fauxAssistantMessage("hi")]);
+
+		const deps: InterpreterDeps = {
+			resolveModel: () => faux.getModel(),
+			streamFn: streamSimple,
+		};
+
+		const events = await runChat(fauxManifest(), deps);
+
+		expect(events.some((e) => e.kind === "reasoning_delta")).toBe(false);
+	});
+
+	it("drops redacted reasoning but keeps the reply text", async () => {
+		// Anthropic delivers the "[Reasoning redacted]" placeholder as one block, not
+		// character-streamed — a large tokenSize makes faux emit it as a single delta so
+		// the per-delta guard sees the whole sentinel (faux's default chunking is a test
+		// artifact that would split it across deltas).
+		const faux = registerFauxProvider({
+			provider: "faux",
+			tokenSize: { min: 100, max: 100 },
+		});
+		registrations.push(faux);
+		faux.setResponses([
+			fauxAssistantMessage([
+				fauxThinking("[Reasoning redacted]"),
+				fauxText("ok"),
+			]),
+		]);
+
+		const deps: InterpreterDeps = {
+			resolveModel: () => faux.getModel(),
+			streamFn: streamSimple,
+		};
+
+		const events = await runChat(fauxManifest(), deps);
+
+		expect(events.some((e) => e.kind === "reasoning_delta")).toBe(false);
+
+		const text = events
+			.filter(
+				(e): e is { kind: "text_delta"; delta: string } =>
+					e.kind === "text_delta",
+			)
+			.map((e) => e.delta)
+			.join("");
+		expect(text).toBe("ok");
+		expect(events[events.length - 1]).toEqual({ kind: "done" });
 	});
 });
