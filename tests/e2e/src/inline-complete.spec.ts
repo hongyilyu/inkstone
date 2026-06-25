@@ -120,8 +120,10 @@ test("quick-defer an active Inbox todo to Tomorrow → Core persists defer_at = 
 		timeout: 15_000,
 	});
 
-	// Visible feedback (the point of the iteration): the deferred row now shows a
-	// "Deferred · <day>" chip. Match `/deferred/i` to avoid coupling to the exact
-	// locale day format (`formatDay`'s toLocaleDateString output).
-	await expect(inbox.getByText(/deferred/i)).toBeVisible({ timeout: 15_000 });
+	// Visible feedback (the point of quick-defer): the deferred row now shows the
+	// shared "Available <day>" chip (DeferChip, #232) carrying the YYYY-MM-DD day
+	// slice — the exact tomorrow the write persisted.
+	await expect(
+		inbox.getByText(`Available ${expectedTomorrow().slice(0, 10)}`),
+	).toBeVisible({ timeout: 15_000 });
 });

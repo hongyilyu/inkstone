@@ -474,7 +474,6 @@ describe("TodoRow", () => {
 			).not.toBeInTheDocument();
 		});
 	});
-
 });
 
 describe("EntityRow", () => {
