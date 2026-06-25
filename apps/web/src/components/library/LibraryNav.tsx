@@ -1,5 +1,6 @@
 import { Link, useNavigate } from "@tanstack/react-router";
 import {
+	CalendarArrowUp,
 	CalendarClock,
 	Hourglass,
 	House,
@@ -15,6 +16,7 @@ import {
 	KIND_ORDER,
 	libraryItemKindCounts,
 	projectsForReview,
+	scheduledTodos,
 	waitingTodos,
 } from "@/lib/libraryItems";
 import { cn } from "@/lib/utils.js";
@@ -28,6 +30,7 @@ export function LibraryNav() {
 	const counts = libraryItemKindCounts(items);
 	const inboxCount = inboxTodos(items).length;
 	const waitingCount = waitingTodos(items).length;
+	const scheduledCount = scheduledTodos(items).length;
 	const reviewCount = projectsForReview(items).length;
 	// Suppress the count badges ONLY when the read failed AND there's no cached data
 	// to count — otherwise a misleading `0` reads as a fake-empty workspace. A
@@ -91,6 +94,17 @@ export function LibraryNav() {
 					<span className="flex-1 truncate">Waiting</span>
 					<span className="text-sidebar-foreground/45 text-xs tabular-nums">
 						{countLabel(waitingCount)}
+					</span>
+				</Link>
+				<Link
+					to="/library/scheduled"
+					className={navRow}
+					activeProps={{ className: cn(navRow, navRowActive) }}
+				>
+					<CalendarArrowUp className="size-4 shrink-0" aria-hidden />
+					<span className="flex-1 truncate">Scheduled</span>
+					<span className="text-sidebar-foreground/45 text-xs tabular-nums">
+						{countLabel(scheduledCount)}
 					</span>
 				</Link>
 				<Link
