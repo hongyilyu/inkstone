@@ -3,6 +3,7 @@ import {
 	type RunEventValue,
 	UnknownThreadError,
 	WsClient,
+	type WsError,
 	WsRequestError,
 } from "@inkstone/ui-sdk";
 import { QueryClient } from "@tanstack/react-query";
@@ -10,6 +11,10 @@ import { act, cleanup, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Deferred, Effect, Layer, ManagedRuntime, Stream } from "effect";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	CONNECTION_SEND_FAILURE,
+	GENERIC_SEND_FAILURE,
+} from "@/lib/connectionFailureCopy";
 import { resetBridge } from "@/store/bridge";
 import {
 	appendUserMessage,
@@ -27,15 +32,24 @@ function makeStubRuntime(opts: {
 	readonly events: readonly RunEventValue[];
 	readonly threadId?: string;
 	readonly cancelRun?: WsClient["Type"]["cancelRun"];
+	// When set, both the focused-thread send (`postMessage`) and the mint-on-send
+	// (`threadCreate`) fail in the SDK's E channel with this WsError — so the real
+	// bridge `send`/`sendNewThread` squash path surfaces it (slice 4).
+	readonly sendFailure?: WsError;
 }) {
 	const unused = Effect.die("not exercised in this test");
 	const stub = WsClient.of({
 		threadCreate: () =>
-			Effect.succeed({
-				thread_id: opts.threadId ?? "thread-new",
-				run_id: opts.runId,
-			}),
-		postMessage: () => Effect.succeed(opts.runId),
+			opts.sendFailure
+				? Effect.fail(opts.sendFailure)
+				: Effect.succeed({
+						thread_id: opts.threadId ?? "thread-new",
+						run_id: opts.runId,
+					}),
+		postMessage: () =>
+			opts.sendFailure
+				? Effect.fail(opts.sendFailure)
+				: Effect.succeed(opts.runId),
 		threadList: () => unused,
 		getRunHistory: () => unused,
 		recurrencePreview: () => Effect.die("not exercised in this test"),
@@ -1253,6 +1267,75 @@ describe("ChatColumn", () => {
 		await user.click(screen.getByRole("button", { name: /try again/i }));
 
 		expect(await screen.findByText("recovered")).toBeInTheDocument();
+
+		await runtime.dispose();
+	});
+
+	it("shows the connection-specific copy when a focused-thread send fails because the link is down (ADR-0051)", async () => {
+		const user = userEvent.setup();
+		// The SDK postMessage rejects in the E channel with a connection-caused
+		// WsError; the real bridge `send` squash must surface its `reason` so the
+		// banner reads the link-down copy, not the generic "try again".
+		const runtime = makeStubRuntime({
+			runId: "run-down",
+			events: [],
+			sendFailure: new WsRequestError({ reason: "connection_lost" }),
+		});
+
+		await renderFocused(runtime, "threadA");
+
+		await user.type(screen.getByRole("textbox", { name: /message/i }), "hi");
+		await user.click(screen.getByRole("button", { name: /send/i }));
+
+		// A focused-thread send also settles the seeded bubble as incomplete (its own
+		// `role="alert"` notice), so target the send-error banner by its copy text.
+		const banner = await screen.findByText(CONNECTION_SEND_FAILURE);
+		expect(banner).toHaveAttribute("role", "alert");
+		// The raw reason token never leaks into user copy (BookmarkEditor precedent).
+		expect(banner).not.toHaveTextContent("connection_lost");
+
+		await runtime.dispose();
+	});
+
+	it("keeps the generic copy when a focused-thread send fails for a non-connection reason", async () => {
+		const user = userEvent.setup();
+		const runtime = makeStubRuntime({
+			runId: "run-other",
+			events: [],
+			sendFailure: new WsRequestError({ reason: "decode_failed" }),
+		});
+
+		await renderFocused(runtime, "threadA");
+
+		await user.type(screen.getByRole("textbox", { name: /message/i }), "hi");
+		await user.click(screen.getByRole("button", { name: /send/i }));
+
+		const banner = await screen.findByText(GENERIC_SEND_FAILURE);
+		expect(banner).toHaveAttribute("role", "alert");
+
+		await runtime.dispose();
+	});
+
+	it("shows the connection-specific copy when the FIRST send (mint-on-send) fails because the link is down", async () => {
+		const user = userEvent.setup();
+		// From `/` (no focused thread) the first send mints via `threadCreate`; a
+		// connection-caused failure there must read the same link-down copy.
+		const runtime = makeStubRuntime({
+			runId: "run-mint-down",
+			events: [],
+			sendFailure: new WsRequestError({ reason: "send_failed" }),
+		});
+
+		await renderChatRoute(<ChatColumn />, { runtime, path: "/" });
+
+		await user.type(screen.getByRole("textbox", { name: /message/i }), "hello");
+		await user.click(screen.getByRole("button", { name: /send/i }));
+
+		// Mint-on-send seeds nothing on failure (no orphaned bubble), so the banner
+		// is the only alert — but assert by copy text to stay symmetric with the
+		// focused-thread cases above.
+		const banner = await screen.findByText(CONNECTION_SEND_FAILURE);
+		expect(banner).toHaveAttribute("role", "alert");
 
 		await runtime.dispose();
 	});

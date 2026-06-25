@@ -11,7 +11,15 @@ import {
 	type WsError,
 } from "@inkstone/ui-sdk";
 import type { QueryClient } from "@tanstack/react-query";
-import { Effect, Either, Fiber, Schema as S, Stream } from "effect";
+import {
+	Cause,
+	Effect,
+	Either,
+	Exit,
+	Fiber,
+	Schema as S,
+	Stream,
+} from "effect";
 import type { WsRuntime } from "../runtime.js";
 import {
 	appendUserMessage,
@@ -227,16 +235,23 @@ export async function send(
 		return yield* client.postMessage(threadId, text);
 	});
 
-	try {
-		const runId = await runtime.runPromise(post);
+	// Run via `runPromiseExit` + `Cause.squash` (mirrors useEntityMutation/
+	// useRescanJournalEntry): `runPromise` would reject with Effect's `FiberFailure`
+	// WRAPPER, whose generic message hides the head `WsRequestError` — so a caller
+	// reading `error.reason` gets `undefined`. Squashing returns the real `WsError`,
+	// which ChatColumn parses to pick the connection-specific send-failure copy
+	// (ADR-0051: the per-send copy is error-driven, not ambient).
+	const exit = await runtime.runPromiseExit(post);
+	if (Exit.isSuccess(exit)) {
+		const runId = exit.value;
 		attachRun(threadId, assistantId, runId);
 		startRunStream(runtime, threadId, runId);
 		return { ok: true };
-	} catch (error) {
-		// postMessage failed: mark the seeded assistant message incomplete and surface it.
-		markMessageIncomplete(threadId, assistantId);
-		return { ok: false, error };
 	}
+	// postMessage failed: mark the seeded assistant message incomplete and surface
+	// the squashed WsError (its `reason` drives the failure copy).
+	markMessageIncomplete(threadId, assistantId);
+	return { ok: false, error: Cause.squash(exit.cause) };
 }
 
 /**
@@ -255,18 +270,20 @@ export async function sendNewThread(
 		return yield* client.threadCreate(text);
 	});
 
-	try {
-		const { thread_id, run_id } = await runtime.runPromise(create);
+	// `runPromiseExit` + `Cause.squash` so the failure carries the real `WsError`,
+	// not Effect's `FiberFailure` wrapper — same rationale as {@link send}.
+	const exit = await runtime.runPromiseExit(create);
+	if (Exit.isSuccess(exit)) {
+		const { thread_id, run_id } = exit.value;
 		// Mark hydrated so navigating onto a freshly-minted thread does NOT trigger a thread/get hydrate (slice 13 guard).
 		setHydrationStatus(thread_id, "ready");
 		const assistantId = seedTurn(thread_id, text);
 		attachRun(thread_id, assistantId, run_id);
 		startRunStream(runtime, thread_id, run_id);
 		return { ok: true, threadId: thread_id };
-	} catch (error) {
-		// threadCreate failed before any thread was minted — nothing seeded, no orphaned bubble. Surface the failure.
-		return { ok: false, error };
 	}
+	// threadCreate failed before any thread was minted — nothing seeded, no orphaned bubble. Surface the squashed failure.
+	return { ok: false, error: Cause.squash(exit.cause) };
 }
 
 /** Whether a run's stream fiber is currently tracked — test helper (M2). */
