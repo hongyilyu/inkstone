@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { parseTodo } from "@/lib/entityCodec";
 import {
 	activeProjectItems,
+	addDays,
 	dueSoonTodos,
 	formatDateTime,
 	formatDay,
@@ -686,5 +687,27 @@ describe("formatDay", () => {
 		});
 		expect(out).toContain(month);
 		expect(out).not.toContain("18");
+	});
+});
+
+describe("addDays", () => {
+	// A fixed `now` keeps these clock-proof; the time-of-day is irrelevant since
+	// addDays returns a bare day.
+	const now = new Date("2026-06-25T10:00:00");
+
+	it("returns tomorrow for n=1", () => {
+		expect(addDays(1, now)).toBe("2026-06-26");
+	});
+
+	it("returns next week for n=7", () => {
+		expect(addDays(7, now)).toBe("2026-07-02");
+	});
+
+	it("rolls over a month boundary", () => {
+		expect(addDays(7, new Date("2026-06-28T10:00:00"))).toBe("2026-07-05");
+	});
+
+	it("rolls over a year boundary", () => {
+		expect(addDays(7, new Date("2026-12-29T10:00:00"))).toBe("2027-01-05");
 	});
 });

@@ -432,6 +432,13 @@ export function localNowString(now: Date = new Date()): string {
 	);
 }
 
+/** A local day `YYYY-MM-DD`, `n` days from `now`. Mirrors `dueSoonTodos`' horizon math. */
+export function addDays(n: number, now: Date = new Date()): string {
+	const d = new Date(now);
+	d.setDate(d.getDate() + n);
+	return localNowString(d).slice(0, 10);
+}
+
 /** A Todo is overdue when active and its due *day* is before today (ADR-0031).
  * Due dates are stored at midnight (`<day>T00:00:00`, see `dayToLocal`), so a
  * full-timestamp `dueAt < now` comparison would flag a todo due *today* as
