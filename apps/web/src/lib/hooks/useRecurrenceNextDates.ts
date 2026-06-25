@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Effect } from "effect";
 import {
 	buildRecurrencePreviewParams,
-	type TodoDraft,
+	type RecurrenceDraft,
 } from "@/lib/entityCodec";
 import { useRuntime } from "@/runtime";
 
@@ -29,7 +29,7 @@ export interface RecurrenceNextDates {
  * is advisory — its absence degrades to nothing, never an error in the form).
  */
 export function useRecurrenceNextDates(
-	draft: TodoDraft,
+	draft: RecurrenceDraft,
 ): RecurrenceNextDates | null {
 	const runtime = useRuntime();
 	const params = buildRecurrencePreviewParams(draft);

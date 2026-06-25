@@ -481,8 +481,16 @@ function recurAnchorDatePresent(
 	return d.recurAnchor === "due_at" ? d.dueDay !== "" : d.deferDay !== "";
 }
 
+/**
+ * The recurrence-only slice of a draft (every field the rule/preview functions
+ * read, never `personRefs`). The editor's `draft` state OMITS `personRefs`
+ * (ADR-0032 person-rows own them), so these functions accept the narrower shape
+ * — a full `TodoDraft` still satisfies it.
+ */
+export type RecurrenceDraft = Omit<TodoDraft, "personRefs">;
+
 /** A recurrence is emittable only when toggled on AND its anchor date exists. */
-function recurActive(d: TodoDraft): boolean {
+function recurActive(d: RecurrenceDraft): boolean {
 	return d.recurs && recurAnchorDatePresent(d);
 }
 
@@ -493,7 +501,7 @@ function recurActive(d: TodoDraft): boolean {
  * preview gate, so the two can't disagree (a half-entered end must neither save
  * nor preview an unbounded rule — #227 review-fix).
  */
-function recurEndComplete(d: TodoDraft): boolean {
+function recurEndComplete(d: RecurrenceDraft): boolean {
 	if (d.recurEnd === "until") return d.recurUntilDay !== "";
 	if (d.recurEnd === "after") {
 		const count = Number(d.recurAfterCount);
@@ -505,7 +513,7 @@ function recurEndComplete(d: TodoDraft): boolean {
 /** A positive-integer interval, matching the editor's Save-block guard. Used to
  * keep the preview from firing on a blank/zero interval mid-entry (Core would
  * answer `ended` for `interval < 1`, misleading the user — #227 review-fix). */
-function recurIntervalValid(d: TodoDraft): boolean {
+function recurIntervalValid(d: RecurrenceDraft): boolean {
 	const interval = Number(d.recurInterval);
 	return Number.isInteger(interval) && interval >= 1;
 }
@@ -521,7 +529,7 @@ function recurIntervalValid(d: TodoDraft): boolean {
  * callers gate on it. An incomplete end (e.g. `"after"` with a non-positive
  * count) is dropped here too; the editor's Save-block guards it for UX.
  */
-function buildRecurrence(d: TodoDraft): Record<string, unknown> {
+function buildRecurrence(d: RecurrenceDraft): Record<string, unknown> {
 	const rule: Record<string, unknown> = {
 		interval: Number(d.recurInterval),
 		unit: d.recurUnit,
@@ -565,7 +573,7 @@ function wirePersonRefs(
  * dates ride alongside (day granularity, like the build path).
  */
 function buildRecurrencePreviewParams(
-	d: TodoDraft,
+	d: RecurrenceDraft,
 ): RecurrencePreviewParams | null {
 	if (
 		!recurActive(d) ||
