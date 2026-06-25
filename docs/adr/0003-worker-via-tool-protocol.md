@@ -1,6 +1,6 @@
 # Worker reaches Core-owned resources only through the Tool Protocol
 
-The Worker has no direct access to the SQLite database, the Vault, or external services. Every Core-owned action goes through a Tool Request and is satisfied by a Tool Result on the bidirectional Tool Protocol channel.
+The Worker has no direct access to the SQLite database or external services. Every Core-owned action goes through a Tool Request and is satisfied by a Tool Result on the bidirectional Tool Protocol channel.
 
 ## Why
 

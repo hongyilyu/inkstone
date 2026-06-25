@@ -17,7 +17,7 @@ Out of scope (not Proposals):
 
 - **Reads** — entity queries, search. Tool Protocol calls without Proposal semantics.
 - **Run-internal bookkeeping** — Run Events Core persists, Run/Turn state transitions, Tool Request/Result records. These are Core's persistence of in-flight Run state, not Worker-initiated changes to the Workspace.
-- **Vault export writes** — the Vault is a tier-3 derived export (per [ADR-0004](./0004-three-tier-storage-authority.md), [ADR-0005](./0005-snapshot-and-hash-ingestion.md)); regenerating exported documents is derived rendering, not a user-gated mutation.
+- **Tier-3 projection rebuilds** — regenerating FTS, backlinks, and other derived views (per [ADR-0004](./0004-three-tier-storage-authority.md)) is derived rendering, not a user-gated mutation.
 
 ## Why one write path
 

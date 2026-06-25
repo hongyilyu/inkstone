@@ -12,7 +12,7 @@ interface HarnessFixtures {
 	coreOptions: SpawnCoreOptions;
 	/** The spawned Core: `{ url, workspaceDir, tripGate, shutdown }`. */
 	core: SpawnedCore;
-	/** Just the tempdir Workspace path (Vault/DB live under it). */
+	/** Just the tempdir Workspace path (the DB lives under it). */
 	workspace: { readonly path: string };
 	/** Page-object over the rendered chat surface, pre-navigated to `core.url`. */
 	chat: ChatPage;

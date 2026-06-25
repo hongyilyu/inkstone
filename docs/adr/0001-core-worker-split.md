@@ -1,6 +1,6 @@
 # Two-component split: Core (Rust) and Worker (TypeScript)
 
-Inkstone is split into two components across a process and language boundary: **Core** in Rust and **Worker** in TypeScript. Core owns durable Workspace state, the SQLite database, the Vault, and controlled integrations. Worker owns the agent loop and LLM-provider interaction.
+Inkstone is split into two components across a process and language boundary: **Core** in Rust and **Worker** in TypeScript. Core owns durable Workspace state, the SQLite database, and controlled integrations. Worker owns the agent loop and LLM-provider interaction.
 
 ## Why
 
@@ -18,4 +18,4 @@ Inkstone is split into two components across a process and language boundary: **
 
 - A protocol between Core and Worker is mandatory; see [ADR-0006](./0006-run-events-vs-tool-protocol.md) for its shape, [ADR-0008](./0008-monorepo-shape.md) for repository layout and [ADR-0009](./0009-protocol-strategy.md) for cross-language protocol consistency.
 - Tools and integrations belong in Core by default; LLM-provider logic belongs in the Worker by default.
-- Worker has no direct access to the SQLite database or the Vault; see [ADR-0003](./0003-worker-via-tool-protocol.md).
+- Worker has no direct access to the SQLite database; see [ADR-0003](./0003-worker-via-tool-protocol.md).
