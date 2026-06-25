@@ -4,6 +4,8 @@ import { readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
 	fauxAssistantMessage,
+	fauxText,
+	fauxThinking,
 	fauxToolCall,
 	registerFauxProvider,
 	streamSimple,
@@ -1178,6 +1180,18 @@ export function fauxDepsFor(manifest: WorkerManifest): InterpreterDeps {
 				const parts = prior.map((m) => `${m.role}=${textOf(m.content)}`);
 				return textTurn(`history:${parts.join("|")}`);
 			},
+		]);
+	} else if (process.env.INKSTONE_FAUX_THINKING !== undefined) {
+		// Thinking mode (e2e, ADR-0045 reasoning amendment): one turn emitting a
+		// reasoning block then the reply, so the Client renders a collapsed reasoning
+		// segment that survives reload. The thinking text rides in the env var; the
+		// reply is fixed.
+		const thinking = process.env.INKSTONE_FAUX_THINKING;
+		faux.setResponses([
+			fauxAssistantMessage([
+				fauxThinking(thinking),
+				fauxText("Here is the answer."),
+			]),
 		]);
 	} else {
 		faux.setResponses([
