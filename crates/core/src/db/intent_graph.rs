@@ -82,8 +82,9 @@ struct ResolvedCreate {
     payload: serde_json::Value,
     handle: String,
     /// The JE node's optional `existing_id` anchor-reuse hint (ADR-0042). A
-    /// graph-local hint key (like `handle`) STRIPPED from `payload`; carried here
-    /// so a later slice can reuse the named Journal Entry instead of minting.
+    /// graph-local hint key (like `handle`) STRIPPED from `payload`; carried here so
+    /// `apply_intent_graph_proposal` can route a JE node WITH one to
+    /// `anchor_reuse_journal_entry` (reuse the named JE) instead of minting.
     /// `None` for entity-node `ResolvedCreate`s and JE-less direct capture.
     existing_id: Option<String>,
 }
@@ -810,8 +811,10 @@ async fn weave_and_mint_journal_entry(
         kind: je.kind,
         payload,
         handle: je.handle.clone(),
-        // Preserve the anchor-reuse hint through the weave (read by a later slice).
-        existing_id: je.existing_id.clone(),
+        // This is the create-mode weave: it is only reached when the JE node carries
+        // NO `existing_id` (a node WITH one routes to `anchor_reuse_journal_entry`
+        // instead). So this is always `None`, and the minted JE is newborn.
+        existing_id: None,
     };
     // The JE node's `created_from` user-Message guard row (ADR-0042) — resolved
     // INSIDE this tx, exactly as `apply_proposal` resolves a message-sourced
@@ -909,13 +912,22 @@ async fn anchor_reuse_journal_entry(
             )
         })?;
 
-    // 3. Splice each surviving journal_ref into the stored body + plan its backlink.
+    // 3. For each surviving journal_ref: write its backlink, read back the
+    //    AUTHORITATIVE ref_id, then splice that id into the stored body.
     //    Keyed by the resolved TARGET ENTITY id (UNIQUE(source,target) on entity_refs),
     //    so two handles → one entity share one ref_id and one row.
+    //
+    //    The backlink is inserted HERE (before the revision write) — not after —
+    //    so the body chip carries the row's REAL id. `insert_entity_ref` is
+    //    ON CONFLICT(source,target) DO NOTHING, so when this (JE, target) was
+    //    already anchored (a repeat re-scan, or the same entity chipped earlier),
+    //    the insert no-ops and KEEPS the existing row's id; re-reading it via
+    //    `entity_ref_id_for_source_target` returns that authoritative id, which the
+    //    body then splices on — never a freshly-minted id with no backing row (the
+    //    dangling-chip bug). This mirrors the single-entity reference path
+    //    (`apply::reference_existing_entity_from_journal_entry`).
     let mut entity_ref_id: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
-    // The backlink rows to insert after the revision lands: (ref_id, target_id, label).
-    let mut weave_plan: Vec<(String, String, Option<String>)> = Vec::new();
     for link in links
         .iter()
         .filter(|l| matches!(l.kind, LinkKind::JournalRef) && l.from == je.handle)
@@ -936,16 +948,38 @@ async fn anchor_reuse_journal_entry(
                 link.to
             ))
         })?;
-        // Reuse this entity's ref_id if a prior link already targeted it; else mint
-        // one + plan the single row. Either way the body splices on that ref_id.
+        // Reuse this entity's authoritative ref_id if a prior link this call already
+        // resolved it; else insert the backlink + read the row's real id.
         let ref_id = match entity_ref_id.get(entity_id) {
             Some(existing) => existing.clone(),
             None => {
-                let ref_id = Uuid::now_v7().to_string();
-                entity_ref_id.insert(entity_id.clone(), ref_id.clone());
+                let proposed_ref_id = Uuid::now_v7().to_string();
                 let label = handle_to_label.get(&link.to).cloned();
-                weave_plan.push((ref_id.clone(), entity_id.clone(), label));
-                ref_id
+                queries::insert_entity_ref(
+                    &mut **tx,
+                    &proposed_ref_id,
+                    existing_id,
+                    entity_id,
+                    label.as_deref(),
+                    now_ms,
+                )
+                .await?;
+                // Read the row's id back: on ON CONFLICT this is the EXISTING row's
+                // id (re-anchor), not the proposed one — so the body never carries a
+                // dangling ref_id.
+                let authoritative = queries::entity_ref_id_for_source_target(
+                    &mut **tx,
+                    existing_id,
+                    entity_id,
+                )
+                .await?
+                .ok_or_else(|| {
+                    ApplyError::InvalidMutation(
+                        "failed to create or find entity_ref for source and target".to_string(),
+                    )
+                })?;
+                entity_ref_id.insert(entity_id.clone(), authoritative.clone());
+                authoritative
             }
         };
         // Splice the chip into the running body — fails LOUD (whole tx rolls back) if
@@ -990,21 +1024,8 @@ async fn anchor_reuse_journal_entry(
     )
     .await?;
 
-    // Insert the backlink rows now that the body carries their ref_ids. ON CONFLICT
-    // DO NOTHING makes re-anchoring an already-anchored entity a no-op (the splice
-    // above already failed if the prose was gone, so a duplicate ref reaches here only
-    // when its match_text still exists as plain text — see the suppression test).
-    for (ref_id, target_entity_id, label) in &weave_plan {
-        queries::insert_entity_ref(
-            &mut **tx,
-            ref_id,
-            existing_id,
-            target_entity_id,
-            label.as_deref(),
-            now_ms,
-        )
-        .await?;
-    }
+    // Backlinks were already inserted in step 3 (before the splice) so the body
+    // could carry each row's authoritative ref_id; nothing more to write here.
 
     Ok(existing_id.to_string())
 }
@@ -2790,6 +2811,25 @@ mod tests {
             1,
             "re-anchoring an already-anchored entity writes no duplicate row"
         );
+        // The spliced body chip points at the SURVIVING row's id (`pre_ref`), NOT a
+        // freshly-minted one — re-anchor must reuse the existing entity_ref id, or the
+        // body would carry a dangling ref_id with no backing row (the chip would render
+        // as an un-clickable "Referenced entity" and orphan the backlink).
+        let body = current_je_body(&pool, &scaffold.je_id).await;
+        assert!(
+            body.contains(&serde_json::json!({ "type": "entity_ref", "ref_id": pre_ref })),
+            "the re-anchor chip reuses the existing backlink's ref_id, never a dangling new one: {body:?}"
+        );
+        // And no orphan: the body's entity_ref ref_id resolves to a real row.
+        let surviving_id: String = sqlx::query_scalar(
+            "SELECT id FROM entity_refs WHERE source_entity_id = ?1 AND target_entity_id = ?2",
+        )
+        .bind(&scaffold.je_id)
+        .bind(&priya)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(surviving_id, pre_ref, "the surviving entity_ref row kept its original id");
         // No NEW Priya minted.
         let person_count: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM entities WHERE type = 'person'")

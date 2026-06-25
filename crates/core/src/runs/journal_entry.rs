@@ -27,8 +27,8 @@ use crate::worker;
 
 /// The fixed re-scan instruction. Names the JE and asks the agent to surface
 /// only entities mentioned but not yet captured. The re-scan recognition prompt
-/// lives in `default.toml`'s system prompt (a later slice); this is the user
-/// turn that triggers the run.
+/// lives in `default.toml`'s system prompt; this is the user turn that triggers
+/// the run.
 fn rescan_prompt(je_id: &str) -> String {
     format!(
         "Re-scan the journal entry {je_id} for any people, projects, or tasks I \
