@@ -27,6 +27,7 @@ import {
 	type Project,
 	type RecurrenceRule,
 	type Todo,
+	type TodoPersonRole,
 } from "@/lib/libraryItems";
 
 // The relaxed read-data schemas (@inkstone/protocol) own each Entity Type's
@@ -365,8 +366,12 @@ export interface TodoDraft {
 	projectId: string;
 	dueDay: string;
 	deferDay: string;
-	/** A single `waiting_on` person link — the minimal-but-real ref op (ADR-0032). */
-	waitingPersonId: string;
+	/**
+	 * The Todo's full Person-Reference set (ADR-0031/0032) — any mix of
+	 * `waiting_on`/`related`, at most once per Person. The editor edits this set
+	 * directly; the build emits `person_refs` (create) / `set_person_refs` (update).
+	 */
+	personRefs: { personId: string; role: TodoPersonRole }[];
 	/** The "Repeats" toggle (ADR-0037). The fields below drive only when on. */
 	recurs: boolean;
 	/** Interval as text, like `dueDay` — coerced to a number on build. */
@@ -404,7 +409,6 @@ function stashRecurExtra(
 
 /** The editable draft for a Todo (or a fresh blank draft when `todo` is absent). */
 function todoDraftFromVm(todo: Todo | undefined): TodoDraft {
-	const waiting = todo?.personRefs.find((r) => r.role === "waiting_on");
 	const rule = todo?.recurrence;
 	return {
 		title: todo?.title ?? "",
@@ -413,7 +417,12 @@ function todoDraftFromVm(todo: Todo | undefined): TodoDraft {
 		projectId: todo?.projectId ?? "",
 		dueDay: todo?.dueAt ? todo.dueAt.slice(0, 10) : "",
 		deferDay: todo?.deferAt ? todo.deferAt.slice(0, 10) : "",
-		waitingPersonId: waiting?.personId ?? "",
+		// Copy the WHOLE ref set so an edit round-trips every role; the old
+		// waiting_on-only read silently dropped any `related` ref on save.
+		personRefs: (todo?.personRefs ?? []).map((r) => ({
+			personId: r.personId,
+			role: r.role,
+		})),
 		recurs: rule != null,
 		recurInterval: rule ? String(rule.interval) : "1",
 		recurUnit: rule?.unit ?? "week",
@@ -428,7 +437,9 @@ function todoDraftFromVm(todo: Todo | undefined): TodoDraft {
  * the editor only emits a rule once that date exists — the one client-knowable
  * trap, gated for good UX (Core still owns the rest of validation).
  */
-function recurAnchorDatePresent(d: TodoDraft): boolean {
+function recurAnchorDatePresent(
+	d: Pick<TodoDraft, "recurAnchor" | "dueDay" | "deferDay">,
+): boolean {
 	return d.recurAnchor === "due_at" ? d.dueDay !== "" : d.deferDay !== "";
 }
 
@@ -452,10 +463,17 @@ function buildRecurrence(d: TodoDraft): Record<string, unknown> {
 	return rule;
 }
 
+/** Map the draft's full ref set to the snake_case wire shape Core wants. */
+function wirePersonRefs(
+	refs: TodoDraft["personRefs"],
+): Array<{ person_id: string; role: TodoPersonRole }> {
+	return refs.map((r) => ({ person_id: r.personId, role: r.role }));
+}
+
 /**
  * Build the `create_todo` payload from a draft, OMITTING empty optionals (Core
  * rejects explicit-null on create — ADR-0031/slice-3). `person_refs` is included
- * only when a person is linked.
+ * only when at least one Person is linked.
  */
 function buildCreateParams(d: TodoDraft): EntityMutateParams {
 	const todo: Record<string, unknown> = { title: d.title.trim() };
@@ -471,19 +489,32 @@ function buildCreateParams(d: TodoDraft): EntityMutateParams {
 	if (recurActive(d)) todo.recurrence = buildRecurrence(d);
 
 	const payload: Record<string, unknown> = { todo };
-	if (d.waitingPersonId) {
-		payload.person_refs = [
-			{ person_id: d.waitingPersonId, role: "waiting_on" },
-		];
-	}
+	if (d.personRefs.length > 0)
+		payload.person_refs = wirePersonRefs(d.personRefs);
 	return { mutation_kind: "create_todo", payload };
+}
+
+/**
+ * Canonical form of a ref set for an order-insensitive "changed?" compare: map to
+ * the wire shape, sort by `person_id` then `role`, and stringify. Two sets are
+ * equal iff their canon strings match, regardless of row order.
+ */
+function canonPersonRefs(refs: TodoDraft["personRefs"]): string {
+	return JSON.stringify(
+		wirePersonRefs(refs).sort(
+			(a, b) =>
+				a.person_id.localeCompare(b.person_id) || a.role.localeCompare(b.role),
+		),
+	);
 }
 
 /**
  * Build the `update_todo` payload as the DIFF of `next` against `prev`: only
  * changed scalar fields in the `todo` partial (a cleared optional sends `null`),
- * and `set_person_refs` only when the waiting_on link changed. Returns `null`
- * when nothing changed so the caller can skip the write.
+ * and `set_person_refs` only when the desired ref set changed. The person diff is
+ * a wholesale, order-insensitive full-set REPLACE — `set_person_refs` carries the
+ * complete next set (Core delete-all+inserts it, and `[]` clears all). Returns
+ * `null` when nothing changed so the caller can skip the write.
  *
  * HAND-BUILT, not schema-encoded: the sentinel-null clears are a validator-only
  * extension the advertised update_todo schema rejects (constraint #1).
@@ -529,19 +560,12 @@ function buildUpdateParams(
 	const payload: Record<string, unknown> = { todo_id: todo.id };
 	if (Object.keys(partial).length > 0) payload.todo = partial;
 
-	// Person refs are a set; rebuild from the existing refs minus the old
-	// waiting_on link plus the new one, and `set_person_refs` only if it differs.
-	if (next.waitingPersonId !== prev.waitingPersonId) {
-		const kept = todo.personRefs
-			.filter((r) => r.role !== "waiting_on")
-			.map((r) => ({ person_id: r.personId, role: r.role }));
-		const refs = next.waitingPersonId
-			? [
-					...kept,
-					{ person_id: next.waitingPersonId, role: "waiting_on" as const },
-				]
-			: kept;
-		payload.set_person_refs = refs;
+	// Person refs diff as a SET, order-insensitively. When the desired set differs
+	// from the stored one, emit `set_person_refs` with the COMPLETE next set —
+	// Core's set_person_refs is a wholesale delete-all+insert replace, and `[]`
+	// clears all (ADR-0033). No add/remove ops: the full set is the directive.
+	if (canonPersonRefs(prev.personRefs) !== canonPersonRefs(next.personRefs)) {
+		payload.set_person_refs = wirePersonRefs(next.personRefs);
 	}
 
 	const touched = "todo" in payload || "set_person_refs" in payload;
