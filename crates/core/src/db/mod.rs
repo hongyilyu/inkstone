@@ -221,62 +221,18 @@ pub async fn list_by_type(pool: &SqlitePool, entity_type: &str) -> sqlx::Result<
         })
         .collect::<sqlx::Result<Vec<_>>>()?;
 
-    // Attach each row's origin provenance ("Captured from", ADR-0030), batched
-    // like the journal refs below to avoid an N+1 over the listed Entities. The
-    // query returns oldest-first per Entity, so the FIRST row per id is the true
-    // origin `created_from` (later cross-Thread sources, if any, are ignored).
-    let entity_ids = rows.iter().map(|row| row.id.clone()).collect::<Vec<_>>();
-    let provenance = queries::provenance_for_entities(pool, &entity_ids).await?;
-    let mut provenance_by_entity = HashMap::<String, EntityProvenance>::new();
-    for (entity_id, source_entity_id, thread_id, thread_title) in provenance {
-        provenance_by_entity
-            .entry(entity_id)
-            .or_insert_with(|| match source_entity_id {
-                Some(journal_entry_id) => EntityProvenance::JournalEntry { journal_entry_id },
-                // Exactly one source kind is non-NULL (schema CHECK); a Message
-                // source carries its Thread id, and the Thread title is present
-                // for every real Thread. Default the title defensively rather
-                // than dropping the whole provenance if the join is somehow thin.
-                None => EntityProvenance::Message {
-                    thread_id: thread_id.unwrap_or_default(),
-                    thread_title: thread_title.unwrap_or_default(),
-                },
-            });
-    }
-    for row in &mut rows {
-        row.source = provenance_by_entity.remove(&row.id);
-    }
+    // Attach each row's origin provenance ("Captured from", ADR-0030), batched to
+    // avoid an N+1 over the listed Entities.
+    attach_provenance(pool, &mut rows).await?;
 
+    // A Journal Entry row carries its outgoing refs; a Todo row carries its Person
+    // References (ADR-0032), each batched. The same helpers back the targeted
+    // `entity/backlinks` read so the row shapes can't drift.
     if entity_type == "journal_entry" {
-        let source_entity_ids = rows.iter().map(|row| row.id.clone()).collect::<Vec<_>>();
-        let refs = resolved_entity_refs_for_sources(pool, &source_entity_ids).await?;
-        let mut refs_by_source = HashMap::<String, Vec<ResolvedEntityRef>>::new();
-        for entity_ref in refs {
-            refs_by_source
-                .entry(entity_ref.source_entity_id.clone())
-                .or_default()
-                .push(entity_ref);
-        }
-        for row in &mut rows {
-            row.refs = refs_by_source.remove(&row.id).unwrap_or_default();
-        }
+        attach_journal_entry_refs(pool, &mut rows).await?;
     }
-
-    // Attach each Todo's Person References (ADR-0032), batched like journal refs
-    // above to avoid an N+1 over the listed Todos.
     if entity_type == "todo" {
-        let todo_ids = rows.iter().map(|row| row.id.clone()).collect::<Vec<_>>();
-        let refs = queries::person_refs_for_todos(pool, &todo_ids).await?;
-        let mut refs_by_todo = HashMap::<String, Vec<(String, String)>>::new();
-        for (todo_id, person_id, role) in refs {
-            refs_by_todo
-                .entry(todo_id)
-                .or_default()
-                .push((person_id, role));
-        }
-        for row in &mut rows {
-            row.person_refs = refs_by_todo.remove(&row.id).unwrap_or_default();
-        }
+        attach_person_refs(pool, &mut rows).await?;
     }
 
     Ok(rows)
@@ -407,34 +363,10 @@ async fn mentioned_in_journal_entries(
         })
         .collect::<sqlx::Result<Vec<_>>>()?;
 
-    // Attach each JE's refs + Captured-from source exactly as the `journal_entry`
-    // branch of `list_by_type` does.
-    let source_entity_ids = rows.iter().map(|row| row.id.clone()).collect::<Vec<_>>();
-    let resolved_refs = resolved_entity_refs_for_sources(pool, &source_entity_ids).await?;
-    let mut refs_by_source = HashMap::<String, Vec<ResolvedEntityRef>>::new();
-    for entity_ref in resolved_refs {
-        refs_by_source
-            .entry(entity_ref.source_entity_id.clone())
-            .or_default()
-            .push(entity_ref);
-    }
-    let provenance = queries::provenance_for_entities(pool, &source_entity_ids).await?;
-    let mut provenance_by_entity = HashMap::<String, EntityProvenance>::new();
-    for (je_id, source_entity_id, thread_id, thread_title) in provenance {
-        provenance_by_entity
-            .entry(je_id)
-            .or_insert_with(|| match source_entity_id {
-                Some(journal_entry_id) => EntityProvenance::JournalEntry { journal_entry_id },
-                None => EntityProvenance::Message {
-                    thread_id: thread_id.unwrap_or_default(),
-                    thread_title: thread_title.unwrap_or_default(),
-                },
-            });
-    }
-    for row in &mut rows {
-        row.refs = refs_by_source.remove(&row.id).unwrap_or_default();
-        row.source = provenance_by_entity.remove(&row.id);
-    }
+    // Attach each JE's refs + Captured-from source via the same helpers
+    // `list_by_type`'s `journal_entry` branch uses, so the two reads can't drift.
+    attach_journal_entry_refs(pool, &mut rows).await?;
+    attach_provenance(pool, &mut rows).await?;
 
     // Newest-occurred first; the JE's `occurred_at` is an ISO-8601 string in
     // `data`, so a reverse string compare is chronological. Stable tie-break by id.
@@ -445,6 +377,54 @@ async fn mentioned_in_journal_entries(
     });
 
     Ok(rows)
+}
+
+/// Attach each row's origin provenance ("Captured from", ADR-0030) in one batched
+/// read. The query returns oldest-first per Entity, so the FIRST row per id is the
+/// true origin `created_from`; later cross-Thread sources (if any) are ignored.
+/// Exactly one source kind is non-NULL (schema CHECK); a Message source carries
+/// its Thread id + title, defaulted defensively rather than dropping the whole
+/// provenance if the join is somehow thin. Shared by [`list_by_type`] (all rows)
+/// and [`mentioned_in_journal_entries`] (the JE rows) so the two reads can't drift.
+async fn attach_provenance(pool: &SqlitePool, rows: &mut [EntityRow]) -> sqlx::Result<()> {
+    let entity_ids = rows.iter().map(|row| row.id.clone()).collect::<Vec<_>>();
+    let provenance = queries::provenance_for_entities(pool, &entity_ids).await?;
+    let mut provenance_by_entity = HashMap::<String, EntityProvenance>::new();
+    for (entity_id, source_entity_id, thread_id, thread_title) in provenance {
+        provenance_by_entity
+            .entry(entity_id)
+            .or_insert_with(|| match source_entity_id {
+                Some(journal_entry_id) => EntityProvenance::JournalEntry { journal_entry_id },
+                None => EntityProvenance::Message {
+                    thread_id: thread_id.unwrap_or_default(),
+                    thread_title: thread_title.unwrap_or_default(),
+                },
+            });
+    }
+    for row in &mut *rows {
+        row.source = provenance_by_entity.remove(&row.id);
+    }
+    Ok(())
+}
+
+/// Attach each Journal-Entry row's outgoing Entity References (ADR-0030) in one
+/// batched read. Shared by [`list_by_type`]'s `journal_entry` branch and
+/// [`mentioned_in_journal_entries`] so a JE row carries the same `refs` whichever
+/// read produced it.
+async fn attach_journal_entry_refs(pool: &SqlitePool, rows: &mut [EntityRow]) -> sqlx::Result<()> {
+    let source_entity_ids = rows.iter().map(|row| row.id.clone()).collect::<Vec<_>>();
+    let refs = resolved_entity_refs_for_sources(pool, &source_entity_ids).await?;
+    let mut refs_by_source = HashMap::<String, Vec<ResolvedEntityRef>>::new();
+    for entity_ref in refs {
+        refs_by_source
+            .entry(entity_ref.source_entity_id.clone())
+            .or_default()
+            .push(entity_ref);
+    }
+    for row in rows {
+        row.refs = refs_by_source.remove(&row.id).unwrap_or_default();
+    }
+    Ok(())
 }
 
 /// Attach each Todo row's Person References (ADR-0032) in one batched read,

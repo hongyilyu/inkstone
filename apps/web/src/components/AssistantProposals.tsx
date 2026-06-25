@@ -1,4 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
+import { invalidateEntityReads } from "@/lib/entityReads";
 import { useRuntime } from "@/runtime";
 import { decideProposal } from "@/store/bridge";
 import { useProposalForRun } from "@/store/chat";
@@ -24,16 +25,11 @@ export function AssistantProposals({ runId }: { runId: string }) {
 						editedPayload,
 						decisions,
 					);
-					// accept/edit creates an Entity → refresh the Library; reject creates nothing.
+					// accept/edit creates an Entity → refresh both entity reads (the
+					// Library list and any open Inspector's backlinks, ADR-0050) through
+					// the one owner of that policy; reject creates nothing.
 					if (decision !== "reject") {
-						await queryClient.invalidateQueries({
-							queryKey: ["library-items"],
-						});
-						// An accepted mention/link can change an open Entity's backlinks, so
-						// refresh the detail Inspector's read too (ADR-0050).
-						await queryClient.invalidateQueries({
-							queryKey: ["entity-backlinks"],
-						});
+						await invalidateEntityReads(queryClient);
 					}
 					// Every decision advances the parked Run (it resumes and runs to a
 					// new milestone), so the recent-Runs feed is now stale regardless of

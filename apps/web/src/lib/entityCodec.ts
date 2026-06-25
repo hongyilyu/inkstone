@@ -322,6 +322,32 @@ function parseBookmark(row: LiveEntityRow): Bookmark {
 	} satisfies Bookmark;
 }
 
+/**
+ * Parse a set of live rows, DROPPING (and warning about) any row that throws.
+ * `parseJournalEntry` is strict — it throws on a malformed entry — and a read maps
+ * many rows into one list, so an un-guarded throw would reject the whole read and
+ * blank everything, not just the bad row. Dropping the offender keeps the rest
+ * renderable; the `console.warn` ensures it isn't lost silently (a plain browser
+ * diagnostic — Web capture is out of the ADR-0038 trail). The fail-soft parsers
+ * never throw, so they always pass through. The single owner of this decode policy
+ * for every `entity/*` read hook (`useLibraryItems`, `useEntityBacklinks`).
+ */
+export function parseRowsDroppingMalformed<T>(
+	kind: string,
+	rows: readonly LiveEntityRow[],
+	parse: (row: LiveEntityRow) => T,
+): T[] {
+	const items: T[] = [];
+	for (const row of rows) {
+		try {
+			items.push(parse(row));
+		} catch (error) {
+			console.warn(`Dropping unparseable ${kind} row ${row.id}:`, error);
+		}
+	}
+	return items;
+}
+
 // ---------------------------------------------------------------------------
 // BUILD direction (draft → mutation payload). The codec OWNS the todo draft↔wire
 // mapping — "one place" for the wire shape. The TODO build is the hardest kind:

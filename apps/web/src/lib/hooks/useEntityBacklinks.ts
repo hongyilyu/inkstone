@@ -3,16 +3,11 @@ import { WsClient } from "@inkstone/ui-sdk";
 import { useQuery } from "@tanstack/react-query";
 import { Effect } from "effect";
 import {
-	type LiveEntityRow,
 	parseJournalEntry,
+	parseRowsDroppingMalformed,
 	parseTodo,
 } from "@/lib/entityCodec";
-import type {
-	JournalEntry,
-	LibraryItem,
-	LibraryItemKind,
-	Todo,
-} from "@/lib/libraryItems";
+import type { JournalEntry, LibraryItemKind, Todo } from "@/lib/libraryItems";
 import { useRuntime } from "@/runtime";
 
 /** The Entity kinds that can be an `entity_ref`/link target (ADR-0050) — the only
@@ -22,46 +17,24 @@ function targetsBacklinks(kind: LibraryItemKind): boolean {
 	return kind === "person" || kind === "project" || kind === "todo";
 }
 
-/**
- * Parse a backlink row set, DROPPING (and warning about) any row that throws —
- * the exact discipline `useLibraryItems`' `parseKind` uses. `parseJournalEntry`
- * is strict (it throws on a malformed entry), so one bad "Mentioned in" row would
- * otherwise reject the whole read and blank every backlink section; dropping it
- * keeps the rest renderable. (`console.warn` is a plain browser diagnostic — Web
- * capture is out of the ADR-0038 trail.) `parseTodo` is fail-soft and never throws.
- */
-function parseRows<T extends LibraryItem>(
-	kind: string,
-	rows: readonly LiveEntityRow[],
-	parse: (row: LiveEntityRow) => T,
-): T[] {
-	const items: T[] = [];
-	for (const row of rows) {
-		try {
-			items.push(parse(row));
-		} catch (error) {
-			console.warn(
-				`Dropping unparseable ${kind} backlink row ${row.id}:`,
-				error,
-			);
-		}
-	}
-	return items;
-}
-
-/** Map an `EntityBacklinksResult` into the inspector's two view-model sets. Pure —
+/** Map an `EntityBacklinksResult` into the inspector's two view-model sets, dropping
+ * any malformed row via the shared `parseRowsDroppingMalformed` decode policy. Pure —
  * unit-testable; the hook below only supplies the wire result. */
 export function assembleBacklinks(result: EntityBacklinksResult): {
 	mentionedIn: JournalEntry[];
 	linkedTodos: Todo[];
 } {
 	return {
-		mentionedIn: parseRows(
+		mentionedIn: parseRowsDroppingMalformed(
 			"journal_entry",
 			result.mentioned_in,
 			parseJournalEntry,
 		),
-		linkedTodos: parseRows("todo", result.linked_todos, parseTodo),
+		linkedTodos: parseRowsDroppingMalformed(
+			"todo",
+			result.linked_todos,
+			parseTodo,
+		),
 	};
 }
 
@@ -94,10 +67,16 @@ export function useEntityBacklinks(entityId: string, kind: LibraryItemKind) {
 			return assembleBacklinks(result);
 		},
 	});
+	// `degraded` is the inspector's fallback signal: the read failed AND no good
+	// data is cached. A refetch that fails *after* a successful load (e.g. an
+	// invalidation fires while Core is briefly unreachable) keeps `query.data`, so
+	// the last good backlinks stay authoritative rather than flipping the sections
+	// to the `allEntities` fallback on a transient blip — only a cold failure with
+	// nothing cached degrades.
 	return {
 		mentionedIn: query.data?.mentionedIn ?? [],
 		linkedTodos: query.data?.linkedTodos ?? [],
-		isError: query.isError,
+		degraded: query.isError && query.data === undefined,
 		isPending: query.isPending,
 	};
 }

@@ -629,11 +629,12 @@ function PersonBody({
 	onOpen: (e: LibraryItem) => void;
 }) {
 	const backlinks = useEntityBacklinks(person.id, person.kind);
-	// Waiting / Tasks re-source from Core's reverse lookup (ADR-0050). On a read
-	// error the relation never vanishes — it degrades to the client-derived set
-	// over `allEntities` (the exact pre-Core derivation). Projects (Person→Projects)
-	// stays a client join (ADR-0050 narrow scope).
-	const tasks = backlinks.isError
+	// Waiting / Tasks re-source from Core's reverse lookup (ADR-0050). Only a cold
+	// failure with no cached read degrades to the client-derived set over
+	// `allEntities` (the exact pre-Core derivation); a transient refetch failure
+	// keeps the last good Core set. Projects (Person→Projects) stays a client join
+	// (ADR-0050 narrow scope).
+	const tasks = backlinks.degraded
 		? todosForPerson(allEntities, person)
 		: backlinks.linkedTodos;
 	const { waiting, otherTasks } = splitPersonTodos(tasks, person);
@@ -718,10 +719,11 @@ function ProjectBody({
 	onOpen: (e: LibraryItem) => void;
 }) {
 	const backlinks = useEntityBacklinks(project.id, project.kind);
-	// Todos re-source from Core (ADR-0050); on a read error degrade to the client
-	// derivation over `allEntities` so the relation never vanishes. People and
-	// Progress are cheap client joins over whichever todo set is in play.
-	const todos = backlinks.isError
+	// Todos re-source from Core (ADR-0050); only a cold failure with no cached read
+	// degrades to the client derivation over `allEntities` so the relation never
+	// vanishes (a transient refetch failure keeps the last good Core set). People
+	// and Progress are cheap client joins over whichever todo set is in play.
+	const todos = backlinks.degraded
 		? todosForProject(allEntities, project)
 		: backlinks.linkedTodos;
 	const people = peopleFromTodos(todos, allEntities);
@@ -839,9 +841,9 @@ function withCount(label: string, n: number): string {
  * (ADR-0050 §7) rather than degraded. */
 function mentionsOf(backlinks: {
 	mentionedIn: JournalEntry[];
-	isError: boolean;
+	degraded: boolean;
 }): JournalEntry[] {
-	return backlinks.isError ? [] : backlinks.mentionedIn;
+	return backlinks.degraded ? [] : backlinks.mentionedIn;
 }
 
 /** "Mentioned in" — the distinct Journal Entries that reference this entity, as
