@@ -41,6 +41,7 @@ function makeStubRuntime(opts: {
 		// Park hydrate-on-focus: a focused thread stays `loading` (these tests drive messages directly, not via thread/get).
 		threadGet: () => Effect.never,
 		listEntities: () => unused,
+		getBacklinks: () => unused,
 		entityMutate: () => unused,
 		subscribeRun: () => Stream.fromIterable(opts.events),
 		cancelRun:
@@ -228,6 +229,7 @@ describe("ChatColumn", () => {
 					: Effect.succeed(history);
 			},
 			listEntities: () => unused,
+			getBacklinks: () => unused,
 			entityMutate: () => unused,
 			subscribeRun: () => Stream.empty,
 			cancelRun: () => unused,
@@ -272,6 +274,7 @@ describe("ChatColumn", () => {
 			threadGet: () =>
 				Effect.fail(new UnknownThreadError({ message: "no such thread" })),
 			listEntities: () => unused,
+			getBacklinks: () => unused,
 			entityMutate: () => unused,
 			subscribeRun: () => Stream.empty,
 			cancelRun: () => unused,
@@ -970,6 +973,7 @@ describe("ChatColumn", () => {
 			getRunHistory: () => unused,
 			threadGet: () => Deferred.await(gate),
 			listEntities: () => unused,
+			getBacklinks: () => unused,
 			entityMutate: () => unused,
 			subscribeRun: () => Stream.empty,
 			cancelRun: () => unused,

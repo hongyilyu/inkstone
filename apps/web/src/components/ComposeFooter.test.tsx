@@ -22,6 +22,7 @@ function makeRuntime() {
 		getRunHistory: die,
 		threadGet: die,
 		listEntities: die,
+		getBacklinks: die,
 		entityMutate: die,
 		subscribeRun: dieStream,
 		cancelRun: die,

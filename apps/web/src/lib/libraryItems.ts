@@ -339,33 +339,6 @@ export function todosForPerson(
 }
 
 /**
- * People involved in `project`, derived through the Project's Todos'
- * Person References: Project → Todos → TodoPersonRef → Person (ADR-0031).
- * Distinct, in first-seen order.
- */
-export function peopleForProject(
-	all: LibraryItem[],
-	project: Project,
-): Person[] {
-	const personById = new Map(
-		all.filter((e): e is Person => e.kind === "person").map((p) => [p.id, p]),
-	);
-	const seen = new Set<string>();
-	const people: Person[] = [];
-	for (const todo of todosForProject(all, project)) {
-		for (const ref of todo.personRefs) {
-			if (seen.has(ref.personId)) continue;
-			const person = personById.get(ref.personId);
-			if (person) {
-				seen.add(ref.personId);
-				people.push(person);
-			}
-		}
-	}
-	return people;
-}
-
-/**
  * Projects a `person` is involved in, derived through that Person's Todos:
  * Person → TodoPersonRef → Todo → Project (ADR-0031). Distinct, first-seen order.
  */
@@ -387,26 +360,6 @@ export function projectsForPerson(
 		}
 	}
 	return projects;
-}
-
-/**
- * Journal Entries that inline-reference `target` via an Entity Reference
- * (ADR-0031 "Mentioned in"). Newest occurred first.
- */
-export function journalEntriesMentioning(
-	all: LibraryItem[],
-	target: LibraryItem,
-): JournalEntry[] {
-	return all
-		.filter(
-			(e): e is JournalEntry =>
-				e.kind === "journal_entry" &&
-				e.body.some(
-					(node) =>
-						node.type === "entity_ref" && node.targetEntityId === target.id,
-				),
-		)
-		.sort((a, b) => b.occurredAt.localeCompare(a.occurredAt));
 }
 
 export function projectForTodo(

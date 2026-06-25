@@ -1,14 +1,9 @@
 import { useNavigate } from "@tanstack/react-router";
-import {
-	ArrowUpRight,
-	BookOpenText,
-	MessageSquareText,
-	Pencil,
-	Trash2,
-} from "lucide-react";
+import { ArrowUpRight, MessageSquareText, Pencil, Trash2 } from "lucide-react";
 import { Fragment, type ReactNode, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button.js";
+import { useEntityBacklinks } from "@/lib/hooks/useEntityBacklinks";
 import { useEntityMutation } from "@/lib/hooks/useEntityMutation";
 import type {
 	Bookmark,
@@ -24,14 +19,11 @@ import {
 	bookmarkHref,
 	formatDateTime,
 	formatDay,
-	journalEntriesMentioning,
 	KIND_META,
 	libraryItemSubtitle,
 	libraryItemTitle,
 	PROJECT_STATUS_LABEL,
-	peopleForProject,
 	projectForTodo,
-	projectProgress,
 	projectsForPerson,
 	recurrenceSummary,
 	TODO_STATUS_LABEL,
@@ -104,14 +96,11 @@ const DELETE_KIND: Record<LibraryItemKind, string> = {
  */
 function InspectorShell({
 	entity,
-	allEntities = [],
 	confirmCopy,
 	renderBody,
 	renderEditor,
 }: {
 	entity: LibraryItem;
-	/** Loaded Library items, used to resolve a Journal-Entry source's title. */
-	allEntities?: LibraryItem[];
 	confirmCopy: string;
 	renderBody: (onOpen: (e: LibraryItem) => void) => ReactNode;
 	renderEditor: (onDone: () => void, onCancel: () => void) => ReactNode;
@@ -183,8 +172,6 @@ function InspectorShell({
 				{renderBody(goToEntity)}
 				<CapturedFrom
 					entity={entity}
-					allEntities={allEntities}
-					onOpenEntity={goToEntity}
 					onOpenThread={(threadId) =>
 						navigate({ to: "/thread/$threadId", params: { threadId } })
 					}
@@ -252,7 +239,6 @@ function TodoDetail({
 	return (
 		<InspectorShell
 			entity={todo}
-			allEntities={allEntities}
 			confirmCopy="Delete this Todo?"
 			renderBody={(onOpen) => (
 				<TodoBody todo={todo} allEntities={allEntities} onOpen={onOpen} />
@@ -281,7 +267,6 @@ function PersonDetail({
 	return (
 		<InspectorShell
 			entity={person}
-			allEntities={allEntities}
 			confirmCopy="Delete this Person?"
 			renderBody={(onOpen) => (
 				<PersonBody person={person} allEntities={allEntities} onOpen={onOpen} />
@@ -313,7 +298,6 @@ function ProjectDetail({
 	return (
 		<InspectorShell
 			entity={project}
-			allEntities={allEntities}
 			confirmCopy="Delete this Project? Its Todos lose their project."
 			renderBody={(onOpen) => (
 				<ProjectBody
@@ -348,7 +332,6 @@ function JournalEntryDetail({
 	return (
 		<InspectorShell
 			entity={journalEntry}
-			allEntities={allEntities}
 			confirmCopy="Delete this Journal Entry?"
 			renderBody={(onOpen) => (
 				<JournalEntryBody
@@ -396,48 +379,24 @@ function BookmarkDetail({ bookmark }: { bookmark: Bookmark }) {
 }
 
 /**
- * The Inspector's "Captured from" provenance footer (ADR-0030). Rendered ONLY
- * when the Entity's origin resolves to a working link — a Thread source (link
- * back to the originating chat) or a Journal-Entry source still present in the
- * Library (link to that entry). Everything else renders nothing: a user-authored
- * Entity has no source, and an extracted Entity whose source row was removed
- * (the source Journal Entry/Message was deleted — `entity_sources` cascades) can
- * no longer point anywhere, so a dead "captured from …" line would mislead. The
- * signature magenta is reserved for the link title (a rationed "captured-from
- * link", per DESIGN.md); the footer reads as quiet metadata, not a CTA.
+ * The Inspector's "Captured from" provenance footer (ADR-0030). The chat-origin
+ * link only: a Thread-sourced Entity links back to the originating chat, which
+ * DESIGN.md pins as an Inspector signature (the chat→knowledge origin). A
+ * Journal-Entry-sourced Entity renders nothing here — its relationship surfaces
+ * canonically under "Mentioned in" via backlinks (ADR-0050) — and a user-authored
+ * Entity has no source at all. The `entity_sources` row is never touched; this is
+ * display only. The signature magenta is reserved for the link title (a rationed
+ * "captured-from link", per DESIGN.md); the footer reads as quiet metadata, not a CTA.
  */
 function CapturedFrom({
 	entity,
-	allEntities,
-	onOpenEntity,
 	onOpenThread,
 }: {
 	entity: LibraryItem;
-	allEntities: LibraryItem[];
-	onOpenEntity: (e: LibraryItem) => void;
 	onOpenThread: (threadId: string) => void;
 }) {
 	const source = entity.source;
-	if (!source) return null;
-
-	if (source.kind === "journal_entry") {
-		const target = allEntities.find((e) => e.id === source.journalEntryId);
-		// The source entry is gone (deleted): no resolvable link, so render nothing
-		// rather than a dead row.
-		if (!target) return null;
-		return (
-			<ProvenanceFrame>
-				<ProvenanceLink
-					icon={<BookOpenText className="size-4 shrink-0" aria-hidden />}
-					// A text-only entry's title is its body text; fall back so the link
-					// always has an accessible name (mirrors the Thread branch below).
-					title={libraryItemTitle(target) || "Untitled journal entry"}
-					date={entity.createdAt}
-					onClick={() => onOpenEntity(target)}
-				/>
-			</ProvenanceFrame>
-		);
-	}
+	if (!source || source.kind !== "thread") return null;
 
 	return (
 		<ProvenanceFrame>
@@ -639,6 +598,27 @@ function EntityRefChip({
 	);
 }
 
+/** Active `waiting_on` todos for `person`, then everything else, off a todo set.
+ * "Waiting on" means *actively* waiting (ADR-0031: is_waiting requires
+ * status === "active"); a resolved waiting_on todo is historical and falls through
+ * to "Tasks". Applied to the Core `linkedTodos` set (ADR-0050) — the same predicate
+ * `todosForPerson(..., "waiting_on")` used over `allEntities`, with `personRefs`
+ * riding along on each Core row. */
+function splitPersonTodos(
+	todos: Todo[],
+	person: Person,
+): { waiting: Todo[]; otherTasks: Todo[] } {
+	const waiting = todos.filter(
+		(t) =>
+			t.status === "active" &&
+			t.personRefs.some(
+				(ref) => ref.personId === person.id && ref.role === "waiting_on",
+			),
+	);
+	const waitingIds = new Set(waiting.map((t) => t.id));
+	return { waiting, otherTasks: todos.filter((t) => !waitingIds.has(t.id)) };
+}
+
 function PersonBody({
 	person,
 	allEntities,
@@ -648,16 +628,17 @@ function PersonBody({
 	allEntities: LibraryItem[];
 	onOpen: (e: LibraryItem) => void;
 }) {
+	const backlinks = useEntityBacklinks(person.id, person.kind);
+	// Waiting / Tasks re-source from Core's reverse lookup (ADR-0050). Only a cold
+	// failure with no cached read degrades to the client-derived set over
+	// `allEntities` (the exact pre-Core derivation); a transient refetch failure
+	// keeps the last good Core set. Projects (Person→Projects) stays a client join
+	// (ADR-0050 narrow scope).
+	const tasks = backlinks.degraded
+		? todosForPerson(allEntities, person)
+		: backlinks.linkedTodos;
+	const { waiting, otherTasks } = splitPersonTodos(tasks, person);
 	const projects = projectsForPerson(allEntities, person);
-	const tasks = todosForPerson(allEntities, person);
-	// "Waiting on" means actively waiting (ADR-0031: is_waiting requires
-	// status === "active"). A resolved waiting_on todo is historical and falls
-	// through to "Tasks" below, not this follow-up section.
-	const waiting = todosForPerson(allEntities, person, "waiting_on").filter(
-		(t) => t.status === "active",
-	);
-	const waitingIds = new Set(waiting.map((t) => t.id));
-	const otherTasks = tasks.filter((t) => !waitingIds.has(t.id));
 	return (
 		<>
 			{person.aliases && person.aliases.length > 0 ? (
@@ -671,7 +652,7 @@ function PersonBody({
 				</Field>
 			) : null}
 			{waiting.length > 0 ? (
-				<Field label="Waiting on">
+				<Field label={withCount("Waiting on", waiting.length)}>
 					<div className="-mx-2 flex flex-col">
 						{waiting.map((t) => (
 							<RelatedRow key={t.id} entity={t} onOpen={onOpen} />
@@ -680,7 +661,7 @@ function PersonBody({
 				</Field>
 			) : null}
 			{otherTasks.length > 0 ? (
-				<Field label="Tasks">
+				<Field label={withCount("Tasks", otherTasks.length)}>
 					<div className="-mx-2 flex flex-col">
 						{otherTasks.map((t) => (
 							<RelatedRow key={t.id} entity={t} onOpen={onOpen} />
@@ -697,9 +678,35 @@ function PersonBody({
 					</div>
 				</Field>
 			) : null}
-			<MentionedIn entity={person} allEntities={allEntities} onOpen={onOpen} />
+			<MentionedIn mentions={mentionsOf(backlinks)} onOpen={onOpen} />
 		</>
 	);
+}
+
+/** The Project's People, derived from its Todos' Person References resolved against
+ * `allEntities` (Project → Todo → TodoPersonRef → Person, ADR-0031), applied to the
+ * Core `linkedTodos` set (ADR-0050) — Core resolves the reverse Todo lookup; the
+ * client keeps the cheap Person join. Supersedes the old `peopleForProject`, which
+ * also did the Todo lookup the Core read now owns. */
+function peopleFromTodos(todos: Todo[], allEntities: LibraryItem[]): Person[] {
+	const personById = new Map(
+		allEntities
+			.filter((e): e is Person => e.kind === "person")
+			.map((p) => [p.id, p]),
+	);
+	const seen = new Set<string>();
+	const people: Person[] = [];
+	for (const todo of todos) {
+		for (const ref of todo.personRefs) {
+			if (seen.has(ref.personId)) continue;
+			const person = personById.get(ref.personId);
+			if (person) {
+				seen.add(ref.personId);
+				people.push(person);
+			}
+		}
+	}
+	return people;
 }
 
 function ProjectBody({
@@ -711,9 +718,17 @@ function ProjectBody({
 	allEntities: LibraryItem[];
 	onOpen: (e: LibraryItem) => void;
 }) {
-	const people = peopleForProject(allEntities, project);
-	const todos = todosForProject(allEntities, project);
-	const { done, total } = projectProgress(allEntities, project);
+	const backlinks = useEntityBacklinks(project.id, project.kind);
+	// Todos re-source from Core (ADR-0050); only a cold failure with no cached read
+	// degrades to the client derivation over `allEntities` so the relation never
+	// vanishes (a transient refetch failure keeps the last good Core set). People
+	// and Progress are cheap client joins over whichever todo set is in play.
+	const todos = backlinks.degraded
+		? todosForProject(allEntities, project)
+		: backlinks.linkedTodos;
+	const people = peopleFromTodos(todos, allEntities);
+	const done = todos.filter((t) => t.status === "completed").length;
+	const total = todos.length;
 	const pct = total === 0 ? 0 : Math.round((done / total) * 100);
 
 	return (
@@ -769,7 +784,7 @@ function ProjectBody({
 				</Field>
 			) : null}
 			{todos.length > 0 ? (
-				<Field label="Todos">
+				<Field label={withCount("Todos", todos.length)}>
 					<div className="-mx-2 flex flex-col">
 						{todos.map((t) => (
 							<RelatedRow key={t.id} entity={t} onOpen={onOpen} />
@@ -777,6 +792,7 @@ function ProjectBody({
 					</div>
 				</Field>
 			) : null}
+			<MentionedIn mentions={mentionsOf(backlinks)} onOpen={onOpen} />
 		</>
 	);
 }
@@ -813,20 +829,36 @@ function PersonRefRow({
 	);
 }
 
-/** "Mentioned in" — Journal Entries that inline-reference this entity (ADR-0031). */
+/** A "· N" count suffix on a section header — quiet metadata in the existing
+ * `Field` label slot (DESIGN.md: not a loud badge), matching the inspector's
+ * "Progress · N of M done" voice. */
+function withCount(label: string, n: number): string {
+	return `${label} · ${n}`;
+}
+
+/** The "Mentioned in" set to render, or `[]` when the read errored — Mentioned-in
+ * has no client equivalent on a Project, so it is simply omitted on a failed read
+ * (ADR-0050 §7) rather than degraded. */
+function mentionsOf(backlinks: {
+	mentionedIn: JournalEntry[];
+	degraded: boolean;
+}): JournalEntry[] {
+	return backlinks.degraded ? [] : backlinks.mentionedIn;
+}
+
+/** "Mentioned in" — the distinct Journal Entries that reference this entity, as
+ * resolved by Core's `entity/backlinks` read (ADR-0050). A zero-item set renders
+ * nothing (today's behavior); a non-empty set carries its count on the header. */
 function MentionedIn({
-	entity,
-	allEntities,
+	mentions,
 	onOpen,
 }: {
-	entity: LibraryItem;
-	allEntities: LibraryItem[];
+	mentions: JournalEntry[];
 	onOpen: (e: LibraryItem) => void;
 }) {
-	const mentions = journalEntriesMentioning(allEntities, entity);
 	if (mentions.length === 0) return null;
 	return (
-		<Field label="Mentioned in">
+		<Field label={withCount("Mentioned in", mentions.length)}>
 			<div className="-mx-2 flex flex-col">
 				{mentions.map((entry: JournalEntry) => (
 					<RelatedRow key={entry.id} entity={entry} onOpen={onOpen} />
@@ -845,6 +877,9 @@ function TodoBody({
 	allEntities: LibraryItem[];
 	onOpen: (e: LibraryItem) => void;
 }) {
+	// A Todo only re-sources its "Mentioned in" from Core (ADR-0050); its Project
+	// and People come from the Todo's OWN row (unchanged).
+	const backlinks = useEntityBacklinks(todo.id, todo.kind);
 	const project = projectForTodo(allEntities, todo);
 	const overdue = todoIsOverdue(todo);
 	const personById = new Map(
@@ -912,7 +947,7 @@ function TodoBody({
 					</div>
 				</Field>
 			) : null}
-			<MentionedIn entity={todo} allEntities={allEntities} onOpen={onOpen} />
+			<MentionedIn mentions={mentionsOf(backlinks)} onOpen={onOpen} />
 		</>
 	);
 }

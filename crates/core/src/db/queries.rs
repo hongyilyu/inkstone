@@ -464,6 +464,33 @@ where
     .await
 }
 
+/// Read the raw `(id, data, created_at, updated_at)` rows for a set of Journal
+/// Entry ids, for the `entity/backlinks` "Mentioned in" assembly (ADR-0050). The
+/// caller orders + attaches refs/source; rows come back in arbitrary order.
+pub(super) async fn journal_entries_by_ids<'e, E>(
+    executor: E,
+    journal_entry_ids: &[String],
+) -> sqlx::Result<Vec<(String, String, i64, i64)>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    if journal_entry_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT id, data, created_at, updated_at FROM entities \
+         WHERE type = 'journal_entry' AND id IN (",
+    );
+    let mut separated = query.separated(", ");
+    for journal_entry_id in journal_entry_ids {
+        separated.push_bind(journal_entry_id);
+    }
+    separated.push_unseparated(")");
+
+    query.build_query_as().fetch_all(executor).await
+}
+
 pub(super) async fn entity_type_by_id<'e, E>(
     executor: E,
     entity_id: &str,

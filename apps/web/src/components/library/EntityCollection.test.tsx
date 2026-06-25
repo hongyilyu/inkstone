@@ -53,6 +53,7 @@ function makeRuntime(
 			if (type === "bookmark") return Effect.succeed({ entities: bookmarks });
 			return Effect.succeed({ entities: [] });
 		},
+		getBacklinks: () => unused,
 		entityMutate: () => unused,
 		subscribeRun: () => unused,
 		cancelRun: () => unused,
@@ -157,6 +158,7 @@ describe("EntityCollection", () => {
 					: type === "person"
 						? Effect.succeed({ entities: livePeople })
 						: Effect.succeed({ entities: [] }),
+			getBacklinks: () => Effect.die("unused"),
 			entityMutate: () => Effect.die("unused"),
 			subscribeRun: () => Effect.die("unused"),
 			cancelRun: () => Effect.die("unused"),

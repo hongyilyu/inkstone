@@ -9,7 +9,6 @@ import {
 	inboxTodos,
 	type JournalEntry,
 	type JournalEntryBodyNode,
-	journalEntriesMentioning,
 	journalEntryBodyText,
 	libraryItemKindForSlug,
 	libraryItemSubtitle,
@@ -18,7 +17,6 @@ import {
 	type Person,
 	PROJECT_STATUS_LABEL,
 	type Project,
-	peopleForProject,
 	projectForTodo,
 	projectProgress,
 	projectsForPerson,
@@ -382,9 +380,6 @@ describe("library item helpers", () => {
 	it("resolves project relations both directions", () => {
 		const apiv2 = byId("proj_apiv2") as Project;
 		expect(todosForProject(entities, apiv2)).toHaveLength(3);
-		expect(peopleForProject(entities, apiv2).map((p) => p.id)).toEqual([
-			"person_priya",
-		]);
 		const backfill = byId("todo_backfill") as Todo;
 		expect(projectForTodo(entities, backfill)?.id).toBe("proj_apiv2");
 	});
@@ -407,16 +402,6 @@ describe("library item helpers", () => {
 		});
 		const world = [alice, bob, projA, projB, t1, t2];
 
-		it("peopleForProject derives only through that project's todos", () => {
-			expect(peopleForProject(world, projA).map((p) => p.id)).toEqual([
-				"alice",
-			]);
-			// bob is on projB's todo — must NOT appear under projA.
-			expect(peopleForProject(world, projA).map((p) => p.id)).not.toContain(
-				"bob",
-			);
-		});
-
 		it("projectsForPerson derives through the person's todos", () => {
 			expect(projectsForPerson(world, alice).map((p) => p.id)).toEqual([
 				"projA",
@@ -430,47 +415,6 @@ describe("library item helpers", () => {
 				todosForPerson(world, alice, "waiting_on").map((t) => t.id),
 			).toEqual(["t1"]);
 			expect(todosForPerson(world, alice, "related")).toEqual([]);
-		});
-
-		it("dedupes a person referenced by two of a project's todos", () => {
-			const t1b = mkTodo("t1b", {
-				projectId: "projA",
-				personRefs: [{ personId: "alice", role: "related" }],
-			});
-			expect(
-				peopleForProject([alice, projA, t1, t1b], projA).map((p) => p.id),
-			).toEqual(["alice"]);
-		});
-	});
-
-	describe("journalEntriesMentioning (ADR-0031 'Mentioned in')", () => {
-		const alice = mkPerson("alice", "Alice");
-		const mentioning = (id: string, targetId: string, occurredAt: string) =>
-			({
-				id,
-				kind: "journal_entry",
-				occurredAt,
-				body: [
-					{ type: "text", text: "Saw " },
-					{ type: "entity_ref", refId: `r-${id}`, targetEntityId: targetId },
-				],
-				recency: 1,
-				createdAt: "fixture",
-			}) satisfies JournalEntry;
-
-		it("returns journal entries whose body references the target, newest occurred first", () => {
-			const older = mentioning("je_old", "alice", "2026-06-01T09:00:00");
-			const newer = mentioning("je_new", "alice", "2026-06-10T09:00:00");
-			const other = mentioning("je_other", "bob", "2026-06-11T09:00:00");
-			expect(
-				journalEntriesMentioning([alice, older, newer, other], alice).map(
-					(e) => e.id,
-				),
-			).toEqual(["je_new", "je_old"]);
-		});
-
-		it("returns nothing when no entry references the target", () => {
-			expect(journalEntriesMentioning([alice], alice)).toEqual([]);
 		});
 	});
 

@@ -1,139 +1,98 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import path from "node:path";
 import { expect, test } from "./fixtures.js";
-import type { ChatPage } from "./page-objects/ChatPage.js";
-import { sqlite } from "./seed-proposal.js";
-import { FAUX_WORKER_CMD } from "./spawnCore.js";
+import { dbPathFor, seedEntities, sqlite } from "./seed.js";
 
 /**
- * Entity Source provenance, end-to-end ("Captured from", ADR-0030): extract a
- * Todo from an accepted Journal Entry (faux `extract` mode), then open the Todo
- * in the Library and follow its "Captured from" footer back to the originating
- * Journal Entry. This is the full read-path proof — Core resolves the
- * `created_from` source, the wire carries it, the codec parses it, and the
- * Inspector renders a working link — that the unit/component suites only cover in
- * isolation.
+ * Entity backlinks, end-to-end ("Mentioned in", ADR-0050) — the REVERSE of
+ * `journal-entry-ref.spec.ts`. That spec opens a Journal Entry and follows an
+ * inline ref chip FORWARD to the Person it names. This one stands in the Person's
+ * detail and follows the BACKLINK to the Journal Entry that mentions it.
  *
- * Single-hop (the design decision): a JE-sourced Entity links to the Journal
- * Entry, NOT through it to the chat. The JE then carries its own "Captured from"
- * → Thread, so the chat is one more click away.
+ * It is the full read-path proof for the backlink seam: a real `entity_refs` row
+ * (Journal Entry → Person) flows through Core's `entity/backlinks` query →
+ * ui-sdk `getBacklinks` → `useEntityBacklinks` → the Inspector's "Mentioned in"
+ * section → a working click-through to the source Journal Entry. The unit/
+ * component suites cover each hop in isolation; only this spec proves the wire.
+ *
+ * It supersedes the obsolete "Captured from" footer proof (ADR-0050 retired the
+ * `journal_entry`-source footer branch — a JE-anchored Entity now surfaces its
+ * origin canonically under "Mentioned in", not in the footer). The surviving
+ * `thread`-source footer branch is covered by the EntityDetail unit suite.
  */
 
-const scenarioDir = mkdtempSync(path.join(tmpdir(), "inkstone-provenance-"));
-const extractParamsFile = path.join(scenarioDir, "scenario.json");
+const PERSON_ID = "01900000-0000-7000-8000-0000000ba110";
+const JOURNAL_ENTRY_ID = "01900000-0000-7000-8000-0000000ba111";
+const REF_ID = "01900000-0000-7000-8000-0000000ba112";
 
-test.afterAll(() => {
-	rmSync(scenarioDir, { recursive: true, force: true });
-});
+test("a Person's detail surfaces the Journal Entry that mentions it and clicks through to it", async ({
+	page,
+	core,
+	workspace,
+}) => {
+	const dbPath = dbPathFor(workspace.path);
+	seedMentionedPerson(dbPath);
 
-test.describe("Captured-from provenance (faux extract mode)", () => {
-	test.use({
-		coreOptions: {
-			workerCmd: FAUX_WORKER_CMD,
-			faux: "extract",
-			extractParamsFile,
-		},
+	// Open the TARGET (the Person) — not the Journal Entry.
+	await page.goto(`${core.url}/library/people?id=${PERSON_ID}`);
+	const personDetail = page.getByRole("complementary", {
+		name: /Ada Lovelace details/i,
 	});
+	await expect(personDetail).toBeVisible({ timeout: 15_000 });
 
-	test("an extracted Todo links back to its originating Journal Entry", async ({
-		chat,
-		core,
-		workspace,
-	}) => {
-		const journalText = "Shipped the v2 migration and emailed the team.";
-		writeScenario({
-			journal_text: journalText,
-			todo: { title: "Email the team about v2" },
-		});
-		const dbPath = path.join(workspace.path, "db.sqlite");
-
-		// 1) Capture: send the journal-worthy message, accept the Journal Entry,
-		//    then accept the extracted create_todo.
-		await chat.goto();
-		await chat.send(journalText);
-		await acceptJournalEntry(chat, journalText);
-
-		const todoCard = chat.page
-			.locator('[data-proposal-status="pending"]')
-			.last();
-		await expect(todoCard).toBeVisible({ timeout: 15_000 });
-		await expect(todoCard).toContainText("Email the team about v2");
-		await todoCard.getByRole("button", { name: /add todo/i }).click();
-		await expect(
-			chat.page.locator('[data-proposal-status="accepted"]').last(),
-		).toBeVisible({ timeout: 15_000 });
-
-		// Ground truth: the Todo is sourced created_from the Journal Entry.
-		expect(
-			sqlite(
-				dbPath,
-				`SELECT COUNT(*) FROM entity_sources s
-				 JOIN entities t ON t.id = s.entity_id AND t.type = 'todo'
-				 JOIN entities je ON je.id = s.source_entity_id AND je.type = 'journal_entry'
-				 WHERE s.relation = 'created_from';`,
-			).trim(),
-		).toBe("1");
-		const journalEntryId = sqlite(
-			dbPath,
-			"SELECT id FROM entities WHERE type = 'journal_entry' LIMIT 1;",
-		).trim();
-
-		// 2) Open the Todo in the Library and follow "Captured from".
-		await chat.page.goto(`${core.url}/library/todos`);
-		const todoRow = chat.page
-			.getByRole("region", { name: /todos/i })
-			.getByRole("button", { name: /Email the team about v2/i });
-		await expect(todoRow).toBeVisible({ timeout: 15_000 });
-		await todoRow.click();
-
-		const detail = chat.page.getByRole("complementary", {
-			name: /Email the team about v2 details/i,
-		});
-		await expect(detail).toBeVisible({ timeout: 15_000 });
-
-		// The "Captured from" link carries the Journal Entry title (its body text).
-		const capturedLink = detail.getByRole("button", {
-			name: new RegExp(journalText.slice(0, 20), "i"),
-		});
-		await expect(capturedLink).toBeVisible();
-		await capturedLink.click();
-
-		// 3) Single-hop: it lands on the source Journal Entry's detail, not the chat.
-		await expect(chat.page).toHaveURL(
-			new RegExp(`/library/journal\\?id=${journalEntryId}`),
-		);
-		// The JE detail rail's accessible name is the entry's full body text + " details".
-		const journalDetail = chat.page.getByRole("complementary", {
-			name: new RegExp(journalText.slice(0, 20), "i"),
-		});
-		await expect(journalDetail).toBeVisible({ timeout: 15_000 });
+	// The backlink read resolves the Journal Entry that references this Person and
+	// renders it under "Mentioned in" — the section a Person with no client-side
+	// scan would never show before the backlink seam (ADR-0050). Its row title is
+	// the JE's body text, the inline ref resolved to the Person's current name.
+	const mentionedIn = personDetail
+		.getByText(/Mentioned in/i)
+		.locator("xpath=following-sibling::*[1]");
+	const entryRow = mentionedIn.getByRole("button", {
+		name: /Met Ada Lovelace at school\./i,
 	});
-});
+	await expect(entryRow).toBeVisible({ timeout: 15_000 });
 
-/** Accept the anchor create_journal_entry proposal and wait for its accepted
- * state, pinned to the stable run id captured while still pending. */
-async function acceptJournalEntry(
-	chat: ChatPage,
-	bodyText: string,
-): Promise<void> {
-	const jeCard = chat.page
-		.locator('[data-proposal-status="pending"]')
-		.filter({ hasText: bodyText });
-	await expect(jeCard).toBeVisible({ timeout: 15_000 });
-	const runId = await jeCard.getAttribute("data-proposal");
-	expect(runId).not.toBeNull();
-	await jeCard.getByRole("button", { name: /add journal entry/i }).click();
-	await expect(chat.page.locator(`[data-proposal="${runId}"]`)).toContainText(
-		/added to journal/i,
-		{ timeout: 15_000 },
+	// Click the backlink → land on the Journal Entry's own detail.
+	await entryRow.click();
+	await expect(page).toHaveURL(
+		new RegExp(`/library/journal\\?id=${JOURNAL_ENTRY_ID}`),
 	);
-}
+	await expect(
+		page.getByRole("complementary", {
+			name: /Met Ada Lovelace at school\. details/i,
+		}),
+	).toBeVisible({ timeout: 15_000 });
+});
 
-/** Write the extraction scenario the Worker reads (per test, before goto). */
-function writeScenario(scenario: {
-	journal_text: string;
-	todo?: { title: string };
-}): void {
-	writeFileSync(extractParamsFile, JSON.stringify(scenario));
+/**
+ * Seed a Person and a Journal Entry that references it via a real `entity_refs`
+ * row (the reverse of `journal-entry-ref.spec.ts`'s live proposal apply, landed
+ * directly). The JE body weaves an `entity_ref` node carrying the ref id, so its
+ * rendered title resolves the chip to the Person's current name — exactly the
+ * shape `reference_existing_entity_from_journal_entry` lands.
+ */
+function seedMentionedPerson(dbPath: string): void {
+	seedEntities(dbPath, [
+		{
+			id: PERSON_ID,
+			type: "person",
+			data: { name: "Ada Lovelace", note: "Current canonical name" },
+		},
+		{
+			id: JOURNAL_ENTRY_ID,
+			type: "journal_entry",
+			data: {
+				occurred_at: "2026-06-10T10:30:00",
+				body: [
+					{ type: "text", text: "Met " },
+					{ type: "entity_ref", ref_id: REF_ID },
+					{ type: "text", text: " at school." },
+				],
+			},
+		},
+	]);
+	const now = Date.now();
+	sqlite(
+		dbPath,
+		`INSERT INTO entity_refs (id, source_entity_id, target_entity_id, label_snapshot, created_at)
+		 VALUES ('${REF_ID}', '${JOURNAL_ENTRY_ID}', '${PERSON_ID}', 'Ada snapshot', ${now});`,
+	);
 }

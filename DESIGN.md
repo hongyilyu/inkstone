@@ -216,7 +216,7 @@ Flat by tonal layering, not by shadow. Depth is read from the warm-neutral stack
 A centered `rounded-2xl` popover over a blurred `foreground/25` backdrop, opened with ⌘K from anywhere. A search field over results grouped by type (Threads, People, Projects, Todos, Bookmarks), fully keyboard-driven (↑↓ to move, ↵ to open), the active row washed `accent` with a return-key hint. Entrance scales from 0.98 + fades; disabled under reduced motion.
 
 ### Entity Detail Inspector (signature)
-A ~400px right-hand panel (collapses to full-width below `lg`) that opens when a row is selected. Header (glyph + title + close), a scrollable body of labelled fields and deep-linked relations, and a pinned "Captured from · <when> / <thread>" footer that returns to the source Run. The expression of "chat is the verb, knowledge is the noun."
+A ~400px right-hand panel (collapses to full-width below `lg`) that opens when a row is selected. Header (glyph + title + close), a scrollable body of labelled fields and deep-linked relations, and a pinned "Captured from · <when> / <thread>" footer that returns to the originating chat — the chat-origin (thread) link only; a graph/journal-sourced Entity surfaces its relationships via backlinks ("Mentioned in"), not this footer. The expression of "chat is the verb, knowledge is the noun."
 
 ## 6. Do's and Don'ts
 

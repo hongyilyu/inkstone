@@ -411,6 +411,27 @@ pub struct EntityListResult {
     pub entities: Vec<EntityRow>,
 }
 
+/// `entity/backlinks` params (ADR-0050): the Entity whose reverse relations the
+/// detail Inspector wants. Only Person/Project/Todo are `entity_ref` targets, so
+/// only those fire the read.
+#[derive(Debug, Deserialize)]
+pub struct EntityBacklinksParams {
+    pub entity_id: String,
+}
+
+/// `entity/backlinks` result (ADR-0050): the two reverse sets Core resolves
+/// authoritatively for the detail Inspector — `mentioned_in` (distinct Journal
+/// Entries referencing this Entity, newest-occurred first) and `linked_todos`
+/// (Todos linked via `project_id` / `person_refs`, newest first). Reuses
+/// `EntityRow` (ADR-0032), so each section parses through the existing entity
+/// codec. Both arrays are ALWAYS present (possibly empty `[]`); object-wrapper
+/// shape modeled like `EntityListResult` for forward-extensibility.
+#[derive(Debug, Serialize)]
+pub struct EntityBacklinksResult {
+    pub mentioned_in: Vec<EntityRow>,
+    pub linked_todos: Vec<EntityRow>,
+}
+
 /// `entity/mutate` params (ADR-0033): a user-initiated CRUD request. `payload` is
 /// the same discriminated `{mutation_kind, payload}` envelope the Worker's
 /// `propose_workspace_mutation` tool uses (minus `rationale`), so it stays opaque
@@ -1795,6 +1816,51 @@ mod parity_fixtures {
                     }],
                 }
             ),
+            // ── entity/backlinks (ADR-0050) ──
+            // Maximal result: mentioned_in carries a journal_entry EntityRow with
+            // non-empty refs (a ResolvedEntityRef incl. its optionals) + a message
+            // source (EntitySourceView), mirroring the entity_list_result.json
+            // maximal row so EntityRow coverage carries; linked_todos carries a todo
+            // EntityRow with non-empty person_refs. Both arrays always present.
+            fx!(
+                "entity_backlinks_result.json",
+                EntityBacklinksResult {
+                    mentioned_in: vec![EntityRow {
+                        id: UUID_A.to_string(),
+                        r#type: "journal_entry".to_string(),
+                        data: serde_json::json!({ "title": "Morning brain dump" }),
+                        created_at: 1_700_000_000_000,
+                        updated_at: 1_700_000_000_001,
+                        refs: vec![ResolvedEntityRef {
+                            id: UUID_B.to_string(),
+                            source_entity_id: UUID_A.to_string(),
+                            target_entity_id: UUID_RUN.to_string(),
+                            target_entity_type: "project".to_string(),
+                            target_title: Some("Lead Ads".to_string()),
+                            label_snapshot: Some("Lead Ads".to_string()),
+                        }],
+                        person_refs: vec![],
+                        source: Some(EntitySourceView {
+                            thread_id: Some(UUID_A.to_string()),
+                            thread_title: Some("Morning brain dump".to_string()),
+                            journal_entry_id: None,
+                        }),
+                    }],
+                    linked_todos: vec![EntityRow {
+                        id: UUID_B.to_string(),
+                        r#type: "todo".to_string(),
+                        data: serde_json::json!({ "title": "Buy milk" }),
+                        created_at: 1_700_000_000_000,
+                        updated_at: 1_700_000_000_001,
+                        refs: vec![],
+                        person_refs: vec![TodoPersonRefView {
+                            person_id: UUID_A.to_string(),
+                            role: "waiting_on".to_string(),
+                        }],
+                        source: None,
+                    }],
+                }
+            ),
             // ── entity/mutate ──
             fx!(
                 "entity_mutate_result.json",
@@ -2135,6 +2201,7 @@ mod parity_fixtures {
             "entity_list_result.json",
             "entity_list_result.bare.json",
             "entity_list_result.je_source.json",
+            "entity_backlinks_result.json",
             "entity_mutate_result.json",
             "entity_mutate_result.bare.json",
             "message_search_result.json",
@@ -2217,6 +2284,7 @@ mod parity_fixtures {
         parses!(RunGetHistoryParams, "run_get_history_params.json");
         parses!(RunGetHistoryParams, "run_get_history_params.bare.json");
         parses!(EntityListParams, "entity_list_params.json");
+        parses!(EntityBacklinksParams, "entity_backlinks_params.json");
         parses!(EntityMutateParams, "entity_mutate_params.json");
         parses!(MessageSearchParams, "message_search_params.json");
         parses!(ThreadGetParams, "thread_get_params.json");

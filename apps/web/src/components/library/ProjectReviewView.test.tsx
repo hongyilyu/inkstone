@@ -38,6 +38,7 @@ function makeRuntime(
 			if (type === "person") return Effect.succeed({ entities: people });
 			return Effect.succeed({ entities: [] });
 		},
+		getBacklinks: () => unused,
 		entityMutate,
 		subscribeRun: () => unused,
 		cancelRun: () => unused,
@@ -296,6 +297,7 @@ describe("ProjectReviewView (focused queue)", () => {
 			getRunHistory: () => never,
 			threadGet: () => never,
 			listEntities: () => never,
+			getBacklinks: () => never,
 			entityMutate: () => never,
 			subscribeRun: () => Effect.never as never,
 			cancelRun: () => never,

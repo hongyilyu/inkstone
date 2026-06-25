@@ -19,6 +19,8 @@
 // fixture; they never appear here standalone (they never cross the wire alone).
 
 import {
+	EntityBacklinksParams,
+	EntityBacklinksResult,
 	EntityListParams,
 	EntityListResult,
 	EntityMutateParams,
@@ -166,6 +168,12 @@ export const fixtures: readonly FixtureEntry[] = [
 		dir: "authored",
 	},
 	{
+		message: "EntityBacklinksParams",
+		file: "entity_backlinks_params.json",
+		schema: EntityBacklinksParams,
+		dir: "authored",
+	},
+	{
 		message: "EntityMutateParams",
 		file: "entity_mutate_params.json",
 		schema: EntityMutateParams,
@@ -308,6 +316,15 @@ export const fixtures: readonly FixtureEntry[] = [
 		message: "EntityListResult",
 		file: "entity_list_result.je_source.json",
 		schema: EntityListResult,
+		dir: "emitted",
+	},
+	// EntityBacklinksResult (ADR-0050): maximal — mentioned_in carries a JE row
+	// (refs + message-source), linked_todos a Todo row (person_refs). Both arrays
+	// always present. EntityRow coverage carries from the entity_list maximal row.
+	{
+		message: "EntityBacklinksResult",
+		file: "entity_backlinks_result.json",
+		schema: EntityBacklinksResult,
 		dir: "emitted",
 	},
 	{
@@ -495,6 +512,7 @@ export const CANONICAL_MESSAGES: readonly string[] = [
 	"ThreadCreateParams",
 	"RunGetHistoryParams",
 	"EntityListParams",
+	"EntityBacklinksParams",
 	"EntityMutateParams",
 	"MessageSearchParams",
 	"ThreadGetParams",
@@ -513,6 +531,7 @@ export const CANONICAL_MESSAGES: readonly string[] = [
 	"ThreadListResult",
 	"RunHistoryResult",
 	"EntityListResult",
+	"EntityBacklinksResult",
 	"EntityMutateResult",
 	"MessageSearchResult",
 	"ThreadGetResult",
