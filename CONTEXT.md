@@ -15,19 +15,15 @@ The TypeScript component that drives Runs to completion by executing Turns, and 
 _Avoid_: Agent Runtime, TypeScript Agent Runtime, TypeScript Worker, runtime.
 
 **Workspace**:
-The full local Inkstone state on disk that Core opens and operates against — the vault directory, SQLite database, config, and runtime artifacts taken as a unit. The "unit" is logical, not physical: the Vault is wherever the user keeps it; Core-managed state (DB, config) lives in the OS application-data directory. Inkstone may eventually support multiple workspaces; only one is open per Core process. The MVP supports exactly one Workspace per install.
+The full local Inkstone state on disk that Core opens and operates against — the SQLite database, config, and runtime artifacts taken as a unit. The "unit" is logical, not physical: Core-managed state (DB, config) lives in the OS application-data directory. Inkstone may eventually support multiple workspaces; only one is open per Core process. The MVP supports exactly one Workspace per install.
 _Avoid_: project, environment, instance.
 
-**Vault**:
-A tier-3 derived export directory inside a Workspace — a regenerated, human-readable rendering of tier-2 content (e.g. Obsidian-readable markdown). One-way: Core writes the Vault from tier 2; Core never reads it back as authority. External edits to exported files are not preserved.
-_Avoid_: notes folder, content directory, source directory.
-
 **Client**:
-Any process that talks to Core through Core's client surface. Includes graphical surfaces (Web, TUI, Desktop, Mobile) and non-graphical ones (capture scripts, CLIs). A Client never accesses the SQLite database, the Vault, the Worker, or LLM providers directly.
+Any process that talks to Core through Core's client surface. Includes graphical surfaces (Web, TUI, Desktop, Mobile) and non-graphical ones (capture scripts, CLIs). A Client never accesses the SQLite database, the Worker, or LLM providers directly.
 _Avoid_: UI, UI Client, frontend (use "Web Client" / "TUI Client" / "Capture Client" for specific subtypes).
 
 **Capture Client**:
-A Client whose sole job is to ingest content into the Workspace — clipping articles, piping text into Inkstone, mobile share-sheet captures, and similar. Writes to tier-2 SQLite via Core's client surface like any other Client, not by dropping files into the Vault. Distinguished from interactive clients by being one-shot and non-conversational.
+A Client whose sole job is to ingest content into the Workspace — clipping articles, piping text into Inkstone, mobile share-sheet captures, and similar. Writes to tier-2 SQLite via Core's client surface like any other Client. Distinguished from interactive clients by being one-shot and non-conversational.
 
 **Test Harness**:
 A non-product package that drives end-to-end tests against a real Core, real Worker, and a real Web Client in a headless browser. Spawns Core against a temporary Workspace, configures the Worker to use a mock LLM provider, and asserts behavior through the same surfaces a real user touches. Not a Client (it tests Core's client surface rather than using it for product purposes). Lives outside `apps/`, `crates/`, and `packages/`.
@@ -88,13 +84,13 @@ _Avoid_: approval (covers only accept), response, verdict.
 
 ### Storage
 
-Inkstone has two persistence tiers. SQLite is authoritative for everything Core durably owns; the Vault is a derived export.
+Inkstone has two persistence tiers, both in SQLite. Tier 2 is authoritative for everything Core durably owns; tier 3 is derived and authoritative for nothing.
 
 **SQLite Canonical State** (tier 2, authoritative):
 Authoritative for all content and Inkstone-managed durable application state — Threads, Runs, Proposals, Canonical Entities, approvals, and captured content.
 
 **Derived Projections** (tier 3, derived):
-Re-derivable indexes, views, and exports computed from tier 2 — FTS, extraction candidates, backlinks, dashboards, denormalized views, and the Vault's exported documents. Authoritative for nothing; lost projections can always be rebuilt.
+Re-derivable indexes and views computed from tier 2 — FTS, extraction candidates, backlinks, dashboards, denormalized views. Authoritative for nothing; lost projections can always be rebuilt.
 _Avoid_: indexes (when meaning the whole tier), derived state (ambiguous with non-projection derivations).
 
 **Credential Store**:
@@ -198,7 +194,7 @@ A possible implementation strategy for the Dispatcher — a non-trivial Workflow
 _Avoid_: classifier (one possible implementation, not the role).
 
 **Skill**:
-A drop-in markdown procedure (the Agent Skills `SKILL.md` convention: YAML frontmatter with `name` + `description`, plus a markdown body) that guides the model through a specific task — a weekly review, a trip-capture flow, inbox triage. A Skill is *content the model reads*, never code Core executes. Core scans the skills directory (`<data dir>/inkstone/skills/`, Core-managed config, not the Vault) per dispatch and injects each Skill's `name` + `description` into the Workflow's system prompt; the model loads a Skill's full body mid-Run by calling the `load_skill` tool, which Core resolves by name. A Skill composes tools that already exist in Core's registry — it cannot introduce new ones. Distinct from a **Workflow**: the Workflow is the per-Run behavior bundle the Dispatcher selects at Run start; a Skill is loaded by the *model*, mid-Run, to guide itself within that Workflow. One Run runs one Workflow and may load zero or more Skills. "Core does more" is delivered by broadening the single default Workflow and dropping in Skills, not by adding Workflows the Dispatcher routes between (ADR-0036).
+A drop-in markdown procedure (the Agent Skills `SKILL.md` convention: YAML frontmatter with `name` + `description`, plus a markdown body) that guides the model through a specific task — a weekly review, a trip-capture flow, inbox triage. A Skill is *content the model reads*, never code Core executes. Core scans the skills directory (`<data dir>/inkstone/skills/`, Core-managed config) per dispatch and injects each Skill's `name` + `description` into the Workflow's system prompt; the model loads a Skill's full body mid-Run by calling the `load_skill` tool, which Core resolves by name. A Skill composes tools that already exist in Core's registry — it cannot introduce new ones. Distinct from a **Workflow**: the Workflow is the per-Run behavior bundle the Dispatcher selects at Run start; a Skill is loaded by the *model*, mid-Run, to guide itself within that Workflow. One Run runs one Workflow and may load zero or more Skills. "Core does more" is delivered by broadening the single default Workflow and dropping in Skills, not by adding Workflows the Dispatcher routes between (ADR-0036).
 _Avoid_: plugin (no distribution-unit concept exists), command (Skills are model-invoked, not user-fired slash commands in V1), agent.
 
 ## Example dialogue
@@ -209,9 +205,9 @@ A back-and-forth between two contributors walking through an extraction flow. Th
 >
 > **B:** It's a user **Message** in tier 2 — that's the first authoritative trace. Nothing outside SQLite holds it.
 >
-> **A:** Not the Vault?
+> **A:** Not in a file somewhere on disk?
 >
-> **B:** No. The Vault is a tier-3 derived export — Core writes rendered documents into it from tier 2, never the other way around. The bytes you typed live in `messages` / `message_parts`, not in a file Core would read back.
+> **B:** No. Nothing outside SQLite holds your content. The bytes you typed live in `messages` / `message_parts`; tier 2 is the only authoritative store.
 >
 > **A:** Okay, then what?
 >
@@ -231,12 +227,12 @@ A back-and-forth between two contributors walking through an extraction flow. Th
 >
 > **A:** I accept the Proposal. Now what?
 >
-> **B:** Core applies each accepted change atomically. The Journal Entry, Person record, and Todo land in tier 2 as **Accepted Entities**. Core records **Entity Sources** so the Person and Todo point back to the Journal Entry, and **Entity References** so reference queries can find inline journal references. Anything derived — search index, backlinks, the Vault export's rendered pages if the export is configured to render them — gets rebuilt in tier 3.
+> **B:** Core applies each accepted change atomically. The Journal Entry, Person record, and Todo land in tier 2 as **Accepted Entities**. Core records **Entity Sources** so the Person and Todo point back to the Journal Entry, and **Entity References** so reference queries can find inline journal references. Anything derived — search index, backlinks — gets rebuilt in tier 3.
 >
 > **A:** And later when I query "what do I owe Alice?"
 >
 > **B:** That hits tier 3 — an FTS or backlink lookup. If we ever lost tier 3 we could rebuild it from tier 2. We couldn't rebuild *Alice herself* that way, because the decision to create her happened through a Proposal you approved, and that decision is tier 2.
 
-Notable disambiguations the dialogue exercises: tier 2 vs tier 3 authority; Vault as derived export, not source; Journal Entry as accepted event record vs Message as chat input; Extraction Candidate vs Accepted Entity; Proposal vs Run Event.
+Notable disambiguations the dialogue exercises: tier 2 vs tier 3 authority; Journal Entry as accepted event record vs Message as chat input; Extraction Candidate vs Accepted Entity; Proposal vs Run Event.
 
 Direct non-journal capture uses the same Proposal and Entity Source vocabulary without forcing a Journal Entry. If the user says "Remind me to buy milk," the Workflow may propose a Todo sourced directly from that user Message. If the user says "Remember Alice is the daycare coordinator," it may propose a Person sourced directly from that Message. Journal Entry is required for journal-worthy event capture, not for every Person, Project, or Todo.

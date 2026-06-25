@@ -28,7 +28,7 @@ This ADR records that division because it is hard to reverse (it shapes the mani
 
 ## Why the Worker holding an access token does not violate ADR-0013
 
-ADR-0013 frames the Worker as holding no **durable** state — anything that must survive tear-down lives in Core's tier 2. The access token in the manifest is **not durable Worker state**: it is short-lived, Core-owned, re-supplied fresh on every spawn, and discarded when the Worker exits. The durable secret (the refresh token) stays in Core's Credential Store. ADR-0007's explicit carve-out — provider credentials are a separate concern, neither SQLite-canonical nor Vault — means the Credential Store sits outside the tier-2/tier-3 model without contradicting it, and ADR-0003's chokepoint (no Worker access to SQLite or the Vault) is untouched.
+ADR-0013 frames the Worker as holding no **durable** state — anything that must survive tear-down lives in Core's tier 2. The access token in the manifest is **not durable Worker state**: it is short-lived, Core-owned, re-supplied fresh on every spawn, and discarded when the Worker exits. The durable secret (the refresh token) stays in Core's Credential Store. ADR-0007's explicit carve-out — provider credentials are a separate concern, not part of tier-2 canonical state — means the Credential Store sits outside the tier-2/tier-3 model without contradicting it, and ADR-0003's chokepoint (no Worker access to SQLite) is untouched.
 
 ## Considered and rejected
 
@@ -43,6 +43,6 @@ ADR-0013 frames the Worker as holding no **durable** state — anything that mus
 - [ADR-0001](./0001-core-worker-split.md) / [ADR-0013](./0013-worker-process-lifecycle-and-transport.md) — Worker is ephemeral and holds no durable state; this ADR resolves the apparent tension with the access token in the manifest.
 - [ADR-0002](./0002-clients-talk-only-to-core.md) — login orchestration goes through Core's client surface, not the Web Client running OAuth directly.
 - [ADR-0007](./0007-local-first-single-user.md) — provider credentials are the explicitly carved-out "separate concern" this ADR handles.
-- [ADR-0003](./0003-worker-via-tool-protocol.md) — the Worker's no-SQLite/no-Vault chokepoint stays intact; the Credential Store is Core's.
+- [ADR-0003](./0003-worker-via-tool-protocol.md) — the Worker's no-SQLite chokepoint stays intact; the Credential Store is Core's.
 - [ADR-0014](./0014-client-core-wire-protocol.md) — amended with `provider/login_start` and `provider/status`.
 - [ADR-0018](./0018-workflow-and-tools-definition.md) — the manifest this ADR extends with an access token.

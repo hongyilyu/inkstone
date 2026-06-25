@@ -80,22 +80,21 @@ key into the set Core just scanned, nothing else is reachable. This is the **one
 deviation from the standard, and it is forced by ADR-0003, not chosen for taste.
 
 The tool is read-only with respect to durable Workspace state (it reads a config
-file; it touches no tier-2 row and no Vault export), so it sits comfortably inside
+file; it touches no tier-2 row), so it sits comfortably inside
 Core as Rust with no Proposal and no special policy.
 
-## Why skills live in Core-managed config, not the Vault
+## Why skills live in Core-managed config, not a user notes folder
 
-"Drop a skill into your notes" is the seductive framing, but the Vault is a tier-3
-**derived export** that, per CONTEXT.md, "Core writes… never reads back as
-authority." Reading skills *from* the Vault would make Core depend on the one
-directory it has promised never to treat as a source. Skills are authoritative
+"Drop a skill into your notes" is the seductive framing, but a user-managed notes
+directory is not something Core can treat as authority — Inkstone owns its content
+in tier-2 SQLite, not in an external folder. Skills are authoritative
 input to a Run, so they belong with the other Core-owned, Core-authored state: the
 application-data directory next to the SQLite database (`<data dir>/inkstone/`).
 This also matches openclaw's own *managed* skills root (`~/.openclaw/skills`).
 
 The ergonomic survives: dropping a directory into
 `~/Library/Application Support/inkstone/skills/<name>/` (macOS) is still "drop it in
-and Core picks it up." It is simply the app's data dir, not the user's vault.
+and Core picks it up." It is simply the app's data dir.
 
 ## Trust: markdown migrates, code never does
 
@@ -206,9 +205,9 @@ import path is trivial.
   a `load_skill_resource(name, relpath)` with Core-side path containment — still
   by-name-rooted, never a raw path.)
 
-- **Skills in the Vault (`<vault>/skills/`).** Rejected: Core must never read the
-  Vault as authority (CONTEXT.md). Skills are authoritative Run input and belong in
-  Core-managed config.
+- **Skills in a user notes folder (`<notes>/skills/`).** Rejected: Core owns its
+  content in tier-2 SQLite and treats no external folder as authority. Skills are
+  authoritative Run input and belong in Core-managed config.
 
 - **Skills register new tools.** Rejected: contradicts ADR-0018's Rust-only registry
   and ADR-0003's chokepoint; a dropped-in markdown file conjuring a callable tool is
@@ -253,6 +252,6 @@ import path is trivial.
 - [ADR-0003](./0003-worker-via-tool-protocol.md) — Tool Protocol chokepoint. The
   reason skills load by-name through Core rather than by the Worker reading files.
 - [ADR-0004](./0004-three-tier-storage-authority.md) — tier model. The reason skills
-  live in Core-managed config, not the tier-3 Vault.
+  live in Core-managed config: Core treats no external folder as authority.
 - CONTEXT.md `Workflow`, `Dispatcher`, `Router` — gain a sibling `Skill` term;
   Workflow's `_Avoid_: skill` is removed.

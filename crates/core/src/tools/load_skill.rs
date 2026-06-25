@@ -3,7 +3,7 @@
 //! context mid-Run. The `name` is a key into the Core-managed skills directory
 //! (`<data dir>/inkstone/skills/`, overridable with `INKSTONE_SKILLS_DIR`), never
 //! a path — Core retains total control over what is loadable (ADR-0003). The tool
-//! is read-only w.r.t. durable state: it touches no tier-2 row and no Vault export,
+//! is read-only w.r.t. durable state: it touches no tier-2 row,
 //! so it needs no `pool`, no Proposal, and no special policy.
 //!
 //! Discovery (the per-dispatch scan), the skills-dir resolution, and the

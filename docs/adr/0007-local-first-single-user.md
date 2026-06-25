@@ -5,7 +5,7 @@ Inkstone runs on the user's machine and serves exactly one human per install. Mu
 ## What this means concretely
 
 - **Single user per install.** Not "per Workspace" — per install. Multiple Workspaces in one install are fine; multiple humans sharing a Workspace is not supported.
-- **Local-first by default.** Everything Inkstone owns runs on the user's machine: Core, Worker, SQLite, Vault. LLM providers are a controlled exception — the LLM call has to leave the machine — but no other Inkstone component requires a remote service.
+- **Local-first by default.** Everything Inkstone owns runs on the user's machine: Core, Worker, SQLite. LLM providers are a controlled exception — the LLM call has to leave the machine — but no other Inkstone component requires a remote service.
 - **Network exposure is loopback-only by default.** When Core listens for Clients (Web, TUI, etc.), it binds to localhost. Reaching Inkstone from another device on the LAN, or from outside, is not in scope until an explicit decision opens it.
 - **No human auth flow.** "It's my machine" is the authentication. There is no login, no user table, no session token for the human user. (LLM provider credentials are a separate concern with their own handling.)
 
