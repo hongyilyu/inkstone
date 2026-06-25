@@ -1,6 +1,7 @@
 import { AlertTriangle, Circle, CircleCheck, CircleSlash } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import {
+	formatDay,
 	type LibraryItem,
 	libraryItemSubtitle,
 	libraryItemTitle,
@@ -57,6 +58,15 @@ export function DueChip({ due, overdue }: { due: string; overdue: boolean }) {
 			{/* Keep the date even when overdue so multiple overdue rows stay
 			    distinguishable (matches EntityDetail's "Overdue · <date>"). */}
 			{overdue ? `Overdue · ${due}` : due}
+		</Badge>
+	);
+}
+
+/** Small "not before" pill — when a deferred Todo becomes available. Plain, never destructive. */
+function DeferChip({ defer }: { defer: string }) {
+	return (
+		<Badge variant="secondary" size="sm" className="shrink-0">
+			Available {formatDay(defer)}
 		</Badge>
 	);
 }
@@ -134,6 +144,7 @@ export function TodoRow({
 				{todo.dueAt ? (
 					<DueChip due={todo.dueAt.slice(0, 10)} overdue={overdue} />
 				) : null}
+				{todo.deferAt ? <DeferChip defer={todo.deferAt} /> : null}
 			</button>
 		</li>
 	);

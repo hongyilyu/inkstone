@@ -1,7 +1,7 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { Todo } from "@/lib/libraryItems";
+import { formatDay, type Todo } from "@/lib/libraryItems";
 import { people, todos } from "@/lib/libraryItems.fixtures";
 import { EntityRow, TodoRow } from "./EntityRow";
 
@@ -96,6 +96,49 @@ describe("TodoRow", () => {
 		);
 		expect(screen.getByText("2999-01-02")).toBeInTheDocument();
 		expect(screen.queryByText(/Overdue/)).not.toBeInTheDocument();
+	});
+
+	it("shows an Available <date> chip when the todo is deferred", () => {
+		// Far-future defer date so the chip is clock-proof.
+		const deferred: Todo = {
+			...todo("todo_schedule_alice"),
+			deferAt: "2999-01-05T00:00:00",
+		};
+		render(
+			<ul>
+				<TodoRow todo={deferred} onSelect={() => {}} />
+			</ul>,
+		);
+		// Same formatter both sides keeps the assertion ICU-safe.
+		expect(
+			screen.getByText(`Available ${formatDay("2999-01-05T00:00:00")}`),
+		).toBeInTheDocument();
+	});
+
+	it("shows no Available chip when the todo is not deferred", () => {
+		render(
+			<ul>
+				<TodoRow todo={todo("todo_schedule_alice")} onSelect={() => {}} />
+			</ul>,
+		);
+		expect(screen.queryByText(/^Available /)).not.toBeInTheDocument();
+	});
+
+	it("shows both the due date and the Available chip when the todo has both", () => {
+		const both: Todo = {
+			...todo("todo_schedule_alice"),
+			deferAt: "2999-01-05T00:00:00",
+			dueAt: "2999-01-09T17:00:00",
+		};
+		render(
+			<ul>
+				<TodoRow todo={both} onSelect={() => {}} />
+			</ul>,
+		);
+		expect(screen.getByText("2999-01-09")).toBeInTheDocument();
+		expect(
+			screen.getByText(`Available ${formatDay("2999-01-05T00:00:00")}`),
+		).toBeInTheDocument();
 	});
 });
 
