@@ -23,6 +23,7 @@ import {
 	projectsForReview,
 	recentlyCapturedItems,
 	recurrenceSummary,
+	scheduledTodos,
 	searchLibraryItems,
 	type Todo,
 	todoIsOverdue,
@@ -369,6 +370,58 @@ describe("library item helpers", () => {
 			expect(ids).toContain("proj_apiv2");
 			expect(ids).toContain("proj_garden");
 			expect(ids).not.toContain("proj_inkstone"); // 06-21 future
+		});
+	});
+
+	describe("scheduledTodos (#232)", () => {
+		// Fixed "now" string so future-vs-past defer dates are clock-independent
+		// (today = 2026-06-12). Mirrors projectsForReview's string-`now` convention.
+		const now = "2026-06-12T12:00:00";
+
+		it("includes active future-deferred todos, soonest available first", () => {
+			const later = mkTodo("later", { deferAt: "2026-06-20T00:00:00" });
+			const sooner = mkTodo("sooner", { deferAt: "2026-06-15T00:00:00" });
+			expect(scheduledTodos([later, sooner], now).map((t) => t.id)).toEqual([
+				"sooner",
+				"later",
+			]);
+		});
+
+		it("excludes a todo deferred to the past (already available)", () => {
+			const past = mkTodo("past", { deferAt: "2026-06-01T00:00:00" });
+			expect(scheduledTodos([past], now)).toEqual([]);
+		});
+
+		it("excludes a todo deferred to today's midnight (available from 00:00)", () => {
+			const today = mkTodo("today", { deferAt: "2026-06-12T00:00:00" });
+			expect(scheduledTodos([today], now)).toEqual([]);
+		});
+
+		it("excludes a todo with no defer date", () => {
+			const nodefer = mkTodo("nodefer");
+			expect(scheduledTodos([nodefer], now)).toEqual([]);
+		});
+
+		it("excludes completed and dropped future-deferred todos", () => {
+			const completed = mkTodo("c", {
+				status: "completed",
+				deferAt: "2026-06-20T00:00:00",
+			});
+			const dropped = mkTodo("x", {
+				status: "dropped",
+				deferAt: "2026-06-20T00:00:00",
+			});
+			expect(scheduledTodos([completed, dropped], now)).toEqual([]);
+		});
+
+		it("keeps a future-deferred todo that also has a project (orthogonal)", () => {
+			const withProject = mkTodo("with_proj", {
+				projectId: "proj",
+				deferAt: "2026-06-20T00:00:00",
+			});
+			expect(scheduledTodos([withProject], now).map((t) => t.id)).toEqual([
+				"with_proj",
+			]);
 		});
 	});
 

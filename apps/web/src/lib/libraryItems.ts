@@ -513,6 +513,41 @@ export function waitingTodos(all: LibraryItem[]): Todo[] {
 }
 
 /**
+ * Scheduled: active Todos deferred to a FUTURE date — the complement of
+ * ADR-0031's availability gate (`is_available = status === "active" && (defer_at
+ * == null || defer_at <= now)`). A Todo is "scheduled" when it is active and its
+ * `defer_at` has not yet arrived; it becomes available (and leaves this view) once
+ * `defer_at <= now`. Orthogonal to Inbox/Waiting/Due — a Todo here may also carry a
+ * project, due date, or Person References. Soonest-available first.
+ *
+ * `defer_at` is stored at midnight (`<day>T00:00:00`, see `dayToLocal`), and `now`
+ * is a `YYYY-MM-DDTHH:MM:SS` local wall-clock string, so a full-string `deferAt >
+ * now` comparison is correct: a Todo deferred to today is available from 00:00 and
+ * is NOT scheduled. Mirrors `projectsForReview`'s string-`now` convention.
+ *
+ * Stopgap (#232): a flat list, intentionally minimal. Superseded by the shared
+ * Forecast/calendar view (#236), which will replace and remove this.
+ */
+export function scheduledTodos(
+	all: LibraryItem[],
+	now: string = localNowString(),
+): Todo[] {
+	return all
+		.filter(
+			(e): e is Todo =>
+				e.kind === "todo" &&
+				e.status === "active" &&
+				e.deferAt != null &&
+				e.deferAt > now,
+		)
+		.sort(
+			(a, b) =>
+				(a.deferAt ?? "").localeCompare(b.deferAt ?? "") ||
+				b.recency - a.recency,
+		);
+}
+
+/**
  * Project Review: active or on-hold Projects whose `next_review_at` is at or
  * before `now` (ADR-0031). Completed and dropped Projects are never reviewable.
  * Soonest-due (most overdue) first. `now` is a local wall-clock string.
