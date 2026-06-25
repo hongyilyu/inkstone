@@ -437,7 +437,9 @@ function todoDraftFromVm(todo: Todo | undefined): TodoDraft {
  * the editor only emits a rule once that date exists — the one client-knowable
  * trap, gated for good UX (Core still owns the rest of validation).
  */
-function recurAnchorDatePresent(d: TodoDraft): boolean {
+function recurAnchorDatePresent(
+	d: Pick<TodoDraft, "recurAnchor" | "dueDay" | "deferDay">,
+): boolean {
 	return d.recurAnchor === "due_at" ? d.dueDay !== "" : d.deferDay !== "";
 }
 

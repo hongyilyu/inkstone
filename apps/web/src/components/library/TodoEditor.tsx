@@ -43,6 +43,15 @@ interface PersonRow {
 	role: TodoPersonRole;
 }
 
+/**
+ * The scalar/recurrence half of a `TodoDraft` the editor holds in state. Person
+ * refs are deliberately EXCLUDED — `personRows` is their sole source of truth, so
+ * dropping the field here makes a stale `draft.personRefs` read or write a type
+ * error rather than a latent two-sources-of-truth bug. `submit` reattaches the
+ * rows-derived set to reconstruct the full `TodoDraft`.
+ */
+type EditableDraft = Omit<TodoDraft, "personRefs">;
+
 /** Seed the rows from a draft's ref set (one row per stored ref), minting keys. */
 function seedPersonRows(refs: TodoDraft["personRefs"]): PersonRow[] {
 	return refs.map((r) => ({
@@ -65,15 +74,16 @@ type Props = (
 /** Create / edit a Todo inline in the Library rail (ADR-0033). */
 export function TodoEditor({ allEntities, onDone, onCancel, ...m }: Props) {
 	const existing = m.mode === "edit" ? m.todo : undefined;
-	const baseline = todoDraftFromVm(existing);
-	const [draft, setDraft] = useState<TodoDraft>(baseline);
+	const { personRefs: baselineRefs, ...baseline } = todoDraftFromVm(existing);
 	// The person-reference ROWS are the SOLE source of truth for the People field
-	// (they hold blank, not-yet-chosen rows the codec must not see). `draft` never
-	// mirrors them — `submit` derives the ref set from these rows once, at save
-	// time. Seeded from the baseline so an existing Todo opens with one row per
-	// stored ref.
+	// (they hold blank, not-yet-chosen rows the codec must not see). The editor's
+	// `draft` state OMITS `personRefs` entirely — so it can't drift or be read
+	// stale — and `submit` reattaches the rows-derived set when building the
+	// payload. The rows seed from the baseline so an existing Todo opens with one
+	// row per stored ref.
+	const [draft, setDraft] = useState<EditableDraft>(baseline);
 	const [personRows, setPersonRows] = useState<PersonRow[]>(() =>
-		seedPersonRows(baseline.personRefs),
+		seedPersonRows(baselineRefs),
 	);
 	const mutation = useEntityMutation();
 
@@ -95,8 +105,10 @@ export function TodoEditor({ allEntities, onDone, onCancel, ...m }: Props) {
 		(e): e is Project => e.kind === "project",
 	);
 
-	const set = <K extends keyof TodoDraft>(key: K, value: TodoDraft[K]) =>
-		setDraft((d) => ({ ...d, [key]: value }));
+	const set = <K extends keyof EditableDraft>(
+		key: K,
+		value: EditableDraft[K],
+	) => setDraft((d) => ({ ...d, [key]: value }));
 
 	// A new row defaults to `related` and no person yet; the user picks the person.
 	const addPersonRow = () =>
@@ -152,8 +164,15 @@ export function TodoEditor({ allEntities, onDone, onCancel, ...m }: Props) {
 				.filter((r) => r.personId !== "")
 				.map((r) => ({ personId: r.personId, role: r.role })),
 		};
+		// The update diff compares against the FULL baseline (its stored ref set is
+		// `baselineRefs`, split out of state above), so reattach it here.
 		const params = existing
-			? buildTodo({ mode: "update", existing, baseline, draft: toSave })
+			? buildTodo({
+					mode: "update",
+					existing,
+					baseline: { ...baseline, personRefs: baselineRefs },
+					draft: toSave,
+				})
 			: buildTodo({ mode: "create", draft: toSave });
 		if (params === null) {
 			// Nothing changed — close without a write.
