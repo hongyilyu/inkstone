@@ -15,12 +15,15 @@ import {
 	type TodoStatus,
 } from "@/lib/entityFields";
 import { useEntityMutation } from "@/lib/hooks/useEntityMutation";
-import type {
-	LibraryItem,
-	Person,
-	Project,
-	Todo,
-	TodoPersonRole,
+import { useRecurrenceNextDates } from "@/lib/hooks/useRecurrenceNextDates";
+import {
+	formatDateTime,
+	formatDay,
+	type LibraryItem,
+	type Person,
+	type Project,
+	type Todo,
+	type TodoPersonRole,
 } from "@/lib/libraryItems";
 import {
 	EditorField,
@@ -71,6 +74,18 @@ type Props = (
 	onCancel: () => void;
 };
 
+/**
+ * Format a previewed next-occurrence date for the recurrence unit. minute/hour
+ * cadences advance by a sub-day span, so the time is meaningful (two occurrences
+ * can share a date) → show date+time; day-and-up units land at midnight, so
+ * date-only reads cleaner (#227).
+ */
+function formatNextDate(value: string, unit: RecurrenceUnit): string {
+	return unit === "minute" || unit === "hour"
+		? formatDateTime(value)
+		: formatDay(value);
+}
+
 /** Create / edit a Todo inline in the Library rail (ADR-0033). */
 export function TodoEditor({ allEntities, onDone, onCancel, ...m }: Props) {
 	const existing = m.mode === "edit" ? m.todo : undefined;
@@ -86,6 +101,9 @@ export function TodoEditor({ allEntities, onDone, onCancel, ...m }: Props) {
 		seedPersonRows(baselineRefs),
 	);
 	const mutation = useEntityMutation();
+	// The next occurrence's dates, resolved by Core (null when not previewable —
+	// Repeats off, anchor date absent, or End = Never). Drives the preview block.
+	const nextDates = useRecurrenceNextDates(draft);
 
 	const ids = {
 		title: useId(),
@@ -98,6 +116,9 @@ export function TodoEditor({ allEntities, onDone, onCancel, ...m }: Props) {
 		recurInterval: useId(),
 		recurUnit: useId(),
 		recurAnchor: useId(),
+		recurEnd: useId(),
+		recurUntil: useId(),
+		recurAfterCount: useId(),
 	};
 
 	const people = allEntities.filter((e): e is Person => e.kind === "person");
@@ -148,6 +169,14 @@ export function TodoEditor({ allEntities, onDone, onCancel, ...m }: Props) {
 			// Repeats on but the anchor's date absent: Core would reject the rule.
 			if (!recurAnchorDatePresent(draft))
 				return `Set the ${draft.recurAnchor === "due_at" ? "due" : "defer"} date to save this repeat`;
+			// End condition chosen but its value missing/invalid.
+			if (draft.recurEnd === "until" && draft.recurUntilDay === "")
+				return "Set the end date for this repeat";
+			if (draft.recurEnd === "after") {
+				const count = Number(draft.recurAfterCount);
+				if (!Number.isInteger(count) || count < 1)
+					return "Enter a whole number of repeats of 1 or more";
+			}
 		}
 		return null;
 	})();
@@ -331,6 +360,83 @@ export function TodoEditor({ allEntities, onDone, onCancel, ...m }: Props) {
 						</EditorField>
 						{/* The anchor-missing guidance now lives in the frame's
 						    `disabledReason` (by Save), so it isn't duplicated here. */}
+
+						<EditorField label="End" htmlFor={ids.recurEnd}>
+							<EditorSelect
+								id={ids.recurEnd}
+								value={draft.recurEnd}
+								onChange={(e) =>
+									set("recurEnd", e.target.value as TodoDraft["recurEnd"])
+								}
+							>
+								<option value="never">Never</option>
+								<option value="until">On date</option>
+								<option value="after">After</option>
+							</EditorSelect>
+						</EditorField>
+
+						{draft.recurEnd === "until" ? (
+							<EditorField label="End date" htmlFor={ids.recurUntil}>
+								<EditorInput
+									id={ids.recurUntil}
+									type="date"
+									value={draft.recurUntilDay}
+									onChange={(e) => set("recurUntilDay", e.target.value)}
+								/>
+							</EditorField>
+						) : null}
+
+						{draft.recurEnd === "after" ? (
+							<EditorField label="Times" htmlFor={ids.recurAfterCount}>
+								<EditorInput
+									id={ids.recurAfterCount}
+									type="number"
+									min={1}
+									value={draft.recurAfterCount}
+									onChange={(e) => set("recurAfterCount", e.target.value)}
+								/>
+								<p className="text-muted-foreground text-xs leading-relaxed">
+									How many times in total, counting down as each occurs.
+								</p>
+							</EditorField>
+						) : null}
+						{/* End-condition guidance lives in the frame's
+						    `disabledReason` (by Save), so it isn't duplicated here. */}
+
+						{/* Next-occurrence preview (#227): shown only for a bounded
+						    series (End != Never → nextDates is non-null), computed by
+						    Core's own date math. An ended series names itself; otherwise
+						    the successor's defer/due dates. Sub-day cadences (minute/hour)
+						    advance by a time span, so they render WITH the time —
+						    formatDay alone would print the same date for two consecutive
+						    occurrences. Day-and-up units render date-only (time is always
+						    midnight, the editor edits days). */}
+						{nextDates ? (
+							<div className="flex flex-col gap-1.5 rounded-lg border border-input bg-card/40 px-3 py-2.5">
+								{nextDates.ended ? (
+									<p className="text-muted-foreground text-xs leading-relaxed">
+										No next occurrence — this is the last one.
+									</p>
+								) : (
+									<>
+										<p className="font-medium text-muted-foreground text-xs">
+											Dates for next occurrence
+										</p>
+										{nextDates.deferAt ? (
+											<p className="text-foreground text-sm">
+												Defer{" "}
+												{formatNextDate(nextDates.deferAt, draft.recurUnit)}
+											</p>
+										) : null}
+										{nextDates.dueAt ? (
+											<p className="text-foreground text-sm">
+												Due {formatNextDate(nextDates.dueAt, draft.recurUnit)}
+											</p>
+										) : null}
+									</>
+								)}
+							</div>
+						) : null}
 					</>
 				) : null}
 			</div>

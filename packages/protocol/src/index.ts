@@ -89,6 +89,35 @@ export type RunGetHistoryParams = S.Schema.Type<typeof RunGetHistoryParams>;
 export const RunHistoryResult = S.Struct({ runs: S.Array(RunHistoryItem) });
 export type RunHistoryResult = S.Schema.Type<typeof RunHistoryResult>;
 
+/** `recurrence/preview` params (ADR-0039 amendment, #227): a draft Recurrence
+ * Rule + the editing Todo's current `defer_at`/`due_at`. The editor sends this
+ * read-only request to preview where the next occurrence would land. `recurrence`
+ * is the opaque rule object (Core's date math validates it via a fail-safe, never
+ * rejects here); the dates are optional because a Todo may carry only one anchor.
+ * Hand-authored wire params (what Web sends). */
+export const RecurrencePreviewParams = S.Struct({
+	recurrence: S.Unknown,
+	defer_at: S.optional(S.String),
+	due_at: S.optional(S.String),
+});
+export type RecurrencePreviewParams = S.Schema.Type<
+	typeof RecurrencePreviewParams
+>;
+
+/** `recurrence/preview` result (ADR-0039 amendment, #227): the next occurrence's
+ * dates, or `ended: true` when completing the Todo would spawn no successor (end
+ * condition reached, or a malformed/partial draft rule). `ended: true` is a normal
+ * result, not an error. When `ended` is false, `defer_at`/`due_at` mirror the
+ * input's anchor presence; each is omitted (not null) when absent. */
+export const RecurrencePreviewResult = S.Struct({
+	ended: S.Boolean,
+	defer_at: S.optional(S.String),
+	due_at: S.optional(S.String),
+});
+export type RecurrencePreviewResult = S.Schema.Type<
+	typeof RecurrencePreviewResult
+>;
+
 export const ThreadGetParams = S.Struct({ thread_id: S.String });
 export type ThreadGetParams = S.Schema.Type<typeof ThreadGetParams>;
 

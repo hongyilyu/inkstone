@@ -25,6 +25,7 @@ function makeRuntime(
 		postMessage: () => unused,
 		threadList: () => unused,
 		getRunHistory: () => unused,
+		recurrencePreview: () => Effect.die("not exercised in this test"),
 		threadGet: () => unused,
 		listEntities: () => unused,
 		getBacklinks: () => unused,

@@ -13,11 +13,14 @@ import type { LibraryItem, Person, Project, Todo } from "@/lib/libraryItems";
 import { RuntimeProvider } from "@/runtime";
 import { TodoEditor } from "./TodoEditor";
 
-// Stub WsClient whose `entityMutate` records params and succeeds; unused methods die.
+// Stub WsClient whose `entityMutate` records params and succeeds; `recurrencePreview`
+// runs the supplied handler (defaults to dying); other methods die.
 function makeRuntime(
 	entityMutate: (
 		params: EntityMutateParams,
 	) => Effect.Effect<EntityMutateResult, WsError>,
+	recurrencePreview: WsClient["Type"]["recurrencePreview"] = () =>
+		Effect.die("not exercised in this test"),
 ) {
 	const unused = Effect.die("not exercised in this test");
 	const stub = WsClient.of({
@@ -25,6 +28,7 @@ function makeRuntime(
 		postMessage: () => unused,
 		threadList: () => unused,
 		getRunHistory: () => unused,
+		recurrencePreview,
 		threadGet: () => unused,
 		listEntities: () => unused,
 		getBacklinks: () => unused,
@@ -51,8 +55,9 @@ function renderEditor(
 		params: EntityMutateParams,
 	) => Effect.Effect<EntityMutateResult, WsError> = () =>
 		Effect.succeed({ entity_id: "01900000-0000-7000-8000-000000000099" }),
+	recurrencePreview?: WsClient["Type"]["recurrencePreview"],
 ) {
-	const runtime = makeRuntime(entityMutate);
+	const runtime = makeRuntime(entityMutate, recurrencePreview);
 	const client = new QueryClient({
 		defaultOptions: {
 			queries: { retry: false },
@@ -97,6 +102,14 @@ const existing: Todo = {
 const allEntities: LibraryItem[] = [alice, project, existing];
 
 afterEach(cleanup);
+
+// Deterministic flush for the negative preview assertions: drain pending
+// microtasks (react-query schedules its queryFn on the microtask queue, never a
+// timer), so "no read fired" is proven without a wall-clock sleep. A disabled
+// query never schedules at all; this just gives any erroneous schedule a turn.
+const flushMicrotasks = async () => {
+	for (let i = 0; i < 3; i++) await Promise.resolve();
+};
 
 describe("TodoEditor Save gate", () => {
 	// The compound guard surfaces to the frame: an empty title leaves Save disabled.
@@ -624,6 +637,74 @@ describe("TodoEditor recurrence", () => {
 		});
 	});
 
+	// End condition (#227): choosing "On date" reveals the date field and folds
+	// {until} into the rule the editor sends.
+	it("emits an `until` end condition when End is set to a date", async () => {
+		const user = userEvent.setup();
+		const seen: EntityMutateParams[] = [];
+		renderEditor(
+			{ mode: "create", allEntities, onDone: () => {}, onCancel: () => {} },
+			(params) => {
+				seen.push(params);
+				return Effect.succeed({
+					entity_id: "01900000-0000-7000-8000-000000000099",
+				});
+			},
+		);
+
+		await user.type(screen.getByLabelText(/title/i), "Weekly standup");
+		await user.type(screen.getByLabelText(/defer until/i), "2026-07-01");
+		await user.click(screen.getByLabelText(/repeats/i));
+		await user.selectOptions(screen.getByLabelText(/^end$/i), "until");
+		await user.type(screen.getByLabelText(/end date/i), "2026-12-31");
+		await user.click(screen.getByRole("button", { name: /^save$/i }));
+
+		await waitFor(() => expect(seen).toHaveLength(1));
+		const todo = (seen[0].payload as { todo: Record<string, unknown> }).todo;
+		expect(todo.recurrence).toEqual({
+			interval: 1,
+			unit: "week",
+			anchor: "defer_at",
+			end: { until: "2026-12-31T00:00:00" },
+		});
+	});
+
+	// End="After" with no count yet keeps Save disabled (the count guard), then
+	// enables once a positive integer is entered and folds {after_count}.
+	it("gates Save on the After count, then emits after_count", async () => {
+		const user = userEvent.setup();
+		const seen: EntityMutateParams[] = [];
+		renderEditor(
+			{ mode: "create", allEntities, onDone: () => {}, onCancel: () => {} },
+			(params) => {
+				seen.push(params);
+				return Effect.succeed({
+					entity_id: "01900000-0000-7000-8000-000000000099",
+				});
+			},
+		);
+
+		await user.type(screen.getByLabelText(/title/i), "Take pills");
+		await user.type(screen.getByLabelText(/defer until/i), "2026-07-01");
+		await user.click(screen.getByLabelText(/repeats/i));
+		await user.selectOptions(screen.getByLabelText(/^end$/i), "after");
+		// The After count starts empty → Save is blocked.
+		const save = screen.getByRole("button", { name: /^save$/i });
+		expect(save).toBeDisabled();
+		await user.type(screen.getByLabelText(/^times$/i), "10");
+		await waitFor(() => expect(save).toBeEnabled());
+		await user.click(save);
+
+		await waitFor(() => expect(seen).toHaveLength(1));
+		const todo = (seen[0].payload as { todo: Record<string, unknown> }).todo;
+		expect(todo.recurrence).toEqual({
+			interval: 1,
+			unit: "week",
+			anchor: "defer_at",
+			end: { after_count: 10 },
+		});
+	});
+
 	// Repeats off must omit `recurrence` entirely on create (never explicit null —
 	// Core rejects null on create, ADR-0031/slice-3).
 	it("omits recurrence on create when Repeats is off", async () => {
@@ -886,4 +967,139 @@ describe("TodoEditor recurrence", () => {
 			anchor: "defer_at",
 		});
 	});
+});
+
+// Next-occurrence preview (#227): a bounded series (End != Never) reads
+// recurrence/preview and renders Core's computed dates, the terminal copy when
+// the series ends, and nothing when End = Never.
+describe("TodoEditor next-occurrence preview", () => {
+	const noMutate = () =>
+		Effect.succeed({ entity_id: "01900000-0000-7000-8000-000000000099" });
+
+	it("shows the next occurrence's dates for a bounded series", async () => {
+		const user = userEvent.setup();
+		const seen: unknown[] = [];
+		renderEditor(
+			{ mode: "create", allEntities, onDone: () => {}, onCancel: () => {} },
+			noMutate,
+			() => {
+				seen.push("called");
+				return Effect.succeed({
+					ended: false,
+					defer_at: "2026-07-08T00:00:00",
+					due_at: undefined,
+				});
+			},
+		);
+
+		await user.type(screen.getByLabelText(/title/i), "Weekly standup");
+		await user.type(screen.getByLabelText(/defer until/i), "2026-07-01");
+		await user.click(screen.getByLabelText(/repeats/i));
+		await user.selectOptions(screen.getByLabelText(/^end$/i), "after");
+		await user.type(screen.getByLabelText(/^times$/i), "10");
+
+		// The preview block names itself and renders the resolved defer date.
+		expect(await screen.findByText(/dates for next occurrence/i)).toBeTruthy();
+		await waitFor(() => expect(screen.getByText(/defer .*2026/i)).toBeTruthy());
+		expect(seen.length).toBeGreaterThan(0);
+	});
+
+	it("names the last occurrence when the series has ended", async () => {
+		const user = userEvent.setup();
+		renderEditor(
+			{ mode: "create", allEntities, onDone: () => {}, onCancel: () => {} },
+			noMutate,
+			() => Effect.succeed({ ended: true }),
+		);
+
+		await user.type(screen.getByLabelText(/title/i), "Final repeat");
+		await user.type(screen.getByLabelText(/defer until/i), "2026-07-01");
+		await user.click(screen.getByLabelText(/repeats/i));
+		await user.selectOptions(screen.getByLabelText(/^end$/i), "after");
+		await user.type(screen.getByLabelText(/^times$/i), "1");
+
+		expect(await screen.findByText(/this is the last one/i)).toBeTruthy();
+	});
+
+	it("renders no preview block while End is Never (unbounded series)", async () => {
+		const user = userEvent.setup();
+		const seen: unknown[] = [];
+		renderEditor(
+			{ mode: "create", allEntities, onDone: () => {}, onCancel: () => {} },
+			noMutate,
+			() => {
+				seen.push("called");
+				return Effect.succeed({ ended: false });
+			},
+		);
+
+		await user.type(screen.getByLabelText(/title/i), "Forever task");
+		await user.type(screen.getByLabelText(/defer until/i), "2026-07-01");
+		await user.click(screen.getByLabelText(/repeats/i));
+		// End defaults to Never: no preview, and the read never fires.
+		expect(screen.queryByText(/dates for next occurrence/i)).toBeNull();
+		expect(screen.queryByText(/this is the last one/i)).toBeNull();
+		// No read should ever fire (query disabled); prove it deterministically.
+		await flushMicrotasks();
+		expect(seen).toHaveLength(0);
+	});
+
+	// End chosen but its value not yet entered (After with a blank count): the
+	// preview must NOT fire — otherwise it would show a "next occurrence" for the
+	// unbounded rule buildRecurrence emits mid-entry (#227 review-fix gate).
+	it("does not fire the preview while the End value is incomplete", async () => {
+		const user = userEvent.setup();
+		const seen: unknown[] = [];
+		renderEditor(
+			{ mode: "create", allEntities, onDone: () => {}, onCancel: () => {} },
+			noMutate,
+			() => {
+				seen.push("called");
+				return Effect.succeed({ ended: false });
+			},
+		);
+
+		await user.type(screen.getByLabelText(/title/i), "Half-entered");
+		await user.type(screen.getByLabelText(/defer until/i), "2026-07-01");
+		await user.click(screen.getByLabelText(/repeats/i));
+		await user.selectOptions(screen.getByLabelText(/^end$/i), "after");
+		// Count left blank → incomplete end → no preview, no read.
+		expect(screen.queryByText(/dates for next occurrence/i)).toBeNull();
+		await flushMicrotasks();
+		expect(seen).toHaveLength(0);
+	});
+
+	// A sub-day cadence (hour/minute) advances by a time span, so the preview must
+	// render WITH the time — date-only would print the same date for two
+	// consecutive occurrences (#227 review-fix: formatNextDate).
+	it("renders the next occurrence WITH a time for an hourly cadence", async () => {
+		const user = userEvent.setup();
+		renderEditor(
+			{ mode: "create", allEntities, onDone: () => {}, onCancel: () => {} },
+			noMutate,
+			() =>
+				Effect.succeed({
+					ended: false,
+					defer_at: "2026-07-01T13:00:00",
+					due_at: undefined,
+				}),
+		);
+
+		await user.type(screen.getByLabelText(/title/i), "Hourly ping");
+		await user.type(screen.getByLabelText(/defer until/i), "2026-07-01");
+		await user.click(screen.getByLabelText(/repeats/i));
+		await user.selectOptions(screen.getByLabelText(/^unit$/i), "hour");
+		await user.selectOptions(screen.getByLabelText(/^end$/i), "after");
+		await user.type(screen.getByLabelText(/^times$/i), "5");
+
+		// The preview renders the successor WITH a time component (e.g. "1:00 PM"),
+		// which the date-only formatter would have dropped. Scope to the preview
+		// block (the heading's container) to avoid the "Defer until" field label.
+		const heading = await screen.findByText(/dates for next occurrence/i);
+		const previewBlock = heading.parentElement as HTMLElement;
+		expect(previewBlock.textContent).toMatch(/Defer .*\d{1,2}:\d{2}/);
+	});
+	// The stale-data-on-error guard is pinned at the hook level
+	// (useRecurrenceNextDates.test.tsx) where the success-then-refetch-failure
+	// path is reproducible; a cold component failure has no retained data to test.
 });

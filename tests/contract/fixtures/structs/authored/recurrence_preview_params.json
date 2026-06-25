@@ -1,0 +1,10 @@
+{
+  "recurrence": {
+    "interval": 1,
+    "unit": "week",
+    "anchor": "defer_at",
+    "end": { "after_count": 10 }
+  },
+  "defer_at": "2026-07-01T00:00:00",
+  "due_at": "2026-07-08T00:00:00"
+}

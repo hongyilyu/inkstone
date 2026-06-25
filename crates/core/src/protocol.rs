@@ -338,6 +338,37 @@ pub struct RunHistoryResult {
     pub runs: Vec<RunHistoryItem>,
 }
 
+/// `recurrence/preview` params (ADR-0039 amendment, #227): a draft Recurrence
+/// Rule + the editing Todo's current `defer_at`/`due_at`. Read-only — the editor
+/// sends an in-progress rule to preview when the next occurrence would land.
+/// `recurrence` is the opaque rule object (validated only by the date math's
+/// fail-safe `None`, never rejected here); the dates are optional because a Todo
+/// may carry only one anchor. Hand-authored wire struct (Deserialize-only).
+#[derive(Debug, Deserialize)]
+pub struct RecurrencePreviewParams {
+    pub recurrence: serde_json::Value,
+    #[serde(default)]
+    pub defer_at: Option<String>,
+    #[serde(default)]
+    pub due_at: Option<String>,
+}
+
+/// `recurrence/preview` result (ADR-0039 amendment, #227): the next occurrence's
+/// dates, or `ended: true` when completing the Todo would spawn no successor
+/// (end condition reached, or a malformed/partial draft rule — `next_occurrence`
+/// is fail-safe). `ended: true` is a normal result, NOT a JSON-RPC error: a
+/// bounded series ending is expected, and an in-flight draft must never surface
+/// as an error in the editor. When `ended` is false, `defer_at`/`due_at` mirror
+/// the input's anchor presence (a date absent on input stays absent).
+#[derive(Debug, Serialize)]
+pub struct RecurrencePreviewResult {
+    pub ended: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub defer_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub due_at: Option<String>,
+}
+
 /// `entity/list` params: the Entity `type` to list, one per call (e.g. `"todo"`,
 /// `"person"`). `r#type` serializes as the wire field `"type"`.
 #[derive(Debug, Deserialize)]
@@ -1782,6 +1813,25 @@ mod parity_fixtures {
                     }],
                 }
             ),
+            // ── recurrence/preview (continuing + ended companion) ──
+            // Maximal: the series continues, both dates present.
+            fx!(
+                "recurrence_preview_result.json",
+                RecurrencePreviewResult {
+                    ended: false,
+                    defer_at: Some("2026-07-08T00:00:00".to_string()),
+                    due_at: Some("2026-07-15T00:00:00".to_string()),
+                }
+            ),
+            // Ended: no successor — both dates omitted (skip_serializing_if None).
+            fx!(
+                "recurrence_preview_result.ended.json",
+                RecurrencePreviewResult {
+                    ended: true,
+                    defer_at: None,
+                    due_at: None,
+                }
+            ),
             // ── entity/list (EntityRow maximal + bare, transitively) ──
             // Maximal row: refs + person_refs + source all present (covers
             // ResolvedEntityRef with its optionals, TodoPersonRefView, EntitySourceView
@@ -2258,6 +2308,8 @@ mod parity_fixtures {
             "thread_create_result.json",
             "thread_list_result.json",
             "run_history_result.json",
+            "recurrence_preview_result.json",
+            "recurrence_preview_result.ended.json",
             "entity_list_result.json",
             "entity_list_result.bare.json",
             "entity_list_result.je_source.json",
@@ -2345,6 +2397,14 @@ mod parity_fixtures {
         parses!(ThreadCreateParams, "thread_create_params.json");
         parses!(RunGetHistoryParams, "run_get_history_params.json");
         parses!(RunGetHistoryParams, "run_get_history_params.bare.json");
+        parses!(
+            RecurrencePreviewParams,
+            "recurrence_preview_params.json"
+        );
+        parses!(
+            RecurrencePreviewParams,
+            "recurrence_preview_params.bare.json"
+        );
         parses!(EntityListParams, "entity_list_params.json");
         parses!(EntityBacklinksParams, "entity_backlinks_params.json");
         parses!(EntityMutateParams, "entity_mutate_params.json");

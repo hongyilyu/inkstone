@@ -30,6 +30,7 @@ function makeStubRuntime(queue: Queue.Queue<RunEventValue>, runId: RunId) {
 		postMessage: () => Effect.succeed(runId),
 		threadList: () => unused,
 		getRunHistory: () => unused,
+		recurrencePreview: () => Effect.die("not exercised in this test"),
 		threadGet: () => unused,
 		listEntities: () => unused,
 		getBacklinks: () => unused,

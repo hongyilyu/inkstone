@@ -38,6 +38,7 @@ function makeStubRuntime(opts: {
 		postMessage: () => Effect.succeed(opts.runId),
 		threadList: () => unused,
 		getRunHistory: () => unused,
+		recurrencePreview: () => Effect.die("not exercised in this test"),
 		// Park hydrate-on-focus: a focused thread stays `loading` (these tests drive messages directly, not via thread/get).
 		threadGet: () => Effect.never,
 		listEntities: () => unused,
@@ -223,6 +224,7 @@ describe("ChatColumn", () => {
 			postMessage: () => unused,
 			threadList: () => unused,
 			getRunHistory: () => unused,
+			recurrencePreview: () => Effect.die("not exercised in this test"),
 			threadGet: () => {
 				calls += 1;
 				return calls === 1
@@ -273,6 +275,7 @@ describe("ChatColumn", () => {
 			postMessage: () => unused,
 			threadList: () => unused,
 			getRunHistory: () => unused,
+			recurrencePreview: () => Effect.die("not exercised in this test"),
 			threadGet: () =>
 				Effect.fail(new UnknownThreadError({ message: "no such thread" })),
 			listEntities: () => unused,
@@ -974,6 +977,7 @@ describe("ChatColumn", () => {
 			postMessage: () => unused,
 			threadList: () => unused,
 			getRunHistory: () => unused,
+			recurrencePreview: () => Effect.die("not exercised in this test"),
 			threadGet: () => Deferred.await(gate),
 			listEntities: () => unused,
 			getBacklinks: () => unused,

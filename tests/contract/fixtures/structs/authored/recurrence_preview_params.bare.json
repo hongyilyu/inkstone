@@ -1,0 +1,8 @@
+{
+  "recurrence": {
+    "interval": 2,
+    "unit": "month",
+    "anchor": "due_at"
+  },
+  "due_at": "2026-07-08T00:00:00"
+}

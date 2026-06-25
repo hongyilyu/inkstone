@@ -1,5 +1,6 @@
 import {
 	type EntityMutateParams,
+	type RecurrencePreviewParams,
 	readBookmarkData,
 	readJournalEntryData,
 	readPersonData,
@@ -379,11 +380,26 @@ export interface TodoDraft {
 	recurUnit: RecurrenceUnit;
 	recurAnchor: RecurAnchor;
 	/**
-	 * The loaded rule's unsurfaced `end` condition, stashed verbatim (re-snaked)
-	 * so an edit that only touches the common path round-trips it untouched
-	 * through the whole-object replace (ADR-0037 UI scope).
+	 * The recurrence END condition (ADR-0037/0039 amendment, #227), surfaced as a
+	 * single mutually-exclusive choice — Core enforces at-most-one of until /
+	 * after_count. `"never"` → no `end`; `"until"` drives `recurUntilDay`;
+	 * `"after"` drives `recurAfterCount`.
 	 */
-	recurExtra?: { end?: unknown };
+	recurEnd: "never" | "until" | "after";
+	/** The `until` bound as a `YYYY-MM-DD` UI date (day granularity, like `dueDay`). */
+	recurUntilDay: string;
+	/**
+	 * The full stored `until` wall-clock string the loaded rule carried (e.g. an
+	 * agent-authored `2026-12-31T23:59:59`), or `""` for a fresh draft. The editor
+	 * only edits the DAY, so when `recurUntilDay` still matches this value's day
+	 * prefix, `buildRecurrence` re-emits this verbatim rather than re-folding to
+	 * midnight — preserving a non-midnight bound through an unrelated edit (#227
+	 * review-fix; mirrors master's verbatim `end` round-trip). Only when the user
+	 * changes the day does it fold to `<day>T00:00:00`.
+	 */
+	recurUntilStored: string;
+	/** The `after_count` as text, like `recurInterval` — coerced to a number on build. */
+	recurAfterCount: string;
 }
 
 /** A `YYYY-MM-DD` UI date → the `YYYY-MM-DDTHH:MM:SS` wall-clock string Core wants. */
@@ -392,19 +408,41 @@ function dayToLocal(day: string): string {
 }
 
 /**
- * Re-snake the rule's unsurfaced `end` condition so it round-trips into the
- * emitted rule byte-for-byte. The editor never surfaces `end` (ADR-0037), but
- * recurrence is replaced as a whole object, so dropping it on a common-path edit
- * would silently lose stored state.
+ * Read a loaded rule's `end` condition into the three flat draft fields
+ * (ADR-0037/0039 amendment, #227). `until`/`after_count` are mutually exclusive
+ * (Core enforces it), so `recurEnd` picks the active branch and the unused day /
+ * count field stays blank.
  */
-function stashRecurExtra(
-	rule: NonNullable<Todo["recurrence"]>,
-): TodoDraft["recurExtra"] {
-	if (!rule.end) return undefined;
-	const end: Record<string, unknown> = {};
-	if (rule.end.until !== undefined) end.until = rule.end.until;
-	if (rule.end.afterCount !== undefined) end.after_count = rule.end.afterCount;
-	return { end };
+function endFieldsFromRule(rule: Todo["recurrence"]): {
+	recurEnd: TodoDraft["recurEnd"];
+	recurUntilDay: string;
+	recurUntilStored: string;
+	recurAfterCount: string;
+} {
+	if (rule?.end?.until !== undefined) {
+		return {
+			recurEnd: "until",
+			recurUntilDay: rule.end.until.slice(0, 10),
+			// Keep the full stored string so an unrelated edit re-emits it verbatim
+			// (preserves a non-midnight bound — #227 review-fix).
+			recurUntilStored: rule.end.until,
+			recurAfterCount: "",
+		};
+	}
+	if (rule?.end?.afterCount !== undefined) {
+		return {
+			recurEnd: "after",
+			recurUntilDay: "",
+			recurUntilStored: "",
+			recurAfterCount: String(rule.end.afterCount),
+		};
+	}
+	return {
+		recurEnd: "never",
+		recurUntilDay: "",
+		recurUntilStored: "",
+		recurAfterCount: "",
+	};
 }
 
 /** The editable draft for a Todo (or a fresh blank draft when `todo` is absent). */
@@ -427,7 +465,7 @@ function todoDraftFromVm(todo: Todo | undefined): TodoDraft {
 		recurInterval: rule ? String(rule.interval) : "1",
 		recurUnit: rule?.unit ?? "week",
 		recurAnchor: rule?.anchor ?? "defer_at",
-		recurExtra: rule ? stashRecurExtra(rule) : undefined,
+		...endFieldsFromRule(rule),
 	};
 }
 
@@ -443,23 +481,74 @@ function recurAnchorDatePresent(
 	return d.recurAnchor === "due_at" ? d.dueDay !== "" : d.deferDay !== "";
 }
 
+/**
+ * The recurrence-only slice of a draft (every field the rule/preview functions
+ * read, never `personRefs`). The editor's `draft` state OMITS `personRefs`
+ * (ADR-0032 person-rows own them), so these functions accept the narrower shape
+ * — a full `TodoDraft` still satisfies it.
+ */
+export type RecurrenceDraft = Omit<TodoDraft, "personRefs">;
+
 /** A recurrence is emittable only when toggled on AND its anchor date exists. */
-function recurActive(d: TodoDraft): boolean {
+function recurActive(d: RecurrenceDraft): boolean {
 	return d.recurs && recurAnchorDatePresent(d);
 }
 
 /**
- * The snake_case recurrence rule for the payload: the common path the editor
- * drives (interval/unit/anchor) plus the stashed `end` it round-trips untouched
- * (ADR-0037/0039). Assumes `recurActive(d)` — callers gate on it.
+ * Whether the chosen END condition carries a usable value: `never` is always
+ * complete (no value needed), `until` needs a date, `after` needs a positive
+ * integer count. The single predicate behind both the editor's Save-block and the
+ * preview gate, so the two can't disagree (a half-entered end must neither save
+ * nor preview an unbounded rule — #227 review-fix).
  */
-function buildRecurrence(d: TodoDraft): Record<string, unknown> {
+function recurEndComplete(d: RecurrenceDraft): boolean {
+	if (d.recurEnd === "until") return d.recurUntilDay !== "";
+	if (d.recurEnd === "after") {
+		const count = Number(d.recurAfterCount);
+		return Number.isInteger(count) && count >= 1;
+	}
+	return true;
+}
+
+/** A positive-integer interval, matching the editor's Save-block guard. Used to
+ * keep the preview from firing on a blank/zero interval mid-entry (Core would
+ * answer `ended` for `interval < 1`, misleading the user — #227 review-fix). */
+function recurIntervalValid(d: RecurrenceDraft): boolean {
+	const interval = Number(d.recurInterval);
+	return Number.isInteger(interval) && interval >= 1;
+}
+
+/**
+ * The snake_case recurrence rule for the payload: the common path the editor
+ * drives (interval/unit/anchor) plus the END condition the user chose
+ * (ADR-0037/0039 amendment, #227). `recurEnd` is mutually exclusive — `"until"`
+ * folds `{until}` (a freshly chosen / day-changed date at day granularity
+ * `T00:00:00` like due/defer; a stored non-midnight bound re-emits verbatim when
+ * the day is untouched — see `recurUntilStored`), `"after"` folds
+ * `{after_count}`, `"never"` omits `end` entirely. Assumes `recurActive(d)` —
+ * callers gate on it. An incomplete end (e.g. `"after"` with a non-positive
+ * count) is dropped here too; the editor's Save-block guards it for UX.
+ */
+function buildRecurrence(d: RecurrenceDraft): Record<string, unknown> {
 	const rule: Record<string, unknown> = {
 		interval: Number(d.recurInterval),
 		unit: d.recurUnit,
 		anchor: d.recurAnchor,
 	};
-	if (d.recurExtra?.end !== undefined) rule.end = d.recurExtra.end;
+	if (d.recurEnd === "until" && d.recurUntilDay) {
+		// Re-emit the stored bound verbatim when the user hasn't changed the day
+		// (preserves a non-midnight `until` an agent authored — #227 review-fix);
+		// only fold to midnight when the day actually changed.
+		const until =
+			d.recurUntilStored.slice(0, 10) === d.recurUntilDay
+				? d.recurUntilStored
+				: dayToLocal(d.recurUntilDay);
+		rule.end = { until };
+	} else if (d.recurEnd === "after") {
+		const count = Number(d.recurAfterCount);
+		if (Number.isInteger(count) && count >= 1)
+			rule.end = { after_count: count };
+	}
 	return rule;
 }
 
@@ -468,6 +557,42 @@ function wirePersonRefs(
 	refs: TodoDraft["personRefs"],
 ): Array<{ person_id: string; role: TodoPersonRole }> {
 	return refs.map((r) => ({ person_id: r.personId, role: r.role }));
+}
+
+/**
+ * The `recurrence/preview` params for a draft (ADR-0039 amendment, #227), or
+ * `null` when there's nothing to preview — Repeats off, the anchor date absent,
+ * End = "never" (an unbounded series has no meaningful "when does it stop"
+ * preview), or an INCOMPLETE end (a blank until date / non-positive count). The
+ * incomplete-end guard matters: without it the gate would enable a preview while
+ * `buildRecurrence` silently drops the unusable end, so Core would compute a
+ * *continuing* successor and the block would show "next occurrence" dates that
+ * contradict the bounded end the user is mid-entering (#227 review-fix). The
+ * editor's hook gates its read on a non-null result. Reuses `buildRecurrence` so
+ * the previewed rule is byte-identical to what a save emits; the current anchor
+ * dates ride alongside (day granularity, like the build path).
+ */
+function buildRecurrencePreviewParams(
+	d: RecurrenceDraft,
+): RecurrencePreviewParams | null {
+	if (
+		!recurActive(d) ||
+		!recurIntervalValid(d) ||
+		d.recurEnd === "never" ||
+		!recurEndComplete(d)
+	)
+		return null;
+	// Returning the concrete RPC type (not a loose Record) makes the compiler
+	// enforce parity with WsClient.recurrencePreview, so a field-name drift in the
+	// params wrapper fails to compile rather than at runtime (#227 review-fix). The
+	// fields are built inline (the schema type is readonly — no post-assignment);
+	// the rule object stays the shared snake_case Record from buildRecurrence, which
+	// RecurrencePreviewParams.recurrence (`unknown`) accepts.
+	return {
+		recurrence: buildRecurrence(d),
+		...(d.deferDay ? { defer_at: dayToLocal(d.deferDay) } : {}),
+		...(d.dueDay ? { due_at: dayToLocal(d.dueDay) } : {}),
+	};
 }
 
 /**
@@ -1096,6 +1221,7 @@ export {
 	buildJournalReference,
 	buildPerson,
 	buildProject,
+	buildRecurrencePreviewParams,
 	buildTodo,
 	journalDraftFromVm,
 	journalScalarsDiffer,
