@@ -1523,17 +1523,11 @@ pub(super) async fn insert_text_part<'e, E>(
 where
     E: Executor<'e, Database = Sqlite>,
 {
-    sqlx::query("INSERT INTO message_parts (message_id, seq, type, text) VALUES (?, ?, 'text', ?)")
-        .bind(message_id.to_string())
-        .bind(seq)
-        .bind(text)
-        .execute(executor)
-        .await
-        .map(|_| ())
+    insert_message_part(executor, message_id, seq, PartType::Text, text).await
 }
 
-/// A reasoning twin of [`insert_text_part`] (ADR-0045 reasoning amendment): a
-/// `type='reasoning'` part seeded with `text`. The `append`/`next_message_part_seq`/
+/// Insert a reasoning part (ADR-0045 reasoning amendment): a `type='reasoning'`
+/// row seeded with `text`. The `append`/`next_message_part_seq`/
 /// `insert_message_run_step` helpers are type-agnostic, so reasoning streams on the
 /// same machine — only the part TYPE distinguishes it.
 pub(super) async fn insert_reasoning_part<'e, E>(
@@ -1545,13 +1539,48 @@ pub(super) async fn insert_reasoning_part<'e, E>(
 where
     E: Executor<'e, Database = Sqlite>,
 {
-    sqlx::query(
-        "INSERT INTO message_parts (message_id, seq, type, text) VALUES (?, ?, 'reasoning', ?)",
-    )
-    .bind(message_id.to_string())
-    .bind(seq)
-    .bind(text)
-    .execute(executor)
+    insert_message_part(executor, message_id, seq, PartType::Reasoning, text).await
+}
+
+/// The `message_parts.type` discriminant for a streamed assistant part (ADR-0045).
+/// `text` is the reply prose; `reasoning` is the thinking trace (#202). Both ride the
+/// same open-on-first-delta / append machine — only this tag distinguishes them, and
+/// only the read (`segment_timeline`) and resume filter (`run_timeline`) branch on it.
+/// Re-exported from `db` ([`super::PartType`]) so the run loop names the kind it opens.
+#[derive(Clone, Copy)]
+pub(crate) enum PartType {
+    Text,
+    Reasoning,
+}
+
+impl PartType {
+    fn as_str(self) -> &'static str {
+        match self {
+            PartType::Text => "text",
+            PartType::Reasoning => "reasoning",
+        }
+    }
+}
+
+/// Insert one `message_parts` row of `part_type`, seeded with `text`. The sole
+/// writer of a streamed part; [`insert_text_part`]/[`insert_reasoning_part`] are
+/// thin typed faces over it so callers name the kind, not the literal.
+async fn insert_message_part<'e, E>(
+    executor: E,
+    message_id: Uuid,
+    seq: i64,
+    part_type: PartType,
+    text: &str,
+) -> sqlx::Result<()>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query("INSERT INTO message_parts (message_id, seq, type, text) VALUES (?, ?, ?, ?)")
+        .bind(message_id.to_string())
+        .bind(seq)
+        .bind(part_type.as_str())
+        .bind(text)
+        .execute(executor)
     .await
     .map(|_| ())
 }
@@ -1833,25 +1862,11 @@ where
 /// filter that drops the user-Message step never widens the window), COALESCE'd
 /// to `runs.ended_at` when this is the last step. A negative span (clock skew) or
 /// an unknown end yields `NULL`; the caller only reads it for reasoning rows.
-#[allow(clippy::type_complexity)]
 pub(super) async fn segment_timeline<'e, E>(
     executor: E,
     run_id: Uuid,
     assistant_message_id: &str,
-) -> sqlx::Result<
-    Vec<(
-        String,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<i64>,
-    )>,
->
+) -> sqlx::Result<Vec<SegmentTimelineRow>>
 where
     E: Executor<'e, Database = Sqlite>,
 {
@@ -1907,22 +1922,41 @@ where
                     let duration_ms = duration_to_next
                         .or_else(|| run_ended_at.map(|end| end - step_created_at))
                         .filter(|&d| d >= 0);
-                    (
+                    SegmentTimelineRow {
                         kind,
                         part_text,
+                        part_type,
                         tc_name,
                         tc_status,
                         request_payload,
                         proposal_id,
                         mutation_kind,
                         proposal_status,
-                        part_type,
                         duration_ms,
-                    )
+                    }
                 },
             )
             .collect()
     })
+}
+
+/// One row of the [`segment_timeline`] walk, named so the caller
+/// ([`super::segment_rows_for_run`]) reads it by field instead of unpacking a
+/// 10-wide positional tuple with `_` holes (ADR-0045). The raw SQL still selects a
+/// wide tuple; this is the resolved, caller-facing shape (duration already folded
+/// from the next-step/`ended_at` seam). `part_type` is the `message_parts.type`
+/// (text/reasoning); `duration_ms` is meaningful only for reasoning rows.
+pub(super) struct SegmentTimelineRow {
+    pub kind: String,
+    pub part_text: Option<String>,
+    pub part_type: Option<String>,
+    pub tc_name: Option<String>,
+    pub tc_status: Option<String>,
+    pub request_payload: Option<String>,
+    pub proposal_id: Option<String>,
+    pub mutation_kind: Option<String>,
+    pub proposal_status: Option<String>,
+    pub duration_ms: Option<i64>,
 }
 
 /// Read a Run's ordered timeline for resume transcript reconstruction

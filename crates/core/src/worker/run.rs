@@ -82,103 +82,38 @@ pub(super) async fn run_loop<P: WorkerPort + Send>(
             // per-run gate across persist + publish so a concurrent
             // `run/subscribe` sees this delta wholly in the snapshot or wholly
             // in the tail, never split or duplicated.
+            // A text/reasoning delta streams into ITS-OWN-type segment, sealing the
+            // OTHER slot first (ADR-0045 reasoning amendment, #202). Both kinds share
+            // one open-or-append-then-publish path under the exactly-once gate; only
+            // the part type, the slot pair, and the republished event differ — see
+            // [`stream_message_delta`].
             WorkerStdout::TextDelta { delta } => {
-                // A text delta seals any open reasoning segment (ADR-0045): the
-                // next reasoning delta opens a fresh part sequenced AFTER this text.
-                open_reasoning_part = None;
-                let guard = gate.lock().await;
-                // Open a fresh segment on the first delta after a boundary
-                // (ADR-0045), else append into the open one. Either path advances
-                // only which part is "open" — the gate's critical section is
-                // unchanged (ADR-0022). `open_text_part` caches the open seq so
-                // steady streaming is one UPDATE per delta, the part opening once.
-                let written = match open_text_part {
-                    Some(part_seq) => {
-                        db::append_assistant_text(&pool, assistant_message_id, part_seq, &delta)
-                            .await
-                    }
-                    None => match db::open_assistant_text_part(
-                        &pool,
-                        run_id,
-                        assistant_message_id,
-                        &delta,
-                        db::now_ms(),
-                    )
-                    .await
-                    {
-                        Ok(seq) => {
-                            open_text_part = seq;
-                            Ok(seq.is_some())
-                        }
-                        Err(e) => Err(e),
-                    },
-                };
-                match written {
-                    Ok(true) => {
-                        let _ = tx.send(RunEvent::TextDelta { delta });
-                    }
-                    Ok(false) => {}
-                    Err(e) => {
-                        tracing::error!(
-                            event = "worker.text_delta_append_failed",
-                            %run_id,
-                            %assistant_message_id,
-                            error = ?e
-                        );
-                    }
-                }
-                drop(guard);
+                stream_message_delta(
+                    &pool,
+                    run_id,
+                    assistant_message_id,
+                    &gate,
+                    &tx,
+                    db::PartType::Text,
+                    &mut open_text_part,
+                    &mut open_reasoning_part,
+                    delta,
+                )
+                .await;
             }
-            // Reasoning (thinking) deltas (ADR-0045 reasoning amendment, #202):
-            // mirror `TextDelta` exactly into the SEPARATE reasoning slot. A
-            // reasoning delta seals any open text segment first, then opens (first
-            // delta after a boundary) or appends the `type='reasoning'` part under
-            // the SAME per-run gate critical section (ADR-0022 exactly-once), and
-            // republishes `RunEvent::ReasoningDelta` on a successful write.
             WorkerStdout::ReasoningDelta { delta } => {
-                open_text_part = None;
-                let guard = gate.lock().await;
-                let written = match open_reasoning_part {
-                    Some(part_seq) => {
-                        db::append_assistant_reasoning_text(
-                            &pool,
-                            assistant_message_id,
-                            part_seq,
-                            &delta,
-                        )
-                        .await
-                    }
-                    None => match db::open_assistant_reasoning_part(
-                        &pool,
-                        run_id,
-                        assistant_message_id,
-                        &delta,
-                        db::now_ms(),
-                    )
-                    .await
-                    {
-                        Ok(seq) => {
-                            open_reasoning_part = seq;
-                            Ok(seq.is_some())
-                        }
-                        Err(e) => Err(e),
-                    },
-                };
-                match written {
-                    Ok(true) => {
-                        let _ = tx.send(RunEvent::ReasoningDelta { delta });
-                    }
-                    Ok(false) => {}
-                    Err(e) => {
-                        tracing::error!(
-                            event = "worker.reasoning_delta_append_failed",
-                            %run_id,
-                            %assistant_message_id,
-                            error = ?e
-                        );
-                    }
-                }
-                drop(guard);
+                stream_message_delta(
+                    &pool,
+                    run_id,
+                    assistant_message_id,
+                    &gate,
+                    &tx,
+                    db::PartType::Reasoning,
+                    &mut open_reasoning_part,
+                    &mut open_text_part,
+                    delta,
+                )
+                .await;
             }
             // Terminal events: record a flag, publish AFTER the terminal tx
             // commits (below). Shutdown sends EOF so stdout closes and the loop
@@ -415,6 +350,75 @@ async fn handle_tool_request(
             }
         }
     }
+}
+
+/// Stream one assistant `text`/`reasoning` delta into its own-type segment under the
+/// exactly-once gate (ADR-0022/0045). One path for both kinds: seal the OTHER slot
+/// (the model switched content type — its part is complete), then open a fresh part on
+/// the first delta after a boundary (caching the seq in `own_slot`) or append into the
+/// open one, and republish the matching Run Event on a successful write. pi gives no
+/// delta-contiguity guarantee, so each kind keeps its own slot and a type switch seals
+/// the other (a contiguous run of one type per `message_parts` row). `own_slot` is this
+/// kind's open-part cache; `other_slot` is the opposite kind's, sealed to `None` here.
+#[allow(clippy::too_many_arguments)]
+async fn stream_message_delta(
+    pool: &SqlitePool,
+    run_id: Uuid,
+    assistant_message_id: Uuid,
+    gate: &Arc<tokio::sync::Mutex<()>>,
+    tx: &broadcast::Sender<RunEvent>,
+    part_type: db::PartType,
+    own_slot: &mut Option<i64>,
+    other_slot: &mut Option<i64>,
+    delta: String,
+) {
+    // A delta of this type seals any open segment of the OTHER type: the next
+    // opposite-type delta opens a fresh part sequenced AFTER this one.
+    *other_slot = None;
+    let guard = gate.lock().await;
+    // Open a fresh segment on the first delta after a boundary (ADR-0045), else
+    // append into the open one. Either path advances only which part is "open" —
+    // the gate's critical section is unchanged (ADR-0022). `own_slot` caches the
+    // open seq so steady streaming is one UPDATE per delta, the part opening once.
+    let written = match *own_slot {
+        Some(part_seq) => {
+            db::append_assistant_part(pool, assistant_message_id, part_seq, &delta).await
+        }
+        None => match db::open_assistant_part(
+            pool,
+            run_id,
+            assistant_message_id,
+            part_type,
+            &delta,
+            db::now_ms(),
+        )
+        .await
+        {
+            Ok(seq) => {
+                *own_slot = seq;
+                Ok(seq.is_some())
+            }
+            Err(e) => Err(e),
+        },
+    };
+    match written {
+        Ok(true) => {
+            let event = match part_type {
+                db::PartType::Text => RunEvent::TextDelta { delta },
+                db::PartType::Reasoning => RunEvent::ReasoningDelta { delta },
+            };
+            let _ = tx.send(event);
+        }
+        Ok(false) => {}
+        Err(e) => {
+            let event = match part_type {
+                db::PartType::Text => "worker.text_delta_append_failed",
+                db::PartType::Reasoning => "worker.reasoning_delta_append_failed",
+            };
+            tracing::error!(event, %run_id, %assistant_message_id, error = ?e);
+        }
+    }
+    drop(guard);
 }
 
 /// Park the Run on a Proposal tool request (ADR-0025). In one transaction:

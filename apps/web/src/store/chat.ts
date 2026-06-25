@@ -522,22 +522,30 @@ function setCumulativeText(
  * the disarmed twin of {@link appendTextSegment}. There is NO armed cumulative-SET
  * path — the resume snapshot is text-only (`type='text'` SQL filter), so a reasoning
  * segment never receives a snapshot delta. If the trailing segment is `reasoning`,
- * extend its text; else OPEN a fresh reasoning segment (the web mirror of Core's
- * open-on-first-delta). A text/tool/proposal between two reasoning runs correctly
- * opens a new one.
+ * extend its text (`opened: false`); else OPEN a fresh reasoning segment (`opened:
+ * true`, the web mirror of Core's open-on-first-delta). A text/tool/proposal between
+ * two reasoning runs correctly opens a new one. The `opened` flag is the single source
+ * of "did a fresh block start here" — `applyEvent` uses it to (re)stamp the block's
+ * open-time, rather than re-deriving the trailing-segment check separately.
  */
 function appendReasoningSegment(
 	segments: readonly Segment[],
 	delta: string,
-): readonly Segment[] {
+): { segments: readonly Segment[]; opened: boolean } {
 	const last = segments[segments.length - 1];
 	if (last?.kind === "reasoning") {
-		return [
-			...segments.slice(0, -1),
-			{ kind: "reasoning", text: last.text + delta },
-		];
+		return {
+			segments: [
+				...segments.slice(0, -1),
+				{ kind: "reasoning", text: last.text + delta },
+			],
+			opened: false,
+		};
 	}
-	return [...segments, { kind: "reasoning", text: delta }];
+	return {
+		segments: [...segments, { kind: "reasoning", text: delta }],
+		opened: true,
+	};
 }
 
 /** Seal the OPEN trailing reasoning segment with a web-clocked `durationMs` when a Run
@@ -560,6 +568,41 @@ function sealOpenReasoning(
 		...segments.slice(0, -1),
 		{ kind: "reasoning", text: last.text, durationMs: now - openedAt },
 	];
+}
+
+/**
+ * A timeline boundary arrived for `runId` (a text delta, a new tool call, or the Run
+ * terminal): seal the open reasoning block with its web-clocked `durationMs` AND clear
+ * the run record's `reasoningOpenedAt`, in ONE atomic state step (ADR-0045 amendment,
+ * open→seal). The two halves — seal the segment, forget its open-time — must move
+ * together so a later block re-stamps fresh and never inherits a stale start; folding
+ * them here keeps that pairing in one place instead of re-deriving it per `applyEvent`
+ * arm. No-op (returns `s` unchanged) when no reasoning block is open. The `terminal`
+ * caller skips the clear (the record settles regardless), but a harmless clear keeps
+ * one code path.
+ */
+function sealReasoningAtBoundary(
+	s: ChatState,
+	threadId: string,
+	runId: string,
+	now: number,
+): ChatState {
+	const openedAt = s.runs[runId]?.reasoningOpenedAt;
+	if (openedAt === undefined) {
+		return s;
+	}
+	const sealed = updateRunMessage(s, threadId, runId, (m) => ({
+		...m,
+		segments: sealOpenReasoning(m.segments, openedAt, now),
+	}));
+	const run = sealed.runs[runId];
+	if (run === undefined) {
+		return sealed;
+	}
+	return {
+		...sealed,
+		runs: { ...sealed.runs, [runId]: { ...run, reasoningOpenedAt: undefined } },
+	};
 }
 
 /** Upsert a `tool_call` segment by call id (ADR-0045): a new id appends a fresh
@@ -713,24 +756,20 @@ export function applyEvent(
 		}
 
 		if (event.kind === "text_delta") {
+			// A text delta means the model finished any open reasoning block: seal it
+			// with a web-clocked duration NOW (not at terminal) so the disclosure reads
+			// "Thought for Ns", not a stale "Thinking…", while the reply streams below
+			// (ADR-0045 amendment). Times each block of a reasoning→text→reasoning
+			// interleave separately. Seal FIRST so the append lands on the sealed timeline.
+			const sealed = sealReasoningAtBoundary(s, threadId, runId, now);
 			// Armed (or no record yet) → the cumulative snapshot SETs; an attached,
 			// disarmed tail APPENDs (ADR-0022 snapshot/tail boundary). The armed bit
 			// drives the open-trailing-text segment (ADR-0045); `segments` is the sole
 			// text source, so the flat reply text derives from it via `concatText`.
-			const armed = s.runs[runId]?.snapshotArmed ?? true;
-			// A text delta means the model finished any open reasoning block: seal it
-			// with a web-clocked duration NOW (not at terminal) so the disclosure reads
-			// "Thought for Ns", not a stale "Thinking…", while the reply streams below
-			// (ADR-0045 amendment, open→seal). Also times each block of a
-			// reasoning→text→reasoning interleave separately.
-			const reasoningOpenedAt = s.runs[runId]?.reasoningOpenedAt;
-			const next = updateRunMessage(s, threadId, runId, (m) => ({
+			const armed = sealed.runs[runId]?.snapshotArmed ?? true;
+			const next = updateRunMessage(sealed, threadId, runId, (m) => ({
 				...m,
-				segments: appendTextSegment(
-					sealOpenReasoning(m.segments, reasoningOpenedAt, now),
-					event.delta,
-					armed,
-				),
+				segments: appendTextSegment(m.segments, event.delta, armed),
 			}));
 			// Disarm the snapshot bit — text_delta's OWN concern, fits neither helper.
 			const run = next.runs[runId];
@@ -739,36 +778,29 @@ export function applyEvent(
 			}
 			return {
 				...next,
-				runs: {
-					...next.runs,
-					// Clear the open-time once sealed so a later block re-stamps fresh.
-					[runId]: {
-						...run,
-						snapshotArmed: false,
-						reasoningOpenedAt: undefined,
-					},
-				},
+				runs: { ...next.runs, [runId]: { ...run, snapshotArmed: false } },
 			};
 		}
 
 		if (event.kind === "reasoning_delta") {
 			// Open/extend the `reasoning` segment (ADR-0045 amendment): append-only,
 			// never a snapshot SET (reasoning isn't in the text-only subscribe snapshot).
-			// A FRESH open (the message's trailing segment is not reasoning) re-stamps the
-			// open-time so the terminal web-clocks THIS block's duration (open→seal); an
-			// append into the same block leaves it. A text/tool between two reasoning runs
-			// thus times each separately.
-			const message = thread.messages.find(
-				(m) => m.role === "assistant" && m.run_id === runId,
-			);
-			const trailing = message?.segments[message.segments.length - 1];
-			const freshOpen = trailing?.kind !== "reasoning";
-			const next = updateRunMessage(s, threadId, runId, (m) => ({
-				...m,
-				segments: appendReasoningSegment(m.segments, event.delta),
-			}));
+			// `appendReasoningSegment` reports whether it OPENED a fresh block (trailing
+			// segment wasn't reasoning) vs extended the open one — the single source of
+			// that fact. A fresh open re-stamps `reasoningOpenedAt` so the next boundary
+			// web-clocks THIS block (open→seal); an extend leaves it, so a
+			// reasoning→text→reasoning interleave times each block separately.
+			let openedFresh = false;
+			const next = updateRunMessage(s, threadId, runId, (m) => {
+				const { segments, opened } = appendReasoningSegment(
+					m.segments,
+					event.delta,
+				);
+				openedFresh = opened;
+				return { ...m, segments };
+			});
 			const run = next.runs[runId];
-			if (run === undefined || !freshOpen) {
+			if (run === undefined || !openedFresh) {
 				return next;
 			}
 			return {
@@ -778,6 +810,14 @@ export function applyEvent(
 		}
 
 		if (event.kind === "tool_call") {
+			// A NEW tool call (a `started` boundary) seals any open reasoning block the
+			// same way a text delta does — the model moved on to a tool, so web-clock the
+			// block now rather than leaving it "Thinking…" until terminal. A terminal
+			// status flip is NOT a new block boundary, so only seal on `started`.
+			const sealed =
+				event.status === "started"
+					? sealReasoningAtBoundary(s, threadId, runId, now)
+					: s;
 			// Upsert into the timeline: `started` appends a `running` segment, a
 			// terminal status flips the matching one in place (ADR-0045).
 			const status = event.status === "started" ? "running" : event.status;
@@ -787,52 +827,23 @@ export function applyEvent(
 				status,
 				arg: event.arg,
 			};
-			// A NEW tool call (a `started` boundary) seals any open reasoning block the
-			// same way a text delta does — the model moved on to a tool, so web-clock the
-			// block now rather than leaving it "Thinking…" until terminal. A terminal
-			// status flip is not a new block boundary, so only seal on `started`.
-			const sealOpened =
-				event.status === "started"
-					? s.runs[runId]?.reasoningOpenedAt
-					: undefined;
-			const next = updateRunMessage(s, threadId, runId, (m) => ({
+			return updateRunMessage(sealed, threadId, runId, (m) => ({
 				...m,
-				segments: upsertToolSegment(
-					sealOpenReasoning(m.segments, sealOpened, now),
-					call,
-				),
+				segments: upsertToolSegment(m.segments, call),
 			}));
-			if (sealOpened === undefined) {
-				return next;
-			}
-			const run = next.runs[runId];
-			if (run === undefined) {
-				return next;
-			}
-			return {
-				...next,
-				runs: {
-					...next.runs,
-					[runId]: { ...run, reasoningOpenedAt: undefined },
-				},
-			};
 		}
 
 		// A terminal seals any OPEN reasoning segment with a web-clocked duration
-		// (ADR-0045 amendment, open→seal); read the open-time before the record settles.
-		const reasoningOpenedAt = s.runs[runId]?.reasoningOpenedAt;
+		// (ADR-0045 amendment, open→seal) before settling the message.
+		const sealed = sealReasoningAtBoundary(s, threadId, runId, now);
 
 		if (event.kind === "error") {
 			// Terminal worker error (ADR-0006): mark incomplete, attach the message, clear the active run.
-			const next = updateRunMessage(s, threadId, runId, (m) => ({
+			const next = updateRunMessage(sealed, threadId, runId, (m) => ({
 				...m,
 				status: "incomplete",
 				error: event.message,
-				segments: sealOpenReasoning(
-					settleRunningToolSegments(m.segments, "error"),
-					reasoningOpenedAt,
-					now,
-				),
+				segments: settleRunningToolSegments(m.segments, "error"),
 			}));
 			return settleTerminal(next, threadId, runId);
 		}
@@ -841,28 +852,20 @@ export function applyEvent(
 			// Terminal but NOT a failure (ADR-0014): mark incomplete and flag it as a
 			// user cancellation so the bubble renders a calm "stopped" notice, not the
 			// destructive failure alert. No `error` attached. Core mirrors this server-side.
-			const next = updateRunMessage(s, threadId, runId, (m) => ({
+			const next = updateRunMessage(sealed, threadId, runId, (m) => ({
 				...m,
 				status: "incomplete",
 				cancelled: true,
-				segments: sealOpenReasoning(
-					settleRunningToolSegments(m.segments, "completed"),
-					reasoningOpenedAt,
-					now,
-				),
+				segments: settleRunningToolSegments(m.segments, "completed"),
 			}));
 			return settleTerminal(next, threadId, runId);
 		}
 
 		// done: finalize the assistant message and clear the active run.
-		const next = updateRunMessage(s, threadId, runId, (m) => ({
+		const next = updateRunMessage(sealed, threadId, runId, (m) => ({
 			...m,
 			status: "completed",
-			segments: sealOpenReasoning(
-				settleRunningToolSegments(m.segments, "completed"),
-				reasoningOpenedAt,
-				now,
-			),
+			segments: settleRunningToolSegments(m.segments, "completed"),
 		}));
 		return settleTerminal(next, threadId, runId);
 	});

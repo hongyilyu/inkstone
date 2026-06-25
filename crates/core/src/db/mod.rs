@@ -719,17 +719,25 @@ async fn segment_rows_for_run(
     // The row index of the LAST decided Proposal step — the only Proposal that
     // rehydrates, so a multi-park Run surfaces one indicator (its most-recent
     // decision), matching the live store and the superseded ADR-0044 read.
-    let last_decided_proposal = rows.iter().rposition(
-        |(kind, _, _, _, _, proposal_id, _, proposal_status, _, _)| {
-            kind == "tool_call"
-                && proposal_id.is_some()
-                && matches!(proposal_status.as_deref(), Some("accepted" | "rejected"))
-        },
-    );
+    let last_decided_proposal = rows.iter().rposition(|row| {
+        row.kind == "tool_call"
+            && row.proposal_id.is_some()
+            && matches!(row.proposal_status.as_deref(), Some("accepted" | "rejected"))
+    });
     let mut segments = Vec::with_capacity(rows.len());
-    for (idx, (kind, part_text, tc_name, tc_status, request_payload, proposal_id, mutation_kind, proposal_status, part_type, duration_ms)) in
-        rows.into_iter().enumerate()
-    {
+    for (idx, row) in rows.into_iter().enumerate() {
+        let queries::SegmentTimelineRow {
+            kind,
+            part_text,
+            part_type,
+            tc_name,
+            tc_status,
+            request_payload,
+            proposal_id,
+            mutation_kind,
+            proposal_status,
+            duration_ms,
+        } = row;
         match kind.as_str() {
             "message" => {
                 let text = part_text.unwrap_or_default();
@@ -828,7 +836,7 @@ pub async fn history_for_run(
 /// Persist a Run's initial rows in one deferred-FK transaction: the FK cycle
 /// between `runs.user_message_id` and `messages.run_id` resolves only at COMMIT.
 /// Inserts the assistant `messages` row (`streaming`) with NO text part yet —
-/// [`open_assistant_text_part`] opens the first one on the first delta (ADR-0045).
+/// [`open_assistant_part`] opens the first one on the first delta (ADR-0045).
 pub async fn persist_initial_run(
     pool: &SqlitePool,
     run_id: Uuid,
@@ -971,18 +979,23 @@ async fn insert_initial_run_rows(
     queries::touch_thread_activity(&mut **tx, thread_id, now_ms).await
 }
 
-/// Open a NEW assistant text segment on the first `text_delta` after a boundary
-/// (run start / a tool / a park), per ADR-0045. In one transaction: insert a
-/// fresh `message_parts` text row at the message's next `part_seq` seeded with
-/// `delta`, plus its `run_steps` `message` row at the Run's live `seq` carrying
-/// that `part_seq` — so the segment sequences at the point the text actually
-/// began. Returns `Some(part_seq)` (the open part the run loop appends into), or
-/// `None` if the assistant Message is no longer `streaming` (a late delta after a
-/// terminal transition — dropped, mirroring [`append_assistant_text`]'s guard).
-pub async fn open_assistant_text_part(
+pub(crate) use queries::PartType;
+
+/// Open a NEW assistant segment of `part_type` on the first delta after a boundary
+/// (run start / a tool / a park), per ADR-0045. In one transaction: insert a fresh
+/// `message_parts` row of that type at the message's next `part_seq` seeded with
+/// `delta`, plus its `run_steps` `message` row at the Run's live `seq` carrying that
+/// `part_seq` — so the segment sequences at the point the content actually began. The
+/// `run_steps` row is always `kind='message'`; only the part TYPE distinguishes text
+/// from reasoning, and the run loop tracks a separate open slot per type (pi gives no
+/// delta-contiguity guarantee). Returns `Some(part_seq)` (the open part the run loop
+/// appends into), or `None` if the assistant Message is no longer `streaming` (a late
+/// delta after a terminal transition — dropped, mirroring [`append_assistant_part`]'s guard).
+pub async fn open_assistant_part(
     pool: &SqlitePool,
     run_id: Uuid,
     assistant_message_id: Uuid,
+    part_type: PartType,
     delta: &str,
     now_ms: i64,
 ) -> sqlx::Result<Option<i64>> {
@@ -992,7 +1005,14 @@ pub async fn open_assistant_text_part(
     }
     let part_seq = queries::next_message_part_seq(&mut *tx, assistant_message_id).await?;
     let step_seq = queries::next_run_step_seq(&mut *tx, run_id).await?;
-    queries::insert_text_part(&mut *tx, assistant_message_id, part_seq, delta).await?;
+    match part_type {
+        PartType::Text => {
+            queries::insert_text_part(&mut *tx, assistant_message_id, part_seq, delta).await?
+        }
+        PartType::Reasoning => {
+            queries::insert_reasoning_part(&mut *tx, assistant_message_id, part_seq, delta).await?
+        }
+    }
     queries::insert_message_run_step(
         &mut *tx,
         run_id,
@@ -1006,12 +1026,14 @@ pub async fn open_assistant_text_part(
     Ok(Some(part_seq))
 }
 
-/// Append a streaming `text_delta` to the currently-open assistant text segment
-/// at `part_seq` (ADR-0045; the run loop tracks which part is open and opens a
-/// fresh one after each tool/park boundary via [`open_assistant_text_part`]).
-/// Single statement; SQLite serializes writes. Returns `false` (no row updated)
-/// when the Message is no longer `streaming`, so a late delta is dropped.
-pub async fn append_assistant_text(
+/// Append a streaming delta to the currently-open assistant segment at `part_seq`
+/// (ADR-0045; the run loop tracks which part is open per type and opens a fresh one
+/// after each boundary via [`open_assistant_part`]). The append SQL is type-agnostic
+/// (it keys on `(message_id, part_seq)` + streaming status, not `type`), so one
+/// function serves both text and reasoning parts. Single statement; SQLite serializes
+/// writes. Returns `false` (no row updated) when the Message is no longer `streaming`,
+/// so a late delta is dropped.
+pub async fn append_assistant_part(
     pool: &SqlitePool,
     assistant_message_id: Uuid,
     part_seq: i64,
@@ -1020,51 +1042,6 @@ pub async fn append_assistant_text(
     queries::append_text_part(pool, assistant_message_id, part_seq, delta)
         .await
         .map(|rows| rows == 1)
-}
-
-/// A reasoning twin of [`open_assistant_text_part`] (ADR-0045 reasoning
-/// amendment, #202): identical tx shape and `streaming` guard, but inserts a
-/// `type='reasoning'` part. The `run_steps` row is still `kind='message'` — only
-/// the part TYPE distinguishes reasoning from text. The run loop tracks a
-/// SEPARATE open slot for reasoning (pi gives no delta-contiguity guarantee).
-pub async fn open_assistant_reasoning_part(
-    pool: &SqlitePool,
-    run_id: Uuid,
-    assistant_message_id: Uuid,
-    delta: &str,
-    now_ms: i64,
-) -> sqlx::Result<Option<i64>> {
-    let mut tx = pool.begin().await?;
-    if !queries::message_is_streaming(&mut *tx, assistant_message_id).await? {
-        return Ok(None);
-    }
-    let part_seq = queries::next_message_part_seq(&mut *tx, assistant_message_id).await?;
-    let step_seq = queries::next_run_step_seq(&mut *tx, run_id).await?;
-    queries::insert_reasoning_part(&mut *tx, assistant_message_id, part_seq, delta).await?;
-    queries::insert_message_run_step(
-        &mut *tx,
-        run_id,
-        step_seq,
-        assistant_message_id,
-        part_seq,
-        now_ms,
-    )
-    .await?;
-    tx.commit().await?;
-    Ok(Some(part_seq))
-}
-
-/// Append a streaming `reasoning_delta` to the open reasoning segment at
-/// `part_seq` (ADR-0045 reasoning amendment). The append SQL is type-agnostic
-/// (it filters on streaming status, not `type`), so this delegates to
-/// [`append_assistant_text`] — the open slot already targets a reasoning part.
-pub async fn append_assistant_reasoning_text(
-    pool: &SqlitePool,
-    assistant_message_id: Uuid,
-    part_seq: i64,
-    delta: &str,
-) -> sqlx::Result<bool> {
-    append_assistant_text(pool, assistant_message_id, part_seq, delta).await
 }
 
 /// Persist an incoming Tool Request (ADR-0017/0018): a `pending` `tool_calls`
@@ -3700,6 +3677,81 @@ mod tests {
                 );
             }
             other => panic!("expected a lone reasoning segment, got {other:?}"),
+        }
+    }
+
+    /// ADR-0045 reasoning amendment: a NEGATIVE reasoning span (the next step's
+    /// `created_at` precedes this one's — clock skew / a non-monotonic stamp)
+    /// yields `duration_ms = None`, not a negative number on the wire. Pins the
+    /// `.filter(|&d| d >= 0)` guard in `segment_timeline`. Seeded as
+    /// `[reasoning@t=20, text@t=10]` → raw span `10 - 20 = -10` → None.
+    #[tokio::test]
+    async fn thread_get_reasoning_negative_span_yields_none_duration() {
+        let pool = memory_pool().await;
+        let thread_id = Uuid::now_v7();
+        let run_id = Uuid::now_v7();
+        let assistant_id = Uuid::now_v7();
+
+        let mut tx = pool.begin().await.expect("begin");
+        queries::insert_thread(&mut *tx, thread_id, "T", 1)
+            .await
+            .expect("thread");
+        sqlx::query(
+            "INSERT INTO runs \
+             (id, thread_id, workflow_name, workflow_version, provider, model, \
+              thinking_level, user_message_id, status, started_at) \
+             VALUES (?, ?, 'w', '1', 'p', 'm', 'medium', ?, 'completed', 1)",
+        )
+        .bind(run_id.to_string())
+        .bind(thread_id.to_string())
+        .bind(assistant_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .expect("run");
+        queries::insert_message(
+            &mut *tx,
+            assistant_id,
+            thread_id,
+            run_id,
+            "assistant",
+            "completed",
+            1,
+        )
+        .await
+        .expect("assistant message");
+        // Reasoning @ created_at=20, then a later-seq text step stamped EARLIER
+        // (@10) — the next-step span is `10 - 20 = -10`, which the guard drops to None.
+        queries::insert_reasoning_part(&mut *tx, assistant_id, 0, "Pondering.")
+            .await
+            .expect("reasoning part");
+        queries::insert_message_run_step(&mut *tx, run_id, 0, assistant_id, 0, 20)
+            .await
+            .expect("reasoning step");
+        queries::insert_text_part(&mut *tx, assistant_id, 1, "Reply.")
+            .await
+            .expect("text part");
+        queries::insert_message_run_step(&mut *tx, run_id, 1, assistant_id, 1, 10)
+            .await
+            .expect("text step");
+        tx.commit().await.expect("commit seed");
+
+        let (_title, rows) = get_thread_with_messages(&pool, thread_id)
+            .await
+            .expect("read ok")
+            .expect("thread exists");
+        let assistant = rows
+            .iter()
+            .find(|m| m.role == "assistant")
+            .expect("assistant row");
+        match &assistant.segments[0] {
+            MessageSegment::Reasoning { text, duration_ms } => {
+                assert_eq!(text, "Pondering.");
+                assert_eq!(
+                    *duration_ms, None,
+                    "a negative span (clock skew) is dropped to None, not sent negative"
+                );
+            }
+            other => panic!("segment[0] is the reasoning segment, got {other:?}"),
         }
     }
 

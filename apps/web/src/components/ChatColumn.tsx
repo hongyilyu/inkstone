@@ -414,31 +414,46 @@ type RenderGroup =
 /** Fold the ordered timeline into render groups: consecutive `tool_call` segments
  * coalesce into ONE group (existing grouping + tests stay intact); text/reasoning/
  * proposal segments render between such runs, preserving event-arrival order. The
- * explicit `reasoning` arm precedes the `proposal` fallback — a reasoning segment
- * carries no `runId`, so it must not fall through to the proposal branch. */
+ * `switch` is EXHAUSTIVE over `Segment["kind"]` with an `assertNever` default — a
+ * future segment kind is a compile error here, not a silent misrender (no
+ * `else`-assumes-proposal fallthrough). */
 function toRenderGroups(segments: readonly Segment[]): RenderGroup[] {
 	const groups: RenderGroup[] = [];
 	for (const seg of segments) {
-		if (seg.kind === "tool_call") {
-			const last = groups[groups.length - 1];
-			if (last?.kind === "tools") {
-				last.calls.push(seg.call);
-			} else {
-				groups.push({ kind: "tools", calls: [seg.call] });
+		switch (seg.kind) {
+			case "tool_call": {
+				const last = groups[groups.length - 1];
+				if (last?.kind === "tools") {
+					last.calls.push(seg.call);
+				} else {
+					groups.push({ kind: "tools", calls: [seg.call] });
+				}
+				break;
 			}
-		} else if (seg.kind === "text") {
-			groups.push({ kind: "text", text: seg.text });
-		} else if (seg.kind === "reasoning") {
-			groups.push({
-				kind: "reasoning",
-				text: seg.text,
-				durationMs: seg.durationMs,
-			});
-		} else {
-			groups.push({ kind: "proposal", runId: seg.runId });
+			case "text":
+				groups.push({ kind: "text", text: seg.text });
+				break;
+			case "reasoning":
+				groups.push({
+					kind: "reasoning",
+					text: seg.text,
+					durationMs: seg.durationMs,
+				});
+				break;
+			case "proposal":
+				groups.push({ kind: "proposal", runId: seg.runId });
+				break;
+			default:
+				assertNeverSegment(seg);
 		}
 	}
 	return groups;
+}
+
+/** Exhaustiveness guard: a new {@link Segment} kind that reaches here is a compile
+ * error (the param is `never` only if every kind is handled above). */
+function assertNeverSegment(seg: never): never {
+	throw new Error(`unhandled segment kind: ${JSON.stringify(seg)}`);
 }
 
 function AssistantBubble({
