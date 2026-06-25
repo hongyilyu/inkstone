@@ -1068,9 +1068,12 @@ impl ProposableMutation {
             | P::CreateTodo
             | P::UpdateTodo
             | P::DeleteTodo
-            // The graph mints its own newborn Journal Entry (ADR-0042 "the JE node
-            // is create-only"); it never mutates an existing JE, so there is no
-            // current-JE review context to attach.
+            // The graph mints its own newborn Journal Entry (ADR-0042 create mode)
+            // OR re-anchors an existing one (ADR-0042 anchor-reuse amendment), but
+            // either way the card displays create nodes + links, never a
+            // current-vs-proposed JE body diff — so there is no review context to
+            // attach. Anchor-reuse splices into the stored body Core-side; the user
+            // is not editing the JE, so the UPDATE-kind review diff does not apply.
             | P::ApplyIntentGraph => false,
         }
     }
