@@ -863,6 +863,64 @@ fn weave_journal_body(
     Ok(())
 }
 
+/// Splice a NEW `entity_ref` chip into a STORED JE body at the FIRST un-chipped
+/// plain-text occurrence of `match_text` (the ADR-0042 anchor-reuse re-scan: the
+/// user accepted a missed entity whose name already sits as plain prose in an
+/// existing JE). The matched substring is split out of its `{type:text}` node into a
+/// `{type:entity_ref, ref_id}` node, leaving the surrounding prose BYTE-IDENTICAL
+/// (no rewording, no trimming, leading/trailing spaces preserved) and every existing
+/// `entity_ref` node untouched. An `entity_ref` node has no `text`, so it is never
+/// scanned — an already-chipped occurrence of the same name is skipped and a later
+/// plain-text occurrence is the one chipped.
+///
+/// Returns `Err(InvalidMutation)` naming `match_text` when it occurs in NO un-chipped
+/// text node — the prose-faithfulness guard: Core never invents prose, so a re-scan
+/// whose anchor has vanished from the stored body fails loud rather than appending or
+/// rewording. The split never emits an empty `{text:""}` node (which would violate
+/// the body's own `minLength:1`): an empty side from a match at the start/end of a
+/// node, or a match spanning the whole node, is dropped — mirroring how
+/// `weave_journal_body` never collapses to an empty text node. The result satisfies
+/// `crate::entities::validate_woven_journal_body`.
+#[allow(dead_code)] // wired into apply in the next slice
+fn splice_entity_ref_into_body(
+    body: &[serde_json::Value],
+    match_text: &str,
+    ref_id: &str,
+) -> Result<Vec<serde_json::Value>, ApplyError> {
+    let mut out = Vec::with_capacity(body.len() + 2);
+    let mut spliced = false;
+
+    for node in body {
+        // Only un-chipped text nodes are candidates; an entity_ref node (no `text`)
+        // is copied through verbatim. Once we've spliced, every later node — text or
+        // chip — is copied verbatim too (first occurrence wins).
+        let text = (!spliced)
+            .then(|| node.get("text").and_then(serde_json::Value::as_str))
+            .flatten();
+        let Some((before, after)) = text.and_then(|t| t.split_once(match_text)) else {
+            out.push(node.clone());
+            continue;
+        };
+
+        // Drop an empty side rather than emit a `{text:""}` node (minLength:1).
+        if !before.is_empty() {
+            out.push(serde_json::json!({ "type": "text", "text": before }));
+        }
+        out.push(serde_json::json!({ "type": "entity_ref", "ref_id": ref_id }));
+        if !after.is_empty() {
+            out.push(serde_json::json!({ "type": "text", "text": after }));
+        }
+        spliced = true;
+    }
+
+    if !spliced {
+        return Err(ApplyError::InvalidMutation(format!(
+            "re-scan match text {match_text:?} not found in any un-chipped journal body text node"
+        )));
+    }
+    Ok(out)
+}
+
 /// Fold the `todo_project` + `todo_person` links whose `from` is `todo_handle`
 /// into the Todo's create payload (ADR-0042), so the SAME create-todo path applies
 /// them. The payload is the `{todo: TodoData}` envelope `apply_entity_mutation`
@@ -1926,5 +1984,170 @@ mod tests {
         assert!(body.iter().all(|n| n.get("type").and_then(serde_json::Value::as_str)
             != Some("text")
             || n.get("text").and_then(serde_json::Value::as_str).is_some_and(|t| !t.is_empty())));
+    }
+
+    // splice_entity_ref_into_body: the re-scan splice (slice 2). All cases are pure
+    // — no pool, no tx. A fresh UUID stands in for the minted ref id so the spliced
+    // body satisfies `validate_woven_journal_body` (entity_ref ref_id must be a UUID).
+
+    // Case 1: splice into a single text node. The matched substring is split out into
+    // a `{entity_ref, ref_id}` node; the prose on either side is BYTE-IDENTICAL to the
+    // original minus the match (leading/trailing spaces preserved exactly, no trim).
+    #[test]
+    fn splice_splits_one_text_node_byte_faithfully() {
+        let ref_id = Uuid::now_v7().to_string();
+        let body = vec![serde_json::json!({
+            "type": "text", "text": "synced with Wenqian and Priya today"
+        })];
+        let out = splice_entity_ref_into_body(&body, "Priya", &ref_id).expect("splice ok");
+        assert_eq!(
+            out,
+            vec![
+                serde_json::json!({ "type": "text", "text": "synced with Wenqian and " }),
+                serde_json::json!({ "type": "entity_ref", "ref_id": ref_id }),
+                serde_json::json!({ "type": "text", "text": " today" }),
+            ]
+        );
+        // The spliced body is a valid stored JE body.
+        crate::entities::validate_woven_journal_body(&serde_json::Value::Array(out))
+            .expect("spliced body is schema-valid");
+    }
+
+    // Case 2: an existing entity_ref node is left IDENTICAL (same ref_id) when a
+    // DIFFERENT entity is spliced elsewhere in the body.
+    #[test]
+    fn splice_leaves_existing_chip_untouched() {
+        let old = Uuid::now_v7().to_string();
+        let new = Uuid::now_v7().to_string();
+        let body = vec![
+            serde_json::json!({ "type": "text", "text": "met " }),
+            serde_json::json!({ "type": "entity_ref", "ref_id": old }),
+            serde_json::json!({ "type": "text", "text": " and Priya" }),
+        ];
+        let out = splice_entity_ref_into_body(&body, "Priya", &new).expect("splice ok");
+        // The pre-existing chip is byte-identical (same ref_id, same node).
+        assert_eq!(out[1], serde_json::json!({ "type": "entity_ref", "ref_id": old }));
+        // The plain-text "Priya" became the new chip; the prose around it is exact.
+        assert_eq!(out[2], serde_json::json!({ "type": "text", "text": " and " }));
+        assert_eq!(out[3], serde_json::json!({ "type": "entity_ref", "ref_id": new }));
+        crate::entities::validate_woven_journal_body(&serde_json::Value::Array(out))
+            .expect("spliced body is schema-valid");
+    }
+
+    // Case 3: match_text absent from every text node → loud Err(InvalidMutation),
+    // NOT a silent no-op. The message names the missing match_text.
+    #[test]
+    fn splice_not_found_errors_loud() {
+        let ref_id = Uuid::now_v7().to_string();
+        let body = vec![serde_json::json!({ "type": "text", "text": "synced with the team" })];
+        let err = splice_entity_ref_into_body(&body, "Priya", &ref_id)
+            .expect_err("absent match_text must fail loud");
+        match err {
+            ApplyError::InvalidMutation(msg) => assert!(
+                msg.contains("Priya"),
+                "the error names the missing match_text: {msg}"
+            ),
+            other => panic!("expected InvalidMutation, got {other:?}"),
+        }
+    }
+
+    // Case 4a: the FIRST un-chipped occurrence wins. "Priya" appears twice in plain
+    // text; only the first is chipped — the second stays plain text.
+    #[test]
+    fn splice_chips_first_occurrence_only() {
+        let ref_id = Uuid::now_v7().to_string();
+        let body = vec![serde_json::json!({
+            "type": "text", "text": "Priya then later Priya again"
+        })];
+        let out = splice_entity_ref_into_body(&body, "Priya", &ref_id).expect("splice ok");
+        // Match at the very start drops the empty left side: chip, then the remainder
+        // (which still contains the second, plain-text "Priya").
+        assert_eq!(
+            out,
+            vec![
+                serde_json::json!({ "type": "entity_ref", "ref_id": ref_id }),
+                serde_json::json!({ "type": "text", "text": " then later Priya again" }),
+            ]
+        );
+        crate::entities::validate_woven_journal_body(&serde_json::Value::Array(out))
+            .expect("spliced body is schema-valid");
+    }
+
+    // Case 4b: a name that is ALREADY chipped earlier (an entity_ref node has no
+    // `text` so it is never scanned) and ALSO appears later as plain text → the
+    // plain-text occurrence is the one chipped; the existing chip is untouched.
+    #[test]
+    fn splice_skips_existing_chip_and_takes_plain_text() {
+        let old = Uuid::now_v7().to_string();
+        let new = Uuid::now_v7().to_string();
+        let body = vec![
+            serde_json::json!({ "type": "entity_ref", "ref_id": old }),
+            serde_json::json!({ "type": "text", "text": " saw Priya later" }),
+        ];
+        let out = splice_entity_ref_into_body(&body, "Priya", &new).expect("splice ok");
+        assert_eq!(out[0], serde_json::json!({ "type": "entity_ref", "ref_id": old }));
+        assert_eq!(out[1], serde_json::json!({ "type": "text", "text": " saw " }));
+        assert_eq!(out[2], serde_json::json!({ "type": "entity_ref", "ref_id": new }));
+        assert_eq!(out[3], serde_json::json!({ "type": "text", "text": " later" }));
+        crate::entities::validate_woven_journal_body(&serde_json::Value::Array(out))
+            .expect("spliced body is schema-valid");
+    }
+
+    // Case 5a: match at the START of a node — the empty LEFT side is dropped (no
+    // `{text:""}` node, which would violate minLength:1).
+    #[test]
+    fn splice_match_at_start_drops_empty_left() {
+        let ref_id = Uuid::now_v7().to_string();
+        let body = vec![serde_json::json!({ "type": "text", "text": "Priya said hi" })];
+        let out = splice_entity_ref_into_body(&body, "Priya", &ref_id).expect("splice ok");
+        assert_eq!(
+            out,
+            vec![
+                serde_json::json!({ "type": "entity_ref", "ref_id": ref_id }),
+                serde_json::json!({ "type": "text", "text": " said hi" }),
+            ]
+        );
+        crate::entities::validate_woven_journal_body(&serde_json::Value::Array(out))
+            .expect("spliced body is schema-valid");
+    }
+
+    // Case 5b: match at the END of a node — the empty RIGHT side is dropped.
+    #[test]
+    fn splice_match_at_end_drops_empty_right() {
+        let ref_id = Uuid::now_v7().to_string();
+        let body = vec![serde_json::json!({ "type": "text", "text": "today I met Priya" })];
+        let out = splice_entity_ref_into_body(&body, "Priya", &ref_id).expect("splice ok");
+        assert_eq!(
+            out,
+            vec![
+                serde_json::json!({ "type": "text", "text": "today I met " }),
+                serde_json::json!({ "type": "entity_ref", "ref_id": ref_id }),
+            ]
+        );
+        crate::entities::validate_woven_journal_body(&serde_json::Value::Array(out))
+            .expect("spliced body is schema-valid");
+    }
+
+    // Case 5c: match == the WHOLE text node — both sides empty, so ONLY the chip
+    // remains (no empty text siblings on either side).
+    #[test]
+    fn splice_match_whole_node_leaves_only_chip() {
+        let ref_id = Uuid::now_v7().to_string();
+        let body = vec![
+            serde_json::json!({ "type": "text", "text": "saw " }),
+            serde_json::json!({ "type": "text", "text": "Priya" }),
+            serde_json::json!({ "type": "text", "text": " today" }),
+        ];
+        let out = splice_entity_ref_into_body(&body, "Priya", &ref_id).expect("splice ok");
+        assert_eq!(
+            out,
+            vec![
+                serde_json::json!({ "type": "text", "text": "saw " }),
+                serde_json::json!({ "type": "entity_ref", "ref_id": ref_id }),
+                serde_json::json!({ "type": "text", "text": " today" }),
+            ]
+        );
+        crate::entities::validate_woven_journal_body(&serde_json::Value::Array(out))
+            .expect("spliced body is schema-valid");
     }
 }
