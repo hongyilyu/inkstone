@@ -99,8 +99,10 @@ export type ThreadGetParams = S.Schema.Type<typeof ThreadGetParams>;
  * what each row renders — the former `ToolCallView` (`name`/`status`/optional `arg`,
  * Proposal tool calls excluded) and `MessageProposalView` (`proposal_id`/
  * `mutation_kind`/`status`, decided outcomes only) — inlined under the `kind` tag.
- * Left OPEN for a future `reasoning` kind (#202). SUPERSEDES the read-path shapes of
- * ADR-0043 (`tool_calls`) and ADR-0044 (`proposal`): both fold into `segments`. */
+ * The previously-reserved `reasoning` kind (#202) is now realized — the model's
+ * thinking renders as a fourth segment kind (see the ADR-0045 reasoning amendment).
+ * SUPERSEDES the read-path shapes of ADR-0043 (`tool_calls`) and ADR-0044
+ * (`proposal`): both fold into `segments`. */
 export const Segment = S.Union(
 	S.Struct({ kind: S.Literal("text"), text: S.String }),
 	S.Struct({
@@ -119,6 +121,14 @@ export const Segment = S.Union(
 		 * name + deep-link it. Omitted (not null) for a rejected Proposal (nothing
 		 * created) or when no Entity resolves. */
 		entity_id: S.optional(S.String),
+	}),
+	// The model's thinking trace (ADR-0045 reasoning amendment, #202): `text` is the
+	// streamed reasoning, `duration_ms` how long the model thought (Core-computed at
+	// read, omitted not null when unknown). Renders default-collapsed.
+	S.Struct({
+		kind: S.Literal("reasoning"),
+		text: S.String,
+		duration_ms: S.optional(S.Number),
 	}),
 );
 export type Segment = S.Schema.Type<typeof Segment>;
@@ -157,6 +167,10 @@ export const RunEvent = S.Union(
 	S.Struct({ kind: S.Literal("done") }),
 	S.Struct({ kind: S.Literal("cancelled") }),
 	S.Struct({ kind: S.Literal("error"), message: S.String }),
+	// A reasoning (thinking) delta, mirroring `text_delta` (ADR-0045 reasoning
+	// amendment, #202): the segment boundary is inferred from the interleaved stream,
+	// so no position field — the open reasoning segment opens on the first such delta.
+	S.Struct({ kind: S.Literal("reasoning_delta"), delta: S.String }),
 );
 export type RunEvent = S.Schema.Type<typeof RunEvent>;
 

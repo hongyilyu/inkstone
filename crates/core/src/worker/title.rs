@@ -127,6 +127,9 @@ pub fn spawn_title_generation(
                         Some(crate::protocol::WorkerStdout::TextDelta { delta }) => {
                             acc.push_str(&delta)
                         }
+                        // Reasoning deltas (ADR-0045 reasoning amendment, #202) are
+                        // not title text — skip them and keep collecting.
+                        Some(crate::protocol::WorkerStdout::ReasoningDelta { .. }) => {}
                         Some(crate::protocol::WorkerStdout::Done) => return Some(acc),
                         // The titler has no tools and an explicit error is a
                         // failed turn: in both cases discard the partial output

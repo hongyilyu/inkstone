@@ -408,11 +408,12 @@ export const fixtures: readonly FixtureEntry[] = [
 	},
 
 	// ── slice 4: worker↔core protocol — the surface ADR-0009 was written about ──
-	// RunEvent (5 variants; tool_call gets one fixture per ToolCallStatus value so
-	// the closed status domain is locked), ToolResult (ToolOutcome ok/err arms),
-	// WorkerManifest (ManifestMessage 3 variants transitively), WorkerStdout (4
-	// variants, hand-authored — decoded against the BROADER TS WorkerOutbound union,
-	// see the asymmetry note in structs.test.ts).
+	// RunEvent (6 variants; tool_call gets one fixture per ToolCallStatus value so
+	// the closed status domain is locked, plus reasoning_delta — ADR-0045 reasoning
+	// segment, #202), ToolResult (ToolOutcome ok/err arms), WorkerManifest
+	// (ManifestMessage 3 variants transitively), WorkerStdout (5 variants,
+	// hand-authored — decoded against the BROADER TS WorkerOutbound union, see the
+	// asymmetry note in structs.test.ts).
 	{
 		message: "RunEvent",
 		file: "run_event.text_delta.json",
@@ -452,6 +453,12 @@ export const fixtures: readonly FixtureEntry[] = [
 	{
 		message: "RunEvent",
 		file: "run_event.error.json",
+		schema: RunEvent,
+		dir: "emitted",
+	},
+	{
+		message: "RunEvent",
+		file: "run_event.reasoning_delta.json",
 		schema: RunEvent,
 		dir: "emitted",
 	},
@@ -505,6 +512,12 @@ export const fixtures: readonly FixtureEntry[] = [
 	{
 		message: "WorkerStdout",
 		file: "worker_stdout.tool_request.json",
+		schema: WorkerOutbound,
+		dir: "authored",
+	},
+	{
+		message: "WorkerStdout",
+		file: "worker_stdout.reasoning_delta.json",
 		schema: WorkerOutbound,
 		dir: "authored",
 	},
@@ -571,13 +584,14 @@ export const UNION_VARIANTS: Readonly<Record<string, number>> = {
 	// tool_call spans 3 ToolCallStatus values) raises the total. A dropped variant
 	// fixture drops the count and reds the lock.
 	//
-	// RunEvent (5 variants): text_delta, tool_call ×3 statuses, done, cancelled,
-	//   error = 7 fixtures.
-	RunEvent: 7,
+	// RunEvent (6 variants): text_delta, tool_call ×3 statuses, done, cancelled,
+	//   error, reasoning_delta = 8 fixtures.
+	RunEvent: 8,
 	// ToolResult carries the ToolOutcome union (ok / err) = 2 fixtures.
 	ToolResult: 2,
-	// WorkerStdout (4 variants): text_delta, done, error, tool_request = 4.
-	WorkerStdout: 4,
+	// WorkerStdout (5 variants): text_delta, done, error, tool_request,
+	//   reasoning_delta = 5.
+	WorkerStdout: 5,
 	// WorkerManifest: maximal (all 3 ManifestMessage variants in one fixture) +
 	// bare = 2 fixtures; the per-ManifestMessage-variant coverage is asserted
 	// structurally in the Rust self-lock, not by fixture count.

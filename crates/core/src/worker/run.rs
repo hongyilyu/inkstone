@@ -121,6 +121,12 @@ pub(super) async fn run_loop<P: WorkerPort + Send>(
                 }
                 drop(guard);
             }
+            // Reasoning (thinking) deltas (ADR-0045 reasoning amendment, #202): the
+            // contract variant lands in slice 1; the open/append/republish producer
+            // (the open_reasoning_part slot + RunEvent::ReasoningDelta) lands in
+            // slice 3. Until then the delta is dropped so the run loop compiles
+            // exhaustively without faking slice-3 behavior here.
+            WorkerStdout::ReasoningDelta { .. } => {}
             // Terminal events: record a flag, publish AFTER the terminal tx
             // commits (below). Shutdown sends EOF so stdout closes and the loop
             // breaks.
