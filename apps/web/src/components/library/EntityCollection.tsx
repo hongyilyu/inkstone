@@ -5,6 +5,16 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { SearchField } from "@/components/ui/search-field";
 import { useLibraryItems } from "@/lib/hooks/useLibraryItems";
 import {
+	type ActiveFacets,
+	composeFacets,
+	deriveFacets,
+	EMPTY_FACETS,
+	type FacetKey,
+	facetCounts,
+	hasActiveFacets,
+	toggleFacet,
+} from "@/lib/libraryFacets";
+import {
 	groupJournalEntriesByDay,
 	type JournalEntry,
 	KIND_META,
@@ -17,6 +27,7 @@ import {
 } from "@/lib/libraryItems";
 import { EntityRow, TodoRow } from "./EntityRow.js";
 import { EntitySkeleton } from "./EntitySkeleton.js";
+import { FacetRow } from "./FacetRow.js";
 
 const PROJECT_STATUS_RANK: Record<Project["status"], number> = {
 	active: 0,
@@ -71,17 +82,52 @@ export function EntityCollection({
 }) {
 	const { data, isPending, isError } = useLibraryItems();
 	const [query, setQuery] = useState("");
+	const [facets, setFacets] = useState<ActiveFacets>(EMPTY_FACETS);
 	const meta = KIND_META[kind];
 
+	// `query` and `facets` are ephemeral and collection-scoped. The route mounts
+	// this with `key={kind}`, so switching collections remounts the component and
+	// resets both to empty — a People filter can't leak onto Projects.
+
+	const allItems = useMemo(() => data ?? [], [data]);
+
 	const ofKind = useMemo(
-		() => (data ?? []).filter((e) => e.kind === kind),
-		[data, kind],
+		() => allItems.filter((e) => e.kind === kind),
+		[allItems, kind],
 	);
 
-	const items = useMemo(() => {
+	// The text-search (or kind-sorted) base, BEFORE facets narrow it.
+	const base = useMemo(() => {
 		if (query.trim()) return searchLibraryItems(ofKind, query);
 		return [...ofKind].sort(compareForKind(kind));
 	}, [ofKind, kind, query]);
+
+	// Facet groups derived from the UNFILTERED kind set (so groups don't flicker as
+	// the user toggles); only individual chips dim/hide via leave-one-out counts.
+	const facetGroups = useMemo(
+		() => deriveFacets(kind, ofKind, allItems),
+		[kind, ofKind, allItems],
+	);
+
+	// Leave-one-out counts per group, computed over the query-narrowed base.
+	const counts = useMemo(() => {
+		const out = {} as Record<FacetKey, Map<string, number>>;
+		for (const group of facetGroups) {
+			out[group.key] = facetCounts(group.key, base, facets, allItems);
+		}
+		return out;
+	}, [facetGroups, base, facets, allItems]);
+
+	const items = useMemo(
+		() => composeFacets(base, facets, allItems),
+		[base, facets, allItems],
+	);
+
+	const filtersActive = query.trim().length > 0 || hasActiveFacets(facets);
+	const resetAll = () => {
+		setQuery("");
+		setFacets(EMPTY_FACETS);
+	};
 
 	// Show the load-failure state ONLY when the read errored AND we have no cached
 	// rows of this kind to fall back on. A refetch error with a coherent cache keeps
@@ -128,6 +174,19 @@ export function EntityCollection({
 						aria-label={`Search ${meta.plural.toLowerCase()}`}
 						placeholder={`Search ${meta.plural.toLowerCase()}…`}
 					/>
+					{/* Facet controls compose over the same in-memory set as the search.
+					    Hidden while loading/errored/first-run — there's nothing to filter. */}
+					{!isPending && !showError && ofKind.length > 0 ? (
+						<FacetRow
+							groups={facetGroups}
+							active={facets}
+							counts={counts}
+							onToggle={(key, value) =>
+								setFacets((prev) => toggleFacet(prev, key, value))
+							}
+							onClear={() => setFacets(EMPTY_FACETS)}
+						/>
+					) : null}
 				</div>
 			</header>
 
@@ -157,10 +216,21 @@ export function EntityCollection({
 							}
 						/>
 					) : items.length === 0 ? (
+						// Search and/or facets narrowed everything out. One honest "no
+						// matches" state with a single Reset that clears BOTH the facets and
+						// the query (the inline facet "Clear" and the SearchField ✕ stay for
+						// partial resets).
 						<EmptyState
 							icon={Search}
-							title="No matches"
-							description={`Nothing in ${meta.plural.toLowerCase()} matches "${query.trim()}". Try a different search.`}
+							title={`No ${meta.plural.toLowerCase()} match your filters`}
+							description="Try removing a filter or search term."
+							action={
+								filtersActive ? (
+									<Button variant="chip" size="pill" onClick={resetAll}>
+										Reset
+									</Button>
+								) : undefined
+							}
 						/>
 					) : kind === "journal_entry" ? (
 						<JournalEntryGroups

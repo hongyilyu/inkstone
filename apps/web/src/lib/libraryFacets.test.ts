@@ -6,6 +6,9 @@ import {
 	EMPTY_FACETS,
 	facetCounts,
 	facetsForKind,
+	hasActiveFacets,
+	isFacetActive,
+	toggleFacet,
 } from "./libraryFacets";
 import type { LibraryItem, Person, Project, Todo } from "./libraryItems";
 
@@ -264,6 +267,39 @@ describe("facetCounts (leave-one-out)", () => {
 		);
 		expect(counts.get("p1") ?? 0).toBe(0);
 		expect(counts.get("p2") ?? 0).toBe(0);
+	});
+});
+
+describe("toggleFacet / isFacetActive / hasActiveFacets", () => {
+	it("multi-selects status (OR) without mutating the input", () => {
+		const a0 = EMPTY_FACETS;
+		const a1 = toggleFacet(a0, "status", "active");
+		expect(isFacetActive(a1, "status", "active")).toBe(true);
+		expect(a0.statuses.size).toBe(0); // original untouched
+		const a2 = toggleFacet(a1, "status", "completed");
+		expect([...a2.statuses].sort()).toEqual(["active", "completed"]);
+		// Re-toggling removes just that value.
+		const a3 = toggleFacet(a2, "status", "active");
+		expect([...a3.statuses]).toEqual(["completed"]);
+	});
+
+	it("single-selects date: a second preset replaces the first; re-selecting clears", () => {
+		const a1 = toggleFacet(EMPTY_FACETS, "date", "overdue");
+		expect(a1.date).toBe("overdue");
+		const a2 = toggleFacet(a1, "date", "due_soon");
+		expect(a2.date).toBe("due_soon"); // replaced, not added
+		const a3 = toggleFacet(a2, "date", "due_soon");
+		expect(a3.date).toBeNull(); // re-select clears
+	});
+
+	it("reports whether anything is active", () => {
+		expect(hasActiveFacets(EMPTY_FACETS)).toBe(false);
+		expect(hasActiveFacets(toggleFacet(EMPTY_FACETS, "person", "p1"))).toBe(
+			true,
+		);
+		expect(hasActiveFacets(toggleFacet(EMPTY_FACETS, "date", "overdue"))).toBe(
+			true,
+		);
 	});
 });
 

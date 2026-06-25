@@ -59,6 +59,46 @@ export const EMPTY_FACETS: ActiveFacets = {
 	people: new Set(),
 };
 
+/** Is `value` currently selected under facet `key`? (For rendering a chip's
+ * pressed state.) */
+export function isFacetActive(
+	active: ActiveFacets,
+	key: FacetKey,
+	value: string,
+): boolean {
+	if (key === "status") return active.statuses.has(value);
+	if (key === "date") return active.date === value;
+	return active.people.has(value);
+}
+
+/** Whether any facet at all is selected (drives the inline Clear affordance). */
+export function hasActiveFacets(active: ActiveFacets): boolean {
+	return (
+		active.statuses.size > 0 || active.date != null || active.people.size > 0
+	);
+}
+
+/** Toggle `value` under facet `key`, returning a fresh `ActiveFacets` (never
+ * mutates). Status/person are multi-select (toggle membership of the Set); date is
+ * single-select (selecting clears any other preset, re-selecting clears it). */
+export function toggleFacet(
+	active: ActiveFacets,
+	key: FacetKey,
+	value: string,
+): ActiveFacets {
+	if (key === "date") {
+		return {
+			...active,
+			date: active.date === value ? null : (value as DatePreset),
+		};
+	}
+	const field = key === "status" ? "statuses" : "people";
+	const next = new Set(active[field]);
+	if (next.has(value)) next.delete(value);
+	else next.add(value);
+	return { ...active, [field]: next };
+}
+
 /** "Due soon" horizon: a todo due within this many days (inclusive of today) is
  * "due soon"; matches the spirit of `dueSoonTodos`' default window, widened to a
  * week so the preset is a useful forward view. */

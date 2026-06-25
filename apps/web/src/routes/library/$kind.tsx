@@ -39,7 +39,10 @@ function KindRoute() {
 	}
 
 	return (
+		// key={kind} remounts on collection change so the ephemeral search query and
+		// facet selection reset to empty — a People filter must not leak onto Projects.
 		<EntityCollection
+			key={kind}
 			kind={kind}
 			selectedId={id ?? null}
 			onSelect={(next) =>
