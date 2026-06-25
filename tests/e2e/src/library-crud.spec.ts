@@ -584,4 +584,11 @@ test("delete a seeded Todo shows the 'Deleted' success cue", async ({
 	// The delete navigates away (route drops ?id) and unmounts the editor, but the
 	// cue is root-mounted so it survives (slice 2) — it announces "Deleted".
 	await expect(cue(page)).toContainText("Deleted", { timeout: 5_000 });
+
+	// And the navigation the cue is meant to survive actually happened: the detail
+	// rail is dismissed and ?id is cleared. Without this the test would still pass
+	// if delete stopped clearing the route, masking a regression in the very
+	// contract ("the cue survives navigation") it claims to prove.
+	await expect(detail).toHaveCount(0, { timeout: 15_000 });
+	await expect(page).toHaveURL(/\/library\/todos$/, { timeout: 15_000 });
 });
