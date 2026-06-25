@@ -357,6 +357,7 @@ const intentGraphBodyEntityRefNode = S.Struct({
 /** The optional `journal_entry` node (journal-anchored capture). */
 const intentGraphJournalEntry = S.Struct({
 	handle,
+	existing_id: S.optional(patternedUuid),
 	occurred_at: localDateTime,
 	ended_at: S.optional(localDateTime),
 	body: S.Array(
@@ -380,6 +381,7 @@ const intentGraphJournalRefLink = S.Struct({
 	kind: S.Literal("journal_ref"),
 	from: handle,
 	to: handle,
+	match_text: S.optional(nonEmptyString),
 });
 
 /** `apply_intent_graph` payload: optional `journal_entry`, `>= 1` entity nodes,

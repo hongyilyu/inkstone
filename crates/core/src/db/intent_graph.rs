@@ -81,6 +81,11 @@ struct ResolvedCreate {
     kind: MutationKind,
     payload: serde_json::Value,
     handle: String,
+    /// The JE node's optional `existing_id` anchor-reuse hint (ADR-0042). A
+    /// graph-local hint key (like `handle`) STRIPPED from `payload`; carried here
+    /// so a later slice can reuse the named Journal Entry instead of minting.
+    /// `None` for entity-node `ResolvedCreate`s and JE-less direct capture.
+    existing_id: Option<String>,
 }
 
 /// One intended link between two graph handles (ADR-0042). `from`/`to` are
@@ -94,6 +99,10 @@ struct Link {
     to: String,
     /// The `todo_person` role (`waiting_on`/`related`); `None` for the other kinds.
     role: Option<String>,
+    /// The `journal_ref` link's optional `match_text` — the substring of the JE body
+    /// the model recognized, for later stored-body splicing (ADR-0042). `None` for
+    /// the other kinds.
+    match_text: Option<String>,
 }
 
 /// The three link kinds (ADR-0042). `JournalRef` (JE → entity) is woven into the JE
@@ -469,6 +478,8 @@ pub async fn apply_intent_graph_proposal(
                     // node's own payload.
                     payload,
                     handle: node.handle.clone(),
+                    // Anchor-reuse is a JE-node concept; entity-node creates carry none.
+                    existing_id: None,
                 };
                 if node.type_str == "todo" {
                     todo_creates.push(create);
@@ -768,6 +779,8 @@ async fn weave_and_mint_journal_entry(
         kind: je.kind,
         payload,
         handle: je.handle.clone(),
+        // Preserve the anchor-reuse hint through the weave (read by a later slice).
+        existing_id: je.existing_id.clone(),
     };
     // The JE node's `created_from` user-Message guard row (ADR-0042) — resolved
     // INSIDE this tx, exactly as `apply_proposal` resolves a message-sourced
@@ -1435,11 +1448,18 @@ fn parse_link(value: &serde_json::Value) -> Result<Link, ApplyError> {
         .get("role")
         .and_then(serde_json::Value::as_str)
         .map(str::to_string);
+    // The optional `journal_ref` match_text (parsed generically like `role`; only
+    // meaningful for journal_ref) — the recognized body substring for later splicing.
+    let match_text = obj
+        .get("match_text")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
     Ok(Link {
         kind,
         from,
         to,
         role,
+        match_text,
     })
 }
 
@@ -1460,6 +1480,8 @@ fn resolve_journal_entry_node(node: &serde_json::Value) -> Result<ResolvedCreate
         ApplyError::InvalidMutation("journal_entry node must be an object".to_string())
     })?;
 
+    // Only the JE data keys land in the create payload — `handle` and the
+    // `existing_id` anchor-reuse hint are graph-local and never JE data.
     let mut payload = serde_json::Map::new();
     for key in ["occurred_at", "ended_at", "body"] {
         if let Some(value) = obj.get(key) {
@@ -1477,10 +1499,18 @@ fn resolve_journal_entry_node(node: &serde_json::Value) -> Result<ResolvedCreate
         .unwrap_or("<je>")
         .to_string();
 
+    // The model's optional anchor-reuse hint (ADR-0042) — carried through for a
+    // later slice; the create path above never sees it (stripped from `payload`).
+    let existing_id = obj
+        .get("existing_id")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+
     Ok(ResolvedCreate {
         kind: MutationKind::CreateJournalEntry,
         payload: serde_json::Value::Object(payload),
         handle,
+        existing_id,
     })
 }
 
@@ -1813,6 +1843,46 @@ mod tests {
             .await
             .unwrap();
         assert!(plan.is_empty());
+    }
+
+    // The JE node's `existing_id` anchor-reuse hint (this slice) is THREADED THROUGH
+    // onto the JE `ResolvedCreate`, AND stripped out of the reconstructed create
+    // `payload` (it is a graph-local hint key like handle/type, never JE data —
+    // the create path must not see it). And a `journal_ref` link carries its
+    // `match_text` through onto the parsed `Link` (later slices splice the stored
+    // body on it). Pure structural extract — no pool, no write, apply untouched.
+    #[test]
+    fn extract_threads_je_existing_id_and_journal_ref_match_text() {
+        let anchor = Uuid::now_v7().to_string();
+        let payload = serde_json::json!({
+            "journal_entry": {
+                "handle": "@je",
+                "existing_id": anchor,
+                "occurred_at": "2026-06-10T10:30:00",
+                "body": [{ "type": "entity_ref", "target": "@p" }]
+            },
+            "entities": [{ "handle": "@p", "type": "person", "name": "Priya" }],
+            "links": [{ "kind": "journal_ref", "from": "@je", "to": "@p", "match_text": "Priya" }]
+        });
+        let graph = extract_graph(&payload).expect("graph extracts");
+
+        let je = graph.journal_entry.expect("journal_entry present");
+        assert_eq!(
+            je.existing_id.as_deref(),
+            Some(anchor.as_str()),
+            "the JE node's existing_id anchor-reuse hint is threaded onto ResolvedCreate"
+        );
+        assert!(
+            je.payload.get("existing_id").is_none(),
+            "existing_id is a graph-local hint key and MUST be stripped from the create payload"
+        );
+
+        assert_eq!(graph.links.len(), 1);
+        assert_eq!(
+            graph.links[0].match_text.as_deref(),
+            Some("Priya"),
+            "the journal_ref link's match_text is parsed onto the Link"
+        );
     }
 
     // weave_journal_body pins all three placeholder outcomes in isolation, including

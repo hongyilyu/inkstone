@@ -186,6 +186,12 @@
           "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}$",
           "type": "string"
         },
+        "existing_id": {
+          "maxLength": 36,
+          "minLength": 36,
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": "string"
+        },
         "handle": {
           "minLength": 1,
           "type": "string"
@@ -275,6 +281,10 @@
                 "enum": [
                   "journal_ref"
                 ],
+                "type": "string"
+              },
+              "match_text": {
+                "minLength": 1,
                 "type": "string"
               },
               "to": {

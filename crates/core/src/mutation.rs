@@ -616,6 +616,7 @@ fn intent_graph_journal_entry_node() -> PayloadSpec {
         ObjErr::JsonObject,
         vec![
             Field::required("handle", FieldSpec::non_empty_string()),
+            Field::optional("existing_id", FieldSpec::Uuid { schema_regex: true }),
             Field::datetime("occurred_at").require(),
             Field::datetime("ended_at"),
             Field::required("body", graph_body_nodes()),
@@ -645,6 +646,7 @@ fn intent_graph_links() -> FieldSpec {
     ));
     let mut journal_ref = vec![graph_discriminant("kind", &["journal_ref"])];
     journal_ref.extend(from_to());
+    journal_ref.push(Field::optional("match_text", FieldSpec::non_empty_string()));
     FieldSpec::OneOfArray {
         variants: vec![
             PayloadSpec::nested("intent graph todo_project link", ObjErr::JsonObject, todo_project),
