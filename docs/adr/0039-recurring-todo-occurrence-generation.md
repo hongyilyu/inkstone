@@ -121,6 +121,55 @@ does. The pure date math stays in `recurrence.rs`; the apply helper owns the DB
 writes. This follows the established `apply_*` read-modify-write recompute
 pattern, not an inline expansion of `apply_update_todo`.
 
+## Amendment: a read-side next-occurrence preview (#227)
+
+The Recurrence Rule's *write* side (this ADR) and its end conditions (ADR-0037)
+were complete in Core but only partly surfaced: the Todo editor could set
+interval / unit / anchor but **not the `end` condition**, and nothing showed a
+user *when the next occurrence would land*. #227 surfaces both. The editor gains
+an **End** control (`Never` / `On date` → `until` / `After N` → `after_count`),
+and — for a bounded series — a read-only **"Dates for next occurrence"** preview
+of the successor's `defer_at` / `due_at`.
+
+Computing those dates is exactly the math this ADR defines. Rather than mirror
+the civil-arithmetic + month/year clamping in TypeScript (a drift risk: the
+clamp, overflow guards, and inclusive-`until` semantics are subtle), the preview
+**reuses `recurrence::next_occurrence` verbatim** through a new read seam.
+
+- **New read RPC `recurrence/preview`** (request→response via the ADR-0029
+  handler combinator). Params: a draft `recurrence` rule + the current
+  `defer_at` / `due_at` (the dates the editor already holds). Result: the
+  successor's `defer_at` / `due_at`, or a flag that the series has ended. It is a
+  **pure, read-only** call — no DB read, no write — so it carries the
+  single-user log's read-seam shape (sibling to ADR-0050's backlinks read), not a
+  mutation.
+- **`next_occurrence` stays the one source of truth.** The handler calls it
+  directly (same crate; widen nothing the dispatch can't already reach) and maps
+  its `Option<Occurrence>` to the wire result. `None` (series ended: the merged
+  Todo would be the last occurrence — `after_count == 1`, or `next_anchor`
+  strictly past `until`, or a partial in-flight draft) becomes an explicit
+  **"no next occurrence"** result, never an error. The web renders that as "this
+  is the last occurrence".
+- **The wire pair joins the contract-parity gate (ADR-0009).** The request param
+  is hand-authored (client→Core) and the result is Core-emitted, so the slice is
+  atomic across Rust serde mirrors, the `@inkstone/protocol` Effect schemas, the
+  `authored/` + `emitted/` struct fixtures, the `structs.registry.ts` entries,
+  and the `CANONICAL_MESSAGES` completeness lock — the gate reds otherwise. This
+  is the one parity-gate slice in the otherwise web-only #225–#227 set; it is
+  sequenced alone.
+- **Date-only preview.** The editor edits days, not times, and every unit
+  advances by whole days/months/years, so the successor's *date* is invariant to
+  the stored time-of-day — the preview shows the date, matching Core exactly with
+  no time-preservation logic. The preview block shows only when **End ≠ Never**
+  (a bounded series is where "when does it stop / what's next" is meaningful).
+- **`until` granularity.** The editor's `On date` writes `until` at day
+  granularity (`YYYY-MM-DDT00:00:00`), consistent with the date-only `due_at` /
+  `defer_at` it sits beside. Core's inclusive-`until` bound and string compare
+  (above) are unchanged.
+
+No change to the write path, the rule shape, or `next_occurrence` itself — this
+is purely an additive read seam over the existing pure function.
+
 ## Considered and rejected
 
 - **Generate from completion time (`from_completion`).** The stored shape once
@@ -156,3 +205,7 @@ pattern, not an inline expansion of `apply_update_todo`.
   in-transaction recompute helper this mirrors (no new source row on recompute).
 - [#125](https://github.com/hongyilyu/inkstone/issues/125) — the issue this
   resolves.
+- [ADR-0050](./0050-entity-backlinks-read-seam.md) — the read-seam precedent the
+  `recurrence/preview` amendment mirrors (a pure read over existing Core state).
+- [#227](https://github.com/hongyilyu/inkstone/issues/227) — the End-condition
+  editor + next-occurrence preview the amendment records.
