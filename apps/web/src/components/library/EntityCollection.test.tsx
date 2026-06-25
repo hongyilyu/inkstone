@@ -1,7 +1,7 @@
 import type { EntityListResult } from "@inkstone/protocol";
 import { WsClient } from "@inkstone/ui-sdk";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Effect, Layer, ManagedRuntime } from "effect";
 import type { ReactNode } from "react";
@@ -252,9 +252,10 @@ describe("EntityCollection", () => {
 		});
 
 		await screen.findByText("Active due soon");
-		const titles = screen
-			.getAllByText(/^(Active|Zed)/)
-			.map((el) => el.textContent);
+		// Scope to the row list — a "Status" facet chip also reads "Active", so an
+		// unscoped /^Active/ would pick it up alongside the row titles.
+		const { getAllByText } = within(screen.getByRole("list"));
+		const titles = getAllByText(/^(Active|Zed)/).map((el) => el.textContent);
 		// Active dated (soon before late) → active undated → completed last.
 		expect(titles).toEqual([
 			"Active due soon",
@@ -288,7 +289,9 @@ describe("EntityCollection", () => {
 			"zzznobody",
 		);
 
-		expect(screen.getByText(/no matches/i)).toBeInTheDocument();
+		expect(
+			screen.getByText(/no people match your filters/i),
+		).toBeInTheDocument();
 		expect(screen.queryByText("Ada Lovelace")).not.toBeInTheDocument();
 	});
 
@@ -415,6 +418,307 @@ describe("EntityCollection", () => {
 		expect(
 			await screen.findByText("Met Ada Lovelace at school."),
 		).toBeInTheDocument();
+	});
+
+	// --- Facets (slice-2: Status) ---
+
+	const mkTodo = (
+		id: string,
+		title: string,
+		data: Record<string, unknown>,
+	) => ({
+		id,
+		type: "todo" as const,
+		data: { title, ...data },
+		created_at: 1_700_000_000_000,
+		updated_at: 1_700_000_000_000,
+	});
+
+	// `person_refs` lives at the ROW level on the wire (not inside `data`), so a
+	// fixture linking a Todo to People must set it there — `parseTodo` reads
+	// `row.person_refs`, not `data.person_refs`.
+	const aliceId = "01900000-0000-7000-8000-0000000000a1"; // Ada
+	const graceId = "01900000-0000-7000-8000-0000000000a2"; // Grace
+	const mkTodoWithPeople = (
+		id: string,
+		title: string,
+		data: Record<string, unknown>,
+		personRefs: { person_id: string; role: "waiting_on" | "related" }[],
+	) => ({
+		id,
+		type: "todo" as const,
+		data: { title, ...data },
+		person_refs: personRefs,
+		created_at: 1_700_000_000_000,
+		updated_at: 1_700_000_000_000,
+	});
+
+	// Three todos spanning active/completed/dropped so the Status facet can partition.
+	const mixedStatusTodos: EntityListResult["entities"] = [
+		mkTodo("st-active", "Active todo", { status: "active" }),
+		mkTodo("st-done", "Completed todo", { status: "completed" }),
+		mkTodo("st-dropped", "Dropped todo", { status: "dropped" }),
+	];
+
+	// Facet chips share label text with row titles ("Active todo" vs the "Active"
+	// chip), so scope chip queries to the labelled Filters group.
+	const filters = () => within(screen.getByRole("group", { name: /filters/i }));
+
+	it("shows a Status facet group only when the kind has >=2 distinct statuses", async () => {
+		renderCollection("todo", { todos: mixedStatusTodos });
+		await screen.findByText("Active todo");
+		// The group label and one chip per present status.
+		expect(screen.getByText("Status")).toBeInTheDocument();
+		expect(
+			filters().getByRole("button", { name: /^Active/ }),
+		).toBeInTheDocument();
+		expect(
+			filters().getByRole("button", { name: /^Completed/ }),
+		).toBeInTheDocument();
+	});
+
+	it("does not show a Status facet group when all rows share one status", async () => {
+		renderCollection("todo", {
+			todos: [
+				mkTodo("a1", "Only active one", { status: "active" }),
+				mkTodo("a2", "Only active two", { status: "active" }),
+			],
+		});
+		await screen.findByText("Only active one");
+		// A single-value facet can't partition → no group, no label.
+		expect(screen.queryByText("Status")).not.toBeInTheDocument();
+	});
+
+	it("filters rows when a status chip is selected and restores when cleared", async () => {
+		const user = userEvent.setup();
+		renderCollection("todo", { todos: mixedStatusTodos });
+		await screen.findByText("Active todo");
+
+		await user.click(filters().getByRole("button", { name: /^Completed/ }));
+		expect(screen.getByText("Completed todo")).toBeInTheDocument();
+		expect(screen.queryByText("Active todo")).not.toBeInTheDocument();
+		expect(screen.queryByText("Dropped todo")).not.toBeInTheDocument();
+
+		// Clicking the active chip again clears it → all rows return.
+		await user.click(filters().getByRole("button", { name: /^Completed/ }));
+		expect(screen.getByText("Active todo")).toBeInTheDocument();
+		expect(screen.getByText("Dropped todo")).toBeInTheDocument();
+	});
+
+	it("composes a status facet with the text query", async () => {
+		const user = userEvent.setup();
+		renderCollection("todo", {
+			todos: [
+				mkTodo("q1", "Alpha active", { status: "active" }),
+				mkTodo("q2", "Beta active", { status: "active" }),
+				mkTodo("q3", "Alpha completed", { status: "completed" }),
+			],
+		});
+		await screen.findByText("Alpha active");
+
+		await user.type(
+			screen.getByRole("textbox", { name: /search todos/i }),
+			"alpha",
+		);
+		// Query alone keeps both Alphas.
+		expect(screen.getByText("Alpha active")).toBeInTheDocument();
+		expect(screen.getByText("Alpha completed")).toBeInTheDocument();
+		expect(screen.queryByText("Beta active")).not.toBeInTheDocument();
+
+		// Adding Status=active narrows to the active Alpha only (AND).
+		await user.click(filters().getByRole("button", { name: /^Active/ }));
+		expect(screen.getByText("Alpha active")).toBeInTheDocument();
+		expect(screen.queryByText("Alpha completed")).not.toBeInTheDocument();
+	});
+
+	it("teaches an empty-after-filter state with a Reset that clears facets and query", async () => {
+		const user = userEvent.setup();
+		renderCollection("todo", {
+			todos: [
+				mkTodo("e1", "Findable active", { status: "active" }),
+				mkTodo("e2", "Other completed", { status: "completed" }),
+			],
+		});
+		await screen.findByText("Findable active");
+
+		// Filter to Completed (keeps "Other completed"), THEN type a query that the
+		// completed row doesn't match → empty. (Querying first would zero the
+		// Completed chip's leave-one-out count and hide it, so order matters.)
+		await user.click(filters().getByRole("button", { name: /^Completed/ }));
+		await user.type(
+			screen.getByRole("textbox", { name: /search todos/i }),
+			"findable",
+		);
+		expect(
+			screen.getByText(/no todos match your filters/i),
+		).toBeInTheDocument();
+
+		// Reset restores the full list (clears BOTH the query and the facet).
+		await user.click(screen.getByRole("button", { name: /^reset/i }));
+		expect(screen.getByText("Findable active")).toBeInTheDocument();
+		expect(screen.getByText("Other completed")).toBeInTheDocument();
+		expect(
+			(
+				screen.getByRole("textbox", {
+					name: /search todos/i,
+				}) as HTMLInputElement
+			).value,
+		).toBe("");
+	});
+
+	it("renders no facet row for kinds without facets (people)", async () => {
+		renderCollection("person", { people: livePeople });
+		await screen.findByText("Ada Lovelace");
+		// The whole Filters group is absent (the "People" <h1> collection title is
+		// not a facet — assert on the group, not on stray label text).
+		expect(
+			screen.queryByRole("group", { name: /filters/i }),
+		).not.toBeInTheDocument();
+		expect(screen.queryByText("Status")).not.toBeInTheDocument();
+	});
+
+	// --- Facets (slice-3: Due + People) ---
+
+	// Dates relative to the real "now" the component reads, so overdue/due-soon
+	// classification holds regardless of the calendar day the suite runs on.
+	const dayOffset = (days: number) => {
+		const d = new Date();
+		d.setDate(d.getDate() + days);
+		const pad = (n: number) => String(n).padStart(2, "0");
+		return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T00:00:00`;
+	};
+
+	it("shows a Due facet group and filters todos by date preset (single-select)", async () => {
+		const user = userEvent.setup();
+		renderCollection("todo", {
+			todos: [
+				mkTodo("d-over", "Overdue todo", {
+					status: "active",
+					due_at: dayOffset(-3),
+				}),
+				mkTodo("d-soon", "Soon todo", {
+					status: "active",
+					due_at: dayOffset(2),
+				}),
+				mkTodo("d-none", "Undated todo", { status: "active" }),
+			],
+		});
+		await screen.findByText("Overdue todo");
+
+		// The Due group renders with the present buckets, each chip carrying its
+		// leave-one-out match count (1 overdue, 1 due-soon, 1 undated).
+		expect(screen.getByText("Due")).toBeInTheDocument();
+		expect(
+			filters().getByRole("button", { name: /^Overdue 1$/ }),
+		).toBeInTheDocument();
+		await user.click(filters().getByRole("button", { name: /^Overdue/ }));
+		expect(screen.getByText("Overdue todo")).toBeInTheDocument();
+		expect(screen.queryByText("Soon todo")).not.toBeInTheDocument();
+		expect(screen.queryByText("Undated todo")).not.toBeInTheDocument();
+
+		// Single-select: choosing another preset replaces (not adds).
+		await user.click(filters().getByRole("button", { name: /^No date/ }));
+		expect(screen.getByText("Undated todo")).toBeInTheDocument();
+		expect(screen.queryByText("Overdue todo")).not.toBeInTheDocument();
+	});
+
+	it("shows a People facet for todos and filters by associated person", async () => {
+		const user = userEvent.setup();
+		renderCollection("todo", {
+			people: livePeople, // Ada (…a1), Grace (…a2)
+			todos: [
+				mkTodoWithPeople("p-ada", "Ada task", { status: "active" }, [
+					{ person_id: aliceId, role: "related" },
+				]),
+				mkTodoWithPeople("p-grace", "Grace task", { status: "active" }, [
+					{ person_id: graceId, role: "waiting_on" },
+				]),
+			],
+		});
+		await screen.findByText("Ada task");
+
+		expect(screen.getByText("People")).toBeInTheDocument();
+		await user.click(filters().getByRole("button", { name: /^Ada/ }));
+		expect(screen.getByText("Ada task")).toBeInTheDocument();
+		expect(screen.queryByText("Grace task")).not.toBeInTheDocument();
+	});
+
+	it("hides a person chip whose leave-one-out count drops to 0 under another facet", async () => {
+		const user = userEvent.setup();
+		renderCollection("todo", {
+			people: livePeople,
+			todos: [
+				// Ada appears only on a COMPLETED todo; Grace only on an ACTIVE one.
+				mkTodoWithPeople("c-ada", "Ada done", { status: "completed" }, [
+					{ person_id: aliceId, role: "related" },
+				]),
+				mkTodoWithPeople("c-grace", "Grace active", { status: "active" }, [
+					{ person_id: graceId, role: "related" },
+				]),
+			],
+		});
+		await screen.findByText("Ada done");
+
+		// Both person chips present initially.
+		expect(filters().getByRole("button", { name: /^Ada/ })).toBeInTheDocument();
+		expect(
+			filters().getByRole("button", { name: /^Grace/ }),
+		).toBeInTheDocument();
+
+		// Select Status=active → Ada (completed-only) has a 0 leave-one-out count → hidden.
+		await user.click(filters().getByRole("button", { name: /^Active/ }));
+		expect(
+			filters().queryByRole("button", { name: /^Ada/ }),
+		).not.toBeInTheDocument();
+		expect(
+			filters().getByRole("button", { name: /^Grace/ }),
+		).toBeInTheDocument();
+	});
+
+	it("shows a People facet for projects, derived through their todos", async () => {
+		const user = userEvent.setup();
+		renderCollection("project", {
+			people: livePeople,
+			projects: [
+				{
+					id: "pr-a",
+					type: "project",
+					data: { name: "Apollo", status: "active" },
+					created_at: 1_700_000_000_000,
+					updated_at: 1_700_000_000_000,
+				},
+				{
+					id: "pr-b",
+					type: "project",
+					data: { name: "Borealis", status: "active" },
+					created_at: 1_700_000_000_000,
+					updated_at: 1_700_000_000_000,
+				},
+			],
+			todos: [
+				mkTodoWithPeople(
+					"pt-ada",
+					"Apollo task",
+					{ status: "active", project_id: "pr-a" },
+					[{ person_id: aliceId, role: "related" }],
+				),
+				// Borealis links Grace, so the derived People facet has >=2 distinct
+				// people and can partition (one person alone wouldn't render a group).
+				mkTodoWithPeople(
+					"pt-grace",
+					"Borealis task",
+					{ status: "active", project_id: "pr-b" },
+					[{ person_id: graceId, role: "related" }],
+				),
+			],
+		});
+		await screen.findByText("Apollo");
+
+		// Project people are derived (Project → its Todos → personRefs).
+		expect(screen.getByText("People")).toBeInTheDocument();
+		await user.click(filters().getByRole("button", { name: /^Ada/ }));
+		expect(screen.getByText("Apollo")).toBeInTheDocument();
+		expect(screen.queryByText("Borealis")).not.toBeInTheDocument();
 	});
 
 	it("drops a malformed live Journal Entry row but still renders the valid ones (slice-3)", async () => {
