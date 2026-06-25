@@ -1859,11 +1859,14 @@ where
 /// Two columns join the original 8 for the ADR-0045 reasoning amendment (#202):
 /// `mp.type` (the caller switches the `message` branch on it — `text` vs
 /// `reasoning`) and a Core-computed `duration_ms` for reasoning. Duration is the
-/// span from this step's `created_at` to the NEXT step's `created_at` (the
-/// earliest later seq in the SAME Run — a correlated subquery, so the WHERE
-/// filter that drops the user-Message step never widens the window), COALESCE'd
-/// to `runs.ended_at` when this is the last step. A negative span (clock skew) or
-/// an unknown end yields `NULL`; the caller only reads it for reasoning rows.
+/// span from this step's `created_at` to the IMMEDIATE NEXT step's `created_at`
+/// (the lowest later `seq` in the SAME Run — a correlated subquery ordered by
+/// `seq`, NOT `MIN(created_at)`: a later step stamped at an earlier time, e.g.
+/// same-ms or clock skew, must not be mistaken for the next one; the subquery also
+/// dodges the WHERE filter that drops the user-Message step, so it never widens the
+/// window), COALESCE'd to `runs.ended_at` when this is the last step. A negative
+/// span (clock skew) or an unknown end yields `NULL`; the caller only reads it for
+/// reasoning rows.
 pub(super) async fn segment_timeline<'e, E>(
     executor: E,
     run_id: Uuid,
@@ -1878,9 +1881,11 @@ where
                 p.id, p.mutation_kind, p.status, \
                 mp.type, \
                 ( \
-                  SELECT MIN(nxt.created_at) - rs.created_at \
+                  SELECT nxt.created_at - rs.created_at \
                   FROM run_steps nxt \
                   WHERE nxt.run_id = rs.run_id AND nxt.seq > rs.seq \
+                  ORDER BY nxt.seq \
+                  LIMIT 1 \
                 ) \
                 AS duration_to_next, \
                 ( \

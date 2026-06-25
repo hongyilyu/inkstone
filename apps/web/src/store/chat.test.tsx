@@ -673,6 +673,41 @@ describe("segment timeline (ADR-0045)", () => {
 		]);
 	});
 
+	it("a tool_call(started) after reasoning seals that block's duration mid-stream", () => {
+		seedRun("tRTool", "run-rtool");
+
+		// The model thinks, then calls a tool: a `started` tool_call is a boundary the
+		// same as a text delta — it seals the open reasoning block's web-clocked
+		// duration NOW, so the disclosure reads "Thought for Ns" beside the tool row,
+		// not a stale "Thinking…" until the Run terminates.
+		const opened = 1_000;
+		applyEvent(
+			"tRTool",
+			"run-rtool",
+			{ kind: "reasoning_delta", delta: "parsing" },
+			opened,
+		);
+		applyEvent(
+			"tRTool",
+			"run-rtool",
+			{
+				kind: "tool_call",
+				tool_call_id: "tc_1",
+				name: "search_entities",
+				status: "started",
+			},
+			opened + 2_500,
+		);
+
+		expect(segmentsOf("tRTool", "run-rtool")).toEqual([
+			{ kind: "reasoning", text: "parsing", durationMs: 2_500 },
+			{
+				kind: "tool_call",
+				call: { id: "tc_1", name: "search_entities", status: "running" },
+			},
+		]);
+	});
+
 	it("times each block of a reasoning→text→reasoning interleave separately", () => {
 		seedRun("tRTR", "run-rtr");
 

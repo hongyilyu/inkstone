@@ -3750,6 +3750,91 @@ mod tests {
         }
     }
 
+    /// ADR-0045 reasoning amendment: duration is the IMMEDIATE NEXT step by `seq`,
+    /// not the later step with the smallest `created_at`. Seeded so a LATER-seq step
+    /// carries an EARLIER timestamp than the immediate next: `[reasoning@seq0 t=20,
+    /// text@seq1 t=25, text@seq2 t=15]`. The correct duration is `25 - 20 = 5` (the
+    /// seq-1 next step); a `MIN(created_at)` subquery would wrongly pick seq-2's t=15
+    /// → `-5` → None. This pins the `ORDER BY nxt.seq LIMIT 1` fix.
+    #[tokio::test]
+    async fn thread_get_reasoning_duration_uses_immediate_next_seq_not_min_time() {
+        let pool = memory_pool().await;
+        let thread_id = Uuid::now_v7();
+        let run_id = Uuid::now_v7();
+        let assistant_id = Uuid::now_v7();
+
+        let mut tx = pool.begin().await.expect("begin");
+        queries::insert_thread(&mut *tx, thread_id, "T", 1)
+            .await
+            .expect("thread");
+        sqlx::query(
+            "INSERT INTO runs \
+             (id, thread_id, workflow_name, workflow_version, provider, model, \
+              thinking_level, user_message_id, status, started_at) \
+             VALUES (?, ?, 'w', '1', 'p', 'm', 'medium', ?, 'completed', 1)",
+        )
+        .bind(run_id.to_string())
+        .bind(thread_id.to_string())
+        .bind(assistant_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .expect("run");
+        queries::insert_message(
+            &mut *tx,
+            assistant_id,
+            thread_id,
+            run_id,
+            "assistant",
+            "completed",
+            1,
+        )
+        .await
+        .expect("assistant message");
+        // reasoning @ seq 0, t=20 — the immediate next step (seq 1) is t=25, so the
+        // correct span is 5. The seq-2 step is stamped EARLIER (t=15): a MIN-over-time
+        // subquery would pick it and compute -5 (→ None); ORDER BY seq picks seq 1.
+        queries::insert_reasoning_part(&mut *tx, assistant_id, 0, "Weighing.")
+            .await
+            .expect("reasoning part");
+        queries::insert_message_run_step(&mut *tx, run_id, 0, assistant_id, 0, 20)
+            .await
+            .expect("reasoning step");
+        queries::insert_text_part(&mut *tx, assistant_id, 1, "First.")
+            .await
+            .expect("text part 1");
+        queries::insert_message_run_step(&mut *tx, run_id, 1, assistant_id, 1, 25)
+            .await
+            .expect("text step 1");
+        queries::insert_text_part(&mut *tx, assistant_id, 2, "Second.")
+            .await
+            .expect("text part 2");
+        queries::insert_message_run_step(&mut *tx, run_id, 2, assistant_id, 2, 15)
+            .await
+            .expect("text step 2");
+        tx.commit().await.expect("commit seed");
+
+        let (_title, rows) = get_thread_with_messages(&pool, thread_id)
+            .await
+            .expect("read ok")
+            .expect("thread exists");
+        let assistant = rows
+            .iter()
+            .find(|m| m.role == "assistant")
+            .expect("assistant row");
+        match &assistant.segments[0] {
+            MessageSegment::Reasoning { text, duration_ms } => {
+                assert_eq!(text, "Weighing.");
+                assert_eq!(
+                    *duration_ms,
+                    Some(5),
+                    "duration = immediate-next-seq step's created_at (25) - this (20), \
+                     NOT the min-time later step (15)"
+                );
+            }
+            other => panic!("segment[0] is the reasoning segment, got {other:?}"),
+        }
+    }
+
     /// ADR-0045 reasoning amendment: an empty-text reasoning part yields NO
     /// segment, mirroring the empty-text-part skip — a provider that opens a
     /// thinking block but emits no content never renders a "Thought" row.
