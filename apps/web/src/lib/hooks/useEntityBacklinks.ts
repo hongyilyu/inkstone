@@ -77,6 +77,5 @@ export function useEntityBacklinks(entityId: string, kind: LibraryItemKind) {
 		mentionedIn: query.data?.mentionedIn ?? [],
 		linkedTodos: query.data?.linkedTodos ?? [],
 		degraded: query.isError && query.data === undefined,
-		isPending: query.isPending,
 	};
 }

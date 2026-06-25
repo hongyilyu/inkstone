@@ -38,7 +38,7 @@ Add a dedicated **`entity/backlinks { entity_id }`** client-surface read,
 fired on detail-open, returning the two reverse sets Core resolves
 authoritatively:
 
-```
+```rust
 EntityBacklinksResult {
   mentioned_in: Vec<EntityRow>,   // distinct Journal Entries referencing this entity
   linked_todos: Vec<EntityRow>,   // Todos linked to this entity (project_id / person_refs reverse)
