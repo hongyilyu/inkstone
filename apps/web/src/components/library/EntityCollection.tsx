@@ -109,9 +109,11 @@ export function EntityCollection({
 		[kind, ofKind, allItems],
 	);
 
-	// Leave-one-out counts per group, computed over the query-narrowed base.
+	// Leave-one-out counts per group, computed over the query-narrowed base. Only
+	// keys for the present groups are populated, so the type is Partial (FacetRow
+	// reads counts for the same groups it renders, falling back to an empty Map).
 	const counts = useMemo(() => {
-		const out = {} as Record<FacetKey, Map<string, number>>;
+		const out: Partial<Record<FacetKey, Map<string, number>>> = {};
 		for (const group of facetGroups) {
 			out[group.key] = facetCounts(group.key, base, facets, allItems);
 		}

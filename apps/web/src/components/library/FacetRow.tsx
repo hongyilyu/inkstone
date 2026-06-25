@@ -57,8 +57,9 @@ export function FacetRow({
 }: {
 	groups: FacetGroup[];
 	active: ActiveFacets;
-	/** Per-group leave-one-out counts: group key → (value → count). */
-	counts: Record<FacetKey, Map<string, number>>;
+	/** Per-group leave-one-out counts: group key → (value → count). Partial — only
+	 * the rendered groups carry an entry; absent keys fall back to an empty Map. */
+	counts: Partial<Record<FacetKey, Map<string, number>>>;
 	onToggle: (key: FacetKey, value: string) => void;
 	onClear: () => void;
 }) {
@@ -69,7 +70,7 @@ export function FacetRow({
 		// biome-ignore lint/a11y/useSemanticElements: role="group" + aria-label is the correct WAI-ARIA pattern for a labelled set of filter controls; <fieldset> would import form-reset/border semantics this toolbar doesn't want
 		<div role="group" aria-label="Filters" className="mt-3 flex flex-col gap-2">
 			{groups.map((group) => {
-				const groupCounts = counts[group.key];
+				const groupCounts = counts[group.key] ?? new Map<string, number>();
 				const visible = group.values.filter(
 					(v) =>
 						isFacetActive(active, group.key, v.value) ||

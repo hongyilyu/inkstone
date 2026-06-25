@@ -18,8 +18,6 @@ import {
 	type LibraryItem,
 	type LibraryItemKind,
 	localNowString,
-	type Person,
-	type Project,
 	todosForProject,
 } from "./libraryItems";
 
@@ -59,6 +57,14 @@ export const EMPTY_FACETS: ActiveFacets = {
 	people: new Set(),
 };
 
+/** Exhaustiveness guard for the per-facet dispatches below. A `FacetKey` no branch
+ * handled is a compile error here, so adding a 4th facet fails to type-check at every
+ * dispatch site until handled — rather than silently falling through to the `person`
+ * branch (the prior shape). Throws if ever reached at runtime. */
+function assertNever(key: never): never {
+	throw new Error(`Unhandled facet key: ${key as string}`);
+}
+
 /** Is `value` currently selected under facet `key`? (For rendering a chip's
  * pressed state.) */
 export function isFacetActive(
@@ -68,7 +74,8 @@ export function isFacetActive(
 ): boolean {
 	if (key === "status") return active.statuses.has(value);
 	if (key === "date") return active.date === value;
-	return active.people.has(value);
+	if (key === "person") return active.people.has(value);
+	return assertNever(key);
 }
 
 /** Whether any facet at all is selected (drives the inline Clear affordance). */
@@ -92,6 +99,7 @@ export function toggleFacet(
 			date: active.date === value ? null : (value as DatePreset),
 		};
 	}
+	if (key !== "status" && key !== "person") return assertNever(key);
 	const field = key === "status" ? "statuses" : "people";
 	const next = new Set(active[field]);
 	if (next.has(value)) next.delete(value);
@@ -168,10 +176,9 @@ function associatedPersonIds(
 	if (item.kind === "todo") return item.personRefs.map((r) => r.personId);
 	if (item.kind === "project") {
 		const ids = new Set<string>();
-		for (const todo of todosForProject(
-			allItems as LibraryItem[],
-			item as Project,
-		)) {
+		// `allItems as LibraryItem[]` strips readonly for todosForProject's signature
+		// (it doesn't mutate); `item` is already narrowed to Project by the guard.
+		for (const todo of todosForProject(allItems as LibraryItem[], item)) {
 			for (const ref of todo.personRefs) ids.add(ref.personId);
 		}
 		return [...ids];
@@ -227,7 +234,8 @@ export function composeFacets(
 function withoutOwn(active: ActiveFacets, key: FacetKey): ActiveFacets {
 	if (key === "status") return { ...active, statuses: new Set() };
 	if (key === "date") return { ...active, date: null };
-	return { ...active, people: new Set() };
+	if (key === "person") return { ...active, people: new Set() };
+	return assertNever(key);
 }
 
 /** The value(s) of `item` under one facet key (a row can carry several people but
@@ -246,7 +254,8 @@ function valuesOf(
 		const b = dateBucket(item, now);
 		return b == null ? [] : [b];
 	}
-	return associatedPersonIds(item, allItems);
+	if (key === "person") return associatedPersonIds(item, allItems);
+	return assertNever(key);
 }
 
 /** Leave-one-out, context-aware counts for one facet's chips: how many rows would
@@ -322,7 +331,7 @@ function presentPersonValues(
 	}
 	const nameById = new Map<string, string>();
 	for (const item of allItems) {
-		if (item.kind === "person") nameById.set(item.id, (item as Person).name);
+		if (item.kind === "person") nameById.set(item.id, item.name);
 	}
 	return [...counts.entries()]
 		.map(([id, count]) => ({ value: id, label: nameById.get(id) ?? id, count }))
@@ -348,7 +357,9 @@ export function deriveFacets(
 				? presentStatusValues(kind, ofKind)
 				: key === "date"
 					? presentDateValues(ofKind, now)
-					: presentPersonValues(ofKind, allItems);
+					: key === "person"
+						? presentPersonValues(ofKind, allItems)
+						: assertNever(key);
 		if (values.length >= 2) {
 			groups.push({ key, label: GROUP_LABEL[key], values });
 		}
