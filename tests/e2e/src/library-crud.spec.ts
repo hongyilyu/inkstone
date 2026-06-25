@@ -532,3 +532,56 @@ test("delete a seeded Bookmark via the inline confirm → delete_bookmark remove
 		),
 	).toBe("0");
 });
+
+// The root-mounted EntityCue (slice 1/2) is the one `role="status"` with a
+// `data-cue-key`; scoping on that attribute avoids the app's other live regions
+// (CopyOutcome, the composer's run status). It auto-dismisses at CUE_DISMISS_MS
+// (2500ms), so we assert appearance promptly — Playwright auto-retries until it
+// shows or the 5s timeout — and don't assert disappearance.
+const cue = (page: import("@playwright/test").Page) =>
+	page.locator('[role="status"][data-cue-key]');
+
+test("create a Todo shows the 'Created' success cue", async ({
+	page,
+	core,
+}) => {
+	await page.goto(`${core.url}/library/todos`);
+	await page.getByRole("button", { name: /new todo/i }).click();
+
+	const rail = page.getByRole("complementary", { name: /new todo/i });
+	await expect(rail).toBeVisible({ timeout: 15_000 });
+	await rail.getByLabel("Title").fill("Order more coffee filters");
+	await rail.getByRole("button", { name: /^save$/i }).click();
+
+	// The success cue announces "Created" once the create round-trips through Core.
+	await expect(cue(page)).toContainText("Created", { timeout: 5_000 });
+});
+
+test("delete a seeded Todo shows the 'Deleted' success cue", async ({
+	page,
+	core,
+	workspace,
+}) => {
+	const dbPath = dbPathFor(workspace.path);
+	const TODO = "01900000-0000-7000-8000-000000010008";
+	seedEntities(dbPath, [
+		{
+			id: TODO,
+			type: "todo",
+			data: { title: "Toss the expired snacks", status: "active" },
+		},
+	]);
+
+	await page.goto(`${core.url}/library/todos?id=${TODO}`);
+	const detail = page.getByRole("complementary", {
+		name: /Toss the expired snacks details/i,
+	});
+	await expect(detail).toBeVisible({ timeout: 15_000 });
+
+	await detail.getByRole("button", { name: /delete todo/i }).click();
+	await detail.getByRole("button", { name: /^delete$/i }).click();
+
+	// The delete navigates away (route drops ?id) and unmounts the editor, but the
+	// cue is root-mounted so it survives (slice 2) — it announces "Deleted".
+	await expect(cue(page)).toContainText("Deleted", { timeout: 5_000 });
+});
