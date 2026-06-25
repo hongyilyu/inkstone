@@ -387,6 +387,22 @@ describe("library item helpers", () => {
 			]);
 		});
 
+		it("breaks a same-defer tie by recency (most recent first)", () => {
+			// Identical deferAt forces the secondary `recency` sort key.
+			const older = mkTodo("older", {
+				deferAt: "2026-06-20T00:00:00",
+				recency: 1,
+			});
+			const newer = mkTodo("newer", {
+				deferAt: "2026-06-20T00:00:00",
+				recency: 2,
+			});
+			expect(scheduledTodos([older, newer], now).map((t) => t.id)).toEqual([
+				"newer",
+				"older",
+			]);
+		});
+
 		it("excludes a todo deferred to the past (already available)", () => {
 			const past = mkTodo("past", { deferAt: "2026-06-01T00:00:00" });
 			expect(scheduledTodos([past], now)).toEqual([]);

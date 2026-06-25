@@ -1,7 +1,7 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { formatDay, type Todo } from "@/lib/libraryItems";
+import type { Todo } from "@/lib/libraryItems";
 import { people, todos } from "@/lib/libraryItems.fixtures";
 import { EntityRow, TodoRow } from "./EntityRow";
 
@@ -109,10 +109,8 @@ describe("TodoRow", () => {
 				<TodoRow todo={deferred} onSelect={() => {}} />
 			</ul>,
 		);
-		// Same formatter both sides keeps the assertion ICU-safe.
-		expect(
-			screen.getByText(`Available ${formatDay("2999-01-05T00:00:00")}`),
-		).toBeInTheDocument();
+		// Chip shows the YYYY-MM-DD day slice, matching DueChip's format.
+		expect(screen.getByText("Available 2999-01-05")).toBeInTheDocument();
 	});
 
 	it("shows no Available chip when the todo is not deferred", () => {
@@ -136,9 +134,7 @@ describe("TodoRow", () => {
 			</ul>,
 		);
 		expect(screen.getByText("2999-01-09")).toBeInTheDocument();
-		expect(
-			screen.getByText(`Available ${formatDay("2999-01-05T00:00:00")}`),
-		).toBeInTheDocument();
+		expect(screen.getByText("Available 2999-01-05")).toBeInTheDocument();
 	});
 });
 
