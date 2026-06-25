@@ -36,10 +36,14 @@ Concretely:
    These are the symmetric derivations ADR-0031 specifies
    (`Project people = Project → Todos → TodoPersonRef → Person`).
 
-4. **No dedicated relation RPCs in V1.** Core's relation read helpers
-   (`todos_by_person`, `project_people`, `person_projects`,
-   `projects_due_for_review`, …) remain Core-internal. They exist and are
-   test-covered, but no `person/todos`-style RPC is exposed yet.
+4. **No dedicated relation RPCs in V1.** The client derivation above is
+   authoritative; no `person/todos`-style RPC is exposed. The speculative
+   Core-internal reserve helpers (`project_people`, `person_projects`,
+   `projects_due_for_review`) were removed once they had no caller; `todos_by_person`
+   / `todos_by_project` survive only because the entity-backlink read (ADR-0050)
+   uses them. If a future need (server-side pagination, a non-load-all Client)
+   makes derivation untenable, the reserve helpers are re-added then — a small,
+   reversible change — superseding this ADR.
 
 ## Rationale
 
@@ -57,9 +61,9 @@ Concretely:
 
 - **Avoids premature RPC surface.** A `person→todos` / `project→people` RPC set
   would be N round-trips per detail page and a wider contract to maintain, for no
-  capability the derivation lacks. Core keeps the authoritative helpers in
-  reserve; if a future need (server-side pagination, a non-load-all Client) makes
-  derivation untenable, those helpers promote to RPCs then — superseding this ADR.
+  capability the derivation lacks. The client derivation is authoritative; if a
+  future need (server-side pagination, a non-load-all Client) makes it untenable,
+  the reserve helpers are re-added and promoted to RPCs then — superseding this ADR.
 
 ## Consequences
 
@@ -77,8 +81,8 @@ Concretely:
 
 - **Dedicated relation RPCs** (`person/todos`, `project/people`,
   `person/projects`). Rejected for V1: more round-trips, wider contract, and the
-  Client already holds every row needed to derive the same answer. The Core
-  helpers stay ready behind the seam for when a Client can't load everything.
+  Client already holds every row needed to derive the same answer. A reserve
+  helper is re-added behind the seam if a Client ever can't load everything.
 - **A standalone `todo_person_ref/list` RPC.** Rejected: it splits one logical
   read (a Todo and its refs) into two calls and re-introduces the N+1 the
   on-row `person_refs` avoids.

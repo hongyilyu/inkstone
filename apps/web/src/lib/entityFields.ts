@@ -1,6 +1,6 @@
 // The single source of truth for the entity FIELD SURFACE: the status/unit/anchor
-// value domains, the `{value,label}` option arrays the editors render, the
-// derived `*_STATUS_LABEL` maps, and the three pure coercers
+// value domains, the `{value,label}` option arrays the editors render, and the
+// three pure coercers
 // (parseAliases/asTodoStatus/asProjectStatus). A PURE LEAF — it imports nothing
 // (no React, no lucide, no libraryItems/entityCodec/components), so every
 // consumer (codec, proposalEdit, intentGraphReview, the rail editors, the
@@ -50,16 +50,6 @@ export const TODO_STATUS_OPTIONS = TODO_STATUSES;
 export const PROJECT_STATUS_OPTIONS = PROJECT_STATUSES;
 export const RECURRENCE_UNIT_OPTIONS = RECURRENCE_UNITS;
 export const RECUR_ANCHOR_OPTIONS = RECUR_ANCHORS;
-
-/** Status → display label, derived from the canonical arrays so a new status is
- * a one-line edit in one place (the maps can never drift from the domain). */
-export const TODO_STATUS_LABEL = Object.fromEntries(
-	TODO_STATUSES.map((o) => [o.value, o.label]),
-) as Record<TodoStatus, string>;
-
-export const PROJECT_STATUS_LABEL = Object.fromEntries(
-	PROJECT_STATUSES.map((o) => [o.value, o.label]),
-) as Record<ProjectStatus, string>;
 
 /** Parse a comma-separated aliases/field string into a trimmed, non-empty `string[]`. */
 export function parseAliases(raw: string): string[] {

@@ -7,7 +7,7 @@ The Web Client (`apps/web`) styles its UI with **Tailwind v4** for utilities and
 - All styling under `apps/web/src/**` uses Tailwind utility classes.
 - Reusable primitives that need accessible behavior (focus-trap, ARIA, keyboard nav) come from `@base-ui-components/react`, styled with Tailwind.
 - Design tokens (colors, surfaces, accent, spacing) are CSS variables defined once in `apps/web/src/index.css` and consumed by Tailwind via `@theme inline`. See [Theming](#theming).
-- Animations: `tw-animate-css` for keyframe utilities.
+- Animations: hand-rolled `@keyframes` + `--animate-*` tokens in `apps/web/src/index.css`.
 - Icons: `lucide-react`. One source for proposal-kind icons, theme toggle, send button, filter pills, and any future glyph. Tree-shaken; matches the shadcn / `my-clone` convention so patterns lift without translation.
 - Typography: **Inter Variable, self-hosted**. The WOFF2 file lives at `apps/web/public/fonts/Inter-Variable.woff2`; one `@font-face` block in `index.css` declares it. Body fallback chain: `"Inter", ui-sans-serif, system-ui, sans-serif`. Mono stays `ui-monospace, "SF Mono", Menlo, Consolas, monospace` (system mono is fine; no self-host). Self-hosting (vs. Google Fonts CDN) keeps the app offline-capable and consistent with local-first; embedded into Core through Vite's `dist/` like the rest of the static bundle.
 

@@ -18,7 +18,6 @@ export function EntityEditorFrame({
 	onCancel,
 	saving,
 	error,
-	saveLabel = "Save",
 	canSave = true,
 	disabledReason,
 	children,
@@ -28,7 +27,6 @@ export function EntityEditorFrame({
 	onCancel: () => void;
 	saving: boolean;
 	error: string | null;
-	saveLabel?: string;
 	/** Disables Save (showing its disabled affordance) when a required field guard fails. */
 	canSave?: boolean;
 	/** Why Save is disabled (e.g. "Add a title to save"); shown as a muted hint
@@ -82,7 +80,7 @@ export function EntityEditorFrame({
 						size="row"
 						disabled={saving || !canSave}
 					>
-						{saving ? "Saving…" : saveLabel}
+						{saving ? "Saving…" : "Save"}
 					</Button>
 				</div>
 			</footer>

@@ -2,12 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
 	asProjectStatus,
 	asTodoStatus,
-	PROJECT_STATUS_LABEL,
 	PROJECT_STATUS_OPTIONS,
 	parseAliases,
 	RECUR_ANCHOR_OPTIONS,
 	RECURRENCE_UNIT_OPTIONS,
-	TODO_STATUS_LABEL,
 	TODO_STATUS_OPTIONS,
 } from "@/lib/entityFields";
 
@@ -87,24 +85,6 @@ describe("entityFields — single-source entity field surface", () => {
 				{ value: "defer_at", label: "Defer date" },
 				{ value: "due_at", label: "Due date" },
 			]);
-		});
-	});
-
-	describe("derived *_STATUS_LABEL maps", () => {
-		it("TODO_STATUS_LABEL equals the literals", () => {
-			expect(TODO_STATUS_LABEL).toEqual({
-				active: "Active",
-				completed: "Completed",
-				dropped: "Dropped",
-			});
-		});
-		it("PROJECT_STATUS_LABEL equals the literals", () => {
-			expect(PROJECT_STATUS_LABEL).toEqual({
-				active: "Active",
-				on_hold: "On hold",
-				completed: "Completed",
-				dropped: "Dropped",
-			});
 		});
 	});
 });

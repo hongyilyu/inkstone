@@ -49,7 +49,3 @@ export function chatCardPath(
 		`Z`,
 	].join(" ");
 }
-
-export function makeChatCardClipPath(width: number, height: number): string {
-	return `path("${chatCardPath(width, height)}")`;
-}

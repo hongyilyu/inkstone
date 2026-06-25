@@ -2,7 +2,7 @@
 
 Design rationale extracted from code comments during cleanup — keep in sync with the source.
 
-## ChatCardRecess.tsx — chatCardPath / makeChatCardClipPath
+## ChatCardRecess.tsx — chatCardPath
 
 Builds a CSS clip-path that carves a smooth recess out of the chat card's top
 edge for the TopRightControls icon cluster. The recess is a "bay": the chat
@@ -10,13 +10,14 @@ card's top edge dips down with a single smooth concave arc on the left, then
 runs flat to the right, where the top-right corner rounds off into the right
 edge that meets the activity rail.
 
-Apply via inline style on the chat-card wrapper:
+`chatCardPath` returns the raw SVG path data; callers wrap it in `path("…")`
+inline to apply it as a CSS clip-path:
 
 ```tsx
-<div style={{ clipPath: makeChatCardClipPath(w, h) }} ... />
+el.style.clipPath = `path("${chatCardPath(w, h, { bay: hasRail })}")`;
 ```
 
-`chatCardPath` returns the `path()` definition string. Trace clockwise from the
+Trace clockwise from the
 top-left corner's start, around the perimeter of the visible card shape. With
 `bay: false` the top edge stays flat with both corners rounded — the plain
 framed surface a page uses when it has no right rail (and so no floating control

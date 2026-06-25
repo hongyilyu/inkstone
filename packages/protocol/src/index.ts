@@ -539,10 +539,6 @@ export type CoreToolDescriptor = S.Schema.Type<typeof CoreToolDescriptor>;
 export const WorkerOutbound = S.Union(RunEvent, ToolRequest);
 export type WorkerOutbound = S.Schema.Type<typeof WorkerOutbound>;
 
-/** Core → Worker, after the manifest: a tool's outcome (ADR-0018). */
-export const WorkerInbound = ToolResult;
-export type WorkerInbound = S.Schema.Type<typeof WorkerInbound>;
-
 // provider/* (ADR-0023, ADR-0014 amendment): LLM-provider connection.
 
 /** One provider's connection state in `provider/status`. */

@@ -30,7 +30,6 @@ import {
 	ThreadSummary,
 	ToolRequest,
 	ToolResult,
-	WorkerInbound,
 	WorkerManifest,
 	WorkerOutbound,
 } from "./index.js";
@@ -743,17 +742,5 @@ describe("WorkerOutbound (RunEvent | ToolRequest)", () => {
 		expect(() =>
 			S.decodeUnknownSync(WorkerOutbound)({ kind: "tool_response" }),
 		).toThrow();
-	});
-});
-
-describe("WorkerInbound (ToolResult)", () => {
-	it("aliases ToolResult and accepts an ok outcome", () => {
-		const wire = {
-			kind: "tool_result",
-			run_id: "01900000-0000-7000-8000-000000000000",
-			tool_call_id: "call_1",
-			outcome: { ok: { content: [{ type: "text", text: "contents" }] } },
-		};
-		expect(S.decodeUnknownSync(WorkerInbound)(wire)).toEqual(wire);
 	});
 });

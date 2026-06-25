@@ -2,20 +2,6 @@
 
 export type ProposalKind = "todo" | "project" | "note" | "file";
 
-/** Flat mock view of a chat message; stand-in for the live `Message` type (collapses ADR-0017 tier-2 schema into one record). */
-export type MockChatMessage =
-	| { role: "user"; t: string; text: string }
-	| {
-			role: "assistant";
-			t: string;
-			text: string;
-			actions?: {
-				kind: "read" | "search" | "write" | "decide";
-				label: string;
-			}[];
-			proposalIds?: string[];
-	  };
-
 /** An APPLIED edit the agent already made, reviewed post-hoc (audit/undo/open) — despite the legacy "Proposal" name. */
 export type Proposal = {
 	id: string;
