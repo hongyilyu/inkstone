@@ -6,6 +6,7 @@ import {
 } from "@tanstack/react-router";
 import { useEffect } from "react";
 import { CommandPalette } from "@/components/CommandPalette";
+import { EntityCue } from "@/components/EntityCue";
 import { registerThreadTitledHandler, setOnRunSettled } from "@/store/bridge";
 import { noteNonSettingsLocation } from "@/store/settings-origin";
 
@@ -37,6 +38,7 @@ function RootLayout() {
 		<>
 			<Outlet />
 			<CommandPalette />
+			<EntityCue />
 		</>
 	);
 }
