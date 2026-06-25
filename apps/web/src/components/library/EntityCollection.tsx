@@ -252,6 +252,8 @@ export function EntityCollection({
 										allItems={data ?? []}
 										selected={item.id === selectedId}
 										onSelect={onSelect}
+										onComplete={() => {}}
+										onQuickDefer={() => {}}
 									/>
 								) : (
 									<li key={item.id}>

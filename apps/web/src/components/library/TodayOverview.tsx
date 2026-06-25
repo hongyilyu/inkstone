@@ -111,6 +111,8 @@ export function TodayOverview() {
 								todo={todo}
 								allItems={data}
 								onSelect={open}
+								onComplete={() => {}}
+								onQuickDefer={() => {}}
 							/>
 						))}
 					</ul>

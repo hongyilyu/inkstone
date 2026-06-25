@@ -78,6 +78,8 @@ export function DerivedTodoView({
 									allItems={data ?? []}
 									selected={todo.id === selectedId}
 									onSelect={onSelect}
+									onComplete={() => {}}
+									onQuickDefer={() => {}}
 								/>
 							))}
 						</ul>

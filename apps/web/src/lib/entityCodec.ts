@@ -525,8 +525,17 @@ function buildUpdateParams(
 	next: TodoDraft,
 ): EntityMutateParams | null {
 	const partial: Record<string, unknown> = {};
-	if (next.title.trim() !== prev.title) partial.title = next.title.trim();
-	if (next.note.trim() !== prev.note) partial.note = next.note.trim() || null;
+	// Trim BOTH sides: the draft seeds title/note untrimmed from the stored Todo
+	// (todoDraftFromVm), so a trimmed-vs-untrimmed compare would emit a spurious
+	// title/note on an edit that never touched them — e.g. a quick-defer of a Todo
+	// whose stored title carries surrounding whitespace (silent re-title + note clear).
+	// (The Person/Project/Bookmark builders below carry the same untrimmed-prev
+	// compare, but they full-REPLACE rather than partial-merge, so a false diff only
+	// re-sends the already-correct value — harmless. Trimmed here only where it bites.)
+	if (next.title.trim() !== prev.title.trim())
+		partial.title = next.title.trim();
+	if (next.note.trim() !== prev.note.trim())
+		partial.note = next.note.trim() || null;
 	if (next.projectId !== prev.projectId)
 		partial.project_id = next.projectId || null;
 	if (next.dueDay !== prev.dueDay)
