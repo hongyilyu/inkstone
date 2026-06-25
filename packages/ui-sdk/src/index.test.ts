@@ -10,6 +10,7 @@ import {
 import { afterEach, describe, expect, it } from "vitest";
 import { WebSocketServer, type WebSocket as WsConn } from "ws";
 import {
+	type ConnectionStatus,
 	clearNotificationHandler,
 	resetNotificationHandlers,
 	setNotificationHandler,
@@ -953,4 +954,275 @@ describe("WsClient", () => {
 			await server.close();
 		}
 	});
+
+	// --- Socket-liveness signal (ADR-0051) ---
+
+	// A server that CLOSES the first `dropFirstN` connections immediately on open,
+	// then accepts and answers thread/list. The supervised reconnect loop runs
+	// independently of any request, so closing on open drives consecutive drops
+	// (and the status transitions) without an in-flight request to ride. After the
+	// drops are exhausted the socket stays open and answers normally.
+	const makeFlakyServer = async (
+		dropFirstN: number,
+	): Promise<{ url: string; close: () => Promise<void> }> => {
+		const wss = new WebSocketServer({ port: 0, host: "127.0.0.1" });
+		await new Promise<void>((resolve) =>
+			wss.once("listening", () => resolve()),
+		);
+		const { port } = wss.address() as { port: number };
+		let opened = 0;
+		wss.on("connection", (ws) => {
+			opened += 1;
+			if (opened <= dropFirstN) {
+				// Drop this connection at once — the client's retry re-opens a fresh one.
+				ws.close();
+				return;
+			}
+			ws.on("message", (data) => {
+				const req = JSON.parse(data.toString()) as WireRequest;
+				if (req.method === "thread/list") {
+					ws.send(
+						JSON.stringify({
+							jsonrpc: "2.0",
+							id: req.id,
+							result: { threads: [] },
+						}),
+					);
+				}
+			});
+		});
+		return {
+			url: `ws://127.0.0.1:${port}/ws`,
+			close: () => new Promise<void>((resolve) => wss.close(() => resolve())),
+		};
+	};
+
+	// A controllable outage harness: starts a listener (so first-open succeeds and
+	// the layer builds), then `down()` terminates the live socket AND stops
+	// listening — every reconnect attempt is then REFUSED (no `onOpen`, so the
+	// attempt counter climbs and the ramp lapses to `disconnected`) — and `up()`
+	// rebinds a fresh listener on the SAME port so the client's retry heals back to
+	// `connected`. This models a real Core outage (ADR-0007: a killable local
+	// process). `down()` must terminate the established socket: `wss.close()` alone
+	// waits for live clients to disconnect and would hang while the client is still
+	// connected.
+	const makeOutageServer = async (): Promise<{
+		url: string;
+		down: () => Promise<void>;
+		up: () => Promise<void>;
+		close: () => Promise<void>;
+	}> => {
+		let live: WsConn[] = [];
+		let wss = new WebSocketServer({ port: 0, host: "127.0.0.1" });
+		wss.on("connection", (ws) => live.push(ws));
+		await new Promise<void>((resolve) =>
+			wss.once("listening", () => resolve()),
+		);
+		const { port } = wss.address() as { port: number };
+		return {
+			url: `ws://127.0.0.1:${port}/ws`,
+			down: () =>
+				new Promise<void>((resolve) => {
+					for (const ws of live) ws.terminate();
+					live = [];
+					wss.close(() => resolve());
+				}),
+			up: async () => {
+				wss = new WebSocketServer({ port, host: "127.0.0.1" });
+				wss.on("connection", (ws) => live.push(ws));
+				await new Promise<void>((resolve) =>
+					wss.once("listening", () => resolve()),
+				);
+			},
+			close: () =>
+				new Promise<void>((resolve) => {
+					for (const ws of live) ws.terminate();
+					wss.close(() => resolve());
+				}),
+		};
+	};
+
+	it("connectionStatus replays the current value (connected) on a late subscribe", async () => {
+		const server = await makeServer((ws, req) => {
+			if (req.method === "thread/list") {
+				ws.send(
+					JSON.stringify({
+						jsonrpc: "2.0",
+						id: req.id,
+						result: { threads: [] },
+					}),
+				);
+			}
+		});
+
+		const program = Effect.gen(function* () {
+			const client = yield* WsClient;
+			// Round-trip first so the socket is fully open and the `connected`
+			// transition has already fired BEFORE we subscribe. A Queue-backed stream
+			// would now yield nothing; `SubscriptionRef.changes` must replay `connected`.
+			yield* client.threadList();
+			return yield* client
+				.connectionStatus()
+				.pipe(Stream.take(1), Stream.runCollect);
+		});
+
+		try {
+			const first = Array.from(
+				await Effect.runPromise(provide(server.url)(program)),
+			);
+			expect(first).toEqual(["connected"]);
+		} finally {
+			await server.close();
+		}
+	});
+
+	it("connectionStatus: connected → reconnecting → connected across a single drop within the fast ramp", async () => {
+		// One drop on open → within the ramp → `reconnecting`; the next open heals
+		// back to `connected`. The reconnect loop runs independently of any request,
+		// so the status stream alone drives the sequence (sub-second on the ~50ms ramp).
+		const server = await makeFlakyServer(1);
+
+		const program = Effect.gen(function* () {
+			const client = yield* WsClient;
+			// `Stream.changes` collapses consecutive duplicate sets (a ramp retry can
+			// re-set `reconnecting`); the distinct sequence is the assertion.
+			const collected = yield* Stream.runCollect(
+				client.connectionStatus().pipe(Stream.changes, Stream.take(3)),
+			);
+			return Array.from(collected);
+		});
+
+		try {
+			const statuses = await Effect.runPromise(provide(server.url)(program));
+			expect(statuses).toEqual(["connected", "reconnecting", "connected"]);
+		} finally {
+			await server.close();
+		}
+	});
+
+	it("connectionStatus settles to disconnected once the fast ramp lapses, then heals — and proves reconnect is unbounded (recovers past the old 5-attempt cap)", async () => {
+		// A true outage: the listener goes DOWN, so every reconnect attempt is
+		// refused (no `onOpen`). Attempts 1–5 ride the fast ramp (`reconnecting`);
+		// once the ramp lapses (> RECONNECT_RAMP_ATTEMPTS = 5) the status flips to
+		// `disconnected` and the retry continues on the steady interval. Bringing the
+		// listener back UP heals to `connected`. Under the retired `times: 5` cap the
+		// supervised fiber would have died after attempt 5 and never re-opened; that
+		// the link reaches `connected` again proves the cap is gone (unbounded).
+		const server = await makeOutageServer();
+
+		const program = Effect.gen(function* () {
+			const client = yield* WsClient;
+			// `Stream.changes` collapses consecutive duplicate statuses: each fast-ramp
+			// retry sets `reconnecting` afresh and SubscriptionRef.changes re-emits per
+			// set, so without this `take(4)` would stop inside the ramp. Distinct
+			// transitions: connected → reconnecting → disconnected → connected.
+			const collected = yield* Effect.fork(
+				Stream.runCollect(
+					client.connectionStatus().pipe(Stream.changes, Stream.take(4)),
+				),
+			);
+			// Take the listener down: the live socket drops and reconnects are refused.
+			yield* Effect.promise(() => server.down());
+			// Hold the outage past the fast-ramp boundary into the steady phase so the
+			// status has settled to `disconnected` before the listener returns. The
+			// ramp (5 attempts at the ~50ms exponential) lapses well under 2.5s.
+			yield* Effect.sleep("2500 millis");
+			yield* Effect.promise(() => server.up());
+			const result = yield* Fiber.join(collected);
+			return Array.from(result);
+		});
+
+		try {
+			const statuses = await Effect.runPromise(provide(server.url)(program));
+			expect(statuses).toEqual([
+				"connected",
+				"reconnecting",
+				"disconnected",
+				"connected",
+			]);
+		} finally {
+			await server.close();
+		}
+	}, 30_000);
+
+	it("the SECOND outage in a session ramps fresh — a brief blip after a long outage recovers on the fast ramp, not stuck at the steady interval", async () => {
+		// Single-source-of-truth regression (ADR-0051): label and delay must BOTH be
+		// derived from the per-outage attempt count, so the Nth outage behaves like
+		// the first. The buggy stateless composed `Schedule` advanced its driver
+		// MONOTONICALLY over the Layer lifetime (its state only resets on a SUCCESS,
+		// but `connection` always fails to drive retry). So after the first outage
+		// pushed the driver into its steady phase, a fresh blip — though correctly
+		// LABELED `reconnecting` (the counter reset in `onOpen`) — would STALL the
+		// full steady interval (5s) before retrying. This test forces a long first
+		// outage (crossing the ramp into the steady phase), heals, then a brief
+		// SECOND drop, and asserts the second recovery lands on the fast ramp
+		// (sub-second), well under the steady interval. Against the pre-fix code the
+		// second recovery waits ~5s, failing the timing assertion.
+		const server = await makeOutageServer();
+
+		// Record each distinct status transition with its wall-clock time so we can
+		// assert the SECOND `reconnecting → connected` heal is fast (ramp), not slow
+		// (steady). `Stream.changes` collapses the per-retry `reconnecting` re-sets.
+		const seen: Array<{ status: ConnectionStatus; t: number }> = [];
+
+		const program = Effect.gen(function* () {
+			const client = yield* WsClient;
+			const collector = yield* Effect.fork(
+				Stream.runForEach(
+					client.connectionStatus().pipe(Stream.changes, Stream.take(6)),
+					(status) =>
+						Effect.sync(() => {
+							seen.push({ status, t: Date.now() });
+						}),
+				),
+			);
+			// --- First outage: the one slow (~2.5s) leg. Hold past the ramp into the
+			// steady phase so the status settles to `disconnected` (and, pre-fix, the
+			// schedule driver is now stuck in steady).
+			yield* Effect.promise(() => server.down());
+			yield* Effect.sleep("2500 millis");
+			yield* Effect.promise(() => server.up());
+			// Wait for the heal to `connected` to register before the second drop, so
+			// the two outages don't blur into one transition.
+			yield* client.connectionStatus().pipe(
+				Stream.filter((s) => s === "connected"),
+				Stream.take(1),
+				Stream.runDrain,
+			);
+			// --- Second outage: a BRIEF blip. Down, then bring the listener back up
+			// immediately so the client's next reconnect attempt finds it live. With a
+			// fresh ramp (counter reset in `onOpen`) attempt 1 fires ~50ms after the
+			// drop → fast heal. Pre-fix, the steady-phase driver waits ~5s.
+			const secondDropAt = Date.now();
+			yield* Effect.promise(() => server.down());
+			yield* Effect.promise(() => server.up());
+			yield* Fiber.join(collector);
+			return secondDropAt;
+		});
+
+		try {
+			const secondDropAt = await Effect.runPromise(
+				provide(server.url)(program),
+			);
+
+			// The distinct sequence: two full outage cycles, the second on the ramp
+			// (no `disconnected` — it heals before the ramp lapses).
+			expect(seen.map((s) => s.status)).toEqual([
+				"connected",
+				"reconnecting",
+				"disconnected",
+				"connected",
+				"reconnecting",
+				"connected",
+			]);
+
+			// The SECOND heal must land on the fast ramp: the final `connected` arrives
+			// well under the steady interval (5s) after the second drop. Pre-fix the
+			// monotonic driver stalls ~5s here, blowing this bound.
+			const secondConnectedAt = seen[5].t;
+			expect(secondConnectedAt - secondDropAt).toBeLessThan(1500);
+		} finally {
+			await server.close();
+		}
+	}, 30_000);
 });

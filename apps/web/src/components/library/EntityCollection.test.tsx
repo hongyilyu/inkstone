@@ -3,7 +3,7 @@ import { WsClient } from "@inkstone/ui-sdk";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Effect, Layer, ManagedRuntime } from "effect";
+import { Effect, Layer, ManagedRuntime, Stream } from "effect";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LibraryItemKind } from "@/lib/libraryItems";
@@ -68,6 +68,7 @@ function makeRuntime(
 		proposalDecide: () => unused,
 		messageSearch: () => unused,
 		proposalNotifications: () => unused,
+		connectionStatus: () => Stream.empty,
 	});
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 }
@@ -175,6 +176,7 @@ describe("EntityCollection", () => {
 			proposalDecide: () => Effect.die("unused"),
 			messageSearch: () => Effect.die("unused"),
 			proposalNotifications: () => Effect.die("unused"),
+			connectionStatus: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 		const client = new QueryClient({

@@ -58,6 +58,7 @@ function makeStubRuntime(opts: {
 		proposalDecide: () => unused,
 		messageSearch: () => unused,
 		proposalNotifications: () => Stream.empty,
+		connectionStatus: () => Stream.empty,
 	});
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 }
@@ -246,6 +247,7 @@ describe("ChatColumn", () => {
 			proposalDecide: () => unused,
 			messageSearch: () => unused,
 			proposalNotifications: () => Stream.empty,
+			connectionStatus: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
@@ -293,6 +295,7 @@ describe("ChatColumn", () => {
 			proposalDecide: () => unused,
 			messageSearch: () => unused,
 			proposalNotifications: () => Stream.empty,
+			connectionStatus: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
@@ -994,6 +997,7 @@ describe("ChatColumn", () => {
 			proposalDecide: () => unused,
 			messageSearch: () => unused,
 			proposalNotifications: () => Stream.empty,
+			connectionStatus: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 		try {

@@ -40,6 +40,7 @@ function makeStubRuntime() {
 		proposalDecide: () => unused,
 		messageSearch: () => unused,
 		proposalNotifications: () => unused,
+		connectionStatus: () => Stream.empty,
 	});
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 }
@@ -81,6 +82,7 @@ function makeGrowingStubRuntime(opts: {
 		proposalDecide: () => Effect.die("not exercised"),
 		messageSearch: () => Effect.die("not exercised"),
 		proposalNotifications: () => Stream.empty,
+		connectionStatus: () => Stream.empty,
 	});
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 }

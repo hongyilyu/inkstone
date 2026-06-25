@@ -2,7 +2,7 @@ import type { EntityListResult } from "@inkstone/protocol";
 import { WsClient } from "@inkstone/ui-sdk";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen } from "@testing-library/react";
-import { Effect, Layer, ManagedRuntime } from "effect";
+import { Effect, Layer, ManagedRuntime, Stream } from "effect";
 import { Hourglass, Inbox } from "lucide-react";
 import type { ComponentProps, ReactNode } from "react";
 import { afterEach, describe, expect, it } from "vitest";
@@ -42,6 +42,7 @@ function makeRuntime(todos: Rows, people: Rows = [], projects: Rows = []) {
 		proposalDecide: () => unused,
 		messageSearch: () => unused,
 		proposalNotifications: () => unused,
+		connectionStatus: () => Stream.empty,
 	});
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 }

@@ -88,6 +88,7 @@ const stub = WsClient.of({
 	rescanJournalEntry: die,
 	proposalDecide: die,
 	proposalNotifications: () => Stream.empty,
+	connectionStatus: () => Stream.empty,
 });
 
 function renderApp() {

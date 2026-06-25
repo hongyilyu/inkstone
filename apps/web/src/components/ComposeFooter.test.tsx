@@ -65,6 +65,7 @@ function makeRuntime() {
 		proposalDecide: die,
 		messageSearch: die,
 		proposalNotifications: () => Stream.empty,
+		connectionStatus: () => Stream.empty,
 	});
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 }

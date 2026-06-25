@@ -31,6 +31,7 @@ import {
 	Context,
 	Data,
 	Deferred,
+	Duration,
 	Effect,
 	Either,
 	Fiber,
@@ -40,9 +41,44 @@ import {
 	Schema as S,
 	Schedule,
 	Stream,
+	SubscriptionRef,
 } from "effect";
 
 export type RunId = string;
+
+/**
+ * Socket-liveness signal (ADR-0051), derived purely from the client's own
+ * socket lifecycle — NOT `provider/connected` (ADR-0049, OAuth state):
+ * - `connected`     — socket open (or healed back open after a drop).
+ * - `reconnecting`  — a post-open drop is in the fast-ramp retry window (a blip).
+ * - `disconnected`  — the fast ramp lapsed; still retrying forever at the steady
+ *                     interval ("down a while, retrying in the background").
+ */
+export type ConnectionStatus = "connected" | "reconnecting" | "disconnected";
+
+// Two-phase reconnect cadence (ADR-0051, amends ADR-0020's bounded `times: 5`):
+// the first RECONNECT_RAMP_ATTEMPTS drops retry on the ~50ms exponential ramp
+// (the `reconnecting` window — laptop sleep / Core restart), then a STEADY
+// interval FOREVER (the `disconnected` window). A short blip never leaves
+// `reconnecting`; a long outage settles to `disconnected` while still retrying,
+// so recovery is automatic with no page reload.
+const RECONNECT_RAMP_ATTEMPTS = 5;
+const RECONNECT_STEADY_INTERVAL = "5 seconds";
+
+// Single source of truth (ADR-0051): the per-outage attempt count drives BOTH
+// the status label AND the retry delay, so they can never disagree. For the
+// Nth consecutive drop since the last open: while N is within the fast ramp the
+// delay is the ~50ms exponential step (`50ms * 2^(N-1)`), matching the
+// `reconnecting` label; once N passes the ramp the delay is the STEADY interval,
+// matching `disconnected`. Because the counter resets to 0 in `onOpen`, a fresh
+// outage after a reopen ramps from 50ms again — so the second outage in a
+// session behaves identically to the first (NOT stuck in the steady phase, the
+// bug a stateless composed `Schedule` produced: its driver only resets on the
+// retried effect SUCCEEDING, but `connection` always fails to drive retry).
+const reconnectDelay = (attempt: number): Duration.DurationInput =>
+	attempt > RECONNECT_RAMP_ATTEMPTS
+		? RECONNECT_STEADY_INTERVAL
+		: Duration.millis(50 * 2 ** (attempt - 1));
 
 export type RunEventValue = S.Schema.Type<typeof RunEvent>;
 
@@ -211,6 +247,11 @@ export class WsClient extends Context.Tag("@inkstone/ui-sdk/WsClient")<
 			params: ProposalDecideParams,
 		) => Effect.Effect<ProposalDecideResult, WsError>;
 		readonly proposalNotifications: () => Stream.Stream<ProposalNotification>;
+		// Socket-liveness state stream (ADR-0051). No error channel — a pure
+		// state stream; `SubscriptionRef.changes` replays the CURRENT value on
+		// subscribe (then streams changes), so an indicator mounting long after
+		// boot gets the live status immediately, not just future transitions.
+		readonly connectionStatus: () => Stream.Stream<ConnectionStatus>;
 	}
 >() {}
 
@@ -228,6 +269,12 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 			// Shared, lazily-created proposal/* queue (ADR-0025) — see docs/design/ui-sdk.md
 			let proposalQueue: Queue.Queue<ProposalNotification> | undefined;
 			let nextId = 1;
+
+			// Socket-liveness state (ADR-0051). Starts `connected` since the layer
+			// build blocks on first open below; set at the three lifecycle points
+			// (onOpen → connected, per-drop → reconnecting, ramp-lapse → disconnected).
+			const statusRef =
+				yield* SubscriptionRef.make<ConnectionStatus>("connected");
 
 			const ensureProposalQueue = (): Queue.Queue<ProposalNotification> => {
 				if (proposalQueue === undefined) {
@@ -337,10 +384,20 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 
 			// First-open failure stays a defect; only post-open drops are recoverable (ADR-0020) — see docs/design/ui-sdk.md
 			let hasOpened = false;
+			// Consecutive failed reconnect attempts since the last open. Drives the
+			// `reconnecting` → `disconnected` boundary off the ATTEMPT COUNT (not
+			// wall-clock) so the transition is deterministic and tests aren't flaky
+			// (ADR-0051). Reset to 0 in `onOpen` when the link heals.
+			let reconnectAttempts = 0;
 			const firstOpen = yield* Deferred.make<void>();
 			const onOpen = Effect.sync(() => {
 				hasOpened = true;
+				// Drives `connected` on every (re)open, so a healed link returns to
+				// `connected` automatically (ADR-0051). The drop arm resets the
+				// ramp counter so the next outage starts its ramp fresh.
+				reconnectAttempts = 0;
 			}).pipe(
+				Effect.zipRight(SubscriptionRef.set(statusRef, "connected")),
 				Effect.zipRight(Deferred.succeed(firstOpen, void 0)),
 				Effect.asVoid,
 			);
@@ -354,13 +411,48 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 				)
 				.pipe(Effect.zipRight(Effect.fail("dropped" as const)));
 
-			// On drop: fail in-flight, then bounded-retry; `while: hasOpened` skips
-			// retry on a first-open failure so the layer build can die — see docs/design/ui-sdk.md
+			// Each drop: fail in-flight requests, then drive the liveness signal off
+			// the consecutive-attempt count (ADR-0051). Within the fast ramp the link
+			// is `reconnecting` (a blip); once the ramp lapses it settles to
+			// `disconnected` — but keeps retrying forever, so this is "down a while,
+			// still retrying," NOT a terminal give-up. The count is reset in `onOpen`.
+			// The next status is computed INSIDE the sync (per drop), not captured at
+			// construction, so the boundary is re-evaluated on every attempt.
+			const onDrop = failPending.pipe(
+				Effect.zipRight(
+					Effect.sync((): ConnectionStatus => {
+						reconnectAttempts += 1;
+						return reconnectAttempts > RECONNECT_RAMP_ATTEMPTS
+							? "disconnected"
+							: "reconnecting";
+					}),
+				),
+				Effect.flatMap((status) => SubscriptionRef.set(statusRef, status)),
+			);
+
+			// Unbounded two-phase reconnect (ADR-0051, amends ADR-0020): one source of
+			// truth. `tapError` runs `onDrop` (which increments `reconnectAttempts`)
+			// BEFORE the schedule computes this step's delay, so `reconnectDelay` reads
+			// the SAME counter value that picked the status label — the ~50ms ramp while
+			// `reconnecting`, the steady interval while `disconnected`. A bare
+			// `Schedule.forever` is unbounded (`times: 5` is GONE — the fiber no longer
+			// dies after a handful of drops; it re-opens whenever Core returns); the
+			// counter-driven `delayed` supplies the cadence. A stateless composed
+			// `Schedule` could NOT do this: its internal driver only resets when the
+			// retried effect SUCCEEDS, but `connection` always fails (to drive retry),
+			// so it advanced monotonically across the Layer lifetime and a fresh blip
+			// after a long outage stalled at the steady interval while the reset counter
+			// still showed `reconnecting`. Keying the delay off `reconnectAttempts` (reset
+			// in `onOpen`) makes the Nth outage in a session ramp exactly like the first.
+			// `while: hasOpened` is retained so a FIRST-open failure still propagates
+			// (the layer build dies, an ADR-0020 defect); only post-open drops retry.
+			const reconnectSchedule = Schedule.forever.pipe(
+				Schedule.delayed(() => reconnectDelay(reconnectAttempts)),
+			);
 			const supervised = connection.pipe(
-				Effect.tapError(() => failPending),
+				Effect.tapError(() => onDrop),
 				Effect.retry({
-					schedule: Schedule.exponential("50 millis"),
-					times: 5,
+					schedule: reconnectSchedule,
 					while: () => hasOpened,
 				}),
 			);
@@ -548,6 +640,12 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 			const proposalNotifications = (): Stream.Stream<ProposalNotification> =>
 				Stream.fromQueue(ensureProposalQueue());
 
+			// `.changes` replays the current value on subscribe, then streams every
+			// transition — the property the indicator needs to render the LIVE status
+			// when it mounts after boot, not "unknown" until the next drop (ADR-0051).
+			const connectionStatus = (): Stream.Stream<ConnectionStatus> =>
+				statusRef.changes;
+
 			return WsClient.of({
 				threadCreate,
 				postMessage,
@@ -570,6 +668,7 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 				proposalGet,
 				proposalDecide,
 				proposalNotifications,
+				connectionStatus,
 			});
 		}),
 	);
