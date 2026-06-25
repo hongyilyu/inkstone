@@ -364,9 +364,7 @@ describe("TodoRow", () => {
 			const ref = todo("todo_estimate");
 			expect(ref.status).toBe("active");
 			expect(ref.deferAt).toBeUndefined();
-			expect(
-				ref.personRefs.some((r) => r.role === "waiting_on"),
-			).toBe(true);
+			expect(ref.personRefs.some((r) => r.role === "waiting_on")).toBe(true);
 
 			const entityMutate = vi.fn<EntityMutate>(() =>
 				Effect.succeed({ entity_id: ref.id }),

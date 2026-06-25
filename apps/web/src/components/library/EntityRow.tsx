@@ -221,7 +221,6 @@ function QuickDeferMenu({ todo }: { todo: Todo }) {
 									<EditorInput
 										type="date"
 										aria-label="Defer to a specific date"
-										// biome-ignore lint/a11y/noAutofocus: focus the revealed picker so a keyboard user lands on it
 										autoFocus
 										onChange={(e) => {
 											if (e.target.value) defer(e.target.value);

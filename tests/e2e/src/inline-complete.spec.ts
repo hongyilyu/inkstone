@@ -34,7 +34,11 @@ test("complete an active Inbox todo inline → Core persists update_todo and the
 }) => {
 	const dbPath = dbPathFor(workspace.path);
 	seedEntities(dbPath, [
-		{ id: TODO, type: "todo", data: { title: "Mail the contract", status: "active" } },
+		{
+			id: TODO,
+			type: "todo",
+			data: { title: "Mail the contract", status: "active" },
+		},
 	]);
 
 	await page.goto(`${core.url}/library/inbox`);
