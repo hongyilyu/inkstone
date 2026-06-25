@@ -50,6 +50,7 @@ function renderTodoRow(
 		postMessage: () => unused,
 		threadList: () => unused,
 		getRunHistory: () => unused,
+		recurrencePreview: () => unused,
 		threadGet: () => unused,
 		listEntities: () => Effect.succeed({ entities: [] as Rows }),
 		getBacklinks: () => unused,
