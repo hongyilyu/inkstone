@@ -252,6 +252,7 @@ export function EntityCollection({
 										allItems={data ?? []}
 										selected={item.id === selectedId}
 										onSelect={onSelect}
+										onComplete={() => {}}
 									/>
 								) : (
 									<li key={item.id}>

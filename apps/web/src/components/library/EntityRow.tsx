@@ -1,9 +1,11 @@
 import { AlertTriangle, Circle, CircleCheck, CircleSlash } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { useEntityMutation } from "@/lib/hooks/useEntityMutation";
 import {
 	type LibraryItem,
 	libraryItemSubtitle,
 	libraryItemTitle,
+	localNowString,
 	projectForTodo,
 	type Todo,
 	todoIsOverdue,
@@ -95,17 +97,67 @@ function TodoStatusGlyph({ todo }: { todo: Todo }) {
 	);
 }
 
-/** Todo row: a read-only status mark plus the open affordance. Editing is deferred (ADR-0032). */
+/**
+ * An interactive status circle that completes an ACTIVE todo in one click via a
+ * direct `update_todo` (status=completed + completed_at), per ADR-0033/0034.
+ * Lives in the same `w-9` slot as the read-only glyph; its own button so it does
+ * not nest inside the row's selecting body button. Optimistic: the circle flips
+ * to CircleCheck on success before the `["library-items"]` refetch lands.
+ */
+function CompleteCircle({ todo }: { todo: Todo }) {
+	const mutation = useEntityMutation();
+	const done = todo.status === "completed" || mutation.isSuccess;
+
+	const complete = () => {
+		if (done || mutation.isPending) return;
+		mutation.mutate({
+			mutation_kind: "update_todo",
+			payload: {
+				todo_id: todo.id,
+				todo: { status: "completed", completed_at: localNowString() },
+			},
+		});
+	};
+
+	return (
+		<button
+			type="button"
+			onClick={complete}
+			disabled={done || mutation.isPending}
+			aria-label={done ? "Completed" : "Mark todo complete"}
+			className="rounded-full focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-default"
+		>
+			{done ? (
+				<CircleCheck className="size-[18px] text-primary" aria-hidden />
+			) : (
+				<Circle
+					className="size-[18px] text-muted-foreground transition-colors hover:text-primary"
+					aria-hidden
+				/>
+			)}
+		</button>
+	);
+}
+
+/**
+ * Todo row: the status mark plus the open affordance. When `onComplete` is wired
+ * AND the todo is active, the status mark is an interactive complete circle
+ * (user-initiated direct write, ADR-0033/0034); otherwise it's the read-only
+ * glyph — resolved rows and rows with no inline action stay read-only.
+ */
 export function TodoRow({
 	todo,
 	allItems = [],
 	selected,
 	onSelect,
+	onComplete,
 }: {
 	todo: Todo;
 	allItems?: LibraryItem[];
 	selected?: boolean;
 	onSelect: (id: string) => void;
+	/** Opt the row into the inline-complete circle. Absent → read-only glyph. */
+	onComplete?: (id: string) => void;
 }) {
 	const resolved = todo.status !== "active";
 	const overdue = todoIsOverdue(todo);
@@ -115,7 +167,11 @@ export function TodoRow({
 	return (
 		<li className="group flex items-stretch gap-1">
 			<span className="flex w-9 shrink-0 items-center justify-center">
-				<TodoStatusGlyph todo={todo} />
+				{onComplete && todo.status === "active" ? (
+					<CompleteCircle todo={todo} />
+				) : (
+					<TodoStatusGlyph todo={todo} />
+				)}
 			</span>
 			<button
 				type="button"
