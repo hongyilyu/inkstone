@@ -60,6 +60,7 @@ function makeRuntime() {
 				effort: "off",
 			}),
 		proposalGet: die,
+		rescanJournalEntry: die,
 		proposalDecide: die,
 		messageSearch: die,
 		proposalNotifications: () => Stream.empty,

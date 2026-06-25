@@ -64,6 +64,7 @@ function makeStubRuntime(opts: {
 		listEntities: () => unused,
 		getBacklinks: () => unused,
 		entityMutate: () => unused,
+		rescanJournalEntry: () => unused,
 		subscribeRun: () => {
 			opts.onSubscribe?.();
 			if (opts.runQueues) {
