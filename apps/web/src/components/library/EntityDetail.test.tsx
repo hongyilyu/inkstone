@@ -2,6 +2,7 @@ import type {
 	EntityBacklinksResult,
 	EntityMutateParams,
 	EntityMutateResult,
+	JournalEntryRescanResult,
 } from "@inkstone/protocol";
 import { WsClient, type WsError, WsRequestError } from "@inkstone/ui-sdk";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -68,6 +69,10 @@ function makeRuntime(
 		entityId: string,
 	) => Effect.Effect<EntityBacklinksResult, WsError> = () =>
 		Effect.die("backlinks not exercised in this test"),
+	rescanJournalEntry: (
+		jeId: string,
+	) => Effect.Effect<JournalEntryRescanResult, WsError> = () =>
+		Effect.die("rescan not exercised in this test"),
 ) {
 	const unused = Effect.die("not exercised in this test");
 	const stub = WsClient.of({
@@ -79,6 +84,7 @@ function makeRuntime(
 		listEntities: () => unused,
 		getBacklinks,
 		entityMutate,
+		rescanJournalEntry,
 		subscribeRun: () => unused,
 		cancelRun: () => unused,
 		providerStatus: () => unused,
@@ -882,6 +888,56 @@ describe("EntityDetail Journal Entry delete", () => {
 		);
 		await waitFor(() =>
 			expect(navigate).toHaveBeenCalledWith({ to: ".", search: {} }),
+		);
+	});
+});
+
+// ── Journal Entry rescan (ADR-0042) ──────────────────────────────────────────
+
+describe("EntityDetail Journal Entry rescan", () => {
+	it("shows a 'Scan again' control on a Journal Entry detail", () => {
+		const entry = journal([{ type: "text", text: "Met Alice about daycare." }]);
+		renderDetail(<EntityDetail entity={entry} allEntities={[entry]} />);
+
+		expect(
+			screen.getByRole("button", { name: /scan again/i }),
+		).toBeInTheDocument();
+	});
+
+	it("does not show 'Scan again' on a non-Journal-Entry detail", () => {
+		const todo = todoItem("t_norescan", { title: "Buy milk" });
+		renderDetail(<EntityDetail entity={todo} allEntities={[todo]} />);
+
+		expect(
+			screen.queryByRole("button", { name: /scan again/i }),
+		).not.toBeInTheDocument();
+	});
+
+	it("rescans with the JE id and navigates to the returned thread", async () => {
+		const user = userEvent.setup();
+		const seen: string[] = [];
+		const entry = journal([{ type: "text", text: "Met Alice about daycare." }]);
+		renderDetail(
+			<EntityDetail entity={entry} allEntities={[entry]} />,
+			makeRuntime(undefined, undefined, (jeId) => {
+				seen.push(jeId);
+				return Effect.succeed({
+					run_id: "run_rescan_1",
+					thread_id: "thr_rescan_1",
+				});
+			}),
+		);
+
+		await user.click(screen.getByRole("button", { name: /scan again/i }));
+
+		await waitFor(() => expect(seen).toEqual([entry.id]));
+		// On success the user is taken to the origin Thread to watch the run +
+		// see the proposal card (ADR-0042).
+		await waitFor(() =>
+			expect(navigate).toHaveBeenCalledWith({
+				to: "/thread/$threadId",
+				params: { threadId: "thr_rescan_1" },
+			}),
 		);
 	});
 });

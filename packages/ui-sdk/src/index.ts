@@ -4,6 +4,7 @@ import {
 	EntityListResult,
 	type EntityMutateParams,
 	EntityMutateResult,
+	JournalEntryRescanResult,
 	MessageSearchResult,
 	ModelCatalogResult,
 	PostMessageResult,
@@ -176,6 +177,9 @@ export class WsClient extends Context.Tag("@inkstone/ui-sdk/WsClient")<
 		readonly entityMutate: (
 			params: EntityMutateParams,
 		) => Effect.Effect<EntityMutateResult, WsError>;
+		readonly rescanJournalEntry: (
+			jeId: string,
+		) => Effect.Effect<JournalEntryRescanResult, WsError>;
 		readonly messageSearch: (
 			query: string,
 		) => Effect.Effect<MessageSearchResult, WsError>;
@@ -455,6 +459,18 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 			): Effect.Effect<EntityMutateResult, WsError> =>
 				request("entity/mutate", { ...params }, EntityMutateResult);
 
+			// journal_entry/rescan (ADR-0042): re-scan an accepted Journal Entry for
+			// mentioned-but-uncaptured entities. Core resolves the JE's origin Thread
+			// and starts an agent Run there; the caller navigates to that Thread.
+			const rescanJournalEntry = (
+				jeId: string,
+			): Effect.Effect<JournalEntryRescanResult, WsError> =>
+				request(
+					"journal_entry/rescan",
+					{ je_id: jeId },
+					JournalEntryRescanResult,
+				);
+
 			// message/search (ADR-0035): substring full-text search over completed Message text.
 			const messageSearch = (
 				query: string,
@@ -527,6 +543,7 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 				listEntities,
 				getBacklinks,
 				entityMutate,
+				rescanJournalEntry,
 				messageSearch,
 				subscribeRun,
 				cancelRun,

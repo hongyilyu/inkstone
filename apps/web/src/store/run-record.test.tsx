@@ -42,6 +42,7 @@ function makeStubRuntime(queue: Queue.Queue<RunEventValue>, runId: RunId) {
 		settingsGet: () => unused,
 		settingsSet: () => unused,
 		proposalGet: () => unused,
+		rescanJournalEntry: () => unused,
 		proposalDecide: () => unused,
 		messageSearch: () => unused,
 		proposalNotifications: () => Stream.empty,

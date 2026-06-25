@@ -610,15 +610,23 @@ fn graph_body_nodes() -> FieldSpec {
 /// The optional `journal_entry` node: its own handle, the occurred/ended
 /// timestamps, and a body of text/entity_ref nodes (entity_ref `target`s are
 /// handles). Present for journal-anchored capture, absent for direct capture.
+///
+/// `body` is OPTIONAL because the node has two modes (ADR-0042): a CREATE node
+/// (no `existing_id`) carries the body the fresh Journal Entry weaves and mints;
+/// an ANCHOR-REUSE node (`existing_id` set — the re-scan path) keeps the EXISTING
+/// entry's stored body and re-emits NO body. The resolver enforces the mode rule
+/// — create-mode fails loud at apply if its woven body is empty/absent
+/// (`validate_woven_journal_body`), anchor-reuse ignores any body.
 fn intent_graph_journal_entry_node() -> PayloadSpec {
     PayloadSpec::nested(
         "intent graph journal entry",
         ObjErr::JsonObject,
         vec![
             Field::required("handle", FieldSpec::non_empty_string()),
+            Field::optional("existing_id", FieldSpec::Uuid { schema_regex: true }),
             Field::datetime("occurred_at").require(),
             Field::datetime("ended_at"),
-            Field::required("body", graph_body_nodes()),
+            Field::optional("body", graph_body_nodes()),
         ],
     )
 }
@@ -645,6 +653,7 @@ fn intent_graph_links() -> FieldSpec {
     ));
     let mut journal_ref = vec![graph_discriminant("kind", &["journal_ref"])];
     journal_ref.extend(from_to());
+    journal_ref.push(Field::optional("match_text", FieldSpec::non_empty_string()));
     FieldSpec::OneOfArray {
         variants: vec![
             PayloadSpec::nested("intent graph todo_project link", ObjErr::JsonObject, todo_project),
@@ -1066,9 +1075,12 @@ impl ProposableMutation {
             | P::CreateTodo
             | P::UpdateTodo
             | P::DeleteTodo
-            // The graph mints its own newborn Journal Entry (ADR-0042 "the JE node
-            // is create-only"); it never mutates an existing JE, so there is no
-            // current-JE review context to attach.
+            // The graph mints its own newborn Journal Entry (ADR-0042 create mode)
+            // OR re-anchors an existing one (ADR-0042 anchor-reuse amendment), but
+            // either way the card displays create nodes + links, never a
+            // current-vs-proposed JE body diff — so there is no review context to
+            // attach. Anchor-reuse splices into the stored body Core-side; the user
+            // is not editing the JE, so the UPDATE-kind review diff does not apply.
             | P::ApplyIntentGraph => false,
         }
     }

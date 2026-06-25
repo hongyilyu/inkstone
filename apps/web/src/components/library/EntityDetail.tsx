@@ -1,10 +1,17 @@
 import { useNavigate } from "@tanstack/react-router";
-import { ArrowUpRight, MessageSquareText, Pencil, Trash2 } from "lucide-react";
+import {
+	ArrowUpRight,
+	MessageSquareText,
+	Pencil,
+	Radar,
+	Trash2,
+} from "lucide-react";
 import { Fragment, type ReactNode, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button.js";
 import { useEntityBacklinks } from "@/lib/hooks/useEntityBacklinks";
 import { useEntityMutation } from "@/lib/hooks/useEntityMutation";
+import { useRescanJournalEntry } from "@/lib/hooks/useRescanJournalEntry";
 import type {
 	Bookmark,
 	JournalEntry,
@@ -157,6 +164,9 @@ function InspectorShell({
 						{meta.label} · {libraryItemSubtitle(entity)}
 					</p>
 				</div>
+				{entity.kind === "journal_entry" ? (
+					<RescanChip jeId={entity.id} />
+				) : null}
 				<Button
 					variant="chip"
 					size="sm"
@@ -224,6 +234,46 @@ function InspectorShell({
 					</Button>
 				)}
 			</footer>
+		</div>
+	);
+}
+
+/**
+ * "Scan again" header chip on a Journal Entry inspector (ADR-0042). Re-runs the
+ * agent over the JE's body to catch people/projects/tasks mentioned but never
+ * captured, then navigates to the spawned Run's origin Thread so the user
+ * watches it and decides the resulting proposal. Available on every accepted
+ * Journal Entry (no gating on whether a first pass ran). Disabled while the
+ * request is in flight; a failed start surfaces inline (the user stays put).
+ */
+function RescanChip({ jeId }: { jeId: string }) {
+	const navigate = useNavigate();
+	const rescan = useRescanJournalEntry();
+	return (
+		<div className="flex flex-col items-end gap-1">
+			<Button
+				variant="chip"
+				size="sm"
+				onClick={() =>
+					rescan.mutate(jeId, {
+						onSuccess: (result) =>
+							navigate({
+								to: "/thread/$threadId",
+								params: { threadId: result.thread_id },
+							}),
+					})
+				}
+				disabled={rescan.isPending}
+				aria-label="Scan again for missed entities"
+			>
+				<Radar className="size-3.5" aria-hidden />
+				{rescan.isPending ? "Scanning…" : "Scan again"}
+			</Button>
+			{rescan.error ? (
+				<span role="alert" className="text-destructive text-xs">
+					Couldn't start scan. Try again.
+				</span>
+			) : null}
 		</div>
 	);
 }

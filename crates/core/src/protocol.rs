@@ -450,6 +450,23 @@ pub struct EntityMutateResult {
     pub entity_id: Option<String>,
 }
 
+/// `journal_entry/rescan` params (ADR-0042): the Journal Entry to re-scan for
+/// people/projects/tasks mentioned but not yet captured. Core resolves the JE's
+/// origin Thread and starts an ordinary agent Run there.
+#[derive(Debug, Deserialize)]
+pub struct JournalEntryRescanParams {
+    pub je_id: String,
+}
+
+/// `journal_entry/rescan` result: the spawned Run and the origin Thread it runs
+/// in (so the Client can follow `run/subscribe(run_id)` and navigate to the
+/// Thread). Mirror of TS `JournalEntryRescanResult`.
+#[derive(Debug, Serialize)]
+pub struct JournalEntryRescanResult {
+    pub run_id: String,
+    pub thread_id: String,
+}
+
 /// `message/search` params (ADR-0035): a substring query over completed Message
 /// text. Mirror of TS `MessageSearchParams`.
 #[derive(Debug, Deserialize)]
@@ -1872,6 +1889,14 @@ mod parity_fixtures {
                 "entity_mutate_result.bare.json",
                 EntityMutateResult { entity_id: None }
             ),
+            // ── journal_entry/rescan (ADR-0042) ──
+            fx!(
+                "journal_entry_rescan_result.json",
+                JournalEntryRescanResult {
+                    run_id: UUID_RUN.to_string(),
+                    thread_id: UUID_B.to_string(),
+                }
+            ),
             // ── message/search ──
             fx!(
                 "message_search_result.json",
@@ -2204,6 +2229,7 @@ mod parity_fixtures {
             "entity_backlinks_result.json",
             "entity_mutate_result.json",
             "entity_mutate_result.bare.json",
+            "journal_entry_rescan_result.json",
             "message_search_result.json",
             "thread_get_result.json",
             "thread_get_result.bare.json",
@@ -2286,6 +2312,7 @@ mod parity_fixtures {
         parses!(EntityListParams, "entity_list_params.json");
         parses!(EntityBacklinksParams, "entity_backlinks_params.json");
         parses!(EntityMutateParams, "entity_mutate_params.json");
+        parses!(JournalEntryRescanParams, "journal_entry_rescan_params.json");
         parses!(MessageSearchParams, "message_search_params.json");
         parses!(ThreadGetParams, "thread_get_params.json");
         parses!(ProviderLoginStartParams, "provider_login_start_params.json");

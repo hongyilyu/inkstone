@@ -448,10 +448,14 @@ async fn attach_person_refs(pool: &SqlitePool, rows: &mut [EntityRow]) -> sqlx::
 }
 
 /// One Journal Entry returned to the Worker for same-Thread correction context.
-/// `data` is the latest accepted revision snapshot.
+/// `data` is the latest accepted revision snapshot. `anchored_entities` names the
+/// People/Projects/Todos ALREADY captured from this entry (its outgoing
+/// `entity_ref`s, resolved to labels) — the re-scan recognition prompt reads it to
+/// SUPPRESS re-proposing an already-chipped entity (ADR-0042).
 pub struct CurrentThreadJournalEntryRow {
     pub entity_id: String,
     pub data: serde_json::Value,
+    pub anchored_entities: Vec<String>,
 }
 
 /// One accepted Journal Entry for `proposal/get` review context. `data` is the
@@ -538,12 +542,34 @@ pub async fn current_thread_journal_entries(
     run_id: Uuid,
 ) -> sqlx::Result<Vec<CurrentThreadJournalEntryRow>> {
     let rows = queries::current_thread_journal_entries(pool, run_id).await?;
-    rows.into_iter()
+    let mut entries = rows
+        .into_iter()
         .map(|(entity_id, data)| {
             let data = parse_entity_data(&entity_id, &data)?;
-            Ok(CurrentThreadJournalEntryRow { entity_id, data })
+            Ok(CurrentThreadJournalEntryRow {
+                entity_id,
+                data,
+                anchored_entities: Vec::new(),
+            })
         })
-        .collect()
+        .collect::<sqlx::Result<Vec<_>>>()?;
+
+    // Resolve each entry's already-captured entities (its outgoing `entity_ref`s,
+    // labeled by current name / mint-time snapshot) in one batched read, so the
+    // re-scan prompt can suppress already-chipped names. Reuses the same
+    // `entity/list` resolver so the labels can't drift.
+    let source_ids = entries.iter().map(|e| e.entity_id.clone()).collect::<Vec<_>>();
+    let refs = resolved_entity_refs_for_sources(pool, &source_ids).await?;
+    let mut by_source = HashMap::<String, Vec<String>>::new();
+    for entity_ref in refs {
+        if let Some(label) = entity_ref.target_title.or(entity_ref.label_snapshot) {
+            by_source.entry(entity_ref.source_entity_id).or_default().push(label);
+        }
+    }
+    for entry in &mut entries {
+        entry.anchored_entities = by_source.remove(&entry.entity_id).unwrap_or_default();
+    }
+    Ok(entries)
 }
 
 /// One item of an assistant turn's ordered `segments[]` timeline for `thread/get`
@@ -1199,6 +1225,16 @@ pub async fn journal_entry_target_is_valid(
     entity_id: &str,
 ) -> sqlx::Result<bool> {
     queries::journal_entry_target_is_valid(pool, run_id, entity_id).await
+}
+
+/// The origin Thread a `journal_entry` was `created_from` (ADR-0042) — the
+/// destination a `journal_entry/rescan` Run starts in. `None` if `je_id` names
+/// no `journal_entry` or has no resolvable origin Thread.
+pub async fn journal_entry_origin_thread_id(
+    pool: &SqlitePool,
+    je_id: &str,
+) -> sqlx::Result<Option<String>> {
+    queries::journal_entry_origin_thread_id(pool, je_id).await
 }
 
 /// The Entity Type of an accepted Entity, parsed into [`crate::mutation::EntityType`].
@@ -2822,6 +2858,67 @@ mod tests {
         assert_eq!(
             rows[0].data.get("title").and_then(|v| v.as_str()),
             Some("ok")
+        );
+    }
+
+    /// `journal_entry_origin_thread_id` resolves the Thread a Journal Entry was
+    /// `created_from` (the origin user Message's Thread), the destination a re-scan
+    /// Run starts in. A non-existent id, or an id naming a non-`journal_entry`
+    /// Entity, resolves to `None` — so the rescan handler errors instead of
+    /// spawning into the wrong Thread.
+    #[tokio::test]
+    async fn journal_entry_origin_thread_id_resolves_je_origin_only() {
+        let pool = memory_pool().await;
+        seed_thread_message(&pool, "thr-origin", "Morning dump", "msg-origin").await;
+
+        // (a) A Journal Entry `created_from` the user Message in thr-origin.
+        seed_entity(&pool, "je-1", "journal_entry", r#"{"occurred_at":"x"}"#).await;
+        seed_source(
+            &pool,
+            "src-je",
+            "je-1",
+            Some("msg-origin"),
+            None,
+            "created_from",
+            10,
+        )
+        .await;
+
+        // (b) A non-`journal_entry` Entity that ALSO has a created_from message
+        // source — the query must reject it on the type guard, not resolve its
+        // Thread.
+        seed_entity(&pool, "t-1", "todo", r#"{"title":"Buy milk"}"#).await;
+        seed_source(
+            &pool,
+            "src-todo",
+            "t-1",
+            Some("msg-origin"),
+            None,
+            "created_from",
+            10,
+        )
+        .await;
+
+        assert_eq!(
+            journal_entry_origin_thread_id(&pool, "je-1")
+                .await
+                .expect("query runs"),
+            Some("thr-origin".to_string()),
+            "a journal_entry resolves its created_from origin Thread"
+        );
+        assert_eq!(
+            journal_entry_origin_thread_id(&pool, "missing")
+                .await
+                .expect("query runs"),
+            None,
+            "an unknown id resolves to None"
+        );
+        assert_eq!(
+            journal_entry_origin_thread_id(&pool, "t-1")
+                .await
+                .expect("query runs"),
+            None,
+            "a non-journal_entry Entity resolves to None even with a created_from source"
         );
     }
 

@@ -9,6 +9,7 @@ mod cancel;
 mod catalog;
 mod entity;
 mod handler;
+mod journal_entry;
 mod message;
 mod post_message;
 mod proposal;
@@ -77,6 +78,9 @@ pub async fn dispatch(
         }
         "entity/mutate" => {
             entity::handle_mutate(pool, req.id, req.params, out_tx).await;
+        }
+        "journal_entry/rescan" => {
+            journal_entry::handle(pool, hubs, req.id, req.params, out_tx).await;
         }
         "message/search" => {
             message::handle_search(pool, req.id, req.params, out_tx).await;

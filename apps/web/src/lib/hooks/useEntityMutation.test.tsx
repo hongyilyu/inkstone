@@ -35,6 +35,7 @@ function makeRuntime(
 		settingsGet: () => unused,
 		settingsSet: () => unused,
 		proposalGet: () => unused,
+		rescanJournalEntry: () => unused,
 		proposalDecide: () => unused,
 		messageSearch: () => unused,
 		proposalNotifications: () => unused,

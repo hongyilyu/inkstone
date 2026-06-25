@@ -70,6 +70,7 @@ describe("_chat layout route (ADR-0042)", () => {
 			settingsGet: () => unused,
 			settingsSet: () => unused,
 			proposalGet: () => unused,
+			rescanJournalEntry: () => unused,
 			proposalDecide: () => unused,
 			messageSearch: () => unused,
 			proposalNotifications: () => unused,

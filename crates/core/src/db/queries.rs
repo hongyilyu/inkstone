@@ -874,6 +874,45 @@ where
     Ok(row.is_some())
 }
 
+/// The Thread a `journal_entry` was `created_from` — the origin user Message's
+/// Thread, which a re-scan Run starts in (ADR-0042). Clones the
+/// [`journal_entry_target_is_valid`] join (type='journal_entry' → created_from
+/// user Message) minus the current-Run guard, projecting that Message's
+/// `thread_id`. `None` if `je_id` names no `journal_entry` or has no such origin.
+///
+/// `LIMIT 1` is deterministic, not arbitrary: a JE carries EXACTLY ONE
+/// `created_from` user-Message source, written once at mint by the single writer
+/// (`apply_entity_mutation` → `insert_entity_source_from_message`); no path
+/// re-sources an existing JE (an `update_journal_entry` writes `updated_from`,
+/// and the re-scan anchor-reuse path writes no source row for the JE). The schema
+/// does not enforce this uniqueness, so a future second-`created_from` writer must
+/// preserve the invariant or revisit this read — the sibling
+/// [`journal_entry_target_is_valid`] guard relies on the same one-origin fact.
+pub(super) async fn journal_entry_origin_thread_id<'e, E>(
+    executor: E,
+    je_id: &str,
+) -> sqlx::Result<Option<String>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_scalar(
+        "SELECT source_message.thread_id \
+         FROM entities e \
+         JOIN entity_sources source \
+           ON source.entity_id = e.id \
+          AND source.relation = 'created_from' \
+         JOIN messages source_message \
+           ON source_message.id = source.source_message_id \
+         WHERE e.id = ?1 \
+           AND e.type = 'journal_entry' \
+           AND source_message.role = 'user' \
+         LIMIT 1",
+    )
+    .bind(je_id)
+    .fetch_optional(executor)
+    .await
+}
+
 pub(super) async fn entity_is_type<'e, E>(
     executor: E,
     entity_id: &str,

@@ -81,6 +81,12 @@ struct ResolvedCreate {
     kind: MutationKind,
     payload: serde_json::Value,
     handle: String,
+    /// The JE node's optional `existing_id` anchor-reuse hint (ADR-0042). A
+    /// graph-local hint key (like `handle`) STRIPPED from `payload`; carried here so
+    /// `apply_intent_graph_proposal` can route a JE node WITH one to
+    /// `anchor_reuse_journal_entry` (reuse the named JE) instead of minting.
+    /// `None` for entity-node `ResolvedCreate`s and JE-less direct capture.
+    existing_id: Option<String>,
 }
 
 /// One intended link between two graph handles (ADR-0042). `from`/`to` are
@@ -94,6 +100,10 @@ struct Link {
     to: String,
     /// The `todo_person` role (`waiting_on`/`related`); `None` for the other kinds.
     role: Option<String>,
+    /// The `journal_ref` link's optional `match_text` — the substring of the JE body
+    /// the model recognized, for later stored-body splicing (ADR-0042). `None` for
+    /// the other kinds.
+    match_text: Option<String>,
 }
 
 /// The three link kinds (ADR-0042). `JournalRef` (JE → entity) is woven into the JE
@@ -469,6 +479,8 @@ pub async fn apply_intent_graph_proposal(
                     // node's own payload.
                     payload,
                     handle: node.handle.clone(),
+                    // Anchor-reuse is a JE-node concept; entity-node creates carry none.
+                    existing_id: None,
                 };
                 if node.type_str == "todo" {
                     todo_creates.push(create);
@@ -508,28 +520,52 @@ pub async fn apply_intent_graph_proposal(
         first_entity_id.get_or_insert(entity_id);
     }
 
-    // Mint the JE LAST (ADR-0042 "Multi-ref Journal Entry weave is one write"):
-    // every entity the JE could reference is now resolved (in `handle_to_id`), so
-    // the JE body's `{entity_ref, target:@handle}` placeholders weave into stored
-    // `{entity_ref, ref_id}` nodes in the JE's SINGLE seq-1 revision — never a
-    // text-only insert followed by an update. The topo-order is JE → people/
-    // projects → todos for FK/link purposes, but the JE *entity row* is minted last
-    // because its body needs the referenced ids; its `entity_ref` rows (source = JE)
-    // are inserted after the JE row exists.
+    // Resolve the JE LAST — every entity it could reference is now in `handle_to_id`.
+    // The JE node has TWO modes (ADR-0042):
+    //   - ANCHOR-REUSE (`existing_id` is Some): the re-scan path. No new JE is minted
+    //     — the named EXISTING JE is reused; each surviving `journal_ref` splices a
+    //     chip into its STORED body (one new revision of the SAME entity row) and
+    //     inserts a backlink row. See [`anchor_reuse_journal_entry`].
+    //   - CREATE (`existing_id` is None): today's path. Mint a fresh JE LAST
+    //     (ADR-0042 "Multi-ref Journal Entry weave is one write"); the JE body's
+    //     `{entity_ref, target:@handle}` placeholders weave into stored
+    //     `{entity_ref, ref_id}` nodes in the JE's SINGLE seq-1 revision — never a
+    //     text-only insert followed by an update. The JE *entity row* is minted last
+    //     because its body needs the referenced ids; its `entity_ref` rows
+    //     (source = JE) are inserted after the JE row exists.
     let mut anchor_entity_id: Option<String> = None;
     if let Some(je) = &je_create {
-        let je_id = weave_and_mint_journal_entry(
-            &mut tx,
-            run_id,
-            je,
-            &graph.links,
-            &handle_to_id,
-            &handle_to_label,
-            &decisions,
-            proposal_id,
-            now_ms,
-        )
-        .await?;
+        let je_id = match je.existing_id.as_deref().filter(|id| !id.trim().is_empty()) {
+            Some(existing_id) => {
+                anchor_reuse_journal_entry(
+                    &mut tx,
+                    run_id,
+                    je,
+                    existing_id,
+                    &graph.links,
+                    &handle_to_id,
+                    &handle_to_label,
+                    &decisions,
+                    proposal_id,
+                    now_ms,
+                )
+                .await?
+            }
+            None => {
+                weave_and_mint_journal_entry(
+                    &mut tx,
+                    run_id,
+                    je,
+                    &graph.links,
+                    &handle_to_id,
+                    &handle_to_label,
+                    &decisions,
+                    proposal_id,
+                    now_ms,
+                )
+                .await?
+            }
+        };
         first_entity_id.get_or_insert_with(|| je_id.clone());
         anchor_entity_id = Some(je_id);
     }
@@ -758,16 +794,27 @@ async fn weave_and_mint_journal_entry(
     // it against the same per-node content rules the client codec enforces before
     // minting — so a future weave bug fails loud as InvalidMutation rather than
     // persisting a body (e.g. an empty text node) that the advertised schema forbids
-    // and that would later black out the client's Library read.
-    if let Some(body) = payload.get("body") {
-        crate::entities::validate_woven_journal_body(body).map_err(ApplyError::InvalidMutation)?;
-    }
+    // and that would later black out the client's Library read. A CREATE-mode JE
+    // (this function — `existing_id` is None) MUST carry a body: the journal_entry
+    // node's `body` is schema-OPTIONAL only to let an ANCHOR-REUSE node omit it
+    // (that path keeps the stored body and never reaches here), so a body-less
+    // create node is rejected here rather than minting an empty Journal Entry.
+    let body = payload.get("body").ok_or_else(|| {
+        ApplyError::InvalidMutation(
+            "intent graph journal_entry create node must carry a body".to_string(),
+        )
+    })?;
+    crate::entities::validate_woven_journal_body(body).map_err(ApplyError::InvalidMutation)?;
 
     // 3. Mint the JE entity (its only write) with the woven body + the guard row.
     let woven_je = ResolvedCreate {
         kind: je.kind,
         payload,
         handle: je.handle.clone(),
+        // This is the create-mode weave: it is only reached when the JE node carries
+        // NO `existing_id` (a node WITH one routes to `anchor_reuse_journal_entry`
+        // instead). So this is always `None`, and the minted JE is newborn.
+        existing_id: None,
     };
     // The JE node's `created_from` user-Message guard row (ADR-0042) — resolved
     // INSIDE this tx, exactly as `apply_proposal` resolves a message-sourced
@@ -795,6 +842,192 @@ async fn weave_and_mint_journal_entry(
     }
 
     Ok(je_id)
+}
+
+/// Anchor-reuse the JE node into an EXISTING Journal Entry (ADR-0042 re-scan): the
+/// model recognized entities it MISSED when the JE was first captured, and the user
+/// accepted them. Instead of minting a new JE, this reuses the named `existing_id`
+/// and folds each surviving `journal_ref` into that JE's STORED body + backlinks, in
+/// ONE new revision of the SAME entity row (the JE id never changes). Called AFTER
+/// every referenced entity is resolved (in `handle_to_id`), exactly like the
+/// create-mode weave.
+///
+/// 1. CROSS-THREAD GUARD: the existing JE's origin user-Message must be in THIS Run's
+///    Thread (`journal_entry_target_is_valid`, in-tx). A re-scan re-anchoring a JE
+///    from a DIFFERENT thread is refused (`InvalidMutation`) — this is what keeps the
+///    v1 re-scan same-thread (the cross-thread surface is a later concern).
+/// 2. Read the existing JE's STORED body via `current_journal_entry_by_id` (the JE
+///    vanished under the parked Proposal → `TargetMissing`).
+/// 3. For each surviving `journal_ref` link (`from == @je`, `to` not rejected and
+///    resolved): require its `match_text` (a re-scan ref has no placement without it
+///    → `InvalidMutation`); create/reuse an `entity_ref` id keyed by the resolved
+///    TARGET ENTITY id (so two handles resolving to one entity share one ref_id, like
+///    the create-mode weave); splice the chip into the running body at the first
+///    un-chipped occurrence of `match_text` (slice-2 `splice_entity_ref_into_body`,
+///    which fails LOUD if the text is gone — the whole tx rolls back); plan the
+///    backlink row.
+/// 4. Write the modified body as ONE new revision of the EXISTING JE (update_entity +
+///    insert_entity_revision — NO new `entities` row), then insert the backlink rows
+///    (source = the existing JE id, target = the resolved entity; ON CONFLICT DO
+///    NOTHING, so re-anchoring an already-anchored entity is a no-op).
+///
+/// Returns the existing JE id (the graph anchor — unchanged).
+#[allow(clippy::too_many_arguments)]
+async fn anchor_reuse_journal_entry(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    run_id: Uuid,
+    je: &ResolvedCreate,
+    existing_id: &str,
+    links: &[Link],
+    handle_to_id: &std::collections::HashMap<String, String>,
+    handle_to_label: &std::collections::HashMap<String, String>,
+    decisions: &NodeDecisions,
+    proposal_id: &str,
+    now_ms: i64,
+) -> Result<String, ApplyError> {
+    // 1. Cross-thread guard: the re-anchored JE's origin user-Message must be in this
+    //    Run's Thread. A cross-thread re-scan is refused — nothing is written.
+    if !queries::journal_entry_target_is_valid(&mut **tx, run_id, existing_id).await? {
+        return Err(ApplyError::InvalidMutation(format!(
+            "intent graph anchor-reuse target {existing_id:?} is not a Journal Entry created from \
+             this thread; cross-thread re-scan is refused"
+        )));
+    }
+
+    // 2. Read the existing JE's stored body. A vanished JE (deleted under the parked
+    //    Proposal) is TargetMissing, not an opaque fault.
+    let (_, current_data) = queries::current_journal_entry_by_id(&mut **tx, existing_id)
+        .await?
+        .ok_or(ApplyError::TargetMissing)?;
+    let mut data: serde_json::Value = serde_json::from_str(&current_data).map_err(|e| {
+        ApplyError::InvalidMutation(format!("stored Journal Entry data is malformed JSON: {e}"))
+    })?;
+    let mut body: Vec<serde_json::Value> = data
+        .get("body")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .ok_or_else(|| {
+            ApplyError::InvalidMutation(
+                "stored Journal Entry data is missing its body array".to_string(),
+            )
+        })?;
+
+    // 3. For each surviving journal_ref: write its backlink, read back the
+    //    AUTHORITATIVE ref_id, then splice that id into the stored body.
+    //    Keyed by the resolved TARGET ENTITY id (UNIQUE(source,target) on entity_refs),
+    //    so two handles → one entity share one ref_id and one row.
+    //
+    //    The backlink is inserted HERE (before the revision write) — not after —
+    //    so the body chip carries the row's REAL id. `insert_entity_ref` is
+    //    ON CONFLICT(source,target) DO NOTHING, so when this (JE, target) was
+    //    already anchored (a repeat re-scan, or the same entity chipped earlier),
+    //    the insert no-ops and KEEPS the existing row's id; re-reading it via
+    //    `entity_ref_id_for_source_target` returns that authoritative id, which the
+    //    body then splices on — never a freshly-minted id with no backing row (the
+    //    dangling-chip bug). This mirrors the single-entity reference path
+    //    (`apply::reference_existing_entity_from_journal_entry`).
+    let mut entity_ref_id: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    for link in links
+        .iter()
+        .filter(|l| matches!(l.kind, LinkKind::JournalRef) && l.from == je.handle)
+    {
+        if decisions.is_rejected(&link.to) {
+            continue;
+        }
+        let Some(entity_id) = handle_to_id.get(&link.to) else {
+            // The target resolved to no id (rejected, or a degenerate handle): drop it.
+            continue;
+        };
+        // A re-scan ref has no placement without a match_text (ADR-0042: the chip
+        // splices at the recognized substring). A pure backlink with no in-prose
+        // mention is the case we did NOT choose, so require it → fail loud.
+        let match_text = link.match_text.as_deref().filter(|s| !s.is_empty()).ok_or_else(|| {
+            ApplyError::InvalidMutation(format!(
+                "intent graph anchor-reuse journal_ref to {:?} needs a match_text to splice the body",
+                link.to
+            ))
+        })?;
+        // Reuse this entity's authoritative ref_id if a prior link this call already
+        // resolved it; else insert the backlink + read the row's real id.
+        let ref_id = match entity_ref_id.get(entity_id) {
+            Some(existing) => existing.clone(),
+            None => {
+                let proposed_ref_id = Uuid::now_v7().to_string();
+                let label = handle_to_label.get(&link.to).cloned();
+                queries::insert_entity_ref(
+                    &mut **tx,
+                    &proposed_ref_id,
+                    existing_id,
+                    entity_id,
+                    label.as_deref(),
+                    now_ms,
+                )
+                .await?;
+                // Read the row's id back: on ON CONFLICT this is the EXISTING row's
+                // id (re-anchor), not the proposed one — so the body never carries a
+                // dangling ref_id.
+                let authoritative = queries::entity_ref_id_for_source_target(
+                    &mut **tx,
+                    existing_id,
+                    entity_id,
+                )
+                .await?
+                .ok_or_else(|| {
+                    ApplyError::InvalidMutation(
+                        "failed to create or find entity_ref for source and target".to_string(),
+                    )
+                })?;
+                entity_ref_id.insert(entity_id.clone(), authoritative.clone());
+                authoritative
+            }
+        };
+        // Splice the chip into the running body — fails LOUD (whole tx rolls back) if
+        // the recognized substring is gone from the stored prose.
+        body = splice_entity_ref_into_body(&body, match_text, &ref_id)?;
+    }
+
+    // Defense in depth (ADR-0042 parity with the create-mode weave): the spliced body
+    // is Core-constructed; validate it against the same per-node content rules the
+    // client codec enforces before persisting.
+    let body = serde_json::Value::Array(body);
+    crate::entities::validate_woven_journal_body(&body).map_err(ApplyError::InvalidMutation)?;
+
+    // 4. Write the modified body as ONE new revision of the EXISTING JE — the entity
+    //    ROW id is unchanged; only a new `data` + revision land. No new entities row.
+    if let Some(obj) = data.as_object_mut() {
+        obj.insert("body".to_string(), body);
+    }
+    let data_str = data.to_string();
+    let schema_version = crate::mutation::EntityType::JournalEntry.schema_version();
+    let updated = queries::update_entity(
+        &mut **tx,
+        existing_id,
+        crate::mutation::EntityType::JournalEntry.as_str(),
+        schema_version,
+        &data_str,
+        now_ms,
+    )
+    .await?;
+    if updated != 1 {
+        // The JE vanished between the guard read and the write (ADR-0033 target-gone).
+        return Err(ApplyError::TargetMissing);
+    }
+    let next_seq = queries::next_entity_revision_seq(&mut **tx, existing_id).await?;
+    queries::insert_entity_revision(
+        &mut **tx,
+        existing_id,
+        next_seq,
+        &data_str,
+        Some(proposal_id),
+        now_ms,
+    )
+    .await?;
+
+    // Backlinks were already inserted in step 3 (before the splice) so the body
+    // could carry each row's authoritative ref_id; nothing more to write here.
+
+    Ok(existing_id.to_string())
 }
 
 /// Rewrite a JE body's `entity_ref` placeholders in place (ADR-0042 slice 6): a
@@ -848,6 +1081,63 @@ fn weave_journal_body(
         };
     }
     Ok(())
+}
+
+/// Splice a NEW `entity_ref` chip into a STORED JE body at the FIRST un-chipped
+/// plain-text occurrence of `match_text` (the ADR-0042 anchor-reuse re-scan: the
+/// user accepted a missed entity whose name already sits as plain prose in an
+/// existing JE). The matched substring is split out of its `{type:text}` node into a
+/// `{type:entity_ref, ref_id}` node, leaving the surrounding prose BYTE-IDENTICAL
+/// (no rewording, no trimming, leading/trailing spaces preserved) and every existing
+/// `entity_ref` node untouched. An `entity_ref` node has no `text`, so it is never
+/// scanned — an already-chipped occurrence of the same name is skipped and a later
+/// plain-text occurrence is the one chipped.
+///
+/// Returns `Err(InvalidMutation)` naming `match_text` when it occurs in NO un-chipped
+/// text node — the prose-faithfulness guard: Core never invents prose, so a re-scan
+/// whose anchor has vanished from the stored body fails loud rather than appending or
+/// rewording. The split never emits an empty `{text:""}` node (which would violate
+/// the body's own `minLength:1`): an empty side from a match at the start/end of a
+/// node, or a match spanning the whole node, is dropped — mirroring how
+/// `weave_journal_body` never collapses to an empty text node. The result satisfies
+/// `crate::entities::validate_woven_journal_body`.
+fn splice_entity_ref_into_body(
+    body: &[serde_json::Value],
+    match_text: &str,
+    ref_id: &str,
+) -> Result<Vec<serde_json::Value>, ApplyError> {
+    let mut out = Vec::with_capacity(body.len() + 2);
+    let mut spliced = false;
+
+    for node in body {
+        // Only un-chipped text nodes are candidates; an entity_ref node (no `text`)
+        // is copied through verbatim. Once we've spliced, every later node — text or
+        // chip — is copied verbatim too (first occurrence wins).
+        let text = (!spliced)
+            .then(|| node.get("text").and_then(serde_json::Value::as_str))
+            .flatten();
+        let Some((before, after)) = text.and_then(|t| t.split_once(match_text)) else {
+            out.push(node.clone());
+            continue;
+        };
+
+        // Drop an empty side rather than emit a `{text:""}` node (minLength:1).
+        if !before.is_empty() {
+            out.push(serde_json::json!({ "type": "text", "text": before }));
+        }
+        out.push(serde_json::json!({ "type": "entity_ref", "ref_id": ref_id }));
+        if !after.is_empty() {
+            out.push(serde_json::json!({ "type": "text", "text": after }));
+        }
+        spliced = true;
+    }
+
+    if !spliced {
+        return Err(ApplyError::InvalidMutation(format!(
+            "re-scan match text {match_text:?} not found in any un-chipped journal body text node"
+        )));
+    }
+    Ok(out)
 }
 
 /// Fold the `todo_project` + `todo_person` links whose `from` is `todo_handle`
@@ -1435,11 +1725,18 @@ fn parse_link(value: &serde_json::Value) -> Result<Link, ApplyError> {
         .get("role")
         .and_then(serde_json::Value::as_str)
         .map(str::to_string);
+    // The optional `journal_ref` match_text (parsed generically like `role`; only
+    // meaningful for journal_ref) — the recognized body substring for later splicing.
+    let match_text = obj
+        .get("match_text")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
     Ok(Link {
         kind,
         from,
         to,
         role,
+        match_text,
     })
 }
 
@@ -1460,6 +1757,8 @@ fn resolve_journal_entry_node(node: &serde_json::Value) -> Result<ResolvedCreate
         ApplyError::InvalidMutation("journal_entry node must be an object".to_string())
     })?;
 
+    // Only the JE data keys land in the create payload — `handle` and the
+    // `existing_id` anchor-reuse hint are graph-local and never JE data.
     let mut payload = serde_json::Map::new();
     for key in ["occurred_at", "ended_at", "body"] {
         if let Some(value) = obj.get(key) {
@@ -1477,10 +1776,18 @@ fn resolve_journal_entry_node(node: &serde_json::Value) -> Result<ResolvedCreate
         .unwrap_or("<je>")
         .to_string();
 
+    // The model's optional anchor-reuse hint (ADR-0042) — carried through for a
+    // later slice; the create path above never sees it (stripped from `payload`).
+    let existing_id = obj
+        .get("existing_id")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+
     Ok(ResolvedCreate {
         kind: MutationKind::CreateJournalEntry,
         payload: serde_json::Value::Object(payload),
         handle,
+        existing_id,
     })
 }
 
@@ -1815,6 +2122,46 @@ mod tests {
         assert!(plan.is_empty());
     }
 
+    // The JE node's `existing_id` anchor-reuse hint (this slice) is THREADED THROUGH
+    // onto the JE `ResolvedCreate`, AND stripped out of the reconstructed create
+    // `payload` (it is a graph-local hint key like handle/type, never JE data —
+    // the create path must not see it). And a `journal_ref` link carries its
+    // `match_text` through onto the parsed `Link` (later slices splice the stored
+    // body on it). Pure structural extract — no pool, no write, apply untouched.
+    #[test]
+    fn extract_threads_je_existing_id_and_journal_ref_match_text() {
+        let anchor = Uuid::now_v7().to_string();
+        let payload = serde_json::json!({
+            "journal_entry": {
+                "handle": "@je",
+                "existing_id": anchor,
+                "occurred_at": "2026-06-10T10:30:00",
+                "body": [{ "type": "entity_ref", "target": "@p" }]
+            },
+            "entities": [{ "handle": "@p", "type": "person", "name": "Priya" }],
+            "links": [{ "kind": "journal_ref", "from": "@je", "to": "@p", "match_text": "Priya" }]
+        });
+        let graph = extract_graph(&payload).expect("graph extracts");
+
+        let je = graph.journal_entry.expect("journal_entry present");
+        assert_eq!(
+            je.existing_id.as_deref(),
+            Some(anchor.as_str()),
+            "the JE node's existing_id anchor-reuse hint is threaded onto ResolvedCreate"
+        );
+        assert!(
+            je.payload.get("existing_id").is_none(),
+            "existing_id is a graph-local hint key and MUST be stripped from the create payload"
+        );
+
+        assert_eq!(graph.links.len(), 1);
+        assert_eq!(
+            graph.links[0].match_text.as_deref(),
+            Some("Priya"),
+            "the journal_ref link's match_text is parsed onto the Link"
+        );
+    }
+
     // weave_journal_body pins all three placeholder outcomes in isolation, including
     // the two collapse arms a decide-level test can't easily distinguish: a
     // dropped ref WITH a known label collapses to that label, and a dropped ref with
@@ -1856,5 +2203,879 @@ mod tests {
         assert!(body.iter().all(|n| n.get("type").and_then(serde_json::Value::as_str)
             != Some("text")
             || n.get("text").and_then(serde_json::Value::as_str).is_some_and(|t| !t.is_empty())));
+    }
+
+    // splice_entity_ref_into_body: the re-scan splice (slice 2). All cases are pure
+    // — no pool, no tx. A fresh UUID stands in for the minted ref id so the spliced
+    // body satisfies `validate_woven_journal_body` (entity_ref ref_id must be a UUID).
+
+    // Case 1: splice into a single text node. The matched substring is split out into
+    // a `{entity_ref, ref_id}` node; the prose on either side is BYTE-IDENTICAL to the
+    // original minus the match (leading/trailing spaces preserved exactly, no trim).
+    #[test]
+    fn splice_splits_one_text_node_byte_faithfully() {
+        let ref_id = Uuid::now_v7().to_string();
+        let body = vec![serde_json::json!({
+            "type": "text", "text": "synced with Wenqian and Priya today"
+        })];
+        let out = splice_entity_ref_into_body(&body, "Priya", &ref_id).expect("splice ok");
+        assert_eq!(
+            out,
+            vec![
+                serde_json::json!({ "type": "text", "text": "synced with Wenqian and " }),
+                serde_json::json!({ "type": "entity_ref", "ref_id": ref_id }),
+                serde_json::json!({ "type": "text", "text": " today" }),
+            ]
+        );
+        // The spliced body is a valid stored JE body.
+        crate::entities::validate_woven_journal_body(&serde_json::Value::Array(out))
+            .expect("spliced body is schema-valid");
+    }
+
+    // Case 2: an existing entity_ref node is left IDENTICAL (same ref_id) when a
+    // DIFFERENT entity is spliced elsewhere in the body.
+    #[test]
+    fn splice_leaves_existing_chip_untouched() {
+        let old = Uuid::now_v7().to_string();
+        let new = Uuid::now_v7().to_string();
+        let body = vec![
+            serde_json::json!({ "type": "text", "text": "met " }),
+            serde_json::json!({ "type": "entity_ref", "ref_id": old }),
+            serde_json::json!({ "type": "text", "text": " and Priya" }),
+        ];
+        let out = splice_entity_ref_into_body(&body, "Priya", &new).expect("splice ok");
+        // The pre-existing chip is byte-identical (same ref_id, same node).
+        assert_eq!(out[1], serde_json::json!({ "type": "entity_ref", "ref_id": old }));
+        // The plain-text "Priya" became the new chip; the prose around it is exact.
+        assert_eq!(out[2], serde_json::json!({ "type": "text", "text": " and " }));
+        assert_eq!(out[3], serde_json::json!({ "type": "entity_ref", "ref_id": new }));
+        crate::entities::validate_woven_journal_body(&serde_json::Value::Array(out))
+            .expect("spliced body is schema-valid");
+    }
+
+    // Case 3: match_text absent from every text node → loud Err(InvalidMutation),
+    // NOT a silent no-op. The message names the missing match_text.
+    #[test]
+    fn splice_not_found_errors_loud() {
+        let ref_id = Uuid::now_v7().to_string();
+        let body = vec![serde_json::json!({ "type": "text", "text": "synced with the team" })];
+        let err = splice_entity_ref_into_body(&body, "Priya", &ref_id)
+            .expect_err("absent match_text must fail loud");
+        match err {
+            ApplyError::InvalidMutation(msg) => assert!(
+                msg.contains("Priya"),
+                "the error names the missing match_text: {msg}"
+            ),
+            other => panic!("expected InvalidMutation, got {other:?}"),
+        }
+    }
+
+    // Case 4a: the FIRST un-chipped occurrence wins. "Priya" appears twice in plain
+    // text; only the first is chipped — the second stays plain text.
+    #[test]
+    fn splice_chips_first_occurrence_only() {
+        let ref_id = Uuid::now_v7().to_string();
+        let body = vec![serde_json::json!({
+            "type": "text", "text": "Priya then later Priya again"
+        })];
+        let out = splice_entity_ref_into_body(&body, "Priya", &ref_id).expect("splice ok");
+        // Match at the very start drops the empty left side: chip, then the remainder
+        // (which still contains the second, plain-text "Priya").
+        assert_eq!(
+            out,
+            vec![
+                serde_json::json!({ "type": "entity_ref", "ref_id": ref_id }),
+                serde_json::json!({ "type": "text", "text": " then later Priya again" }),
+            ]
+        );
+        crate::entities::validate_woven_journal_body(&serde_json::Value::Array(out))
+            .expect("spliced body is schema-valid");
+    }
+
+    // Case 4b: a name that is ALREADY chipped earlier (an entity_ref node has no
+    // `text` so it is never scanned) and ALSO appears later as plain text → the
+    // plain-text occurrence is the one chipped; the existing chip is untouched.
+    #[test]
+    fn splice_skips_existing_chip_and_takes_plain_text() {
+        let old = Uuid::now_v7().to_string();
+        let new = Uuid::now_v7().to_string();
+        let body = vec![
+            serde_json::json!({ "type": "entity_ref", "ref_id": old }),
+            serde_json::json!({ "type": "text", "text": " saw Priya later" }),
+        ];
+        let out = splice_entity_ref_into_body(&body, "Priya", &new).expect("splice ok");
+        assert_eq!(out[0], serde_json::json!({ "type": "entity_ref", "ref_id": old }));
+        assert_eq!(out[1], serde_json::json!({ "type": "text", "text": " saw " }));
+        assert_eq!(out[2], serde_json::json!({ "type": "entity_ref", "ref_id": new }));
+        assert_eq!(out[3], serde_json::json!({ "type": "text", "text": " later" }));
+        crate::entities::validate_woven_journal_body(&serde_json::Value::Array(out))
+            .expect("spliced body is schema-valid");
+    }
+
+    // Case 5a: match at the START of a node — the empty LEFT side is dropped (no
+    // `{text:""}` node, which would violate minLength:1).
+    #[test]
+    fn splice_match_at_start_drops_empty_left() {
+        let ref_id = Uuid::now_v7().to_string();
+        let body = vec![serde_json::json!({ "type": "text", "text": "Priya said hi" })];
+        let out = splice_entity_ref_into_body(&body, "Priya", &ref_id).expect("splice ok");
+        assert_eq!(
+            out,
+            vec![
+                serde_json::json!({ "type": "entity_ref", "ref_id": ref_id }),
+                serde_json::json!({ "type": "text", "text": " said hi" }),
+            ]
+        );
+        crate::entities::validate_woven_journal_body(&serde_json::Value::Array(out))
+            .expect("spliced body is schema-valid");
+    }
+
+    // Case 5b: match at the END of a node — the empty RIGHT side is dropped.
+    #[test]
+    fn splice_match_at_end_drops_empty_right() {
+        let ref_id = Uuid::now_v7().to_string();
+        let body = vec![serde_json::json!({ "type": "text", "text": "today I met Priya" })];
+        let out = splice_entity_ref_into_body(&body, "Priya", &ref_id).expect("splice ok");
+        assert_eq!(
+            out,
+            vec![
+                serde_json::json!({ "type": "text", "text": "today I met " }),
+                serde_json::json!({ "type": "entity_ref", "ref_id": ref_id }),
+            ]
+        );
+        crate::entities::validate_woven_journal_body(&serde_json::Value::Array(out))
+            .expect("spliced body is schema-valid");
+    }
+
+    // Case 5c: match == the WHOLE text node — both sides empty, so ONLY the chip
+    // remains (no empty text siblings on either side).
+    #[test]
+    fn splice_match_whole_node_leaves_only_chip() {
+        let ref_id = Uuid::now_v7().to_string();
+        let body = vec![
+            serde_json::json!({ "type": "text", "text": "saw " }),
+            serde_json::json!({ "type": "text", "text": "Priya" }),
+            serde_json::json!({ "type": "text", "text": " today" }),
+        ];
+        let out = splice_entity_ref_into_body(&body, "Priya", &ref_id).expect("splice ok");
+        assert_eq!(
+            out,
+            vec![
+                serde_json::json!({ "type": "text", "text": "saw " }),
+                serde_json::json!({ "type": "entity_ref", "ref_id": ref_id }),
+                serde_json::json!({ "type": "text", "text": " today" }),
+            ]
+        );
+        crate::entities::validate_woven_journal_body(&serde_json::Value::Array(out))
+            .expect("spliced body is schema-valid");
+    }
+
+    // ─── Anchor-reuse apply (slice 3) ───────────────────────────────────────
+    //
+    // These exercise `apply_intent_graph_proposal`'s end-to-end ANCHOR-REUSE branch
+    // against a real (in-memory) pool. The scaffold seeds a Thread + Run + user
+    // Message + a pending Proposal/tool_call (the re-scan run's waitpoint) + an
+    // ACCEPTED Journal Entry whose `created_from` is that user Message, so the
+    // cross-thread guard (`journal_entry_target_is_valid`) passes for the JE in the
+    // Run's Thread.
+
+    /// IDs the anchor-reuse scaffold returns: the existing JE id, the Run id (the
+    /// apply call needs it for the accept-flip + cross-thread guard), the pending
+    /// Proposal id, and its tool_call id.
+    struct Scaffold {
+        je_id: String,
+        run_id: Uuid,
+        proposal_id: String,
+        tool_call_id: String,
+    }
+
+    /// Seed one Thread + Run + user Message + a pending re-scan Proposal/tool_call +
+    /// an accepted Journal Entry (`created_from` the user Message) with the given
+    /// stored body. `thread_for_je` is the Thread the JE is anchored in (defaults to
+    /// the Run's Thread); pass a DIFFERENT thread to exercise the cross-thread guard.
+    async fn seed_anchor_reuse(
+        pool: &sqlx::SqlitePool,
+        je_body: serde_json::Value,
+    ) -> Scaffold {
+        seed_anchor_reuse_cross_thread(pool, je_body, false).await
+    }
+
+    /// `cross_thread = true` puts the JE's origin user Message in a DIFFERENT Thread
+    /// than the re-scan Run, so the in-tx cross-thread guard must refuse the apply.
+    async fn seed_anchor_reuse_cross_thread(
+        pool: &sqlx::SqlitePool,
+        je_body: serde_json::Value,
+        cross_thread: bool,
+    ) -> Scaffold {
+        let now = crate::db::now_ms();
+        let run_thread = Uuid::now_v7().to_string();
+        // The JE's origin Thread: the same as the Run's unless we're forcing a
+        // cross-thread mismatch.
+        let je_thread = if cross_thread {
+            Uuid::now_v7().to_string()
+        } else {
+            run_thread.clone()
+        };
+        let run_id = Uuid::now_v7();
+        let rescan_user_msg = Uuid::now_v7().to_string();
+        // The JE's own origin Run + user Message (its `created_from`). For the
+        // same-thread case this can share the run thread; we model it as its own Run.
+        let je_run = Uuid::now_v7().to_string();
+        let je_user_msg = Uuid::now_v7().to_string();
+        let je_id = Uuid::now_v7().to_string();
+        let tool_call_id = format!("tc_{}", Uuid::now_v7());
+        let proposal_id = Uuid::now_v7().to_string();
+
+        let mut tx = pool.begin().await.expect("begin seed tx");
+        // Threads.
+        for tid in [&run_thread, &je_thread] {
+            // `je_thread` may equal `run_thread`; INSERT OR IGNORE keeps it idempotent.
+            sqlx::query(
+                "INSERT OR IGNORE INTO threads (id, title, created_at, last_activity_at) \
+                 VALUES (?1, 'T', ?2, ?2)",
+            )
+            .bind(tid)
+            .bind(now)
+            .execute(&mut *tx)
+            .await
+            .expect("insert thread");
+        }
+        // The JE's origin Run + user Message (provenance for the guard).
+        sqlx::query(
+            "INSERT INTO runs \
+             (id, thread_id, workflow_name, workflow_version, provider, model, thinking_level, user_message_id, status, started_at, ended_at, terminal_reason) \
+             VALUES (?1, ?2, 'default', '1.0.0', 'faux', 'm', 'off', ?3, 'completed', ?4, ?4, 'completed')",
+        )
+        .bind(&je_run)
+        .bind(&je_thread)
+        .bind(&je_user_msg)
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .expect("insert je run");
+        sqlx::query(
+            "INSERT INTO messages (id, thread_id, run_id, role, status, created_at, updated_at) \
+             VALUES (?1, ?2, ?3, 'user', 'completed', ?4, ?4)",
+        )
+        .bind(&je_user_msg)
+        .bind(&je_thread)
+        .bind(&je_run)
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .expect("insert je user message");
+
+        // The re-scan Run (the apply target) + its user Message.
+        sqlx::query(
+            "INSERT INTO runs \
+             (id, thread_id, workflow_name, workflow_version, provider, model, thinking_level, user_message_id, status, started_at) \
+             VALUES (?1, ?2, 'default', '1.0.0', 'faux', 'm', 'off', ?3, 'parked', ?4)",
+        )
+        .bind(run_id.to_string())
+        .bind(&run_thread)
+        .bind(&rescan_user_msg)
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .expect("insert rescan run");
+        sqlx::query(
+            "INSERT INTO messages (id, thread_id, run_id, role, status, created_at, updated_at) \
+             VALUES (?1, ?2, ?3, 'user', 'completed', ?4, ?4)",
+        )
+        .bind(&rescan_user_msg)
+        .bind(&run_thread)
+        .bind(run_id.to_string())
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .expect("insert rescan user message");
+
+        // The pending re-scan Proposal + its tool_call (the apply flips this).
+        sqlx::query(
+            "INSERT INTO tool_calls (id, run_id, name, request_payload, status, requested_at) \
+             VALUES (?1, ?2, 'apply_intent_graph', '{}', 'pending', ?3)",
+        )
+        .bind(&tool_call_id)
+        .bind(run_id.to_string())
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .expect("insert tool call");
+        sqlx::query(
+            "INSERT INTO proposals (id, tool_call_id, mutation_kind, status) \
+             VALUES (?1, ?2, 'apply_intent_graph', 'pending')",
+        )
+        .bind(&proposal_id)
+        .bind(&tool_call_id)
+        .execute(&mut *tx)
+        .await
+        .expect("insert proposal");
+
+        // The accepted Journal Entry (created_by='user', so no proposal-id CHECK) +
+        // its seq-1 revision + `created_from` the JE's user Message.
+        let je_data = serde_json::json!({
+            "occurred_at": "2026-06-10T10:30:00",
+            "body": je_body,
+        })
+        .to_string();
+        sqlx::query(
+            "INSERT INTO entities (id, type, schema_version, data, created_by, created_at, updated_at) \
+             VALUES (?1, 'journal_entry', 1, ?2, 'user', ?3, ?3)",
+        )
+        .bind(&je_id)
+        .bind(&je_data)
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .expect("insert je entity");
+        sqlx::query(
+            "INSERT INTO entity_revisions (entity_id, seq, data, proposal_id, created_at) \
+             VALUES (?1, 1, ?2, NULL, ?3)",
+        )
+        .bind(&je_id)
+        .bind(&je_data)
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .expect("insert je revision");
+        sqlx::query(
+            "INSERT INTO entity_sources (id, entity_id, source_message_id, relation, created_at) \
+             VALUES (?1, ?2, ?3, 'created_from', ?4)",
+        )
+        .bind(Uuid::now_v7().to_string())
+        .bind(&je_id)
+        .bind(&je_user_msg)
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .expect("insert je source");
+
+        tx.commit().await.expect("commit seed tx");
+        Scaffold {
+            je_id,
+            run_id,
+            proposal_id,
+            tool_call_id,
+        }
+    }
+
+    /// The latest-revision body of `je_id` (the array nodes). Reads the `entities`
+    /// current `data`, which always equals the latest revision.
+    async fn current_je_body(
+        pool: &sqlx::SqlitePool,
+        je_id: &str,
+    ) -> Vec<serde_json::Value> {
+        let data: String = sqlx::query_scalar("SELECT data FROM entities WHERE id = ?1")
+            .bind(je_id)
+            .fetch_one(pool)
+            .await
+            .expect("read je data");
+        serde_json::from_str::<serde_json::Value>(&data)
+            .expect("je data is json")
+            .get("body")
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .expect("je body is an array")
+    }
+
+    /// Count `entity_refs` rows from `source` to `target`.
+    async fn entity_ref_count(
+        pool: &sqlx::SqlitePool,
+        source: &str,
+        target: &str,
+    ) -> i64 {
+        sqlx::query_scalar(
+            "SELECT COUNT(*) FROM entity_refs WHERE source_entity_id = ?1 AND target_entity_id = ?2",
+        )
+        .bind(source)
+        .bind(target)
+        .fetch_one(pool)
+        .await
+        .expect("count entity_refs")
+    }
+
+    /// The number of `journal_entry` rows + the number of revisions of `je_id`.
+    async fn je_row_and_revision_counts(pool: &sqlx::SqlitePool, je_id: &str) -> (i64, i64) {
+        let je_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM entities WHERE type = 'journal_entry'")
+            .fetch_one(pool)
+            .await
+            .expect("count je rows");
+        let revisions: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM entity_revisions WHERE entity_id = ?1")
+                .bind(je_id)
+                .fetch_one(pool)
+                .await
+                .expect("count revisions");
+        (je_rows, revisions)
+    }
+
+    /// The id of the sole new Person of `name` (the minted entity), or None.
+    async fn person_id_named(pool: &sqlx::SqlitePool, name: &str) -> Option<String> {
+        sqlx::query_scalar(
+            "SELECT id FROM entities WHERE type = 'person' AND json_extract(data, '$.name') = ?1",
+        )
+        .bind(name)
+        .fetch_optional(pool)
+        .await
+        .expect("look up person")
+    }
+
+    // Test 1 — the headline anchor-reuse: the JE node carries existing_id, a NEW
+    // Person "Priya" is minted, a backlink row source=J target=priya is written, NO
+    // new JE row appears (the existing JE id is the anchor), the existing JE's latest
+    // body has a chip where "Priya" was (surrounding prose byte-identical), and the
+    // returned anchor == the existing JE id.
+    #[tokio::test]
+    async fn anchor_reuse_mints_entity_chips_existing_body_and_keeps_je_row() {
+        let pool = memory_pool().await;
+        let scaffold = seed_anchor_reuse(
+            &pool,
+            serde_json::json!([{ "type": "text", "text": "synced with Wenqian and Priya today" }]),
+        )
+        .await;
+        let payload = serde_json::json!({
+            "journal_entry": {
+                "handle": "@je",
+                "existing_id": scaffold.je_id,
+                "occurred_at": "2026-06-10T10:30:00"
+            },
+            "entities": [{ "handle": "@priya", "type": "person", "name": "Priya" }],
+            "links": [{ "kind": "journal_ref", "from": "@je", "to": "@priya", "match_text": "Priya" }]
+        });
+
+        let outcome = apply_intent_graph_proposal(
+            &pool,
+            scaffold.run_id,
+            &scaffold.proposal_id,
+            &scaffold.tool_call_id,
+            &payload,
+            None,
+            None,
+            |anchor| format!("anchor:{anchor}"),
+            crate::db::now_ms(),
+        )
+        .await
+        .expect("anchor-reuse applies");
+
+        // (e) the returned anchor is the existing JE id (NOT a new id).
+        match outcome {
+            IntentGraphOutcome::Applied(anchor) => assert_eq!(anchor, scaffold.je_id),
+            IntentGraphOutcome::RejectedAll => panic!("expected Applied"),
+        }
+
+        // (a) a new Person "Priya" was minted.
+        let priya = person_id_named(&pool, "Priya").await.expect("Priya minted");
+
+        // (b) a backlink row source=J target=priya exists.
+        assert_eq!(entity_ref_count(&pool, &scaffold.je_id, &priya).await, 1);
+
+        // (c) exactly ONE journal_entry row and it is still J (no new JE minted), and
+        //     J gained a SECOND revision (the spliced body).
+        let (je_rows, revisions) = je_row_and_revision_counts(&pool, &scaffold.je_id).await;
+        assert_eq!(je_rows, 1, "no new journal_entry row was minted");
+        assert_eq!(revisions, 2, "the spliced body is one new revision");
+
+        // (d) J's latest body now chips "Priya"; the surrounding prose is byte-exact.
+        let body = current_je_body(&pool, &scaffold.je_id).await;
+        // Pull the ref_id from the chip so we can assert the full shape.
+        let chip_ref_id = body
+            .iter()
+            .find_map(|n| n.get("ref_id").and_then(serde_json::Value::as_str))
+            .expect("a chip with a ref_id");
+        assert_eq!(
+            body,
+            vec![
+                serde_json::json!({ "type": "text", "text": "synced with Wenqian and " }),
+                serde_json::json!({ "type": "entity_ref", "ref_id": chip_ref_id }),
+                serde_json::json!({ "type": "text", "text": " today" }),
+            ]
+        );
+    }
+
+    // Test 2 — an existing chip (Wenqian, ref_id R_old) is PRESERVED byte-for-byte
+    // when a new entity (Priya) is spliced; its backing entity_ref row is intact.
+    #[tokio::test]
+    async fn anchor_reuse_preserves_existing_chip() {
+        let pool = memory_pool().await;
+        // Seed a body that ALREADY chips Wenqian and has plain "Priya".
+        let r_old = Uuid::now_v7().to_string();
+        let scaffold = seed_anchor_reuse(
+            &pool,
+            serde_json::json!([
+                { "type": "text", "text": "synced with " },
+                { "type": "entity_ref", "ref_id": r_old },
+                { "type": "text", "text": " and Priya today" }
+            ]),
+        )
+        .await;
+        // Seed Wenqian + its backing entity_ref (R_old) so the existing chip resolves.
+        let wenqian = insert_named(&pool, "person", "Wenqian").await;
+        queries::insert_entity_ref(
+            &pool,
+            &r_old,
+            &scaffold.je_id,
+            &wenqian,
+            Some("Wenqian"),
+            crate::db::now_ms(),
+        )
+        .await
+        .expect("seed existing chip row");
+
+        let payload = serde_json::json!({
+            "journal_entry": {
+                "handle": "@je", "existing_id": scaffold.je_id, "occurred_at": "2026-06-10T10:30:00"
+            },
+            "entities": [{ "handle": "@priya", "type": "person", "name": "Priya" }],
+            "links": [{ "kind": "journal_ref", "from": "@je", "to": "@priya", "match_text": "Priya" }]
+        });
+        apply_intent_graph_proposal(
+            &pool,
+            scaffold.run_id,
+            &scaffold.proposal_id,
+            &scaffold.tool_call_id,
+            &payload,
+            None,
+            None,
+            |a| a.to_string(),
+            crate::db::now_ms(),
+        )
+        .await
+        .expect("anchor-reuse applies");
+
+        let body = current_je_body(&pool, &scaffold.je_id).await;
+        // The Wenqian chip is untouched (same ref_id, same node).
+        assert!(
+            body.contains(&serde_json::json!({ "type": "entity_ref", "ref_id": r_old })),
+            "the pre-existing Wenqian chip is preserved byte-identical: {body:?}"
+        );
+        // Its backing entity_ref row is intact.
+        assert_eq!(entity_ref_count(&pool, &scaffold.je_id, &wenqian).await, 1);
+        // Priya got chipped + her backlink.
+        let priya = person_id_named(&pool, "Priya").await.expect("Priya minted");
+        assert_eq!(entity_ref_count(&pool, &scaffold.je_id, &priya).await, 1);
+    }
+
+    // Test 3 — suppression no-op: an anchor-reuse graph that re-proposes an entity
+    // ALREADY anchored (exact-name reuse → same id) and whose name STILL sits in
+    // plain prose writes NO duplicate entity_ref row and does not error.
+    #[tokio::test]
+    async fn anchor_reuse_reanchor_is_no_op() {
+        let pool = memory_pool().await;
+        // Body has Priya as plain text TWICE so the splice can find an un-chipped one.
+        let scaffold = seed_anchor_reuse(
+            &pool,
+            serde_json::json!([{ "type": "text", "text": "Priya and later Priya again" }]),
+        )
+        .await;
+        // Priya already exists (accepted) AND is already anchored to J.
+        let priya = insert_named(&pool, "person", "Priya").await;
+        let pre_ref = Uuid::now_v7().to_string();
+        queries::insert_entity_ref(
+            &pool,
+            &pre_ref,
+            &scaffold.je_id,
+            &priya,
+            Some("Priya"),
+            crate::db::now_ms(),
+        )
+        .await
+        .expect("seed existing backlink");
+        assert_eq!(entity_ref_count(&pool, &scaffold.je_id, &priya).await, 1);
+
+        // The graph re-proposes Priya by exact name → resolves to REUSE (existing id),
+        // and journal_refs to her again.
+        let payload = serde_json::json!({
+            "journal_entry": {
+                "handle": "@je", "existing_id": scaffold.je_id, "occurred_at": "2026-06-10T10:30:00"
+            },
+            "entities": [{ "handle": "@priya", "type": "person", "name": "Priya" }],
+            "links": [{ "kind": "journal_ref", "from": "@je", "to": "@priya", "match_text": "Priya" }]
+        });
+        apply_intent_graph_proposal(
+            &pool,
+            scaffold.run_id,
+            &scaffold.proposal_id,
+            &scaffold.tool_call_id,
+            &payload,
+            None,
+            None,
+            |a| a.to_string(),
+            crate::db::now_ms(),
+        )
+        .await
+        .expect("re-anchor is a clean no-op");
+
+        // STILL exactly one backlink row (ON CONFLICT DO NOTHING suppressed the dup).
+        assert_eq!(
+            entity_ref_count(&pool, &scaffold.je_id, &priya).await,
+            1,
+            "re-anchoring an already-anchored entity writes no duplicate row"
+        );
+        // The spliced body chip points at the SURVIVING row's id (`pre_ref`), NOT a
+        // freshly-minted one — re-anchor must reuse the existing entity_ref id, or the
+        // body would carry a dangling ref_id with no backing row (the chip would render
+        // as an un-clickable "Referenced entity" and orphan the backlink).
+        let body = current_je_body(&pool, &scaffold.je_id).await;
+        assert!(
+            body.contains(&serde_json::json!({ "type": "entity_ref", "ref_id": pre_ref })),
+            "the re-anchor chip reuses the existing backlink's ref_id, never a dangling new one: {body:?}"
+        );
+        // And no orphan: the body's entity_ref ref_id resolves to a real row.
+        let surviving_id: String = sqlx::query_scalar(
+            "SELECT id FROM entity_refs WHERE source_entity_id = ?1 AND target_entity_id = ?2",
+        )
+        .bind(&scaffold.je_id)
+        .bind(&priya)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(surviving_id, pre_ref, "the surviving entity_ref row kept its original id");
+        // No NEW Priya minted.
+        let person_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM entities WHERE type = 'person'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(person_count, 1, "the existing Priya was reused, not duplicated");
+    }
+
+    // Test 4 — match_text absent from the stored body → Err(InvalidMutation), the
+    // whole tx rolls back: NO new Person, NO new revision, the JE body unchanged.
+    #[tokio::test]
+    async fn anchor_reuse_match_text_not_found_rolls_back() {
+        let pool = memory_pool().await;
+        let original_body =
+            serde_json::json!([{ "type": "text", "text": "synced with the team today" }]);
+        let scaffold = seed_anchor_reuse(&pool, original_body.clone()).await;
+        let payload = serde_json::json!({
+            "journal_entry": {
+                "handle": "@je", "existing_id": scaffold.je_id, "occurred_at": "2026-06-10T10:30:00"
+            },
+            "entities": [{ "handle": "@priya", "type": "person", "name": "Priya" }],
+            "links": [{ "kind": "journal_ref", "from": "@je", "to": "@priya", "match_text": "Priya" }]
+        });
+        let result = apply_intent_graph_proposal(
+            &pool,
+            scaffold.run_id,
+            &scaffold.proposal_id,
+            &scaffold.tool_call_id,
+            &payload,
+            None,
+            None,
+            |a| a.to_string(),
+            crate::db::now_ms(),
+        )
+        .await;
+        match result {
+            Err(ApplyError::InvalidMutation(_)) => {}
+            other => panic!("expected InvalidMutation, got {:?}", other.err()),
+        }
+
+        // Nothing landed: no Priya, the JE keeps its one revision, body unchanged.
+        assert!(person_id_named(&pool, "Priya").await.is_none(), "no Person minted");
+        let (_, revisions) = je_row_and_revision_counts(&pool, &scaffold.je_id).await;
+        assert_eq!(revisions, 1, "no new revision was written");
+        let body = current_je_body(&pool, &scaffold.je_id).await;
+        assert_eq!(
+            serde_json::Value::Array(body),
+            original_body,
+            "the JE body is unchanged after the rollback"
+        );
+        // The proposal stayed pending (the accept-flip rolled back with the tx).
+        let status: String =
+            sqlx::query_scalar("SELECT status FROM proposals WHERE id = ?1")
+                .bind(&scaffold.proposal_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(status, "pending", "the rolled-back accept-flip leaves the proposal pending");
+    }
+
+    // Test 5 — cross-thread guard: an anchor-reuse for a JE whose origin Message is in
+    // a DIFFERENT Thread than the Run → Err(InvalidMutation), nothing written.
+    #[tokio::test]
+    async fn anchor_reuse_cross_thread_is_refused() {
+        let pool = memory_pool().await;
+        let original_body =
+            serde_json::json!([{ "type": "text", "text": "synced with Priya today" }]);
+        let scaffold =
+            seed_anchor_reuse_cross_thread(&pool, original_body.clone(), true).await;
+        let payload = serde_json::json!({
+            "journal_entry": {
+                "handle": "@je", "existing_id": scaffold.je_id, "occurred_at": "2026-06-10T10:30:00"
+            },
+            "entities": [{ "handle": "@priya", "type": "person", "name": "Priya" }],
+            "links": [{ "kind": "journal_ref", "from": "@je", "to": "@priya", "match_text": "Priya" }]
+        });
+        let result = apply_intent_graph_proposal(
+            &pool,
+            scaffold.run_id,
+            &scaffold.proposal_id,
+            &scaffold.tool_call_id,
+            &payload,
+            None,
+            None,
+            |a| a.to_string(),
+            crate::db::now_ms(),
+        )
+        .await;
+        match result {
+            Err(ApplyError::InvalidMutation(_)) => {}
+            other => panic!("expected InvalidMutation, got {:?}", other.err()),
+        }
+
+        // Nothing written: no Priya, no new revision, body unchanged.
+        assert!(person_id_named(&pool, "Priya").await.is_none());
+        let (_, revisions) = je_row_and_revision_counts(&pool, &scaffold.je_id).await;
+        assert_eq!(revisions, 1, "cross-thread refusal writes no revision");
+        assert_eq!(
+            serde_json::Value::Array(current_je_body(&pool, &scaffold.je_id).await),
+            original_body,
+        );
+    }
+
+    // Test 6 — create-mode regression: a JE node WITHOUT existing_id still MINTS a new
+    // JE (the create-mode weave is byte-for-byte unchanged when existing_id is None).
+    #[tokio::test]
+    async fn create_mode_without_existing_id_still_mints_new_je() {
+        let pool = memory_pool().await;
+        // The scaffold seeds an existing JE J; the create-mode graph IGNORES it
+        // (no existing_id) and mints a SECOND, fresh JE.
+        let scaffold = seed_anchor_reuse(
+            &pool,
+            serde_json::json!([{ "type": "text", "text": "unrelated" }]),
+        )
+        .await;
+        let payload = serde_json::json!({
+            "journal_entry": {
+                "handle": "@je",
+                "occurred_at": "2026-06-11T09:00:00",
+                "body": [
+                    { "type": "text", "text": "met " },
+                    { "type": "entity_ref", "target": "@priya" }
+                ]
+            },
+            "entities": [{ "handle": "@priya", "type": "person", "name": "Priya" }],
+            "links": [{ "kind": "journal_ref", "from": "@je", "to": "@priya" }]
+        });
+        let outcome = apply_intent_graph_proposal(
+            &pool,
+            scaffold.run_id,
+            &scaffold.proposal_id,
+            &scaffold.tool_call_id,
+            &payload,
+            None,
+            None,
+            |a| a.to_string(),
+            crate::db::now_ms(),
+        )
+        .await
+        .expect("create-mode applies");
+
+        // A NEW JE was minted (now TWO journal_entry rows) and the anchor is NOT the
+        // seeded JE id.
+        match outcome {
+            IntentGraphOutcome::Applied(anchor) => {
+                assert_ne!(anchor, scaffold.je_id, "create-mode mints a fresh JE, not the seeded one")
+            }
+            IntentGraphOutcome::RejectedAll => panic!("expected Applied"),
+        }
+        let je_rows: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM entities WHERE type = 'journal_entry'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(je_rows, 2, "create-mode added a second JE row");
+    }
+
+    // The body field went OPTIONAL on the JE node so an ANCHOR-REUSE proposal can
+    // omit it (Core keeps the stored body). The create-mode guard pins that a
+    // create-mode JE node (no existing_id) STILL must carry a body: an ABSENT body
+    // fails loud as InvalidMutation, the tx rolls back, and no JE is minted. Without
+    // this test the guard could be reordered/removed in a refactor and the schema
+    // relaxation would silently let a bodyless JE mint.
+    #[tokio::test]
+    async fn create_mode_without_body_is_rejected_and_mints_nothing() {
+        let pool = memory_pool().await;
+        let scaffold = seed_anchor_reuse(
+            &pool,
+            serde_json::json!([{ "type": "text", "text": "unrelated" }]),
+        )
+        .await;
+        // create mode (no existing_id) + NO body on the JE node.
+        let payload = serde_json::json!({
+            "journal_entry": { "handle": "@je", "occurred_at": "2026-06-11T09:00:00" },
+            "entities": [{ "handle": "@priya", "type": "person", "name": "Priya" }],
+            "links": []
+        });
+        let result = apply_intent_graph_proposal(
+            &pool,
+            scaffold.run_id,
+            &scaffold.proposal_id,
+            &scaffold.tool_call_id,
+            &payload,
+            None,
+            None,
+            |a| a.to_string(),
+            crate::db::now_ms(),
+        )
+        .await;
+        assert!(
+            matches!(result, Err(ApplyError::InvalidMutation(_))),
+            "a create-mode JE node without a body is rejected"
+        );
+        // The tx rolled back: still only the seeded JE, and Priya never minted.
+        let je_rows: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM entities WHERE type = 'journal_entry'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(je_rows, 1, "no new JE minted on the rejected create");
+        let person_rows: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM entities WHERE type = 'person'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(person_rows, 0, "nothing minted — atomic rollback");
+    }
+
+    // The companion to the absent-body guard: a create-mode JE node with an EMPTY
+    // body array is rejected by the woven-body min-length validation (a JE body must
+    // have >= 1 node), again minting nothing.
+    #[tokio::test]
+    async fn create_mode_with_empty_body_is_rejected_and_mints_nothing() {
+        let pool = memory_pool().await;
+        let scaffold = seed_anchor_reuse(
+            &pool,
+            serde_json::json!([{ "type": "text", "text": "unrelated" }]),
+        )
+        .await;
+        let payload = serde_json::json!({
+            "journal_entry": { "handle": "@je", "occurred_at": "2026-06-11T09:00:00", "body": [] },
+            "entities": [{ "handle": "@priya", "type": "person", "name": "Priya" }],
+            "links": []
+        });
+        let result = apply_intent_graph_proposal(
+            &pool,
+            scaffold.run_id,
+            &scaffold.proposal_id,
+            &scaffold.tool_call_id,
+            &payload,
+            None,
+            None,
+            |a| a.to_string(),
+            crate::db::now_ms(),
+        )
+        .await;
+        assert!(
+            matches!(result, Err(ApplyError::InvalidMutation(_))),
+            "a create-mode JE node with an empty body is rejected"
+        );
+        let je_rows: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM entities WHERE type = 'journal_entry'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(je_rows, 1, "no new JE minted on the rejected empty-body create");
     }
 }

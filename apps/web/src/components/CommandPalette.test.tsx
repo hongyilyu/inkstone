@@ -84,6 +84,7 @@ const stub = WsClient.of({
 	settingsGet: die,
 	settingsSet: die,
 	proposalGet: die,
+	rescanJournalEntry: die,
 	proposalDecide: die,
 	proposalNotifications: () => Stream.empty,
 });

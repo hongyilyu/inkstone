@@ -354,14 +354,21 @@ const intentGraphBodyEntityRefNode = S.Struct({
 	target: handle,
 });
 
-/** The optional `journal_entry` node (journal-anchored capture). */
+/** The optional `journal_entry` node (journal-anchored capture). `body` is
+ * OPTIONAL: a CREATE node (no `existing_id`) carries the body the fresh entry
+ * weaves; an ANCHOR-REUSE node (`existing_id` set — the re-scan path) keeps the
+ * existing entry's stored body and re-emits no body. Mirrors the Rust optional
+ * `body` on the journal_entry node. */
 const intentGraphJournalEntry = S.Struct({
 	handle,
+	existing_id: S.optional(patternedUuid),
 	occurred_at: localDateTime,
 	ended_at: S.optional(localDateTime),
-	body: S.Array(
-		S.Union(intentGraphBodyTextNode, intentGraphBodyEntityRefNode),
-	).pipe(S.minItems(1, { description: undefined })),
+	body: S.optional(
+		S.Array(
+			S.Union(intentGraphBodyTextNode, intentGraphBodyEntityRefNode),
+		).pipe(S.minItems(1, { description: undefined })),
+	),
 });
 
 /** The three link kinds, declared todo_project→todo_person→journal_ref. */
@@ -380,6 +387,7 @@ const intentGraphJournalRefLink = S.Struct({
 	kind: S.Literal("journal_ref"),
 	from: handle,
 	to: handle,
+	match_text: S.optional(nonEmptyString),
 });
 
 /** `apply_intent_graph` payload: optional `journal_entry`, `>= 1` entity nodes,
