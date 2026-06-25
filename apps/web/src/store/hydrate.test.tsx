@@ -221,6 +221,7 @@ describe("refresh-durable hydration", () => {
 			settingsGet: () => Effect.die("unused"),
 			settingsSet: () => Effect.die("unused"),
 			proposalGet: () => Effect.die("unused"),
+			rescanJournalEntry: () => Effect.die("unused"),
 			proposalDecide: () => Effect.die("unused"),
 			messageSearch: () => Effect.die("unused"),
 			proposalNotifications: () => Stream.empty,
