@@ -31,6 +31,7 @@ function makeRuntime(
 		postMessage: () => unused,
 		threadList: () => unused,
 		getRunHistory: () => unused,
+		recurrencePreview: () => Effect.die("not exercised in this test"),
 		threadGet: () => unused,
 		listEntities: (type) => {
 			if (type === "project") return Effect.succeed({ entities: projects });
@@ -296,6 +297,7 @@ describe("ProjectReviewView (focused queue)", () => {
 			postMessage: () => never,
 			threadList: () => never,
 			getRunHistory: () => never,
+			recurrencePreview: () => Effect.die("not exercised in this test"),
 			threadGet: () => never,
 			listEntities: () => never,
 			getBacklinks: () => never,

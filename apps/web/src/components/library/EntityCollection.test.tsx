@@ -42,6 +42,7 @@ function makeRuntime(
 		postMessage: () => unused,
 		threadList: () => unused,
 		getRunHistory: () => unused,
+		recurrencePreview: () => Effect.die("not exercised in this test"),
 		threadGet: () => unused,
 		listEntities: (type) => {
 			if (type === "person") return Effect.succeed({ entities: people });
@@ -152,6 +153,7 @@ describe("EntityCollection", () => {
 			postMessage: () => Effect.die("unused"),
 			threadList: () => Effect.die("unused"),
 			getRunHistory: () => Effect.die("unused"),
+			recurrencePreview: () => Effect.die("not exercised in this test"),
 			threadGet: () => Effect.die("unused"),
 			listEntities: (type) =>
 				type === "todo"

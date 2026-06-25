@@ -15,12 +15,14 @@ import {
 	type TodoStatus,
 } from "@/lib/entityFields";
 import { useEntityMutation } from "@/lib/hooks/useEntityMutation";
-import type {
-	LibraryItem,
-	Person,
-	Project,
-	Todo,
-	TodoPersonRole,
+import { useRecurrenceNextDates } from "@/lib/hooks/useRecurrenceNextDates";
+import {
+	formatDay,
+	type LibraryItem,
+	type Person,
+	type Project,
+	type Todo,
+	type TodoPersonRole,
 } from "@/lib/libraryItems";
 import {
 	EditorField,
@@ -86,6 +88,9 @@ export function TodoEditor({ allEntities, onDone, onCancel, ...m }: Props) {
 		seedPersonRows(baselineRefs),
 	);
 	const mutation = useEntityMutation();
+	// The next occurrence's dates, resolved by Core (null when not previewable —
+	// Repeats off, anchor date absent, or End = Never). Drives the preview block.
+	const nextDates = useRecurrenceNextDates(draft);
 
 	const ids = {
 		title: useId(),
@@ -384,6 +389,37 @@ export function TodoEditor({ allEntities, onDone, onCancel, ...m }: Props) {
 						) : null}
 						{/* End-condition guidance lives in the frame's
 						    `disabledReason` (by Save), so it isn't duplicated here. */}
+
+						{/* Next-occurrence preview (#227): shown only for a bounded
+						    series (End != Never → nextDates is non-null), computed by
+						    Core's own date math. An ended series names itself; otherwise
+						    the successor's defer/due dates (date-only — the editor edits
+						    days, and every unit advances by whole days). */}
+						{nextDates ? (
+							<div className="flex flex-col gap-1.5 rounded-lg border border-input bg-card/40 px-3 py-2.5">
+								{nextDates.ended ? (
+									<p className="text-muted-foreground text-xs leading-relaxed">
+										No next occurrence — this is the last one.
+									</p>
+								) : (
+									<>
+										<p className="font-medium text-muted-foreground text-xs">
+											Dates for next occurrence
+										</p>
+										{nextDates.deferAt ? (
+											<p className="text-foreground text-sm">
+												Defer {formatDay(nextDates.deferAt)}
+											</p>
+										) : null}
+										{nextDates.dueAt ? (
+											<p className="text-foreground text-sm">
+												Due {formatDay(nextDates.dueAt)}
+											</p>
+										) : null}
+									</>
+								)}
+							</div>
+						) : null}
 					</>
 				) : null}
 			</div>

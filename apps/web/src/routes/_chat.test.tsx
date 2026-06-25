@@ -58,6 +58,7 @@ describe("_chat layout route (ADR-0042)", () => {
 						},
 					],
 				}),
+			recurrencePreview: () => unused,
 			threadGet: () => Effect.never,
 			listEntities: () => Effect.succeed({ entities: [] }),
 			getBacklinks: () => unused,

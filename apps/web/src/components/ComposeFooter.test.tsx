@@ -20,6 +20,7 @@ function makeRuntime() {
 		postMessage: die,
 		threadList: die,
 		getRunHistory: die,
+		recurrencePreview: () => Effect.die("not exercised in this test"),
 		threadGet: die,
 		listEntities: die,
 		getBacklinks: die,

@@ -25,6 +25,7 @@ function makeRuntime(
 		postMessage: () => unused,
 		threadList: () => unused,
 		getRunHistory,
+		recurrencePreview: () => unused,
 		threadGet: () => unused,
 		listEntities: () => unused,
 		getBacklinks: () => unused,

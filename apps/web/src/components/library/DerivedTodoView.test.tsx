@@ -20,6 +20,7 @@ function makeRuntime(todos: Rows, people: Rows = [], projects: Rows = []) {
 		postMessage: () => unused,
 		threadList: () => unused,
 		getRunHistory: () => unused,
+		recurrencePreview: () => Effect.die("not exercised in this test"),
 		threadGet: () => unused,
 		listEntities: (type) => {
 			if (type === "todo") return Effect.succeed({ entities: todos });

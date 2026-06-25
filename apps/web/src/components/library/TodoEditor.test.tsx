@@ -1,6 +1,7 @@
 import type {
 	EntityMutateParams,
 	EntityMutateResult,
+	RecurrencePreviewResult,
 } from "@inkstone/protocol";
 import { WsClient, type WsError } from "@inkstone/ui-sdk";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -13,11 +14,16 @@ import type { LibraryItem, Person, Project, Todo } from "@/lib/libraryItems";
 import { RuntimeProvider } from "@/runtime";
 import { TodoEditor } from "./TodoEditor";
 
-// Stub WsClient whose `entityMutate` records params and succeeds; unused methods die.
+// Stub WsClient whose `entityMutate` records params and succeeds; `recurrencePreview`
+// runs the supplied handler (defaults to dying); other methods die.
 function makeRuntime(
 	entityMutate: (
 		params: EntityMutateParams,
 	) => Effect.Effect<EntityMutateResult, WsError>,
+	recurrencePreview: () => Effect.Effect<
+		RecurrencePreviewResult,
+		WsError
+	> = () => Effect.die("not exercised in this test"),
 ) {
 	const unused = Effect.die("not exercised in this test");
 	const stub = WsClient.of({
@@ -25,6 +31,7 @@ function makeRuntime(
 		postMessage: () => unused,
 		threadList: () => unused,
 		getRunHistory: () => unused,
+		recurrencePreview,
 		threadGet: () => unused,
 		listEntities: () => unused,
 		getBacklinks: () => unused,
@@ -51,8 +58,9 @@ function renderEditor(
 		params: EntityMutateParams,
 	) => Effect.Effect<EntityMutateResult, WsError> = () =>
 		Effect.succeed({ entity_id: "01900000-0000-7000-8000-000000000099" }),
+	recurrencePreview?: () => Effect.Effect<RecurrencePreviewResult, WsError>,
 ) {
-	const runtime = makeRuntime(entityMutate);
+	const runtime = makeRuntime(entityMutate, recurrencePreview);
 	const client = new QueryClient({
 		defaultOptions: {
 			queries: { retry: false },
@@ -953,5 +961,81 @@ describe("TodoEditor recurrence", () => {
 			unit: "week",
 			anchor: "defer_at",
 		});
+	});
+});
+
+// Next-occurrence preview (#227): a bounded series (End != Never) reads
+// recurrence/preview and renders Core's computed dates, the terminal copy when
+// the series ends, and nothing when End = Never.
+describe("TodoEditor next-occurrence preview", () => {
+	const noMutate = () =>
+		Effect.succeed({ entity_id: "01900000-0000-7000-8000-000000000099" });
+
+	it("shows the next occurrence's dates for a bounded series", async () => {
+		const user = userEvent.setup();
+		const seen: unknown[] = [];
+		renderEditor(
+			{ mode: "create", allEntities, onDone: () => {}, onCancel: () => {} },
+			noMutate,
+			() => {
+				seen.push("called");
+				return Effect.succeed({
+					ended: false,
+					defer_at: "2026-07-08T00:00:00",
+					due_at: undefined,
+				});
+			},
+		);
+
+		await user.type(screen.getByLabelText(/title/i), "Weekly standup");
+		await user.type(screen.getByLabelText(/defer until/i), "2026-07-01");
+		await user.click(screen.getByLabelText(/repeats/i));
+		await user.selectOptions(screen.getByLabelText(/^end$/i), "after");
+		await user.type(screen.getByLabelText(/^times$/i), "10");
+
+		// The preview block names itself and renders the resolved defer date.
+		expect(await screen.findByText(/dates for next occurrence/i)).toBeTruthy();
+		await waitFor(() => expect(screen.getByText(/defer .*2026/i)).toBeTruthy());
+		expect(seen.length).toBeGreaterThan(0);
+	});
+
+	it("names the last occurrence when the series has ended", async () => {
+		const user = userEvent.setup();
+		renderEditor(
+			{ mode: "create", allEntities, onDone: () => {}, onCancel: () => {} },
+			noMutate,
+			() => Effect.succeed({ ended: true }),
+		);
+
+		await user.type(screen.getByLabelText(/title/i), "Final repeat");
+		await user.type(screen.getByLabelText(/defer until/i), "2026-07-01");
+		await user.click(screen.getByLabelText(/repeats/i));
+		await user.selectOptions(screen.getByLabelText(/^end$/i), "after");
+		await user.type(screen.getByLabelText(/^times$/i), "1");
+
+		expect(await screen.findByText(/this is the last one/i)).toBeTruthy();
+	});
+
+	it("renders no preview block while End is Never (unbounded series)", async () => {
+		const user = userEvent.setup();
+		const seen: unknown[] = [];
+		renderEditor(
+			{ mode: "create", allEntities, onDone: () => {}, onCancel: () => {} },
+			noMutate,
+			() => {
+				seen.push("called");
+				return Effect.succeed({ ended: false });
+			},
+		);
+
+		await user.type(screen.getByLabelText(/title/i), "Forever task");
+		await user.type(screen.getByLabelText(/defer until/i), "2026-07-01");
+		await user.click(screen.getByLabelText(/repeats/i));
+		// End defaults to Never: no preview, and the read never fires.
+		expect(screen.queryByText(/dates for next occurrence/i)).toBeNull();
+		expect(screen.queryByText(/this is the last one/i)).toBeNull();
+		// Give any erroneous query a tick to fire; it must not.
+		await new Promise((r) => setTimeout(r, 20));
+		expect(seen).toHaveLength(0);
 	});
 });

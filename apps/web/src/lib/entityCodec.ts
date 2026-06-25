@@ -498,6 +498,30 @@ function wirePersonRefs(
 }
 
 /**
+ * The `recurrence/preview` params for a draft (ADR-0039 amendment, #227), or
+ * `null` when there's nothing to preview — Repeats off, the anchor date absent,
+ * or End = "never" (an unbounded series has no meaningful "when does it stop"
+ * preview). The editor's hook gates its read on a non-null result. Reuses
+ * `buildRecurrence` so the previewed rule is byte-identical to what a save emits;
+ * the current anchor dates ride alongside (day granularity, like the build path).
+ */
+function buildRecurrencePreviewParams(d: TodoDraft): {
+	recurrence: Record<string, unknown>;
+	defer_at?: string;
+	due_at?: string;
+} | null {
+	if (!recurActive(d) || d.recurEnd === "never") return null;
+	const params: {
+		recurrence: Record<string, unknown>;
+		defer_at?: string;
+		due_at?: string;
+	} = { recurrence: buildRecurrence(d) };
+	if (d.deferDay) params.defer_at = dayToLocal(d.deferDay);
+	if (d.dueDay) params.due_at = dayToLocal(d.dueDay);
+	return params;
+}
+
+/**
  * Build the `create_todo` payload from a draft, OMITTING empty optionals (Core
  * rejects explicit-null on create — ADR-0031/slice-3). `person_refs` is included
  * only when at least one Person is linked.
@@ -1123,6 +1147,7 @@ export {
 	buildJournalReference,
 	buildPerson,
 	buildProject,
+	buildRecurrencePreviewParams,
 	buildTodo,
 	journalDraftFromVm,
 	journalScalarsDiffer,

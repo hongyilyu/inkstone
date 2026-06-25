@@ -15,6 +15,8 @@ import {
 	ProposalPendingNotification,
 	ProviderLoginStartResult,
 	ProviderStatusResult,
+	type RecurrencePreviewParams,
+	RecurrencePreviewResult,
 	RunCancelResult,
 	type RunEvent,
 	RunEvent as RunEventSchema,
@@ -165,6 +167,9 @@ export class WsClient extends Context.Tag("@inkstone/ui-sdk/WsClient")<
 		readonly getRunHistory: (
 			limit?: number,
 		) => Effect.Effect<RunHistoryResult, WsError>;
+		readonly recurrencePreview: (
+			params: RecurrencePreviewParams,
+		) => Effect.Effect<RecurrencePreviewResult, WsError>;
 		readonly threadGet: (
 			threadId: string,
 		) => Effect.Effect<ThreadGetResult, WsError>;
@@ -430,6 +435,15 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 					RunHistoryResult,
 				);
 
+			// recurrence/preview (ADR-0039 amendment, #227): preview the next
+			// occurrence of a draft Recurrence Rule. Read-only — the editor sends an
+			// in-progress rule + the Todo's current anchor dates and renders the
+			// returned dates (or `ended`). `recurrence` rides as the opaque rule object.
+			const recurrencePreview = (
+				params: RecurrencePreviewParams,
+			): Effect.Effect<RecurrencePreviewResult, WsError> =>
+				request("recurrence/preview", { ...params }, RecurrencePreviewResult);
+
 			const threadGet = (
 				threadId: string,
 			): Effect.Effect<ThreadGetResult, WsError> =>
@@ -539,6 +553,7 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 				postMessage,
 				threadList,
 				getRunHistory,
+				recurrencePreview,
 				threadGet,
 				listEntities,
 				getBacklinks,
