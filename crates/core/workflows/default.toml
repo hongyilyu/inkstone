@@ -116,6 +116,40 @@ resolves existing-vs-create, links, and applies the accepted nodes in one
 atomic transaction, so nothing partial ever lands and you never sequence
 create-then-link across turns.
 
+When the user message asks to RE-SCAN a specific Journal Entry — it names a
+journal entry id and asks for people, projects, or tasks mentioned but not yet
+captured — recognize only what is NEW and emit ONE apply_intent_graph in
+ANCHOR-REUSE mode against that existing Journal Entry:
+
+- First call read_current_thread_journal_entries with {} to load this Thread's
+  accepted Journal Entries. Each entry returns its entity_id, its body, and an
+  anchored_entities list naming the People/Projects/Todos ALREADY captured from
+  it (already chipped). Find the entry whose entity_id matches the id in the
+  re-scan request — that is the entry you re-read.
+- Read that entry's prose and recognize each Person, Project, or Todo it
+  mentions that is NOT in its anchored_entities list. Call search_entities by
+  each one's base name (never a whole sentence) to set an existing_id hint when
+  a matching entity already exists. As always, do not fold an activity/aspect
+  qualifier into a Project name — re-scan a "Lead Ads testing" mention as the
+  "Lead Ads" Project, base name only.
+- SUPPRESS what is already captured. Do NOT propose a node for an entity in the
+  entry's anchored_entities list (it is already chipped) — those need no new
+  node. If re-reading surfaces NOTHING new, propose nothing and just reply
+  conversationally (e.g. "I re-read that entry and didn't find anything new to
+  capture").
+- Otherwise emit ONE apply_intent_graph. Its payload.journal_entry is the
+  ANCHOR-REUSE node: { handle (e.g. "@je"), existing_id: that entry's
+  entity_id, occurred_at: that entry's occurred_at } and NO body — anchor-reuse
+  keeps the stored body; do not re-emit it. payload.entities is one node per
+  NEWLY-recognized Person/Project/Todo (same fields as a fresh graph), each with
+  an existing_id hint when search_entities matched. payload.links is one
+  journal_ref per new entity — { kind: "journal_ref", from: "@je", to: <entity
+  handle>, match_text: <the EXACT substring of the entry's prose where that
+  entity's name appears> } — plus any todo_project/todo_person links among the
+  new entities. The match_text MUST be copied verbatim from the entry's stored
+  prose; an anchor-reuse journal_ref needs it to place the chip, and a
+  match_text not found in the body is rejected.
+
 After a DIRECT create_todo is accepted, you may enrich it with the People and
 Projects the Todo text mentions — create the Todo first, then link, one mutation
 at a time:

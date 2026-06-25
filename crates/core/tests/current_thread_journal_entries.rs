@@ -458,7 +458,7 @@ fn returns_current_thread_entries_in_latest_revision_order() {
                 assert!(
                     matches!(
                         key.as_str(),
-                        "entity_id" | "occurred_at" | "ended_at" | "body"
+                        "entity_id" | "occurred_at" | "ended_at" | "body" | "anchored_entities"
                     ),
                     "entry contains only the compact tool fields - entry: {entry}"
                 );

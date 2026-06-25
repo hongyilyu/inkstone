@@ -257,6 +257,21 @@ fn default_workflow_prompts_for_capture_intent_boundary() {
             && !lower.contains("from that accepted journal entry"),
         "default.toml system_prompt must keep pure-prose journaling on create_journal_entry and drop the old per-entity/JE-accepted-first sequencing, got: {system_prompt:?}"
     );
+    // Re-scan recognition (ADR-0042, slice 6): a message naming a journal entry id
+    // and asking for mentioned-but-uncaptured entities must route to ONE
+    // apply_intent_graph in ANCHOR-REUSE mode — read the current-thread entries,
+    // recognize only what's NEW, splice each via a journal_ref match_text, suppress
+    // anything already anchored, and propose nothing when nothing new is found.
+    assert!(
+        lower.contains("re-scan")
+            && lower.contains("anchored_entities")
+            && lower.contains("existing_id: that entry")
+            && lower.contains("no body")
+            && lower.contains("match_text")
+            && lower.contains("suppress")
+            && lower.contains("propose nothing"),
+        "default.toml system_prompt must describe re-scanning a Journal Entry in anchor-reuse mode (read anchored_entities, reuse existing_id with no body, splice via match_text, suppress already-captured, propose nothing when nothing is new), got: {system_prompt:?}"
+    );
     let tools = doc
         .get("tools")
         .and_then(|v| v.as_array())

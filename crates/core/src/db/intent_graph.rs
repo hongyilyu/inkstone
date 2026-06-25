@@ -793,10 +793,17 @@ async fn weave_and_mint_journal_entry(
     // it against the same per-node content rules the client codec enforces before
     // minting — so a future weave bug fails loud as InvalidMutation rather than
     // persisting a body (e.g. an empty text node) that the advertised schema forbids
-    // and that would later black out the client's Library read.
-    if let Some(body) = payload.get("body") {
-        crate::entities::validate_woven_journal_body(body).map_err(ApplyError::InvalidMutation)?;
-    }
+    // and that would later black out the client's Library read. A CREATE-mode JE
+    // (this function — `existing_id` is None) MUST carry a body: the journal_entry
+    // node's `body` is schema-OPTIONAL only to let an ANCHOR-REUSE node omit it
+    // (that path keeps the stored body and never reaches here), so a body-less
+    // create node is rejected here rather than minting an empty Journal Entry.
+    let body = payload.get("body").ok_or_else(|| {
+        ApplyError::InvalidMutation(
+            "intent graph journal_entry create node must carry a body".to_string(),
+        )
+    })?;
+    crate::entities::validate_woven_journal_body(body).map_err(ApplyError::InvalidMutation)?;
 
     // 3. Mint the JE entity (its only write) with the woven body + the guard row.
     let woven_je = ResolvedCreate {
@@ -2939,5 +2946,96 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(je_rows, 2, "create-mode added a second JE row");
+    }
+
+    // The body field went OPTIONAL on the JE node so an ANCHOR-REUSE proposal can
+    // omit it (Core keeps the stored body). The create-mode guard pins that a
+    // create-mode JE node (no existing_id) STILL must carry a body: an ABSENT body
+    // fails loud as InvalidMutation, the tx rolls back, and no JE is minted. Without
+    // this test the guard could be reordered/removed in a refactor and the schema
+    // relaxation would silently let a bodyless JE mint.
+    #[tokio::test]
+    async fn create_mode_without_body_is_rejected_and_mints_nothing() {
+        let pool = memory_pool().await;
+        let scaffold = seed_anchor_reuse(
+            &pool,
+            serde_json::json!([{ "type": "text", "text": "unrelated" }]),
+        )
+        .await;
+        // create mode (no existing_id) + NO body on the JE node.
+        let payload = serde_json::json!({
+            "journal_entry": { "handle": "@je", "occurred_at": "2026-06-11T09:00:00" },
+            "entities": [{ "handle": "@priya", "type": "person", "name": "Priya" }],
+            "links": []
+        });
+        let result = apply_intent_graph_proposal(
+            &pool,
+            scaffold.run_id,
+            &scaffold.proposal_id,
+            &scaffold.tool_call_id,
+            &payload,
+            None,
+            None,
+            |a| a.to_string(),
+            crate::db::now_ms(),
+        )
+        .await;
+        assert!(
+            matches!(result, Err(ApplyError::InvalidMutation(_))),
+            "a create-mode JE node without a body is rejected"
+        );
+        // The tx rolled back: still only the seeded JE, and Priya never minted.
+        let je_rows: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM entities WHERE type = 'journal_entry'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(je_rows, 1, "no new JE minted on the rejected create");
+        let person_rows: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM entities WHERE type = 'person'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(person_rows, 0, "nothing minted — atomic rollback");
+    }
+
+    // The companion to the absent-body guard: a create-mode JE node with an EMPTY
+    // body array is rejected by the woven-body min-length validation (a JE body must
+    // have >= 1 node), again minting nothing.
+    #[tokio::test]
+    async fn create_mode_with_empty_body_is_rejected_and_mints_nothing() {
+        let pool = memory_pool().await;
+        let scaffold = seed_anchor_reuse(
+            &pool,
+            serde_json::json!([{ "type": "text", "text": "unrelated" }]),
+        )
+        .await;
+        let payload = serde_json::json!({
+            "journal_entry": { "handle": "@je", "occurred_at": "2026-06-11T09:00:00", "body": [] },
+            "entities": [{ "handle": "@priya", "type": "person", "name": "Priya" }],
+            "links": []
+        });
+        let result = apply_intent_graph_proposal(
+            &pool,
+            scaffold.run_id,
+            &scaffold.proposal_id,
+            &scaffold.tool_call_id,
+            &payload,
+            None,
+            None,
+            |a| a.to_string(),
+            crate::db::now_ms(),
+        )
+        .await;
+        assert!(
+            matches!(result, Err(ApplyError::InvalidMutation(_))),
+            "a create-mode JE node with an empty body is rejected"
+        );
+        let je_rows: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM entities WHERE type = 'journal_entry'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(je_rows, 1, "no new JE minted on the rejected empty-body create");
     }
 }

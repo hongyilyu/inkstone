@@ -610,6 +610,13 @@ fn graph_body_nodes() -> FieldSpec {
 /// The optional `journal_entry` node: its own handle, the occurred/ended
 /// timestamps, and a body of text/entity_ref nodes (entity_ref `target`s are
 /// handles). Present for journal-anchored capture, absent for direct capture.
+///
+/// `body` is OPTIONAL because the node has two modes (ADR-0042): a CREATE node
+/// (no `existing_id`) carries the body the fresh Journal Entry weaves and mints;
+/// an ANCHOR-REUSE node (`existing_id` set — the re-scan path) keeps the EXISTING
+/// entry's stored body and re-emits NO body. The resolver enforces the mode rule
+/// — create-mode fails loud at apply if its woven body is empty/absent
+/// (`validate_woven_journal_body`), anchor-reuse ignores any body.
 fn intent_graph_journal_entry_node() -> PayloadSpec {
     PayloadSpec::nested(
         "intent graph journal entry",
@@ -619,7 +626,7 @@ fn intent_graph_journal_entry_node() -> PayloadSpec {
             Field::optional("existing_id", FieldSpec::Uuid { schema_regex: true }),
             Field::datetime("occurred_at").require(),
             Field::datetime("ended_at"),
-            Field::required("body", graph_body_nodes()),
+            Field::optional("body", graph_body_nodes()),
         ],
     )
 }

@@ -204,8 +204,7 @@
       },
       "required": [
         "handle",
-        "occurred_at",
-        "body"
+        "occurred_at"
       ],
       "type": "object"
     },
