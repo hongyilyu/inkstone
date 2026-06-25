@@ -391,6 +391,35 @@ describe("TodoRow", () => {
 			expect(arg.payload).not.toHaveProperty("set_person_refs");
 		});
 
+		// (b″) Regression lock for the trim asymmetry: a stored Todo whose title/note
+		// carries surrounding whitespace (Core never trims on store) must STILL defer
+		// to a pure `defer_at` diff — the build must not silently re-title or clear the
+		// note. Drop the both-sides trim in buildUpdateParams and this goes red with a
+		// spurious `title` (and a destructive `note: null`).
+		it("emits a defer-only payload even when the stored title/note has whitespace", async () => {
+			const base = todo("todo_estimate");
+			const ref = { ...base, title: "Chase Marco  ", note: "  " };
+
+			const entityMutate = vi.fn<EntityMutate>(() =>
+				Effect.succeed({ entity_id: ref.id }),
+			);
+			renderTodoRow(
+				<TodoRow todo={ref} onSelect={() => {}} onQuickDefer={() => {}} />,
+				entityMutate,
+			);
+
+			const user = userEvent.setup();
+			await user.click(screen.getByRole("button", { name: /defer todo/i }));
+			await user.click(screen.getByRole("button", { name: /^tomorrow$/i }));
+
+			await waitFor(() => expect(entityMutate).toHaveBeenCalledTimes(1));
+			const arg = entityMutate.mock.calls[0]?.[0] as EntityMutateParams;
+			expect(arg.mutation_kind).toBe("update_todo");
+			const payload = arg.payload as { todo: Record<string, unknown> };
+			// Whitespace title/note must NOT leak into a defer-only edit.
+			expect(Object.keys(payload.todo)).toEqual(["defer_at"]);
+		});
+
 		// (c) "Pick a date…" reveals a native date input; committing a day fires
 		// defer_at = <chosen-day>T00:00:00.
 		it("defers to a picked date via the date input", async () => {
