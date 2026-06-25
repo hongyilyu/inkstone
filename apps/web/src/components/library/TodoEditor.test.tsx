@@ -549,6 +549,41 @@ describe("TodoEditor edit", () => {
 		).map((o) => (o as HTMLOptionElement).value);
 		expect(row0Options).toContain(alice.id);
 	});
+
+	// A blank (added-but-no-person-chosen) row must NOT reach the wire — the codec
+	// pass-through trusts the editor to filter it, so Core never sees person_id:""
+	// (which it rejects). This pins the submit-time filter that upholds that contract.
+	it("omits a blank person row, emitting only the chosen ref", async () => {
+		const user = userEvent.setup();
+		const seen: EntityMutateParams[] = [];
+		renderEditor(
+			{
+				mode: "edit",
+				todo: existing,
+				allEntities: [...allEntities, bob],
+				onDone: () => {},
+				onCancel: () => {},
+			},
+			(params) => {
+				seen.push(params);
+				return Effect.succeed({ entity_id: existing.id });
+			},
+		);
+
+		// Row 0 → Alice; row 1 added but left on "Choose a person" (blank).
+		await user.click(screen.getByRole("button", { name: /add person/i }));
+		await user.selectOptions(screen.getByLabelText(/^person$/i), alice.id);
+		await user.click(screen.getByRole("button", { name: /add person/i }));
+		await user.click(screen.getByRole("button", { name: /^save$/i }));
+
+		await waitFor(() => expect(seen).toHaveLength(1));
+		const refs = (seen[0].payload as { set_person_refs: unknown[] })
+			.set_person_refs;
+		// Only Alice (a new row defaults to `related`) — the blank row is filtered,
+		// so no `person_id: ""` reaches Core.
+		expect(refs).toEqual([{ person_id: alice.id, role: "related" }]);
+		expect(JSON.stringify(refs)).not.toContain('"person_id":""');
+	});
 });
 
 describe("TodoEditor recurrence", () => {

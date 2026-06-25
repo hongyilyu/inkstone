@@ -67,10 +67,11 @@ export function TodoEditor({ allEntities, onDone, onCancel, ...m }: Props) {
 	const existing = m.mode === "edit" ? m.todo : undefined;
 	const baseline = todoDraftFromVm(existing);
 	const [draft, setDraft] = useState<TodoDraft>(baseline);
-	// The person-reference ROWS are the UI source of truth (they hold blank,
-	// not-yet-chosen rows the codec must not see); `draft.personRefs` is derived
-	// from them on every mutation, filtering empty rows out. Seeded once from the
-	// baseline so an existing Todo opens with one row per stored ref.
+	// The person-reference ROWS are the SOLE source of truth for the People field
+	// (they hold blank, not-yet-chosen rows the codec must not see). `draft` never
+	// mirrors them — `submit` derives the ref set from these rows once, at save
+	// time. Seeded from the baseline so an existing Todo opens with one row per
+	// stored ref.
 	const [personRows, setPersonRows] = useState<PersonRow[]>(() =>
 		seedPersonRows(baseline.personRefs),
 	);
@@ -97,24 +98,9 @@ export function TodoEditor({ allEntities, onDone, onCancel, ...m }: Props) {
 	const set = <K extends keyof TodoDraft>(key: K, value: TodoDraft[K]) =>
 		setDraft((d) => ({ ...d, [key]: value }));
 
-	// Apply a rows transform and re-derive the draft's ref set from it — blank
-	// (no-person) rows live only in the UI and are filtered out so the codec never
-	// emits a `person_id: ""` Core would reject.
-	const updatePersonRows = (next: (rows: PersonRow[]) => PersonRow[]) =>
-		setPersonRows((rows) => {
-			const updated = next(rows);
-			set(
-				"personRefs",
-				updated
-					.filter((r) => r.personId !== "")
-					.map((r) => ({ personId: r.personId, role: r.role })),
-			);
-			return updated;
-		});
-
 	// A new row defaults to `related` and no person yet; the user picks the person.
 	const addPersonRow = () =>
-		updatePersonRows((rows) => [
+		setPersonRows((rows) => [
 			...rows,
 			{ key: nextPersonRowKey++, personId: "", role: "related" },
 		]);
@@ -122,11 +108,11 @@ export function TodoEditor({ allEntities, onDone, onCancel, ...m }: Props) {
 		key: number,
 		patch: Partial<Omit<PersonRow, "key">>,
 	) =>
-		updatePersonRows((rows) =>
+		setPersonRows((rows) =>
 			rows.map((r) => (r.key === key ? { ...r, ...patch } : r)),
 		);
 	const removePersonRow = (key: number) =>
-		updatePersonRows((rows) => rows.filter((r) => r.key !== key));
+		setPersonRows((rows) => rows.filter((r) => r.key !== key));
 
 	// Toggling Repeats on defaults the anchor to whichever date the Todo already
 	// has (due preferred), so the emitted rule's anchor date is present (ADR-0037).
@@ -156,9 +142,19 @@ export function TodoEditor({ allEntities, onDone, onCancel, ...m }: Props) {
 
 	const submit = () => {
 		if (saveBlock !== null) return;
+		// Derive the ref set from the rows at save time — blank (no-person) rows
+		// live only in the UI and are filtered out so the codec never emits a
+		// `person_id: ""` Core would reject. This is the single point the rows feed
+		// the draft, so the two can't drift mid-edit.
+		const toSave: TodoDraft = {
+			...draft,
+			personRefs: personRows
+				.filter((r) => r.personId !== "")
+				.map((r) => ({ personId: r.personId, role: r.role })),
+		};
 		const params = existing
-			? buildTodo({ mode: "update", existing, baseline, draft })
-			: buildTodo({ mode: "create", draft });
+			? buildTodo({ mode: "update", existing, baseline, draft: toSave })
+			: buildTodo({ mode: "create", draft: toSave });
 		if (params === null) {
 			// Nothing changed — close without a write.
 			onDone(existing?.id ?? draft.title);
