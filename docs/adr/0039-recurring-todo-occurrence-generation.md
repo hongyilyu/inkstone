@@ -157,11 +157,15 @@ clamp, overflow guards, and inclusive-`until` semantics are subtle), the preview
   and the `CANONICAL_MESSAGES` completeness lock — the gate reds otherwise. This
   is the one parity-gate slice in the otherwise web-only #225–#227 set; it is
   sequenced alone.
-- **Date-only preview.** The editor edits days, not times, and every unit
-  advances by whole days/months/years, so the successor's *date* is invariant to
-  the stored time-of-day — the preview shows the date, matching Core exactly with
-  no time-preservation logic. The preview block shows only when **End ≠ Never**
-  (a bounded series is where "when does it stop / what's next" is meaningful).
+- **Date-granularity preview.** The editor edits days, not times, and the
+  day-and-up units (`day`/`week`/`month`/`year`) advance by whole days, so the
+  successor's *date* is invariant to the stored time-of-day — those render
+  **date-only**, matching Core with no time-preservation logic. The sub-day units
+  (`minute`/`hour`) advance by a time span, so two occurrences can share a date;
+  those render **date + time** so the preview doesn't print the same value twice.
+  The preview block shows only when **End ≠ Never** (a bounded series is where
+  "when does it stop / what's next" is meaningful) and the chosen end + interval
+  are complete (an incomplete bound would otherwise preview an unbounded rule).
 - **`until` granularity.** A freshly chosen or day-changed `On date` writes
   `until` at day granularity (`YYYY-MM-DDT00:00:00`), consistent with the
   date-only `due_at` / `defer_at` it sits beside. But a Todo whose stored `until`
