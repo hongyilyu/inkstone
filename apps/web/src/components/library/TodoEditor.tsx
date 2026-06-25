@@ -98,6 +98,9 @@ export function TodoEditor({ allEntities, onDone, onCancel, ...m }: Props) {
 		recurInterval: useId(),
 		recurUnit: useId(),
 		recurAnchor: useId(),
+		recurEnd: useId(),
+		recurUntil: useId(),
+		recurAfterCount: useId(),
 	};
 
 	const people = allEntities.filter((e): e is Person => e.kind === "person");
@@ -148,6 +151,14 @@ export function TodoEditor({ allEntities, onDone, onCancel, ...m }: Props) {
 			// Repeats on but the anchor's date absent: Core would reject the rule.
 			if (!recurAnchorDatePresent(draft))
 				return `Set the ${draft.recurAnchor === "due_at" ? "due" : "defer"} date to save this repeat`;
+			// End condition chosen but its value missing/invalid.
+			if (draft.recurEnd === "until" && draft.recurUntilDay === "")
+				return "Set the end date for this repeat";
+			if (draft.recurEnd === "after") {
+				const count = Number(draft.recurAfterCount);
+				if (!Number.isInteger(count) || count < 1)
+					return "Enter a whole number of repeats of 1 or more";
+			}
 		}
 		return null;
 	})();
@@ -330,6 +341,48 @@ export function TodoEditor({ allEntities, onDone, onCancel, ...m }: Props) {
 							</p>
 						</EditorField>
 						{/* The anchor-missing guidance now lives in the frame's
+						    `disabledReason` (by Save), so it isn't duplicated here. */}
+
+						<EditorField label="End" htmlFor={ids.recurEnd}>
+							<EditorSelect
+								id={ids.recurEnd}
+								value={draft.recurEnd}
+								onChange={(e) =>
+									set("recurEnd", e.target.value as TodoDraft["recurEnd"])
+								}
+							>
+								<option value="never">Never</option>
+								<option value="until">On date</option>
+								<option value="after">After</option>
+							</EditorSelect>
+						</EditorField>
+
+						{draft.recurEnd === "until" ? (
+							<EditorField label="End date" htmlFor={ids.recurUntil}>
+								<EditorInput
+									id={ids.recurUntil}
+									type="date"
+									value={draft.recurUntilDay}
+									onChange={(e) => set("recurUntilDay", e.target.value)}
+								/>
+							</EditorField>
+						) : null}
+
+						{draft.recurEnd === "after" ? (
+							<EditorField label="Times" htmlFor={ids.recurAfterCount}>
+								<EditorInput
+									id={ids.recurAfterCount}
+									type="number"
+									min={1}
+									value={draft.recurAfterCount}
+									onChange={(e) => set("recurAfterCount", e.target.value)}
+								/>
+								<p className="text-muted-foreground text-xs leading-relaxed">
+									How many times in total, counting down as each occurs.
+								</p>
+							</EditorField>
+						) : null}
+						{/* End-condition guidance lives in the frame's
 						    `disabledReason` (by Save), so it isn't duplicated here. */}
 					</>
 				) : null}

@@ -624,6 +624,74 @@ describe("TodoEditor recurrence", () => {
 		});
 	});
 
+	// End condition (#227): choosing "On date" reveals the date field and folds
+	// {until} into the rule the editor sends.
+	it("emits an `until` end condition when End is set to a date", async () => {
+		const user = userEvent.setup();
+		const seen: EntityMutateParams[] = [];
+		renderEditor(
+			{ mode: "create", allEntities, onDone: () => {}, onCancel: () => {} },
+			(params) => {
+				seen.push(params);
+				return Effect.succeed({
+					entity_id: "01900000-0000-7000-8000-000000000099",
+				});
+			},
+		);
+
+		await user.type(screen.getByLabelText(/title/i), "Weekly standup");
+		await user.type(screen.getByLabelText(/defer until/i), "2026-07-01");
+		await user.click(screen.getByLabelText(/repeats/i));
+		await user.selectOptions(screen.getByLabelText(/^end$/i), "until");
+		await user.type(screen.getByLabelText(/end date/i), "2026-12-31");
+		await user.click(screen.getByRole("button", { name: /^save$/i }));
+
+		await waitFor(() => expect(seen).toHaveLength(1));
+		const todo = (seen[0].payload as { todo: Record<string, unknown> }).todo;
+		expect(todo.recurrence).toEqual({
+			interval: 1,
+			unit: "week",
+			anchor: "defer_at",
+			end: { until: "2026-12-31T00:00:00" },
+		});
+	});
+
+	// End="After" with no count yet keeps Save disabled (the count guard), then
+	// enables once a positive integer is entered and folds {after_count}.
+	it("gates Save on the After count, then emits after_count", async () => {
+		const user = userEvent.setup();
+		const seen: EntityMutateParams[] = [];
+		renderEditor(
+			{ mode: "create", allEntities, onDone: () => {}, onCancel: () => {} },
+			(params) => {
+				seen.push(params);
+				return Effect.succeed({
+					entity_id: "01900000-0000-7000-8000-000000000099",
+				});
+			},
+		);
+
+		await user.type(screen.getByLabelText(/title/i), "Take pills");
+		await user.type(screen.getByLabelText(/defer until/i), "2026-07-01");
+		await user.click(screen.getByLabelText(/repeats/i));
+		await user.selectOptions(screen.getByLabelText(/^end$/i), "after");
+		// The After count starts empty → Save is blocked.
+		const save = screen.getByRole("button", { name: /^save$/i });
+		expect(save).toBeDisabled();
+		await user.type(screen.getByLabelText(/^times$/i), "10");
+		await waitFor(() => expect(save).toBeEnabled());
+		await user.click(save);
+
+		await waitFor(() => expect(seen).toHaveLength(1));
+		const todo = (seen[0].payload as { todo: Record<string, unknown> }).todo;
+		expect(todo.recurrence).toEqual({
+			interval: 1,
+			unit: "week",
+			anchor: "defer_at",
+			end: { after_count: 10 },
+		});
+	});
+
 	// Repeats off must omit `recurrence` entirely on create (never explicit null —
 	// Core rejects null on create, ADR-0031/slice-3).
 	it("omits recurrence on create when Repeats is off", async () => {

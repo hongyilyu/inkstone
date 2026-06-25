@@ -379,11 +379,16 @@ export interface TodoDraft {
 	recurUnit: RecurrenceUnit;
 	recurAnchor: RecurAnchor;
 	/**
-	 * The loaded rule's unsurfaced `end` condition, stashed verbatim (re-snaked)
-	 * so an edit that only touches the common path round-trips it untouched
-	 * through the whole-object replace (ADR-0037 UI scope).
+	 * The recurrence END condition (ADR-0037/0039 amendment, #227), surfaced as a
+	 * single mutually-exclusive choice — Core enforces at-most-one of until /
+	 * after_count. `"never"` → no `end`; `"until"` drives `recurUntilDay`;
+	 * `"after"` drives `recurAfterCount`.
 	 */
-	recurExtra?: { end?: unknown };
+	recurEnd: "never" | "until" | "after";
+	/** The `until` bound as a `YYYY-MM-DD` UI date (day granularity, like `dueDay`). */
+	recurUntilDay: string;
+	/** The `after_count` as text, like `recurInterval` — coerced to a number on build. */
+	recurAfterCount: string;
 }
 
 /** A `YYYY-MM-DD` UI date → the `YYYY-MM-DDTHH:MM:SS` wall-clock string Core wants. */
@@ -392,19 +397,31 @@ function dayToLocal(day: string): string {
 }
 
 /**
- * Re-snake the rule's unsurfaced `end` condition so it round-trips into the
- * emitted rule byte-for-byte. The editor never surfaces `end` (ADR-0037), but
- * recurrence is replaced as a whole object, so dropping it on a common-path edit
- * would silently lose stored state.
+ * Read a loaded rule's `end` condition into the three flat draft fields
+ * (ADR-0037/0039 amendment, #227). `until`/`after_count` are mutually exclusive
+ * (Core enforces it), so `recurEnd` picks the active branch and the unused day /
+ * count field stays blank.
  */
-function stashRecurExtra(
-	rule: NonNullable<Todo["recurrence"]>,
-): TodoDraft["recurExtra"] {
-	if (!rule.end) return undefined;
-	const end: Record<string, unknown> = {};
-	if (rule.end.until !== undefined) end.until = rule.end.until;
-	if (rule.end.afterCount !== undefined) end.after_count = rule.end.afterCount;
-	return { end };
+function endFieldsFromRule(rule: Todo["recurrence"]): {
+	recurEnd: TodoDraft["recurEnd"];
+	recurUntilDay: string;
+	recurAfterCount: string;
+} {
+	if (rule?.end?.until !== undefined) {
+		return {
+			recurEnd: "until",
+			recurUntilDay: rule.end.until.slice(0, 10),
+			recurAfterCount: "",
+		};
+	}
+	if (rule?.end?.afterCount !== undefined) {
+		return {
+			recurEnd: "after",
+			recurUntilDay: "",
+			recurAfterCount: String(rule.end.afterCount),
+		};
+	}
+	return { recurEnd: "never", recurUntilDay: "", recurAfterCount: "" };
 }
 
 /** The editable draft for a Todo (or a fresh blank draft when `todo` is absent). */
@@ -427,7 +444,7 @@ function todoDraftFromVm(todo: Todo | undefined): TodoDraft {
 		recurInterval: rule ? String(rule.interval) : "1",
 		recurUnit: rule?.unit ?? "week",
 		recurAnchor: rule?.anchor ?? "defer_at",
-		recurExtra: rule ? stashRecurExtra(rule) : undefined,
+		...endFieldsFromRule(rule),
 	};
 }
 
@@ -450,8 +467,12 @@ function recurActive(d: TodoDraft): boolean {
 
 /**
  * The snake_case recurrence rule for the payload: the common path the editor
- * drives (interval/unit/anchor) plus the stashed `end` it round-trips untouched
- * (ADR-0037/0039). Assumes `recurActive(d)` — callers gate on it.
+ * drives (interval/unit/anchor) plus the END condition the user chose
+ * (ADR-0037/0039 amendment, #227). `recurEnd` is mutually exclusive — `"until"`
+ * folds `{until}` at day granularity (`T00:00:00`, like due/defer), `"after"`
+ * folds `{after_count}`, `"never"` omits `end` entirely. Assumes `recurActive(d)`
+ * — callers gate on it. An incomplete end (e.g. `"after"` with a non-positive
+ * count) is dropped here too; the editor's Save-block guards it for UX.
  */
 function buildRecurrence(d: TodoDraft): Record<string, unknown> {
 	const rule: Record<string, unknown> = {
@@ -459,7 +480,13 @@ function buildRecurrence(d: TodoDraft): Record<string, unknown> {
 		unit: d.recurUnit,
 		anchor: d.recurAnchor,
 	};
-	if (d.recurExtra?.end !== undefined) rule.end = d.recurExtra.end;
+	if (d.recurEnd === "until" && d.recurUntilDay) {
+		rule.end = { until: dayToLocal(d.recurUntilDay) };
+	} else if (d.recurEnd === "after") {
+		const count = Number(d.recurAfterCount);
+		if (Number.isInteger(count) && count >= 1)
+			rule.end = { after_count: count };
+	}
 	return rule;
 }
 

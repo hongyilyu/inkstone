@@ -712,6 +712,116 @@ describe("entityCodec build — todo create", () => {
 		expect(todo).not.toHaveProperty("recurrence");
 	});
 
+	// End condition (#227): the editor's End dropdown folds into rule.end.
+	it("folds an `until` end condition at day granularity", () => {
+		const params = buildTodo({
+			mode: "create",
+			draft: draft({
+				title: "Weekly standup",
+				deferDay: "2026-07-01",
+				recurs: true,
+				recurAnchor: "defer_at",
+				recurEnd: "until",
+				recurUntilDay: "2026-12-31",
+			}),
+		});
+		const todo = (params?.payload as { todo: Record<string, unknown> }).todo;
+		expect(todo.recurrence).toEqual({
+			interval: 1,
+			unit: "week",
+			anchor: "defer_at",
+			end: { until: "2026-12-31T00:00:00" },
+		});
+	});
+
+	it("folds an `after_count` end condition from the count field", () => {
+		const params = buildTodo({
+			mode: "create",
+			draft: draft({
+				title: "Take pills",
+				deferDay: "2026-07-01",
+				recurs: true,
+				recurAnchor: "defer_at",
+				recurEnd: "after",
+				recurAfterCount: "10",
+			}),
+		});
+		const todo = (params?.payload as { todo: Record<string, unknown> }).todo;
+		expect(todo.recurrence).toEqual({
+			interval: 1,
+			unit: "week",
+			anchor: "defer_at",
+			end: { after_count: 10 },
+		});
+	});
+
+	it("omits `end` when the End choice is `never` (the two are mutually exclusive)", () => {
+		const params = buildTodo({
+			mode: "create",
+			draft: draft({
+				title: "Forever task",
+				deferDay: "2026-07-01",
+				recurs: true,
+				recurAnchor: "defer_at",
+				recurEnd: "never",
+				// Stale values in the unused branches must not leak into the rule.
+				recurUntilDay: "2026-12-31",
+				recurAfterCount: "10",
+			}),
+		});
+		const todo = (params?.payload as { todo: Record<string, unknown> }).todo;
+		expect(todo.recurrence).toEqual({
+			interval: 1,
+			unit: "week",
+			anchor: "defer_at",
+		});
+		expect(todo.recurrence).not.toHaveProperty("end");
+	});
+
+	it("reads a stored `until` end back into the draft fields", () => {
+		const d = todoDraftFromVm({
+			id: "t_u",
+			kind: "todo",
+			title: "Bounded",
+			status: "active",
+			personRefs: [],
+			recency: 1,
+			createdAt: "fixture",
+			deferAt: "2026-07-01T00:00:00",
+			recurrence: {
+				interval: 1,
+				unit: "week",
+				anchor: "defer_at",
+				end: { until: "2026-12-31T00:00:00" },
+			},
+		});
+		expect(d.recurEnd).toBe("until");
+		expect(d.recurUntilDay).toBe("2026-12-31");
+		expect(d.recurAfterCount).toBe("");
+	});
+
+	it("reads a stored `after_count` end back into the draft fields", () => {
+		const d = todoDraftFromVm({
+			id: "t_a",
+			kind: "todo",
+			title: "Counted",
+			status: "active",
+			personRefs: [],
+			recency: 1,
+			createdAt: "fixture",
+			deferAt: "2026-07-01T00:00:00",
+			recurrence: {
+				interval: 1,
+				unit: "week",
+				anchor: "defer_at",
+				end: { afterCount: 5 },
+			},
+		});
+		expect(d.recurEnd).toBe("after");
+		expect(d.recurAfterCount).toBe("5");
+		expect(d.recurUntilDay).toBe("");
+	});
+
 	it("recurAnchorDatePresent gates on the chosen anchor's date", () => {
 		expect(
 			recurAnchorDatePresent(draft({ recurAnchor: "due_at", dueDay: "" })),
@@ -982,6 +1092,55 @@ describe("entityCodec build — todo update", () => {
 						unit: "week",
 						anchor: "defer_at",
 						end: { after_count: 10 },
+					},
+				},
+			},
+		});
+	});
+
+	const recurringUntil: Todo = {
+		...existing,
+		deferAt: "2026-07-01T00:00:00",
+		recurrence: {
+			interval: 1,
+			unit: "week",
+			anchor: "defer_at",
+			end: { until: "2026-12-31T00:00:00" },
+		},
+	};
+
+	// Changing the End choice rebuilds the whole rule (recurrence diffs as one object).
+	it("emits the whole rule with the new end when End switches until→after", () => {
+		expect(
+			edit(recurringUntil, { recurEnd: "after", recurAfterCount: "3" }),
+		).toEqual({
+			mutation_kind: "update_todo",
+			payload: {
+				todo_id: "t_c1",
+				todo: {
+					recurrence: {
+						interval: 1,
+						unit: "week",
+						anchor: "defer_at",
+						end: { after_count: 3 },
+					},
+				},
+			},
+		});
+	});
+
+	// Clearing End to `never` drops `end` from the emitted rule (still a rule, just
+	// unbounded) — distinct from toggling Repeats off, which sends recurrence:null.
+	it("drops `end` when the End choice is cleared to never", () => {
+		expect(edit(recurringUntil, { recurEnd: "never" })).toEqual({
+			mutation_kind: "update_todo",
+			payload: {
+				todo_id: "t_c1",
+				todo: {
+					recurrence: {
+						interval: 1,
+						unit: "week",
+						anchor: "defer_at",
 					},
 				},
 			},
