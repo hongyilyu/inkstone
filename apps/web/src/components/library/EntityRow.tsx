@@ -61,6 +61,17 @@ export function DueChip({ due, overdue }: { due: string; overdue: boolean }) {
 	);
 }
 
+/** Small "not before" pill — when a deferred Todo becomes available. Plain, never
+ * destructive. Takes the `YYYY-MM-DD` day slice, matching `DueChip`'s date format
+ * so a row carrying both pills reads consistently. */
+function DeferChip({ defer }: { defer: string }) {
+	return (
+		<Badge variant="secondary" size="sm" className="shrink-0">
+			Available {defer}
+		</Badge>
+	);
+}
+
 /** Read-only status mark for a Todo row — completed/dropped/active, label not colour alone. */
 function TodoStatusGlyph({ todo }: { todo: Todo }) {
 	if (todo.status === "completed") {
@@ -134,6 +145,7 @@ export function TodoRow({
 				{todo.dueAt ? (
 					<DueChip due={todo.dueAt.slice(0, 10)} overdue={overdue} />
 				) : null}
+				{todo.deferAt ? <DeferChip defer={todo.deferAt.slice(0, 10)} /> : null}
 			</button>
 		</li>
 	);

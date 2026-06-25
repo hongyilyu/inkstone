@@ -16,6 +16,7 @@ import { Route as LibraryIndexRouteImport } from './routes/library/index'
 import { Route as ChatIndexRouteImport } from './routes/_chat/index'
 import { Route as SettingsModelsRouteImport } from './routes/settings/models'
 import { Route as LibraryWaitingRouteImport } from './routes/library/waiting'
+import { Route as LibraryScheduledRouteImport } from './routes/library/scheduled'
 import { Route as LibraryReviewRouteImport } from './routes/library/review'
 import { Route as LibraryInboxRouteImport } from './routes/library/inbox'
 import { Route as LibraryKindRouteImport } from './routes/library/$kind'
@@ -55,6 +56,11 @@ const LibraryWaitingRoute = LibraryWaitingRouteImport.update({
   path: '/waiting',
   getParentRoute: () => LibraryRouteRoute,
 } as any)
+const LibraryScheduledRoute = LibraryScheduledRouteImport.update({
+  id: '/scheduled',
+  path: '/scheduled',
+  getParentRoute: () => LibraryRouteRoute,
+} as any)
 const LibraryReviewRoute = LibraryReviewRouteImport.update({
   id: '/review',
   path: '/review',
@@ -83,6 +89,7 @@ export interface FileRoutesByFullPath {
   '/library/$kind': typeof LibraryKindRoute
   '/library/inbox': typeof LibraryInboxRoute
   '/library/review': typeof LibraryReviewRoute
+  '/library/scheduled': typeof LibraryScheduledRoute
   '/library/waiting': typeof LibraryWaitingRoute
   '/settings/models': typeof SettingsModelsRoute
   '/library/': typeof LibraryIndexRoute
@@ -93,6 +100,7 @@ export interface FileRoutesByTo {
   '/library/$kind': typeof LibraryKindRoute
   '/library/inbox': typeof LibraryInboxRoute
   '/library/review': typeof LibraryReviewRoute
+  '/library/scheduled': typeof LibraryScheduledRoute
   '/library/waiting': typeof LibraryWaitingRoute
   '/settings/models': typeof SettingsModelsRoute
   '/': typeof ChatIndexRoute
@@ -107,6 +115,7 @@ export interface FileRoutesById {
   '/library/$kind': typeof LibraryKindRoute
   '/library/inbox': typeof LibraryInboxRoute
   '/library/review': typeof LibraryReviewRoute
+  '/library/scheduled': typeof LibraryScheduledRoute
   '/library/waiting': typeof LibraryWaitingRoute
   '/settings/models': typeof SettingsModelsRoute
   '/_chat/': typeof ChatIndexRoute
@@ -122,6 +131,7 @@ export interface FileRouteTypes {
     | '/library/$kind'
     | '/library/inbox'
     | '/library/review'
+    | '/library/scheduled'
     | '/library/waiting'
     | '/settings/models'
     | '/library/'
@@ -132,6 +142,7 @@ export interface FileRouteTypes {
     | '/library/$kind'
     | '/library/inbox'
     | '/library/review'
+    | '/library/scheduled'
     | '/library/waiting'
     | '/settings/models'
     | '/'
@@ -145,6 +156,7 @@ export interface FileRouteTypes {
     | '/library/$kind'
     | '/library/inbox'
     | '/library/review'
+    | '/library/scheduled'
     | '/library/waiting'
     | '/settings/models'
     | '/_chat/'
@@ -209,6 +221,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof LibraryWaitingRouteImport
       parentRoute: typeof LibraryRouteRoute
     }
+    '/library/scheduled': {
+      id: '/library/scheduled'
+      path: '/scheduled'
+      fullPath: '/library/scheduled'
+      preLoaderRoute: typeof LibraryScheduledRouteImport
+      parentRoute: typeof LibraryRouteRoute
+    }
     '/library/review': {
       id: '/library/review'
       path: '/review'
@@ -244,6 +263,7 @@ interface LibraryRouteRouteChildren {
   LibraryKindRoute: typeof LibraryKindRoute
   LibraryInboxRoute: typeof LibraryInboxRoute
   LibraryReviewRoute: typeof LibraryReviewRoute
+  LibraryScheduledRoute: typeof LibraryScheduledRoute
   LibraryWaitingRoute: typeof LibraryWaitingRoute
   LibraryIndexRoute: typeof LibraryIndexRoute
 }
@@ -252,6 +272,7 @@ const LibraryRouteRouteChildren: LibraryRouteRouteChildren = {
   LibraryKindRoute: LibraryKindRoute,
   LibraryInboxRoute: LibraryInboxRoute,
   LibraryReviewRoute: LibraryReviewRoute,
+  LibraryScheduledRoute: LibraryScheduledRoute,
   LibraryWaitingRoute: LibraryWaitingRoute,
   LibraryIndexRoute: LibraryIndexRoute,
 }
