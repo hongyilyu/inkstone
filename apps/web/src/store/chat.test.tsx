@@ -603,6 +603,109 @@ describe("segment timeline (ADR-0045)", () => {
 		const segs = segmentsOf("tDup", "run-dup");
 		expect(segs.filter((s) => s.kind === "proposal")).toHaveLength(1);
 	});
+
+	it("a reasoning_delta opens a reasoning segment; a second delta appends into it", () => {
+		seedRun("tR", "run-r");
+
+		applyEvent("tR", "run-r", { kind: "reasoning_delta", delta: "A" });
+		applyEvent("tR", "run-r", { kind: "reasoning_delta", delta: "B" });
+
+		expect(segmentsOf("tR", "run-r")).toEqual([
+			{ kind: "reasoning", text: "AB" },
+		]);
+	});
+
+	it("a text_delta then a reasoning_delta produce two distinct segments in order", () => {
+		seedRun("tRT", "run-rt");
+
+		applyEvent("tRT", "run-rt", { kind: "text_delta", delta: "reply" });
+		applyEvent("tRT", "run-rt", { kind: "reasoning_delta", delta: "thinking" });
+
+		expect(segmentsOf("tRT", "run-rt")).toEqual([
+			{ kind: "text", text: "reply" },
+			{ kind: "reasoning", text: "thinking" },
+		]);
+	});
+
+	it("a terminal stamps a web-clocked durationMs on the open reasoning segment", () => {
+		seedRun("tRD", "run-rd");
+
+		// The injectable `now` makes the open→seal clocking deterministic: the run
+		// record's open-time is set to `now` when the fresh reasoning segment opens;
+		// the terminal stamps `now − openedAt` (ADR-0045: live clocks its own).
+		const opened = 1_000;
+		applyEvent(
+			"tRD",
+			"run-rd",
+			{ kind: "reasoning_delta", delta: "why" },
+			opened,
+		);
+		applyEvent("tRD", "run-rd", { kind: "done" }, opened + 1_500);
+
+		expect(segmentsOf("tRD", "run-rd")).toEqual([
+			{ kind: "reasoning", text: "why", durationMs: 1_500 },
+		]);
+	});
+
+	it("a text_delta after reasoning seals that block's duration mid-stream, not at terminal", () => {
+		seedRun("tRTseal", "run-rtseal");
+
+		// The model thinks, then starts replying: the reasoning block is sealed the
+		// moment the reply text arrives (open→seal), so the disclosure reads
+		// "Thought for Ns" while the reply streams below — never a stale "Thinking…".
+		const opened = 1_000;
+		applyEvent(
+			"tRTseal",
+			"run-rtseal",
+			{ kind: "reasoning_delta", delta: "weighing it" },
+			opened,
+		);
+		applyEvent(
+			"tRTseal",
+			"run-rtseal",
+			{ kind: "text_delta", delta: "Here is the answer." },
+			opened + 2_000,
+		);
+
+		expect(segmentsOf("tRTseal", "run-rtseal")).toEqual([
+			{ kind: "reasoning", text: "weighing it", durationMs: 2_000 },
+			{ kind: "text", text: "Here is the answer." },
+		]);
+	});
+
+	it("times each block of a reasoning→text→reasoning interleave separately", () => {
+		seedRun("tRTR", "run-rtr");
+
+		const t0 = 1_000;
+		applyEvent(
+			"tRTR",
+			"run-rtr",
+			{ kind: "reasoning_delta", delta: "first" },
+			t0,
+		);
+		// Text at t0+1s seals block 1 at 1000ms, and re-arms the open-time slot.
+		applyEvent(
+			"tRTR",
+			"run-rtr",
+			{ kind: "text_delta", delta: "mid" },
+			t0 + 1_000,
+		);
+		// A second reasoning block opens fresh (its own open-time)…
+		applyEvent(
+			"tRTR",
+			"run-rtr",
+			{ kind: "reasoning_delta", delta: "second" },
+			t0 + 1_000,
+		);
+		// …and the terminal seals it at 3000ms — block 1's 1000ms is untouched.
+		applyEvent("tRTR", "run-rtr", { kind: "done" }, t0 + 4_000);
+
+		expect(segmentsOf("tRTR", "run-rtr")).toEqual([
+			{ kind: "reasoning", text: "first", durationMs: 1_000 },
+			{ kind: "text", text: "mid" },
+			{ kind: "reasoning", text: "second", durationMs: 3_000 },
+		]);
+	});
 });
 
 describe("concatText", () => {
@@ -617,5 +720,17 @@ describe("concatText", () => {
 				{ kind: "text", text: "y" },
 			]),
 		).toBe("xy");
+	});
+
+	it("excludes a reasoning segment — the thinking trace never leaks into the reply", () => {
+		// The no-leak LOCK (ADR-0045): the copyable reply text / ⌘K search-match /
+		// typing-indicator all derive from concatText, which must NEVER surface the
+		// reasoning trace.
+		expect(
+			concatText([
+				{ kind: "text", text: "A" },
+				{ kind: "reasoning", text: "secret" },
+			]),
+		).toBe("A");
 	});
 });

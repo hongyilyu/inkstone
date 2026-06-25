@@ -1076,6 +1076,145 @@ describe("ChatColumn", () => {
 		}
 	});
 
+	it("renders a streaming reasoning segment as a collapsed 'Thinking…' disclosure with the trace hidden", async () => {
+		const runtime = makeStubRuntime({ runId: "run-r1", events: [] });
+		seedAssistantMessage("threadA", {
+			id: "a-reason",
+			role: "assistant",
+			status: "streaming",
+			run_id: "r-reason",
+			segments: [{ kind: "reasoning", text: "hmm let me think" }],
+		});
+
+		await renderFocused(runtime, "threadA");
+
+		// Collapsed by default while streaming (no auto-expand): the live label shows…
+		const toggle = screen.getByRole("button", { name: /thinking/i });
+		expect(toggle).toHaveAttribute("aria-expanded", "false");
+		// …and the trace body is NOT visible.
+		expect(screen.queryByText("hmm let me think")).toBeNull();
+
+		await runtime.dispose();
+	});
+
+	it("expands the reasoning disclosure on click to reveal the trace", async () => {
+		const user = userEvent.setup();
+		const runtime = makeStubRuntime({ runId: "run-r2", events: [] });
+		seedAssistantMessage("threadA", {
+			id: "a-reason2",
+			role: "assistant",
+			status: "streaming",
+			run_id: "r-reason2",
+			segments: [{ kind: "reasoning", text: "hmm" }],
+		});
+
+		await renderFocused(runtime, "threadA");
+
+		const toggle = screen.getByRole("button", { name: /thinking/i });
+		expect(screen.queryByText("hmm")).toBeNull();
+
+		await user.click(toggle);
+
+		expect(toggle).toHaveAttribute("aria-expanded", "true");
+		expect(screen.getByText("hmm")).toBeInTheDocument();
+
+		await runtime.dispose();
+	});
+
+	it("labels a sealed reasoning segment 'Thought for Ns' when durationMs >= 1000", async () => {
+		const runtime = makeStubRuntime({ runId: "run-r3", events: [] });
+		seedAssistantMessage("threadA", {
+			id: "a-reason3",
+			role: "assistant",
+			status: "completed",
+			run_id: "r-reason3",
+			segments: [
+				{ kind: "reasoning", text: "deep thoughts", durationMs: 4000 },
+				{ kind: "text", text: "the reply" },
+			],
+		});
+
+		await renderFocused(runtime, "threadA");
+
+		expect(
+			screen.getByRole("button", { name: /thought for 4s/i }),
+		).toBeInTheDocument();
+
+		await runtime.dispose();
+	});
+
+	it("labels a sealed reasoning segment bare 'Thought' when durationMs is undefined or sub-second", async () => {
+		const runtime = makeStubRuntime({ runId: "run-r4", events: [] });
+		seedAssistantMessage("threadA", {
+			id: "a-reason4",
+			role: "assistant",
+			status: "completed",
+			run_id: "r-reason4",
+			segments: [
+				{ kind: "reasoning", text: "a quick thought" },
+				{ kind: "reasoning", text: "another", durationMs: 400 },
+				{ kind: "text", text: "the reply" },
+			],
+		});
+
+		await renderFocused(runtime, "threadA");
+
+		// Both an undefined duration and a sub-second one read bare "Thought" (no "for Ns").
+		const toggles = screen.getAllByRole("button", { name: /^thought$/i });
+		expect(toggles).toHaveLength(2);
+		expect(screen.queryByRole("button", { name: /thought for/i })).toBeNull();
+
+		await runtime.dispose();
+	});
+
+	it("suppresses the typing indicator while ONLY a reasoning segment is streaming", async () => {
+		const runtime = makeStubRuntime({ runId: "run-r5", events: [] });
+		seedAssistantMessage("threadA", {
+			id: "a-reason5",
+			role: "assistant",
+			status: "streaming",
+			run_id: "r-reason5",
+			// concatText === "" (no text segment) and no running tool — but a reasoning
+			// segment is present, so the "Thinking…" disclosure stands in for the dots.
+			segments: [{ kind: "reasoning", text: "thinking out loud" }],
+		});
+
+		await renderFocused(runtime, "threadA");
+
+		expect(screen.queryByTestId("typing-indicator")).toBeNull();
+		expect(
+			screen.getByRole("button", { name: /thinking/i }),
+		).toBeInTheDocument();
+
+		await runtime.dispose();
+	});
+
+	it("shows 'Thought for Ns' (not 'Thinking…') for a SEALED reasoning block while the reply still streams", async () => {
+		const runtime = makeStubRuntime({ runId: "run-r6", events: [] });
+		seedAssistantMessage("threadA", {
+			id: "a-reason6",
+			role: "assistant",
+			// Turn is still streaming (the reply text is arriving)…
+			status: "streaming",
+			run_id: "r-reason6",
+			// …but the reasoning block already sealed (durationMs set when the text opened).
+			// It must read the calm settled label, not a stale pulsing "Thinking…".
+			segments: [
+				{ kind: "reasoning", text: "decided", durationMs: 2000 },
+				{ kind: "text", text: "Here it is" },
+			],
+		});
+
+		await renderFocused(runtime, "threadA");
+
+		expect(
+			screen.getByRole("button", { name: /thought for 2s/i }),
+		).toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: /thinking/i })).toBeNull();
+
+		await runtime.dispose();
+	});
+
 	it("offers Try again on an interrupted reply and re-sends the previous turn", async () => {
 		const user = userEvent.setup();
 		const runtime = makeStubRuntime({

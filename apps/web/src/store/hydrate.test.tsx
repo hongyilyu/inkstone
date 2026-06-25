@@ -184,6 +184,63 @@ describe("refresh-durable hydration", () => {
 		await runtime.dispose();
 	});
 
+	it("rehydrates a reasoning segment: maps wire duration_ms → store durationMs", async () => {
+		const result: ThreadGetResult = {
+			thread_id: "tReason",
+			title: "T",
+			messages: [
+				{
+					id: "m2",
+					role: "assistant",
+					status: "completed",
+					run_id: "r1",
+					segments: [
+						{ kind: "reasoning", text: "let me think", duration_ms: 1500 },
+						{ kind: "text", text: "the answer" },
+					],
+				},
+			],
+		};
+		const stub = WsClient.of({
+			threadCreate: () => Effect.die("unused"),
+			postMessage: () => Effect.die("unused"),
+			threadList: () => Effect.die("unused"),
+			getRunHistory: () => Effect.die("unused"),
+			listEntities: () => Effect.die("unused"),
+			getBacklinks: () => Effect.die("unused"),
+			entityMutate: () => Effect.die("unused"),
+			threadGet: (id) =>
+				id === "tReason"
+					? Effect.succeed(result)
+					: Effect.die("unknown thread"),
+			subscribeRun: () => Stream.empty,
+			cancelRun: () => Effect.die("unused"),
+			providerStatus: () => Effect.die("unused"),
+			providerLoginStart: () => Effect.die("unused"),
+			modelCatalog: () => Effect.die("unused"),
+			settingsGet: () => Effect.die("unused"),
+			settingsSet: () => Effect.die("unused"),
+			proposalGet: () => Effect.die("unused"),
+			proposalDecide: () => Effect.die("unused"),
+			messageSearch: () => Effect.die("unused"),
+			proposalNotifications: () => Stream.empty,
+		});
+		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
+
+		await hydrateThread(runtime, "tReason");
+
+		const assistant = getChatState().threads.tReason?.messages[0];
+		expect(assistant?.segments[0]).toEqual({
+			kind: "reasoning",
+			text: "let me think",
+			durationMs: 1500,
+		});
+		// The trace never leaks into the copyable reply text (the no-leak invariant).
+		expect(concatText(assistant?.segments ?? [])).toBe("the answer");
+
+		await runtime.dispose();
+	});
+
 	it("reconstructs a decided Proposal (ADR-0044) so the settled card survives reload", async () => {
 		const result: ThreadGetResult = {
 			thread_id: "tProp",

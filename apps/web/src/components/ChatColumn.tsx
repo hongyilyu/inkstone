@@ -29,6 +29,7 @@ import { AssistantProposals } from "./AssistantProposals.js";
 import { ChatMarkdown } from "./ChatMarkdown.js";
 import { ComposeFooter } from "./ComposeFooter.js";
 import { CopyButton } from "./CopyButton.js";
+import { ReasoningSegment } from "./ReasoningSegment.js";
 import { ToolActivity } from "./ToolActivity.js";
 import { Button } from "./ui/button.js";
 import { EmptyState } from "./ui/empty-state.js";
@@ -397,15 +398,24 @@ function UserBubble({
 
 /** A maximal run of consecutive `tool_call` segments collapsed for one
  * {@link ToolActivity} (so grouping/`+N` overflow is preserved), or a single
- * `text`/`proposal` segment — the unit the bubble renders in timeline order (ADR-0045). */
+ * `text`/`proposal`/`reasoning` segment — the unit the bubble renders in timeline
+ * order (ADR-0045). Each reasoning segment is its OWN group (one disclosure); they
+ * do NOT coalesce like tool runs. */
 type RenderGroup =
 	| { readonly kind: "tools"; readonly calls: ToolCall[] }
 	| { readonly kind: "text"; readonly text: string }
-	| { readonly kind: "proposal"; readonly runId: string };
+	| { readonly kind: "proposal"; readonly runId: string }
+	| {
+			readonly kind: "reasoning";
+			readonly text: string;
+			readonly durationMs?: number;
+	  };
 
 /** Fold the ordered timeline into render groups: consecutive `tool_call` segments
- * coalesce into ONE group (existing grouping + tests stay intact); text/proposal
- * segments render between such runs, preserving event-arrival order. */
+ * coalesce into ONE group (existing grouping + tests stay intact); text/reasoning/
+ * proposal segments render between such runs, preserving event-arrival order. The
+ * explicit `reasoning` arm precedes the `proposal` fallback — a reasoning segment
+ * carries no `runId`, so it must not fall through to the proposal branch. */
 function toRenderGroups(segments: readonly Segment[]): RenderGroup[] {
 	const groups: RenderGroup[] = [];
 	for (const seg of segments) {
@@ -418,6 +428,12 @@ function toRenderGroups(segments: readonly Segment[]): RenderGroup[] {
 			}
 		} else if (seg.kind === "text") {
 			groups.push({ kind: "text", text: seg.text });
+		} else if (seg.kind === "reasoning") {
+			groups.push({
+				kind: "reasoning",
+				text: seg.text,
+				durationMs: seg.durationMs,
+			});
 		} else {
 			groups.push({ kind: "proposal", runId: seg.runId });
 		}
@@ -440,6 +456,13 @@ function AssistantBubble({
 	const toolRunning = message.segments.some(
 		(seg) => seg.kind === "tool_call" && seg.call.status === "running",
 	);
+	// A streaming turn carrying a reasoning segment shows its "Thinking…" disclosure,
+	// so the generic typing dots must NOT double up (ADR-0045 amendment). `concatText`
+	// is text-only by construction, so a reasoning-only stream otherwise reads as the
+	// empty pre-content gap and would mis-show the dots.
+	const reasoningStreaming =
+		message.status === "streaming" &&
+		message.segments.some((seg) => seg.kind === "reasoning");
 	const groups = toRenderGroups(message.segments);
 	return (
 		<li
@@ -464,6 +487,14 @@ function AssistantBubble({
 						key={`proposal-${i}`}
 						runId={group.runId}
 					/>
+				) : group.kind === "reasoning" ? (
+					<ReasoningSegment
+						// biome-ignore lint/suspicious/noArrayIndexKey: timeline position is the identity here
+						key={`reasoning-${i}`}
+						text={group.text}
+						durationMs={group.durationMs}
+						streaming={message.status === "streaming"}
+					/>
 				) : (
 					<div
 						// biome-ignore lint/suspicious/noArrayIndexKey: timeline position is the identity here
@@ -475,18 +506,21 @@ function AssistantBubble({
 					</div>
 				),
 			)}
-			{message.status === "streaming" && text === "" && !toolRunning && (
-				<div
-					data-testid="typing-indicator"
-					role="status"
-					aria-label="Assistant is typing"
-					className="flex items-center gap-1 px-1 py-2"
-				>
-					<span className="size-2 rounded-full bg-muted-foreground motion-safe:[animation:typing-pulse_1.2s_ease-in-out_infinite]" />
-					<span className="size-2 rounded-full bg-muted-foreground motion-safe:[animation:typing-pulse_1.2s_ease-in-out_infinite] motion-safe:[animation-delay:0.2s]" />
-					<span className="size-2 rounded-full bg-muted-foreground motion-safe:[animation:typing-pulse_1.2s_ease-in-out_infinite] motion-safe:[animation-delay:0.4s]" />
-				</div>
-			)}
+			{message.status === "streaming" &&
+				text === "" &&
+				!toolRunning &&
+				!reasoningStreaming && (
+					<div
+						data-testid="typing-indicator"
+						role="status"
+						aria-label="Assistant is typing"
+						className="flex items-center gap-1 px-1 py-2"
+					>
+						<span className="size-2 rounded-full bg-muted-foreground motion-safe:[animation:typing-pulse_1.2s_ease-in-out_infinite]" />
+						<span className="size-2 rounded-full bg-muted-foreground motion-safe:[animation:typing-pulse_1.2s_ease-in-out_infinite] motion-safe:[animation-delay:0.2s]" />
+						<span className="size-2 rounded-full bg-muted-foreground motion-safe:[animation:typing-pulse_1.2s_ease-in-out_infinite] motion-safe:[animation-delay:0.4s]" />
+					</div>
+				)}
 			{message.status === "completed" && text.length > 0 && (
 				<div className="opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
 					<CopyButton text={text} />
