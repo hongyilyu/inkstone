@@ -11,18 +11,17 @@ function initials(name: string): string {
 
 const SIZES = {
 	sm: { box: "size-8 text-[11px]", icon: "size-4" },
-	md: { box: "size-10 text-sm", icon: "size-5" },
 	lg: { box: "size-12 text-base", icon: "size-6" },
 } as const;
 
 /** Visual mark for an entity: initials for People, kind glyph otherwise; kinds differ by glyph + label, never colour alone (PRODUCT.md a11y). */
 export function EntityGlyph({
 	entity,
-	size = "md",
+	size,
 	className,
 }: {
 	entity: LibraryItem;
-	size?: keyof typeof SIZES;
+	size: "sm" | "lg";
 	className?: string;
 }) {
 	const s = SIZES[size];

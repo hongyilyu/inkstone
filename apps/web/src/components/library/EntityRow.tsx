@@ -1,5 +1,4 @@
 import { AlertTriangle, Circle, CircleCheck, CircleSlash } from "lucide-react";
-import type { ReactNode } from "react";
 import { Badge } from "@/components/ui/badge";
 import {
 	type LibraryItem,
@@ -12,17 +11,15 @@ import {
 import { cn } from "@/lib/utils.js";
 import { EntityGlyph } from "./EntityGlyph.js";
 
-/** Generic, selectable row: glyph + title + subtitle, optional trailing slot. */
+/** Generic, selectable row: glyph + title + subtitle. */
 export function EntityRow({
 	entity,
 	selected,
 	onSelect,
-	trailing,
 }: {
 	entity: LibraryItem;
 	selected?: boolean;
 	onSelect: (id: string) => void;
-	trailing?: ReactNode;
 }) {
 	return (
 		<button
@@ -44,7 +41,6 @@ export function EntityRow({
 					{libraryItemSubtitle(entity)}
 				</span>
 			</span>
-			{trailing}
 		</button>
 	);
 }
