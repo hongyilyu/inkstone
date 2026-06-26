@@ -2,7 +2,7 @@ import type { RunRetryResult } from "@inkstone/protocol";
 import { type RunEventValue, type RunId, WsClient } from "@inkstone/ui-sdk";
 import { Effect, Layer, ManagedRuntime, Queue, Stream } from "effect";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { awaitRun, resetBridge, retryRun } from "./bridge.js";
+import { awaitRun, hasRunFiber, resetBridge, retryRun } from "./bridge.js";
 import {
 	appendUserMessage,
 	concatText,
@@ -200,6 +200,108 @@ describe("retryRun bridge — re-drives the SAME Run, no seeded turn", () => {
 		);
 		expect(assistant?.status).toBe("incomplete");
 		expect(assistant?.error).toBe("the model fell over");
+
+		await runtime.dispose();
+	});
+
+	it("an unknown_run outcome is a benign no-op (bubble unchanged, no re-subscribe)", async () => {
+		const runId = "run-gone" as RunId;
+		seedErroredTurn(runId);
+
+		const queue = Effect.runSync(Queue.unbounded<RunEventValue>());
+		const { runtime, retrySpy } = makeStubRuntime(queue, "unknown_run");
+
+		await retryRun(runtime, "t1", runId);
+
+		// Same shape as not_errored: Core did not flip the Run, so nothing is
+		// re-driven — no run record armed, the bubble keeps its errored state.
+		expect(retrySpy).toHaveBeenCalledWith(runId);
+		expect(getRun(runId)).toBeUndefined();
+		expect(hasRunFiber(runId)).toBe(false);
+		const assistant = getChatState().threads.t1?.messages.find(
+			(m) => m.role === "assistant",
+		);
+		expect(assistant?.status).toBe("incomplete");
+		expect(assistant?.error).toBe("the model fell over");
+
+		await runtime.dispose();
+	});
+});
+
+/**
+ * Stub WsClient that hands out a FRESH queue per `subscribeRun` call (the `queues`
+ * list is consumed in order), so a test can drive the first vs the second retry's
+ * subscription independently — the seam that proves a re-retry interrupted the
+ * prior stream fiber rather than leaving two fibers on the same runId.
+ */
+function makePerCallStubRuntime(queues: Queue.Queue<RunEventValue>[]) {
+	const unused = Effect.die("not used in this test");
+	let call = 0;
+	const stub = WsClient.of({
+		threadCreate: () => unused,
+		postMessage: () => unused,
+		threadList: () => unused,
+		getRunHistory: () => unused,
+		recurrencePreview: () => unused,
+		threadGet: () => unused,
+		listEntities: () => unused,
+		getBacklinks: () => unused,
+		entityMutate: () => unused,
+		subscribeRun: () => Stream.fromQueue(queues[call++]),
+		cancelRun: () => unused,
+		retryRun: () => Effect.succeed({ outcome: "accepted" as const }),
+		providerStatus: () => unused,
+		providerLoginStart: () => unused,
+		modelCatalog: () => unused,
+		settingsGet: () => unused,
+		settingsSet: () => unused,
+		proposalGet: () => unused,
+		rescanJournalEntry: () => unused,
+		proposalDecide: () => unused,
+		messageSearch: () => unused,
+		proposalNotifications: () => Stream.empty,
+		connectionStatus: () => Stream.empty,
+	});
+	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
+}
+
+describe("retryRun bridge — a re-retry interrupts the prior stream fiber (M2)", () => {
+	it("a second retry interrupts the first fiber so only the second drives the bubble", async () => {
+		const runId = "run-err" as RunId;
+		seedErroredTurn(runId);
+
+		// Two queues: queue[0] feeds the first retry's fiber, queue[1] the second's.
+		const queue0 = Effect.runSync(Queue.unbounded<RunEventValue>());
+		const queue1 = Effect.runSync(Queue.unbounded<RunEventValue>());
+		const runtime = makePerCallStubRuntime([queue0, queue1]);
+
+		// First retry forks fiber A (subscribed to queue0).
+		await retryRun(runtime, "t1", runId);
+		expect(hasRunFiber(runId)).toBe(true);
+
+		// Second retry: interrupt-then-resubscribe forks fiber B (subscribed to
+		// queue1). Without the `interruptRun` line, fiber A would survive on queue0.
+		await retryRun(runtime, "t1", runId);
+		expect(hasRunFiber(runId)).toBe(true);
+
+		const assistant = () =>
+			getChatState().threads.t1?.messages.find((m) => m.role === "assistant");
+
+		// Drive a terminal on the FIRST fiber's queue. If fiber A was interrupted
+		// (the fix), nothing consumes queue0 and the bubble stays `streaming`. If it
+		// leaked (the bug), fiber A would consume this and settle the bubble.
+		Queue.unsafeOffer(queue0, { kind: "text_delta", delta: "STALE" });
+		Queue.unsafeOffer(queue0, { kind: "done" });
+		await new Promise((r) => setTimeout(r, 0));
+		expect(assistant()?.status).toBe("streaming");
+		expect(concatText(assistant()?.segments ?? [])).toBe("");
+
+		// The SECOND fiber owns the bubble: its events drive it to completion.
+		Queue.unsafeOffer(queue1, { kind: "text_delta", delta: "fresh answer" });
+		Queue.unsafeOffer(queue1, { kind: "done" });
+		await awaitRun(runtime, runId);
+		expect(assistant()?.status).toBe("completed");
+		expect(concatText(assistant()?.segments ?? [])).toBe("fresh answer");
 
 		await runtime.dispose();
 	});

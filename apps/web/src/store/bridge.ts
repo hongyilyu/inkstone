@@ -425,7 +425,13 @@ export async function retryRun(
 
 	// Reset the errored bubble to live, then re-stream the SAME run. startRunStream
 	// arms the snapshot bit + forks the subscribe tail, so don't double-arm here.
+	// Stale-fiber guard (M2), mirroring decideProposal's resume: interrupt any fiber
+	// still tracked for this runId BEFORE re-subscribing, so a double-click — or an
+	// errored fiber still winding down — can't leave two subscription fibers racing on
+	// the same runId (whose snapshot text_deltas would fight over the bubble).
+	// `interruptRun` is a no-op when no live fiber exists.
 	resetMessageForRetry(threadId, runId);
+	interruptRun(runtime, runId);
 	startRunStream(runtime, threadId, runId);
 }
 
