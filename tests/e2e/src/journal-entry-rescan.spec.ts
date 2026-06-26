@@ -373,6 +373,11 @@ test.describe("an append re-scan folds in a later-mentioned Person", () => {
 		await expect(card.locator('[data-graph-node="@priya"]')).toContainText(
 			APPEND_PERSON_NAME,
 		);
+		// The appended clause is NEW prose the user is approving — it exists only in the
+		// proposal, so the card MUST surface it BEFORE Apply (ADR-0042 #221 approval
+		// contract). Unlike a match_text chip (which lands in prose the entry already
+		// shows), there is no other surface for this sentence.
+		await expect(card).toContainText(APPEND_CLAUSE);
 
 		const runId = await card.getAttribute("data-proposal");
 		expect(runId).not.toBeNull();

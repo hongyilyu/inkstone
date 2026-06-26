@@ -476,11 +476,47 @@ export interface DowngradeNotice {
 /** One intended link between two graph handles, parsed from the proposal payload
  * (the same `links[]` Core stores). Only `todo_project`/`todo_person` matter for
  * the downgrade notice (a `journal_ref` to a rejected entity collapses to text,
- * not a Todo downgrade). */
+ * not a Todo downgrade). A `journal_ref` may carry `appendText` — a model-proposed
+ * clause Core will APPEND to the saved entry's prose (ADR-0042 #221); it is surfaced
+ * on the card so the user reviews the new sentence before accepting it. */
 export interface GraphLink {
 	readonly kind: "todo_project" | "todo_person" | "journal_ref";
 	readonly from: string;
 	readonly to: string;
+	/** A `journal_ref`'s `append_text`: the clause appended to the entry's prose. */
+	readonly appendText?: string;
+}
+
+/** A model-proposed clause an accepted `journal_ref` will append to a saved Journal
+ * Entry's prose (ADR-0042 #221), surfaced for review before Apply. */
+export interface AppendedClause {
+	/** The entity handle the appended clause links to (its chip). */
+	readonly targetHandle: string;
+	/** The clause text Core will append (the new prose the user is approving). */
+	readonly text: string;
+}
+
+/** The appended-prose clauses the user is about to approve: one per accepted
+ * `journal_ref` carrying `append_text` whose target is staged accept. The appended
+ * sentence exists ONLY in this proposal (unlike `match_text`, which chips prose the
+ * entry already shows), so the card must render it — the ADR-0042 #221 approval
+ * contract is "the user sees the new sentence on the card before accepting." */
+export function appendedClauses(
+	plan: readonly ResolvedNode[],
+	links: readonly GraphLink[],
+	buffer: StagingBuffer,
+	repoints: RepointBuffer = {},
+): AppendedClause[] {
+	const byHandle = new Map(plan.map((node) => [node.handle, node]));
+	const out: AppendedClause[] = [];
+	for (const link of links) {
+		if (link.kind !== "journal_ref" || link.appendText === undefined) continue;
+		const target = byHandle.get(link.to);
+		if (target === undefined || stageFor(buffer, target, repoints) !== "accept")
+			continue;
+		out.push({ targetHandle: link.to, text: link.appendText });
+	}
+	return out;
 }
 
 /** Compute the downgrade notices for the current staging (ADR-0042 reconcile): for
@@ -551,7 +587,15 @@ export function parseGraphLinks(payload: unknown): GraphLink[] {
 			typeof from === "string" &&
 			typeof to === "string"
 		) {
-			out.push({ kind, from, to });
+			const appendText = record.append_text;
+			out.push({
+				kind,
+				from,
+				to,
+				...(kind === "journal_ref" && typeof appendText === "string"
+					? { appendText }
+					: {}),
+			});
 		}
 	}
 	return out;

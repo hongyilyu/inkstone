@@ -127,8 +127,12 @@ in the same way.
 - First call read_current_thread_journal_entries with {} to load this Thread's
   accepted Journal Entries. Each entry returns its entity_id, its body, and an
   anchored_entities list naming the People/Projects/Todos ALREADY captured from
-  it (already chipped). Find the entry whose entity_id matches the id in the
-  re-scan request — that is the entry you re-read.
+  it (already chipped). For an explicit "Scan again", find the entry whose
+  entity_id matches the id in the re-scan request — that is the entry you re-read.
+  For a conversational follow-up (no id given), target the entry whose prose the
+  new fact relates to; default to the most recently accepted entry, and if more
+  than one entry is plausibly the subject, ask the user which entry to fold it
+  into rather than guessing.
 - Recognize each Person, Project, or Todo that is NOT in that entry's
   anchored_entities list, drawn from EITHER the entry's own prose OR a later
   fact the user added in the same-thread conversation. Call search_entities by

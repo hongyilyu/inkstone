@@ -4,6 +4,7 @@ import {
 	acceptAll,
 	allAccepted,
 	allRejected,
+	appendedClauses,
 	buildDecisions,
 	buildEditedFields,
 	candidateSubtitle,
@@ -590,6 +591,73 @@ describe("parseGraphLinks", () => {
 		expect(parseGraphLinks({})).toEqual([]);
 		expect(parseGraphLinks(null)).toEqual([]);
 		expect(parseGraphLinks({ links: "nope" })).toEqual([]);
+	});
+
+	it("carries a journal_ref's append_text, but only for journal_ref kinds", () => {
+		const payload = {
+			links: [
+				{
+					kind: "journal_ref",
+					from: "@je",
+					to: "@priya",
+					append_text: "Hi P.",
+				},
+				// append_text on a non-journal_ref kind is ignored (not a placement field).
+				{
+					kind: "todo_person",
+					from: "@rodeo",
+					to: "@priya",
+					append_text: "ignored",
+				},
+				// a non-string append_text is dropped (the field is simply absent).
+				{ kind: "journal_ref", from: "@je", to: "@morris", append_text: 7 },
+			],
+		};
+		expect(parseGraphLinks(payload)).toEqual([
+			{ kind: "journal_ref", from: "@je", to: "@priya", appendText: "Hi P." },
+			{ kind: "todo_person", from: "@rodeo", to: "@priya" },
+			{ kind: "journal_ref", from: "@je", to: "@morris" },
+		]);
+	});
+});
+
+describe("appendedClauses", () => {
+	const reusePerson: ResolvedNode = {
+		handle: "@priya",
+		type: "person",
+		disposition: "create",
+		label: "Priya",
+	};
+	const plan = [reusePerson];
+
+	it("surfaces the appended clause for an accepted journal_ref carrying append_text", () => {
+		const links: GraphLink[] = [
+			{
+				kind: "journal_ref",
+				from: "@je",
+				to: "@priya",
+				appendText: "Followed up with Priya.",
+			},
+		];
+		// @priya is a create node — accept by default.
+		expect(appendedClauses(plan, links, {})).toEqual([
+			{ targetHandle: "@priya", text: "Followed up with Priya." },
+		]);
+	});
+
+	it("omits the clause when its target node is staged reject", () => {
+		const links: GraphLink[] = [
+			{ kind: "journal_ref", from: "@je", to: "@priya", appendText: "x." },
+		];
+		const buffer = setStage({}, reusePerson, "reject");
+		expect(appendedClauses(plan, links, buffer)).toEqual([]);
+	});
+
+	it("ignores a journal_ref with no append_text (the match_text/splice path)", () => {
+		const links: GraphLink[] = [
+			{ kind: "journal_ref", from: "@je", to: "@priya" },
+		];
+		expect(appendedClauses(plan, links, {})).toEqual([]);
 	});
 });
 
