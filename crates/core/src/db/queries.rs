@@ -1416,34 +1416,60 @@ where
         .map(|r| r.rows_affected())
 }
 
-/// Delete a Run's `run_steps` (run-retry, ADR-0028 amendment): both the assistant
-/// message steps and any tool_call steps the failed attempt wrote. Deleted BEFORE
-/// [`delete_message_parts`] would orphan the composite FK, and before
-/// [`delete_tool_calls`] (the `tool_call` steps FK `tool_calls`). Runs inside the
-/// retry tx.
-pub(super) async fn delete_run_steps<'e, E>(executor: E, run_id: Uuid) -> sqlx::Result<u64>
+/// Delete a Run's `run_steps` EXCEPT the steps of a kept (proposal-backed)
+/// tool_call (run-retry, ADR-0028 amendment): the failed attempt's assistant
+/// `message` steps (the partial text/reasoning that pollutes
+/// `select_run_snapshot`'s `group_concat`) and its NON-proposal `tool_call` steps
+/// are dropped, but a `tool_call` step whose `tool_call_id` has a `proposals`
+/// sidecar is KEPT — that step is a prior DECIDED proposal's committed history and
+/// must still rehydrate as a `proposal` segment via [`segment_timeline`]. A kept
+/// step's FK to the kept tool_call ([`delete_unproposed_tool_calls`]) stays valid.
+///
+/// Deleted BEFORE [`delete_message_parts`] (the dropped `message` steps' composite
+/// FK references the parts) and BEFORE [`delete_unproposed_tool_calls`] (the
+/// dropped `tool_call` steps FK those tool_calls). Runs inside the retry tx.
+pub(super) async fn delete_run_steps_except_proposals<'e, E>(
+    executor: E,
+    run_id: Uuid,
+) -> sqlx::Result<u64>
 where
     E: Executor<'e, Database = Sqlite>,
 {
-    sqlx::query("DELETE FROM run_steps WHERE run_id = ?1")
-        .bind(run_id.to_string())
-        .execute(executor)
-        .await
-        .map(|r| r.rows_affected())
+    sqlx::query(
+        "DELETE FROM run_steps \
+         WHERE run_id = ?1 \
+           AND (tool_call_id IS NULL \
+                OR tool_call_id NOT IN (SELECT tool_call_id FROM proposals))",
+    )
+    .bind(run_id.to_string())
+    .execute(executor)
+    .await
+    .map(|r| r.rows_affected())
 }
 
-/// Delete a Run's `tool_calls` (run-retry, ADR-0028 amendment): the failed
-/// attempt's tool I/O. Deleted AFTER [`delete_run_steps`] (whose `tool_call` rows
-/// FK these). Runs inside the retry tx.
-pub(super) async fn delete_tool_calls<'e, E>(executor: E, run_id: Uuid) -> sqlx::Result<u64>
+/// Delete a Run's `tool_calls` that are NOT proposal-backed (run-retry, ADR-0028
+/// amendment): the failed attempt's own tool I/O. A tool_call WITH a `proposals`
+/// sidecar is SPARED — it is committed history of a prior decided proposal, and its
+/// `ON DELETE CASCADE` to `proposals` (migration 0001:116) would cascade-delete the
+/// proposals row, orphaning the surviving `entities.created_via_proposal_id` /
+/// `entity_revisions.proposal_id` FKs (no on-delete) and rolling back the whole
+/// retry tx. Deleted AFTER [`delete_run_steps_except_proposals`] (whose dropped
+/// `tool_call` steps FK these). Runs inside the retry tx.
+pub(super) async fn delete_unproposed_tool_calls<'e, E>(
+    executor: E,
+    run_id: Uuid,
+) -> sqlx::Result<u64>
 where
     E: Executor<'e, Database = Sqlite>,
 {
-    sqlx::query("DELETE FROM tool_calls WHERE run_id = ?1")
-        .bind(run_id.to_string())
-        .execute(executor)
-        .await
-        .map(|r| r.rows_affected())
+    sqlx::query(
+        "DELETE FROM tool_calls \
+         WHERE run_id = ?1 AND id NOT IN (SELECT tool_call_id FROM proposals)",
+    )
+    .bind(run_id.to_string())
+    .execute(executor)
+    .await
+    .map(|r| r.rows_affected())
 }
 
 /// Re-flip an assistant Message `incomplete → streaming` (run-retry, ADR-0028

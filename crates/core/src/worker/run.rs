@@ -1410,12 +1410,132 @@ mod tests {
             .expect("prepare_retry");
         assert!(moved.won());
 
-        // After retry: the tool_calls row is gone (delete_tool_calls is load-bearing).
+        // After retry: the unproposed tool_calls row is gone
+        // (delete_unproposed_tool_calls is load-bearing).
         assert_eq!(
             count_tool_calls(&pool, run_id).await,
             0,
             "the failed attempt's tool_calls were cleared"
         );
+    }
+
+    /// Test A3 (F1 regression) — retry SPARES a prior DECIDED proposal's committed
+    /// rows. The mainline flow (propose → park → ACCEPT [stamps entity +
+    /// entity_revisions referencing the proposal] → resume → later ERROR) leaves a
+    /// run carrying a proposal-backed tool_call + a proposals sidecar + a referencing
+    /// entity. The old delete-all `DELETE FROM tool_calls WHERE run_id=?1` would
+    /// CASCADE-delete the proposals row (FK 0001:116), orphaning
+    /// `entities.created_via_proposal_id` → FK violation → whole tx rolls back → Run
+    /// stuck `errored` forever. This test asserts `prepare_retry` SUCCEEDS, the
+    /// proposal + entity + proposal-backed tool_call SURVIVE, and the failed partial
+    /// assistant text is still cleared.
+    #[tokio::test]
+    async fn prepare_retry_spares_decided_proposal_rows() {
+        let pool = memory_pool().await;
+        let wf = test_workflow(&["propose_workspace_mutation"]);
+        let (run_id, _thread_id, amid) = seed_run(&pool, &wf).await;
+
+        // Seed the committed-history of a PRIOR accepted proposal: a tool_call (+ its
+        // run_step, via persist_tool_call), an accepted `proposals` row referencing
+        // it, and an `entity` (+ `entity_revisions`) stamped with that proposal id —
+        // exactly what apply_proposal commits.
+        db::persist_tool_call(
+            &pool,
+            run_id,
+            "tc_prop",
+            "propose_workspace_mutation",
+            r#"{"mutation_kind":"create_person"}"#,
+            db::now_ms(),
+        )
+        .await
+        .expect("persist proposal tool call");
+        db::resolve_tool_call(&pool, "tc_prop", "completed", r#"{"ok":true}"#, db::now_ms())
+            .await
+            .expect("resolve proposal tool call");
+        sqlx::query(
+            "INSERT INTO proposals (id, tool_call_id, mutation_kind, status, decided_by, \
+             decided_at, applied_at) VALUES ('prop-1', 'tc_prop', 'create_person', \
+             'accepted', 'user', 2, 2)",
+        )
+        .execute(&pool)
+        .await
+        .expect("insert accepted proposal");
+        sqlx::query(
+            "INSERT INTO entities (id, type, schema_version, data, created_by, \
+             created_via_proposal_id, created_at, updated_at) \
+             VALUES ('ent-1', 'person', 1, '{\"name\":\"Lev\"}', 'proposal', 'prop-1', 2, 2)",
+        )
+        .execute(&pool)
+        .await
+        .expect("insert entity from proposal");
+        sqlx::query(
+            "INSERT INTO entity_revisions (entity_id, seq, data, proposal_id, created_at) \
+             VALUES ('ent-1', 0, '{\"name\":\"Lev\"}', 'prop-1', 2)",
+        )
+        .execute(&pool)
+        .await
+        .expect("insert entity revision");
+
+        // Then the run streamed partial text and errored.
+        drive_to_errored_with_partial(&pool, run_id, amid, &wf).await;
+
+        async fn count(pool: &SqlitePool, sql: &str, bind: &str) -> i64 {
+            sqlx::query_scalar(sql)
+                .bind(bind.to_string())
+                .fetch_one(pool)
+                .await
+                .expect("count")
+        }
+
+        // prepare_retry must SUCCEED (no FK rollback).
+        let moved = db::prepare_retry(&pool, run_id, &wf, db::now_ms())
+            .await
+            .expect("prepare_retry must not roll back when a decided proposal exists");
+        assert!(moved.won());
+
+        // The decided proposal's committed rows SURVIVE.
+        assert_eq!(
+            count(&pool, "SELECT COUNT(*) FROM proposals WHERE id = ?1", "prop-1").await,
+            1,
+            "the accepted proposal survives"
+        );
+        assert_eq!(
+            count(&pool, "SELECT COUNT(*) FROM entities WHERE id = ?1", "ent-1").await,
+            1,
+            "the proposal's entity survives"
+        );
+        assert_eq!(
+            count(&pool, "SELECT COUNT(*) FROM tool_calls WHERE id = ?1", "tc_prop").await,
+            1,
+            "the proposal-backed tool_call is spared"
+        );
+        // The kept proposal's run_step survives so the decided card still rehydrates.
+        assert_eq!(
+            count(
+                &pool,
+                "SELECT COUNT(*) FROM run_steps WHERE tool_call_id = ?1",
+                "tc_prop",
+            )
+            .await,
+            1,
+            "the proposal's run_step is spared (decided-card rehydration)"
+        );
+
+        // But the failed attempt's partial assistant text IS cleared, and the Run is
+        // back to running with a streaming assistant Message.
+        let snap = db::select_run_snapshot(&pool, run_id).await.unwrap().unwrap();
+        assert_eq!(snap.text, "", "the failed partial text was cleared");
+        assert_eq!(
+            db::run_status(&pool, run_id).await.unwrap().map(db::RunStatus::as_str),
+            Some("running")
+        );
+        let msg_status: String =
+            sqlx::query_scalar("SELECT status FROM messages WHERE id = ?1")
+                .bind(amid.to_string())
+                .fetch_one(&pool)
+                .await
+                .expect("read message status");
+        assert_eq!(msg_status, "streaming");
     }
 
     /// Test C — full re-drive. After `prepare_retry`, a fresh `run_loop` streaming

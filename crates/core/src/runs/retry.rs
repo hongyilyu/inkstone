@@ -115,12 +115,10 @@ struct Spawn {
 /// Pure of any wire framing — the caller owns the Response. A DB fault propagates
 /// as `anyhow::Error` (framed `Internal` by the caller).
 async fn prepare(pool: &SqlitePool, hubs: &Hubs, run_id: uuid::Uuid) -> anyhow::Result<Outcome> {
-    // Unknown Run (no status row) → unknown_run.
-    if db::run_status(pool, run_id).await?.is_none() {
-        return Ok(Outcome::UnknownRun);
-    }
-
     // The original user prompt + the Run's Thread (for live Workflow resolution).
+    // This is the single unknown-run gate: its first read is `thread_id_for_run`
+    // (`SELECT … FROM runs`), so a missing Run resolves `None` here — a separate
+    // `run_status` probe would catch nothing this does not.
     let Some((prompt, thread_id)) = db::run_prompt_and_thread(pool, run_id).await? else {
         return Ok(Outcome::UnknownRun);
     };
@@ -128,6 +126,14 @@ async fn prepare(pool: &SqlitePool, hubs: &Hubs, run_id: uuid::Uuid) -> anyhow::
     // Re-resolve the Workflow from LIVE settings (NOT the snapshot), so a model
     // switch before retry takes effect (ADR-0024 contrast with resume).
     let workflow = dispatcher::dispatch_and_resolve(pool, thread_id, &prompt).await;
+
+    // The reused assistant Message id — the bubble identity stays stable. Read it
+    // BEFORE the committing flip + hub::create: the id is immutable, so reading it
+    // earlier is order-independent, and a fault/None here aborts with the Run still
+    // in its true `errored` state and no producer-less hub left behind.
+    let assistant_message_id = db::assistant_message_id_for_run(pool, run_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("retried run {run_id} has no assistant message"))?;
 
     // The guarded flip + clear-failed-output + re-snapshot, in one tx. A lost flip
     // (the Run was not `errored`) maps to not_errored, with nothing cleared.
@@ -137,7 +143,8 @@ async fn prepare(pool: &SqlitePool, hubs: &Hubs, run_id: uuid::Uuid) -> anyhow::
     }
 
     // Create the hub BEFORE spawning so a subscribe arriving right after the
-    // response can't find a missing hub (mirrors run/post_message).
+    // response can't find a missing hub (mirrors run/post_message). After the
+    // committing flip + the last fallible read, so no abort leaves a stray hub.
     let run_hub = hub::create(hubs, run_id);
 
     // Prior-Run history, excluding this Run — `history_for_run` filters
@@ -149,11 +156,6 @@ async fn prepare(pool: &SqlitePool, hubs: &Hubs, run_id: uuid::Uuid) -> anyhow::
             eprintln!("history_for_run failed for run {run_id}: {e}");
             Vec::new()
         });
-
-    // The reused assistant Message id — the bubble identity stays stable.
-    let assistant_message_id = db::assistant_message_id_for_run(pool, run_id)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("retried run {run_id} has no assistant message"))?;
 
     Ok(Outcome::Accepted(Box::new(Spawn {
         workflow,
@@ -217,9 +219,75 @@ mod tests {
         run_id
     }
 
+    /// Seed a Thread + first Run, then drive it to `errored` (assistant Message
+    /// `incomplete`) by hand — what `RunStatus::fail` leaves behind, without a
+    /// Worker. Returns `(run_id, assistant_message_id)` so the accepted-arm test can
+    /// assert the reused id. Prompt is "the original prompt".
+    async fn seed_errored_run(pool: &SqlitePool) -> (Uuid, Uuid) {
+        crate::workflow::init().expect("load default workflow");
+        let thread_id = Uuid::now_v7();
+        let run_id = Uuid::now_v7();
+        let assistant_message_id = Uuid::now_v7();
+        db::persist_thread_with_first_run(
+            pool,
+            thread_id,
+            run_id,
+            Uuid::now_v7(),
+            assistant_message_id,
+            default_workflow(),
+            "the original prompt",
+            "t",
+            1,
+        )
+        .await
+        .expect("seed run");
+        sqlx::query(
+            "UPDATE runs SET status = 'errored', terminal_reason = 'errored', \
+             error_code = 'agent_error', error_message = 'boom', ended_at = 2 WHERE id = ?1",
+        )
+        .bind(run_id.to_string())
+        .execute(pool)
+        .await
+        .expect("mark run errored");
+        sqlx::query("UPDATE messages SET status = 'incomplete' WHERE id = ?1")
+            .bind(assistant_message_id.to_string())
+            .execute(pool)
+            .await
+            .expect("mark assistant incomplete");
+        (run_id, assistant_message_id)
+    }
+
     fn recv_json(rx: &mut mpsc::UnboundedReceiver<String>) -> Value {
         let line = rx.try_recv().expect("a frame was queued");
         serde_json::from_str(&line).expect("frame is JSON")
+    }
+
+    /// The accepted happy-arm of `prepare` (the testable unit — `handle_retry`'s
+    /// spawn needs a real Worker binary). An ERRORED Run flips to `running`, yields
+    /// `Outcome::Accepted` (label "accepted"), creates a hub, and the carried Spawn
+    /// reuses the SAME assistant_message_id + the original prompt.
+    #[tokio::test]
+    async fn errored_run_prepares_accepted_with_reused_ids() {
+        let pool = memory_pool().await;
+        let hubs = hub::new_hubs();
+        let (run_id, assistant_message_id) = seed_errored_run(&pool).await;
+
+        let outcome = super::prepare(&pool, &hubs, run_id)
+            .await
+            .expect("prepare succeeds");
+
+        assert_eq!(outcome.label(), "accepted");
+        let super::Outcome::Accepted(spawn) = outcome else {
+            panic!("expected Accepted, got {}", outcome.label());
+        };
+        assert_eq!(spawn.assistant_message_id, assistant_message_id, "reused id");
+        assert_eq!(spawn.prompt, "the original prompt", "re-drives the original prompt");
+        assert_eq!(
+            db::run_status(&pool, run_id).await.unwrap().map(db::RunStatus::as_str),
+            Some("running"),
+            "the errored Run flipped to running"
+        );
+        assert!(hub::get(&hubs, run_id).is_some(), "the hub was created");
     }
 
     /// A non-errored (here `running`) Run frames `accepted:false` → `not_errored`,

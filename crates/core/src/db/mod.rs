@@ -1634,13 +1634,21 @@ pub async fn cancel_running_run(
 ///
 /// On `Moved::Lost` (the Run was not `errored` — a concurrent retry/sweep won, or
 /// it was never errored) nothing is cleared and the caller maps it to
-/// `not_errored`. On `Moved::Won`:
-///   - delete the assistant Message's stale `message_parts`, the Run's `run_steps`
-///     (assistant + tool_call steps), and any `tool_calls` — else
-///     `select_run_snapshot`'s `group_concat(text)` would append the retry text
-///     after the dead text and `thread/get`'s timeline would replay the failed
-///     segments. Order: `run_steps` first (its composite FK points at the parts;
-///     its tool_call rows FK `tool_calls`), then parts, then tool_calls;
+/// `not_errored`. On `Moved::Won`, discard ONLY the failed attempt's OWN
+/// uncommitted output — NOT a prior DECIDED proposal's committed rows:
+///   - delete the Run's `run_steps` EXCEPT a proposal-backed `tool_call` step
+///     (`delete_run_steps_except_proposals`), and the failed attempt's NON-proposal
+///     `tool_calls` (`delete_unproposed_tool_calls`) — else `select_run_snapshot`'s
+///     `group_concat(text)` would append the retry text after the dead text and
+///     `thread/get`'s timeline would replay the failed segments. A proposal-backed
+///     tool_call + its run_step are SPARED: deleting that tool_call would
+///     `ON DELETE CASCADE` (0001:116) its `proposals` row, orphaning the surviving
+///     `entities.created_via_proposal_id` / `entity_revisions.proposal_id` FKs and
+///     rolling back the whole tx — and the kept step still rehydrates the decided
+///     proposal segment (`segment_timeline`). Order: `run_steps` first (the dropped
+///     `message` steps' composite FK points at the parts; the dropped `tool_call`
+///     steps FK their tool_calls), then the assistant `message_parts`, then the
+///     unproposed `tool_calls`;
 ///   - re-flip the assistant Message `incomplete → streaming` so the streaming
 ///     part writers (gated on `status='streaming'`) accept the re-driven deltas;
 ///   - re-snapshot the Run's resolved Workflow columns from `workflow` (re-resolved
@@ -1663,17 +1671,18 @@ pub async fn prepare_retry(
         return Ok(moved);
     }
 
-    // Clear the failed attempt's rows. run_steps first (the assistant `message`
-    // steps' composite FK references message_parts, and `tool_call` steps FK
-    // tool_calls), then the parts, then the tool_calls.
-    queries::delete_run_steps(&mut *tx, run_id).await?;
+    // Clear the failed attempt's OWN rows, sparing a prior decided proposal's
+    // committed history. run_steps first (the dropped `message` steps' composite FK
+    // references message_parts, and the dropped `tool_call` steps FK tool_calls),
+    // then the assistant parts, then the unproposed tool_calls.
+    queries::delete_run_steps_except_proposals(&mut *tx, run_id).await?;
     if let Some(assistant_message_id) =
         queries::assistant_message_id_for_run(&mut *tx, run_id).await?
     {
         queries::delete_message_parts(&mut *tx, &assistant_message_id).await?;
         queries::mark_message_streaming(&mut *tx, &assistant_message_id, now_ms).await?;
     }
-    queries::delete_tool_calls(&mut *tx, run_id).await?;
+    queries::delete_unproposed_tool_calls(&mut *tx, run_id).await?;
 
     // Re-snapshot the Run's model columns from the freshly-resolved Workflow.
     queries::resnapshot_run_workflow(
