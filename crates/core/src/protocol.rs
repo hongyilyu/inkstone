@@ -61,6 +61,22 @@ pub struct RunCancelResult {
     pub outcome: String,
 }
 
+/// `run/retry` params (ADR-0028 retry amendment, #230): the errored Run to
+/// re-drive in place. Malformed → `invalid_params`, mirroring `run/cancel`.
+#[derive(Debug, Deserialize)]
+pub struct RunRetryParams {
+    pub run_id: uuid::Uuid,
+}
+
+/// `run/retry` result (ADR-0028 retry amendment, #230): `accepted` (the errored
+/// Run won the `errored → running` flip and is re-driving), `not_errored` (the
+/// Run was not in `errored` — a normal response value, not an error frame, like
+/// `RunCancelResult`'s `already_terminal`), or `unknown_run`.
+#[derive(Debug, Serialize)]
+pub struct RunRetryResult {
+    pub outcome: String,
+}
+
 /// `proposal/get` params (ADR-0025): the parked Run whose pending Proposal to
 /// fetch.
 #[derive(Debug, Deserialize)]
@@ -975,6 +991,28 @@ mod mirror_tests {
     }
 
     #[test]
+    fn run_retry_params_decodes_run_id() {
+        let wire = json!({ "run_id": UUID_A });
+        let p: RunRetryParams = serde_json::from_value(wire).unwrap();
+        assert_eq!(p.run_id.to_string(), UUID_A);
+        // A non-UUID run_id is rejected at decode → invalid_params (ADR-0029).
+        assert!(serde_json::from_value::<RunRetryParams>(json!({ "run_id": "nope" })).is_err());
+    }
+
+    #[test]
+    fn run_retry_result_encodes_outcome() {
+        for outcome in ["accepted", "not_errored", "unknown_run"] {
+            let r = RunRetryResult {
+                outcome: outcome.to_string(),
+            };
+            assert_eq!(
+                serde_json::to_value(&r).unwrap(),
+                json!({ "outcome": outcome }),
+            );
+        }
+    }
+
+    #[test]
     fn proposal_get_params_decodes_run_id() {
         let wire = json!({ "run_id": UUID_A });
         let p: ProposalGetParams = serde_json::from_value(wire).unwrap();
@@ -1728,6 +1766,12 @@ mod parity_fixtures {
                     outcome: "accepted".to_string(),
                 }
             ),
+            fx!(
+                "run_retry_result.json",
+                RunRetryResult {
+                    outcome: "accepted".to_string(),
+                }
+            ),
             // ── proposal/* results + notifications ──
             // ProposalGetResult maximal: rationale + review_context + resolved_plan
             // all present (covers ResolvedNode create/reuse/ambiguous + near_matches,
@@ -2397,6 +2441,7 @@ mod parity_fixtures {
         let committed: &[(&str, &str)] = committed![
             "subscribe_result.json",
             "run_cancel_result.json",
+            "run_retry_result.json",
             "proposal_get_result.json",
             "proposal_get_result.bare.json",
             "proposal_decide_result.json",
@@ -2493,6 +2538,7 @@ mod parity_fixtures {
         parses!(SubscribeParams, "subscribe_params.json");
         parses!(PostMessageParams, "post_message_params.json");
         parses!(RunCancelParams, "run_cancel_params.json");
+        parses!(RunRetryParams, "run_retry_params.json");
         parses!(ProposalGetParams, "proposal_get_params.json");
         parses!(ProposalDecideParams, "proposal_decide_params.json");
         parses!(ProposalDecideParams, "proposal_decide_params.edit.json");

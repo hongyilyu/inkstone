@@ -69,6 +69,7 @@ describe("_chat layout route (ADR-0042)", () => {
 			entityMutate: () => unused,
 			subscribeRun: () => unused,
 			cancelRun: () => unused,
+			retryRun: () => unused,
 			providerStatus: () => unused,
 			providerLoginStart: () => unused,
 			modelCatalog: () => unused,

@@ -32,6 +32,7 @@ import {
 	isRunParked,
 	markMessageIncomplete,
 	nextMessageId,
+	resetMessageForRetry,
 	seedAssistantMessage,
 	setHydrationStatus,
 	setPendingProposal,
@@ -377,6 +378,65 @@ export async function cancelRun(
 	// teardowns don't fire it). So refresh the recent-Runs feed from this
 	// authoritative settle point, else a user-stopped Run lingers as Running/Waiting.
 	onRunSettled?.();
+}
+
+/**
+ * Re-drive an errored Run IN PLACE from the chat surface (ADR-0028 retry
+ * amendment, #230). Fires `run/retry`, then on `accepted` re-streams the SAME
+ * `runId` — it does NOT `seedTurn` a second user/assistant turn (the #230 bug the
+ * client-side re-send produced).
+ *
+ * `threadId` is passed explicitly rather than read via `getRunThreadId(runId)`:
+ * a reloaded errored Run has no live {@link RunRecord} (hydration does not
+ * materialize one), so the index would be empty — but ChatColumn always knows the
+ * focused thread. On `accepted`: reset the errored assistant bubble back to
+ * `streaming` (clear `error`/`incomplete`/`cancelled`, clear segments), then
+ * `startRunStream` on the same `runId` — which internally `beginRunSubscription`s
+ * (re-arming the cumulative-snapshot bit) and forks the subscribe tail, so the
+ * first retry `text_delta` SETs the new text over the cleared timeline.
+ *
+ * `not_errored`/`unknown_run` are benign no-ops: the bubble already shows its
+ * terminal state (a non-errored Run can't be retried), so both return `{ ok: true }`.
+ * A failed REQUEST (transport/decode) returns `{ ok: false, error }` carrying the
+ * squashed {@link WsError} — so the caller can surface the SAME connection-failure
+ * copy `resend` does, instead of the retry button being a silent no-op (CodeRabbit
+ * #244). Uses `runPromiseExit` + `Cause.squash` for the real `WsError`, mirroring
+ * {@link send}.
+ */
+export async function retryRun(
+	runtime: WsRuntime,
+	threadId: string,
+	runId: RunId,
+): Promise<SendResult> {
+	const program = Effect.gen(function* () {
+		const client = yield* WsClient;
+		return yield* client.retryRun(runId);
+	});
+
+	const exit = await runtime.runPromiseExit(program);
+	if (Exit.isFailure(exit)) {
+		// The retry request itself failed (link down, decode) — surface the squashed
+		// WsError so the caller shows the connection-specific copy, like a failed send.
+		return { ok: false, error: Cause.squash(exit.cause) };
+	}
+
+	if (exit.value.outcome !== "accepted") {
+		// not_errored / unknown_run: nothing to re-drive — the bubble keeps its
+		// terminal state (Core did not flip the Run). Not a failure.
+		return { ok: true };
+	}
+
+	// Reset the errored bubble to live, then re-stream the SAME run. startRunStream
+	// arms the snapshot bit + forks the subscribe tail, so don't double-arm here.
+	// Stale-fiber guard (M2), mirroring decideProposal's resume: interrupt any fiber
+	// still tracked for this runId BEFORE re-subscribing, so a double-click — or an
+	// errored fiber still winding down — can't leave two subscription fibers racing on
+	// the same runId (whose snapshot text_deltas would fight over the bubble).
+	// `interruptRun` is a no-op when no live fiber exists.
+	resetMessageForRetry(threadId, runId);
+	interruptRun(runtime, runId);
+	startRunStream(runtime, threadId, runId);
+	return { ok: true };
 }
 
 /** Fork the global `proposalNotifications()` stream into the store, fetching+attaching on `pending` (idempotent; ADR-0025). */

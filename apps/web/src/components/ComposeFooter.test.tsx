@@ -31,6 +31,7 @@ function makeRuntime() {
 		entityMutate: die,
 		subscribeRun: dieStream,
 		cancelRun: die,
+		retryRun: die,
 		providerStatus: die,
 		providerLoginStart: die,
 		modelCatalog: () =>

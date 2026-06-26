@@ -116,6 +116,7 @@ function makeRuntime(
 		entityMutate: () => unused,
 		subscribeRun: () => unused,
 		cancelRun: () => unused,
+		retryRun: () => unused,
 		providerStatus: () => unused,
 		providerLoginStart: () => unused,
 		modelCatalog: () => unused,

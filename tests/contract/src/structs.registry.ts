@@ -49,6 +49,8 @@ import {
 	RunEvent,
 	RunGetHistoryParams,
 	RunHistoryResult,
+	RunRetryParams,
+	RunRetryResult,
 	SettingsResult,
 	SettingsSetParams,
 	SubscribeParams,
@@ -89,8 +91,8 @@ export interface FixtureEntry {
 }
 
 /** Every committed non-payload fixture, paired with its schema + source dir.
- * Grows one slice at a time until all 35 wire messages are covered (13 params +
- * 18 results/notifications + 4 worker↔core protocol). */
+ * Grows one slice at a time until all 37 wire messages are covered (14 params +
+ * 19 results/notifications + 4 worker↔core protocol). */
 export const fixtures: readonly FixtureEntry[] = [
 	// ── slice 1: one per source-direction, to exercise the harness end-to-end ──
 	{
@@ -122,6 +124,12 @@ export const fixtures: readonly FixtureEntry[] = [
 		message: "RunCancelParams",
 		file: "run_cancel_params.json",
 		schema: RunCancelParams,
+		dir: "authored",
+	},
+	{
+		message: "RunRetryParams",
+		file: "run_retry_params.json",
+		schema: RunRetryParams,
 		dir: "authored",
 	},
 	{
@@ -275,6 +283,12 @@ export const fixtures: readonly FixtureEntry[] = [
 		message: "RunCancelResult",
 		file: "run_cancel_result.json",
 		schema: RunCancelResult,
+		dir: "emitted",
+	},
+	{
+		message: "RunRetryResult",
+		file: "run_retry_result.json",
+		schema: RunRetryResult,
 		dir: "emitted",
 	},
 	// ProposalGetResult: maximal (rationale + review_context + resolved_plan —
@@ -593,7 +607,7 @@ export const fixtures: readonly FixtureEntry[] = [
 	},
 ];
 
-/** The hand-maintained canonical set of in-scope wire messages (35 at
+/** The hand-maintained canonical set of in-scope wire messages (37 at
  * completion; grows per slice). The completeness lock pins this equal to the
  * distinct `message` values in {@link fixtures}, so a message can't be covered
  * without being declared, nor declared without a fixture. */
@@ -602,8 +616,10 @@ export const CANONICAL_MESSAGES: readonly string[] = [
 	"PostMessageResult",
 	"SubscribeParams",
 	// slice 2 — the 13 params (12 new + SubscribeParams above = 13 total)
+	// + RunRetryParams (run-retry, ADR-0028 amendment, #230) = 14 params.
 	"PostMessageParams",
 	"RunCancelParams",
+	"RunRetryParams",
 	"ProposalGetParams",
 	"ProposalDecideParams",
 	"ThreadCreateParams",
@@ -621,8 +637,10 @@ export const CANONICAL_MESSAGES: readonly string[] = [
 	"ProviderLoginStartParams",
 	"SettingsSetParams",
 	// slice 3 — the 18 results + notifications
+	// + RunRetryResult (run-retry, ADR-0028 amendment, #230) = 19 results.
 	"SubscribeResult",
 	"RunCancelResult",
+	"RunRetryResult",
 	"ProposalGetResult",
 	"ProposalDecideResult",
 	"ProposalPendingNotification",

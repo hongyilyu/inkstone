@@ -92,6 +92,7 @@ function makeRuntime(
 		rescanJournalEntry,
 		subscribeRun: () => unused,
 		cancelRun: () => unused,
+		retryRun: () => unused,
 		providerStatus: () => unused,
 		providerLoginStart: () => unused,
 		modelCatalog: () => unused,

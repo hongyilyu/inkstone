@@ -19,6 +19,7 @@ mod recurrence_preview;
 // `thread/titled` notification onto its connection (ADR-0047); the request
 // handlers reach it as `super::reply`.
 pub(crate) mod reply;
+mod retry;
 mod run_history;
 mod settings;
 mod subscribe;
@@ -59,6 +60,9 @@ pub async fn dispatch(
         }
         "run/cancel" => {
             cancel::handle_cancel(pool, hubs, req.id, req.params, out_tx).await;
+        }
+        "run/retry" => {
+            retry::handle_retry(pool, hubs, req.id, req.params, out_tx).await;
         }
         "thread/create" => {
             thread_create::handle(pool, hubs, req.id, req.params, out_tx).await;

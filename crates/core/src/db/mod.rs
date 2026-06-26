@@ -1626,6 +1626,84 @@ pub async fn cancel_running_run(
     Ok(moved)
 }
 
+/// Prepare an errored Run for in-place retry (ADR-0028 retry amendment, #230) in
+/// ONE transaction: flip `errored → running` (the guarded [`RunStatus::retry`]),
+/// and — only if won — DISCARD the failed attempt's output so the re-drive starts
+/// clean. The Run keeps its `run_id` AND `assistant_message_id`; only the failed
+/// *contents* are dropped.
+///
+/// On `Moved::Lost` (the Run was not `errored` — a concurrent retry/sweep won, or
+/// it was never errored) nothing is cleared and the caller maps it to
+/// `not_errored`. On `Moved::Won`, discard ONLY the failed attempt's OWN
+/// uncommitted output — NOT a prior DECIDED proposal's committed rows:
+///   - delete the Run's `run_steps` EXCEPT a proposal-backed `tool_call` step
+///     (`delete_run_steps_except_proposals`), and the failed attempt's NON-proposal
+///     `tool_calls` (`delete_unproposed_tool_calls`) — else `select_run_snapshot`'s
+///     `group_concat(text)` would append the retry text after the dead text and
+///     `thread/get`'s timeline would replay the failed segments. A proposal-backed
+///     tool_call + its run_step are SPARED: deleting that tool_call would
+///     `ON DELETE CASCADE` (0001:116) its `proposals` row, orphaning the surviving
+///     `entities.created_via_proposal_id` / `entity_revisions.proposal_id` FKs and
+///     rolling back the whole tx — and the kept step still rehydrates the decided
+///     proposal segment (`segment_timeline`). Order: `run_steps` first (the dropped
+///     `message` steps' composite FK points at the parts; the dropped `tool_call`
+///     steps FK their tool_calls), then the assistant `message_parts`, then the
+///     unproposed `tool_calls`;
+///   - re-flip the assistant Message `incomplete → streaming` so the streaming
+///     part writers (gated on `status='streaming'`) accept the re-driven deltas;
+///   - re-snapshot the Run's resolved Workflow columns from `workflow` (re-resolved
+///     LIVE by the caller via `dispatcher::dispatch_and_resolve`, so a model switch
+///     before retry takes effect — ADR-0024 contrast with resume's snapshot).
+///
+/// The caller owns the spawn: it reads back the `assistant_message_id` + history
+/// and `worker::spawn`s on the SAME ids (mode `None`/fresh).
+pub async fn prepare_retry(
+    pool: &SqlitePool,
+    run_id: Uuid,
+    workflow: &Workflow,
+    now_ms: i64,
+) -> sqlx::Result<Moved> {
+    let mut tx = pool.begin().await?;
+
+    let moved = RunStatus::retry(&mut *tx, run_id, now_ms).await?;
+    if !moved.won() {
+        // Not errored (lost the flip): clear nothing, leave the Run untouched.
+        return Ok(moved);
+    }
+
+    // Clear the failed attempt's OWN rows, sparing a prior decided proposal's
+    // committed history. The assistant message id is read FIRST: the run_steps
+    // delete scopes message-step removal to it (so the user-prompt step survives —
+    // a later park/resume must still reconstruct the user turn), and the parts
+    // delete + streaming re-flip target it. run_steps go first (the dropped
+    // `message` steps' composite FK references message_parts, and the dropped
+    // `tool_call` steps FK tool_calls), then the assistant parts, then the
+    // unproposed tool_calls.
+    if let Some(assistant_message_id) =
+        queries::assistant_message_id_for_run(&mut *tx, run_id).await?
+    {
+        queries::delete_run_steps_except_proposals(&mut *tx, run_id, &assistant_message_id).await?;
+        queries::delete_message_parts(&mut *tx, &assistant_message_id).await?;
+        queries::mark_message_streaming(&mut *tx, &assistant_message_id, now_ms).await?;
+    }
+    queries::delete_unproposed_tool_calls(&mut *tx, run_id).await?;
+
+    // Re-snapshot the Run's model columns from the freshly-resolved Workflow.
+    queries::resnapshot_run_workflow(
+        &mut *tx,
+        run_id,
+        &workflow.name,
+        &workflow.version,
+        &workflow.provider,
+        workflow.model.as_deref().unwrap_or_default(),
+        workflow.thinking_level.as_deref().unwrap_or_default(),
+    )
+    .await?;
+
+    tx.commit().await?;
+    Ok(moved)
+}
+
 /// The run's assistant Message id (the seq-0 streaming row resume continues
 /// appending into). `None` when the Run has no assistant message.
 pub async fn assistant_message_id_for_run(
@@ -1634,6 +1712,27 @@ pub async fn assistant_message_id_for_run(
 ) -> sqlx::Result<Option<Uuid>> {
     let id = queries::assistant_message_id_for_run(pool, run_id).await?;
     Ok(id.and_then(|s| Uuid::parse_str(&s).ok()))
+}
+
+/// A Run's original user prompt (its user Message's concatenated text) and
+/// `thread_id` (run-retry, ADR-0028 amendment, #230). `None` when the Run does
+/// not exist or its `thread_id` is unparseable. Retry re-drives this prompt as a
+/// fresh turn after re-resolving the Workflow from the Thread + prompt.
+pub async fn run_prompt_and_thread(
+    pool: &SqlitePool,
+    run_id: Uuid,
+) -> sqlx::Result<Option<(String, Uuid)>> {
+    let Some(thread_id) = queries::thread_id_for_run(pool, run_id).await? else {
+        return Ok(None);
+    };
+    let Ok(thread_uuid) = Uuid::parse_str(&thread_id) else {
+        return Ok(None);
+    };
+    let user_message_id = queries::user_message_id_for_run(pool, run_id).await?;
+    let prompt = queries::text_parts_by_message(pool, &user_message_id)
+        .await?
+        .concat();
+    Ok(Some((prompt, thread_uuid)))
 }
 
 /// One element of a Run's timeline for resume reconstruction (ADR-0025).
@@ -5036,5 +5135,75 @@ mod tests {
             row.1, 7777,
             "rename does NOT bump last_activity_at (no feed reorder)"
         );
+    }
+
+    /// Drive a bare Run to `errored` directly (terminal fields stamped), to seed
+    /// the retry verb's `from` state. Mirrors what `RunStatus::fail` leaves behind.
+    async fn mark_bare_run_errored(pool: &SqlitePool, run_id: &str) {
+        sqlx::query(
+            "UPDATE runs SET status = 'errored', terminal_reason = 'errored', \
+             error_code = 'agent_error', error_message = 'boom', ended_at = 99 \
+             WHERE id = ?1",
+        )
+        .bind(run_id)
+        .execute(pool)
+        .await
+        .expect("mark errored");
+    }
+
+    /// `RunStatus::retry` lock (ADR-0028 retry amendment, #230): the guarded
+    /// `errored → running` flip wins only from `errored`, clears the four terminal
+    /// fields, and a `running`/`completed`/`parked`/`cancelled` Run loses (0 rows,
+    /// no mutation). The single outbound edge `errored` gains.
+    #[tokio::test]
+    async fn retry_verb_flips_errored_to_running_and_clears_terminal_fields() {
+        let pool = memory_pool().await;
+        let run_id = Uuid::now_v7();
+        let run = run_id.to_string();
+        insert_bare_run(&pool, &run, "running").await;
+        mark_bare_run_errored(&pool, &run).await;
+
+        // Won: errored → running, terminal fields cleared.
+        let mut tx = pool.begin().await.expect("begin");
+        let moved = RunStatus::retry(&mut tx, run_id, 100).await.expect("retry");
+        tx.commit().await.expect("commit");
+        assert_eq!(moved, Moved::Won);
+
+        let (status, tr, ec, em, ended): (String, Option<String>, Option<String>, Option<String>, Option<i64>) =
+            sqlx::query_as(
+                "SELECT status, terminal_reason, error_code, error_message, ended_at \
+                 FROM runs WHERE id = ?1",
+            )
+            .bind(&run)
+            .fetch_one(&pool)
+            .await
+            .expect("read run");
+        assert_eq!(status, "running");
+        assert_eq!(tr, None, "terminal_reason cleared");
+        assert_eq!(ec, None, "error_code cleared");
+        assert_eq!(em, None, "error_message cleared");
+        assert_eq!(ended, None, "ended_at cleared");
+
+        // A retry milestone reuses RunLogKind::Running (no new kind).
+        let last_kind: String = sqlx::query_scalar(
+            "SELECT kind FROM run_log WHERE run_id = ?1 ORDER BY run_seq DESC LIMIT 1",
+        )
+        .bind(&run)
+        .fetch_one(&pool)
+        .await
+        .expect("read run_log");
+        assert_eq!(last_kind, "running");
+
+        // Lost: a non-errored Run matches 0 rows and is untouched.
+        for status in ["running", "completed", "parked", "cancelled"] {
+            let other = Uuid::now_v7();
+            let other_s = other.to_string();
+            insert_bare_run(&pool, &other_s, status).await;
+            let mut tx = pool.begin().await.expect("begin");
+            let moved = RunStatus::retry(&mut tx, other, 100).await.expect("retry lost");
+            tx.commit().await.expect("commit");
+            assert_eq!(moved, Moved::Lost, "{status} run cannot be retried");
+            assert_eq!(run_status_of(&pool, &other_s).await, status, "{status} unchanged");
+        }
     }
 }

@@ -449,6 +449,35 @@ export function markMessageIncomplete(
 	});
 }
 
+/**
+ * Reset the errored assistant bubble bound to `runId` back to live for a
+ * `run/retry` (ADR-0028 retry amendment, #230): flip `incomplete → streaming`
+ * and clear the terminal-state fields (`error`, `cancelled`) so the bubble reads
+ * as a clean live turn again. `applyEvent`'s `text_delta` arm does NOT set status,
+ * so without this the re-streamed bubble would stay `incomplete`.
+ *
+ * Segments are cleared to `[]`: the re-driven Run's first `text_delta` arrives as
+ * a cumulative snapshot (the record is re-armed by {@link beginRunSubscription}),
+ * so `setCumulativeText` would replace the stale TEXT anyway — but resetting also
+ * discards the failed attempt's tool_call/proposal segments (which the snapshot
+ * SET preserves), matching Core clearing the failed message's parts in the retry
+ * transaction. No-op if the thread or a matching assistant message is absent.
+ */
+export function resetMessageForRetry(threadId: string, runId: string): void {
+	store.setState((s) => {
+		if (s.threads[threadId] === undefined) {
+			return s;
+		}
+		return updateRunMessage(s, threadId, runId, (m) => ({
+			...m,
+			status: "streaming",
+			error: undefined,
+			cancelled: undefined,
+			segments: [],
+		}));
+	});
+}
+
 // ── Segment timeline builders (ADR-0045) ──────────────────────────────────────
 // The web mirror of Core's run_steps sequencer: each Run Event extends the ordered
 // `segments[]` so the live render is the same shape the reload will read (slice 3).
