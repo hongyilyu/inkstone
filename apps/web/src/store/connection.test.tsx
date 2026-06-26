@@ -27,6 +27,7 @@ function makeRuntime(sub: SubscriptionRef.SubscriptionRef<ConnectionStatus>) {
 		postMessage: () => unused,
 		threadList: () => unused,
 		getRunHistory: () => unused,
+		recurrencePreview: () => unused,
 		threadGet: () => unused,
 		listEntities: () => unused,
 		getBacklinks: () => unused,

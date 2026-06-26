@@ -67,6 +67,7 @@ function renderTodoRow(
 		proposalDecide: () => unused,
 		messageSearch: () => unused,
 		proposalNotifications: () => unused,
+		connectionStatus: () => unused,
 	});
 	const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 	const client = new QueryClient({
