@@ -314,7 +314,7 @@ mod tests {
                 .expect("search before complete")
                 .len(),
             0,
-            "streaming assistant text is not indexed until completion"
+            "streaming assistant text is not searchable until completion"
         );
 
         crate::db::complete_run(&pool, run_id, 2000)
@@ -342,7 +342,7 @@ mod tests {
 
     /// Completed-only (ADR-0035): assistant text that never reaches `completed` —
     /// left `streaming`, or flipped to `incomplete` by `error_run` — contributes
-    /// no search hit. Only `RunStatus::complete` indexes assistant text.
+    /// no search hit. Only `completed` assistant text is searchable.
     #[tokio::test]
     async fn incomplete_assistant_text_is_not_searchable() {
         let pool = memory_pool().await;
@@ -378,7 +378,7 @@ mod tests {
                 .expect("search streaming/errored")
                 .len(),
             0,
-            "neither streaming nor errored assistant text is indexed"
+            "neither streaming nor errored assistant text is searchable"
         );
     }
 

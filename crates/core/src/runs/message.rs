@@ -161,9 +161,10 @@ mod tests {
         assert_eq!(second["created_at"], json!(1000));
     }
 
-    /// A query carrying FTS/SQL-special characters (`"`, `*`, `%`, `_`, and the
-    /// word `AND`) returns a normal (non-error) JSON-RPC RESPONSE — no panic, no
-    /// error frame. Slice 1 made `%`/`_` literal; this pins the wire path robust.
+    /// A query carrying LIKE-wildcard / SQL-special characters (`"`, `*`, `%`, `_`,
+    /// and the word `AND`) returns a normal (non-error) JSON-RPC RESPONSE — no
+    /// panic, no error frame. `%`/`_` are matched literally; this pins the wire
+    /// path robust.
     #[tokio::test]
     async fn special_character_query_frames_a_normal_response() {
         let pool = memory_pool().await;
