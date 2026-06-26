@@ -654,6 +654,7 @@ fn intent_graph_links() -> FieldSpec {
     let mut journal_ref = vec![graph_discriminant("kind", &["journal_ref"])];
     journal_ref.extend(from_to());
     journal_ref.push(Field::optional("match_text", FieldSpec::non_empty_string()));
+    journal_ref.push(Field::optional("append_text", FieldSpec::non_empty_string()));
     FieldSpec::OneOfArray {
         variants: vec![
             PayloadSpec::nested("intent graph todo_project link", ObjErr::JsonObject, todo_project),
