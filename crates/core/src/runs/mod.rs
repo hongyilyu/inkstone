@@ -25,6 +25,8 @@ mod subscribe;
 mod thread_create;
 mod thread_get;
 mod thread_list;
+mod thread_list_archived;
+mod thread_mutate;
 pub(crate) mod title;
 
 use sqlx::SqlitePool;
@@ -73,6 +75,18 @@ pub async fn dispatch(
         "thread/get" => {
             // The combinator (ADR-0029) owns decode + framing; pass raw params.
             thread_get::handle(pool, req.id, req.params, out_tx).await;
+        }
+        "thread/rename" => {
+            thread_mutate::handle_rename(pool, req.id, req.params, out_tx).await;
+        }
+        "thread/archive" => {
+            thread_mutate::handle_archive(pool, req.id, req.params, out_tx).await;
+        }
+        "thread/unarchive" => {
+            thread_mutate::handle_unarchive(pool, req.id, req.params, out_tx).await;
+        }
+        "thread/list_archived" => {
+            thread_list_archived::handle(pool, req.id, req.params, out_tx).await;
         }
         "entity/list" => {
             entity::handle_list(pool, req.id, req.params, out_tx).await;

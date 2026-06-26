@@ -53,12 +53,16 @@ import {
 	SettingsSetParams,
 	SubscribeParams,
 	SubscribeResult,
+	ThreadArchiveParams,
 	ThreadCreateParams,
 	ThreadCreateResult,
 	ThreadGetParams,
 	ThreadGetResult,
 	ThreadListResult,
+	ThreadMutateResult,
+	ThreadRenameParams,
 	ThreadTitledNotification,
+	ThreadUnarchiveParams,
 	ToolResult,
 	WorkerManifest,
 	WorkerOutbound,
@@ -216,6 +220,26 @@ export const fixtures: readonly FixtureEntry[] = [
 		schema: ThreadGetParams,
 		dir: "authored",
 	},
+	// thread/rename, thread/archive, thread/unarchive params (ADR-0052): the
+	// shapes Web sends. thread_id is a bare string TS-side (Core UUID-checks).
+	{
+		message: "ThreadRenameParams",
+		file: "thread_rename_params.json",
+		schema: ThreadRenameParams,
+		dir: "authored",
+	},
+	{
+		message: "ThreadArchiveParams",
+		file: "thread_archive_params.json",
+		schema: ThreadArchiveParams,
+		dir: "authored",
+	},
+	{
+		message: "ThreadUnarchiveParams",
+		file: "thread_unarchive_params.json",
+		schema: ThreadUnarchiveParams,
+		dir: "authored",
+	},
 	{
 		message: "ProviderLoginStartParams",
 		file: "provider_login_start_params.json",
@@ -316,6 +340,14 @@ export const fixtures: readonly FixtureEntry[] = [
 		schema: ThreadListResult,
 		dir: "emitted",
 	},
+	// thread/list_archived (ADR-0052) reuses ThreadListResult — a second fixture
+	// under the same message key (precedent: RecurrencePreviewResult's two).
+	{
+		message: "ThreadListResult",
+		file: "thread_list_result.archived.json",
+		schema: ThreadListResult,
+		dir: "emitted",
+	},
 	{
 		message: "RunHistoryResult",
 		file: "run_history_result.json",
@@ -376,6 +408,13 @@ export const fixtures: readonly FixtureEntry[] = [
 		message: "EntityMutateResult",
 		file: "entity_mutate_result.bare.json",
 		schema: EntityMutateResult,
+		dir: "emitted",
+	},
+	// The shared ack for thread/rename, thread/archive, thread/unarchive (ADR-0052).
+	{
+		message: "ThreadMutateResult",
+		file: "thread_mutate_result.json",
+		schema: ThreadMutateResult,
 		dir: "emitted",
 	},
 	{
@@ -576,6 +615,9 @@ export const CANONICAL_MESSAGES: readonly string[] = [
 	"JournalEntryRescanParams",
 	"MessageSearchParams",
 	"ThreadGetParams",
+	"ThreadRenameParams",
+	"ThreadArchiveParams",
+	"ThreadUnarchiveParams",
 	"ProviderLoginStartParams",
 	"SettingsSetParams",
 	// slice 3 — the 18 results + notifications
@@ -594,6 +636,7 @@ export const CANONICAL_MESSAGES: readonly string[] = [
 	"EntityListResult",
 	"EntityBacklinksResult",
 	"EntityMutateResult",
+	"ThreadMutateResult",
 	"JournalEntryRescanResult",
 	"MessageSearchResult",
 	"ThreadGetResult",

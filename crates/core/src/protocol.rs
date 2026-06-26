@@ -301,9 +301,46 @@ pub struct ThreadSummary {
 
 /// `thread/list` result: every Thread, most-recent-activity-first. Object-wrapper
 /// shape (`{threads: [...]}`) keeps the result forward-extensible.
+/// `thread/list_archived` (ADR-0052) reuses this same result type for the
+/// archived list (newest-archived-first).
 #[derive(Debug, Serialize)]
 pub struct ThreadListResult {
     pub threads: Vec<ThreadSummary>,
+}
+
+/// `thread/rename` params (ADR-0052): the Thread to rename + its new `title`.
+/// Malformed `thread_id` → `invalid_params` (-32602), unknown → `unknown_thread`
+/// (-32001); an empty/whitespace `title` is also `invalid_params`.
+#[derive(Debug, Deserialize)]
+pub struct ThreadRenameParams {
+    pub thread_id: uuid::Uuid,
+    pub title: String,
+}
+
+/// `thread/archive` params (ADR-0052): the Thread to archive (hide from the
+/// default sidebar list). Malformed `thread_id` → `invalid_params` (-32602),
+/// unknown → `unknown_thread` (-32001).
+#[derive(Debug, Deserialize)]
+pub struct ThreadArchiveParams {
+    pub thread_id: uuid::Uuid,
+}
+
+/// `thread/unarchive` params (ADR-0052): the Thread to restore to the default
+/// list. Malformed `thread_id` → `invalid_params` (-32602), unknown →
+/// `unknown_thread` (-32001).
+#[derive(Debug, Deserialize)]
+pub struct ThreadUnarchiveParams {
+    pub thread_id: uuid::Uuid,
+}
+
+/// The shared ack for the three mutating Thread verbs (`thread/rename`,
+/// `thread/archive`, `thread/unarchive`, ADR-0052): the affected `thread_id`.
+/// Mirrors `EntityMutateResult` but `thread_id` is NON-optional — every mutating
+/// verb has a target Thread (the Web reconciles by invalidating its `["threads"]`
+/// query and re-reading, so a minimal ack suffices).
+#[derive(Debug, Serialize)]
+pub struct ThreadMutateResult {
+    pub thread_id: String,
 }
 
 /// `run/get_history` params: an optional `limit` on how many recent Runs to
@@ -1375,6 +1412,42 @@ mod mirror_tests {
         assert!(serde_json::from_value::<ThreadGetParams>(json!({ "thread_id": "nope" })).is_err());
     }
 
+    #[test]
+    fn thread_rename_params_decodes_thread_id_and_title() {
+        let wire = json!({ "thread_id": UUID_A, "title": "Renamed thread" });
+        let p: ThreadRenameParams = serde_json::from_value(wire).unwrap();
+        assert_eq!(p.thread_id.to_string(), UUID_A);
+        assert_eq!(p.title, "Renamed thread");
+        // A non-UUID thread_id is rejected at decode → invalid_params (ADR-0029).
+        assert!(
+            serde_json::from_value::<ThreadRenameParams>(
+                json!({ "thread_id": "nope", "title": "x" })
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn thread_archive_params_decodes_thread_id() {
+        let wire = json!({ "thread_id": UUID_A });
+        let p: ThreadArchiveParams = serde_json::from_value(wire).unwrap();
+        assert_eq!(p.thread_id.to_string(), UUID_A);
+        assert!(
+            serde_json::from_value::<ThreadArchiveParams>(json!({ "thread_id": "nope" })).is_err()
+        );
+    }
+
+    #[test]
+    fn thread_unarchive_params_decodes_thread_id() {
+        let wire = json!({ "thread_id": UUID_A });
+        let p: ThreadUnarchiveParams = serde_json::from_value(wire).unwrap();
+        assert_eq!(p.thread_id.to_string(), UUID_A);
+        assert!(
+            serde_json::from_value::<ThreadUnarchiveParams>(json!({ "thread_id": "nope" }))
+                .is_err()
+        );
+    }
+
     // --- RunEvent (Serialize + Deserialize): round-trip wire variants. ---
 
     #[test]
@@ -1802,6 +1875,27 @@ mod parity_fixtures {
                         title: "Morning brain dump".to_string(),
                         last_activity_at: 1_700_000_000_000,
                     }],
+                }
+            ),
+            // thread/list_archived (ADR-0052): the inverse list, reusing
+            // ThreadListResult. A distinct id/title so it can't be mistaken for
+            // the active fixture above.
+            fx!(
+                "thread_list_result.archived.json",
+                ThreadListResult {
+                    threads: vec![ThreadSummary {
+                        id: UUID_B.to_string(),
+                        title: "Archived plans".to_string(),
+                        last_activity_at: 1_700_000_000_000,
+                    }],
+                }
+            ),
+            // ── thread/rename, thread/archive, thread/unarchive (ADR-0052) ──
+            // The shared ack echoing the affected thread_id.
+            fx!(
+                "thread_mutate_result.json",
+                ThreadMutateResult {
+                    thread_id: UUID_A.to_string(),
                 }
             ),
             // ── run/get_history ──
@@ -2314,6 +2408,8 @@ mod parity_fixtures {
             "post_message_result.json",
             "thread_create_result.json",
             "thread_list_result.json",
+            "thread_list_result.archived.json",
+            "thread_mutate_result.json",
             "run_history_result.json",
             "recurrence_preview_result.json",
             "recurrence_preview_result.ended.json",
@@ -2418,6 +2514,9 @@ mod parity_fixtures {
         parses!(JournalEntryRescanParams, "journal_entry_rescan_params.json");
         parses!(MessageSearchParams, "message_search_params.json");
         parses!(ThreadGetParams, "thread_get_params.json");
+        parses!(ThreadRenameParams, "thread_rename_params.json");
+        parses!(ThreadArchiveParams, "thread_archive_params.json");
+        parses!(ThreadUnarchiveParams, "thread_unarchive_params.json");
         parses!(ProviderLoginStartParams, "provider_login_start_params.json");
         parses!(SettingsSetParams, "settings_set_params.json");
         parses!(SettingsSetParams, "settings_set_params.bare.json");
