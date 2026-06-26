@@ -1362,6 +1362,62 @@ mod tests {
         assert_eq!(model, "gpt-retry", "the runs.model column was re-snapshotted");
     }
 
+    /// Test A2 — the failed attempt's tool_calls are cleared too. Pins
+    /// `delete_tool_calls` inside `prepare_retry` as load-bearing: a `tool_calls`
+    /// row (with its `run_steps` step, via `persist_tool_call`) is seeded for the
+    /// errored Run, asserted present before retry, and asserted GONE after — so
+    /// removing the DELETE reds this test.
+    #[tokio::test]
+    async fn prepare_retry_clears_tool_calls_from_failed_attempt() {
+        let pool = memory_pool().await;
+        let wf = test_workflow(&["read_thread"]);
+        let (run_id, _thread_id, amid) = seed_run(&pool, &wf).await;
+
+        // The failed attempt ran a tool call (and got a result) before erroring —
+        // persist_tool_call writes both the tool_calls row and its run_steps step.
+        db::persist_tool_call(
+            &pool,
+            run_id,
+            "tc_failed",
+            "read_thread",
+            r#"{"thread_id":"x"}"#,
+            db::now_ms(),
+        )
+        .await
+        .expect("persist tool call");
+        db::resolve_tool_call(&pool, "tc_failed", "completed", r#"{"ok":true}"#, db::now_ms())
+            .await
+            .expect("resolve tool call");
+        drive_to_errored_with_partial(&pool, run_id, amid, &wf).await;
+
+        async fn count_tool_calls(pool: &SqlitePool, run_id: Uuid) -> i64 {
+            sqlx::query_scalar("SELECT COUNT(*) FROM tool_calls WHERE run_id = ?1")
+                .bind(run_id.to_string())
+                .fetch_one(pool)
+                .await
+                .expect("count tool_calls")
+        }
+
+        // Before retry: the failed attempt's tool_calls row exists.
+        assert_eq!(
+            count_tool_calls(&pool, run_id).await,
+            1,
+            "the failed attempt left a tool_call"
+        );
+
+        let moved = db::prepare_retry(&pool, run_id, &wf, db::now_ms())
+            .await
+            .expect("prepare_retry");
+        assert!(moved.won());
+
+        // After retry: the tool_calls row is gone (delete_tool_calls is load-bearing).
+        assert_eq!(
+            count_tool_calls(&pool, run_id).await,
+            0,
+            "the failed attempt's tool_calls were cleared"
+        );
+    }
+
     /// Test C — full re-drive. After `prepare_retry`, a fresh `run_loop` streaming
     /// `[TextDelta("full answer"), Done]` into the REUSED assistant_message_id
     /// produces ONLY the new text (NOT "half full answer") and completes.
