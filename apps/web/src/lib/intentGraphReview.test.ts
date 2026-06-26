@@ -641,7 +641,11 @@ describe("appendedClauses", () => {
 		];
 		// @priya is a create node — accept by default.
 		expect(appendedClauses(plan, links, {})).toEqual([
-			{ targetHandle: "@priya", text: "Followed up with Priya." },
+			{
+				targetHandle: "@priya",
+				text: "Followed up with Priya.",
+				key: "@priya:0",
+			},
 		]);
 	});
 
@@ -672,9 +676,11 @@ describe("appendedClauses", () => {
 				appendText: "And P. left.",
 			},
 		];
+		// Distinct keys even though targetHandle + (potentially) text repeat — the link
+		// index disambiguates, so the card never collides on duplicate clauses.
 		expect(appendedClauses(plan, links, {})).toEqual([
-			{ targetHandle: "@priya", text: "Saw P." },
-			{ targetHandle: "@priya", text: "And P. left." },
+			{ targetHandle: "@priya", text: "Saw P.", key: "@priya:0" },
+			{ targetHandle: "@priya", text: "And P. left.", key: "@priya:1" },
 		]);
 	});
 });

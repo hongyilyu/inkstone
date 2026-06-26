@@ -1030,7 +1030,14 @@ async fn anchor_reuse_journal_entry(
                         link.to
                     ))
                 })?;
-                let appended_node = serde_json::json!({ "type": "text", "text": append_text });
+                // Core OWNS the prose↔clause join space (`join_with_separator`), so any
+                // incidental leading/trailing whitespace the model put on the clause is
+                // not content — trim it. This also removes the failure mode where a
+                // clause like " Priya was also there." (leading space AND label-leading)
+                // splices to a standalone `{text:" "}` node that `validate_woven_journal_body`
+                // rejects. The trim stays non-empty (the field is schema-validated non-blank).
+                let appended_node =
+                    serde_json::json!({ "type": "text", "text": append_text.trim() });
                 let mut spliced_clause =
                     splice_entity_ref_into_body(&[appended_node], label, &ref_id)?;
                 join_with_separator(&mut body, &mut spliced_clause);
@@ -3536,8 +3543,8 @@ mod tests {
     }
 
     // Test — anchor-reuse APPEND of an already-space-led clause (#221): the model emits
-    // `append_text` that already opens with a space. The join must NOT add a SECOND space
-    // (no "  Followed") — it folds a separator only when the boundary lacks whitespace.
+    // `append_text` that already opens with a space. Core trims the incidental whitespace
+    // (it owns the join space), so the result is a SINGLE leading space, not "  Followed".
     #[tokio::test]
     async fn anchor_reuse_append_text_already_spaced_clause_is_not_double_spaced() {
         let pool = memory_pool().await;
@@ -3583,6 +3590,64 @@ mod tests {
                 serde_json::json!({ "type": "text", "text": " Followed up with " }),
                 serde_json::json!({ "type": "entity_ref", "ref_id": chip_ref_id }),
                 serde_json::json!({ "type": "text", "text": "." }),
+            ]
+        );
+    }
+
+    // Test — anchor-reuse APPEND of a clause that BOTH leads with whitespace AND opens
+    // with the label (#221, CodeRabbit): `" Priya was also there."`. Without the trim,
+    // the splice on "Priya" yields a `before = " "` standalone whitespace node that
+    // `validate_woven_journal_body` rejects → tx rollback. Core trims the clause first,
+    // so it applies cleanly and the join space rides on the prose head ("morning sync ").
+    #[tokio::test]
+    async fn anchor_reuse_append_text_leading_space_and_label_leading_applies() {
+        let pool = memory_pool().await;
+        let original_head = serde_json::json!({ "type": "text", "text": "morning sync" });
+        let scaffold = seed_anchor_reuse(&pool, serde_json::json!([original_head])).await;
+        let payload = serde_json::json!({
+            "journal_entry": {
+                "handle": "@je", "existing_id": scaffold.je_id, "occurred_at": "2026-06-10T10:30:00"
+            },
+            "entities": [{ "handle": "@priya", "type": "person", "name": "Priya" }],
+            "links": [{
+                "kind": "journal_ref", "from": "@je", "to": "@priya",
+                // Leading space AND the label leads the clause — the rejected-node case.
+                "append_text": " Priya was also there."
+            }]
+        });
+
+        let outcome = apply_intent_graph_proposal(
+            &pool,
+            scaffold.run_id,
+            &scaffold.proposal_id,
+            &scaffold.tool_call_id,
+            &payload,
+            None,
+            None,
+            |a| a.to_string(),
+            crate::db::now_ms(),
+        )
+        .await
+        .expect("a leading-space label-leading clause applies (trimmed, no standalone-space node)");
+        assert!(matches!(outcome, IntentGraphOutcome::Applied(_)));
+
+        let body = current_je_body(&pool, &scaffold.je_id).await;
+        assert!(
+            !body.iter().any(|n| n.get("text").and_then(serde_json::Value::as_str) == Some(" ")),
+            "no standalone separator node",
+        );
+        let chip_ref_id = body
+            .iter()
+            .find_map(|n| n.get("ref_id").and_then(serde_json::Value::as_str))
+            .expect("a chip");
+        // The clause trims to "Priya was also there."; the chip leads it, and the join
+        // space folds onto the prose head ("morning sync ").
+        assert_eq!(
+            body,
+            vec![
+                serde_json::json!({ "type": "text", "text": "morning sync " }),
+                serde_json::json!({ "type": "entity_ref", "ref_id": chip_ref_id }),
+                serde_json::json!({ "type": "text", "text": " was also there." }),
             ]
         );
     }

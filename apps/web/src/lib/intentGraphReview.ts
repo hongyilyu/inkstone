@@ -494,6 +494,11 @@ export interface AppendedClause {
 	readonly targetHandle: string;
 	/** The clause text Core will append (the new prose the user is approving). */
 	readonly text: string;
+	/** A stable render key, unique per source link (Core appends one clause per
+	 * `journal_ref`, so two links to the same entity with identical text are distinct
+	 * rows). Derived here so the card never keys on a non-unique handle/text or a raw
+	 * array index. */
+	readonly key: string;
 }
 
 /** The appended-prose clauses the user is about to approve: one per accepted
@@ -509,13 +514,19 @@ export function appendedClauses(
 ): AppendedClause[] {
 	const byHandle = new Map(plan.map((node) => [node.handle, node]));
 	const out: AppendedClause[] = [];
-	for (const link of links) {
-		if (link.kind !== "journal_ref" || link.appendText === undefined) continue;
+	// `linkIndex` is the link's position in the source array — a stable per-link id that
+	// disambiguates two journal_refs to the same entity with identical append_text.
+	links.forEach((link, linkIndex) => {
+		if (link.kind !== "journal_ref" || link.appendText === undefined) return;
 		const target = byHandle.get(link.to);
 		if (target === undefined || stageFor(buffer, target, repoints) !== "accept")
-			continue;
-		out.push({ targetHandle: link.to, text: link.appendText });
-	}
+			return;
+		out.push({
+			targetHandle: link.to,
+			text: link.appendText,
+			key: `${link.to}:${linkIndex}`,
+		});
+	});
 	return out;
 }
 

@@ -23,27 +23,42 @@ import { FAUX_WORKER_CMD } from "./spawnCore.js";
  * asserts the boundary holds across both worker modes.
  */
 
-const scenarioDir = mkdtempSync(path.join(tmpdir(), "inkstone-capture-"));
-const captureParamsFile = path.join(scenarioDir, "scenario.json");
-
-test.afterAll(() => {
-	rmSync(scenarioDir, { recursive: true, force: true });
-});
+// One scenario file per DESCRIBE block, each in its own temp dir torn down by that
+// describe's own afterAll. A single module-level dir + a FILE-LEVEL afterAll races under
+// `fullyParallel` (workers: 4): the afterAll fires once PER WORKER as it drains, so a
+// sibling describe's worker can rmSync the shared dir while another describe's test is
+// mid-write → `scenario.json` ENOENT. Per-describe dirs make a dir only removable by the
+// describe that created it. (The middle "boundary" describe uses the propose worker and
+// no scenario file, so it needs none.)
+const matrixScenarioDir = mkdtempSync(
+	path.join(tmpdir(), "inkstone-capture-matrix-"),
+);
+const matrixCaptureParamsFile = path.join(matrixScenarioDir, "scenario.json");
+const enrichScenarioDir = mkdtempSync(
+	path.join(tmpdir(), "inkstone-capture-enrich-"),
+);
+const enrichCaptureParamsFile = path.join(enrichScenarioDir, "scenario.json");
 
 test.describe("Direct capture intent matrix (faux capture mode)", () => {
 	test.use({
 		coreOptions: {
 			workerCmd: FAUX_WORKER_CMD,
 			faux: "capture",
-			captureParamsFile,
+			captureParamsFile: matrixCaptureParamsFile,
 		},
+	});
+	test.afterAll(() => {
+		rmSync(matrixScenarioDir, { recursive: true, force: true });
 	});
 
 	test("Todo intent: 'Remind me to buy milk' → Add Todo card → Message-sourced Todo", async ({
 		chat,
 		workspace,
 	}) => {
-		writeScenario({ intent: "todo", todo: { title: "Buy milk" } });
+		writeScenario(matrixCaptureParamsFile, {
+			intent: "todo",
+			todo: { title: "Buy milk" },
+		});
 		const dbPath = path.join(workspace.path, "db.sqlite");
 
 		await chat.goto();
@@ -72,7 +87,7 @@ test.describe("Direct capture intent matrix (faux capture mode)", () => {
 		chat,
 		workspace,
 	}) => {
-		writeScenario({
+		writeScenario(matrixCaptureParamsFile, {
 			intent: "project",
 			project: { name: "Ship API v2 migration" },
 		});
@@ -99,7 +114,7 @@ test.describe("Direct capture intent matrix (faux capture mode)", () => {
 		chat,
 		workspace,
 	}) => {
-		writeScenario({
+		writeScenario(matrixCaptureParamsFile, {
 			intent: "person",
 			person: { name: "Alice", note: "daycare coordinator" },
 		});
@@ -127,7 +142,7 @@ test.describe("Direct capture intent matrix (faux capture mode)", () => {
 		chat,
 		workspace,
 	}) => {
-		writeScenario({ intent: "conversation" });
+		writeScenario(matrixCaptureParamsFile, { intent: "conversation" });
 		const dbPath = path.join(workspace.path, "db.sqlite");
 
 		await chat.goto();
@@ -199,15 +214,18 @@ test.describe("Direct capture enrichment (faux capture mode)", () => {
 		coreOptions: {
 			workerCmd: FAUX_WORKER_CMD,
 			faux: "capture",
-			captureParamsFile,
+			captureParamsFile: enrichCaptureParamsFile,
 		},
+	});
+	test.afterAll(() => {
+		rmSync(enrichScenarioDir, { recursive: true, force: true });
 	});
 
 	test("existing Person: accept the Todo, then accept the update_todo link → todo_person_refs row", async ({
 		chat,
 		workspace,
 	}) => {
-		writeScenario({
+		writeScenario(enrichCaptureParamsFile, {
 			intent: "todo",
 			todo: { title: "email Priya" },
 			enrich: { person_name: "Priya", person_role: "related" },
@@ -250,7 +268,7 @@ test.describe("Direct capture enrichment (faux capture mode)", () => {
 		chat,
 		workspace,
 	}) => {
-		writeScenario({
+		writeScenario(enrichCaptureParamsFile, {
 			intent: "todo",
 			todo: { title: "follow up with NewPerson" },
 			enrich: { person_name: "NewPerson", person_role: "waiting_on" },
@@ -308,18 +326,21 @@ function acceptedCard(chat: { page: Page }) {
 }
 
 /** Write the capture scenario the Worker reads (per test, before goto). */
-function writeScenario(scenario: {
-	intent: "todo" | "project" | "person" | "conversation";
-	todo?: { title: string; note?: string; due_at?: string; defer_at?: string };
-	project?: { name: string; outcome?: string };
-	person?: { name: string; note?: string; aliases?: string[] };
-	enrich?: {
-		person_name?: string;
-		person_role?: "waiting_on" | "related";
-		project_name?: string;
-	};
-}): void {
-	writeFileSync(captureParamsFile, JSON.stringify(scenario));
+function writeScenario(
+	file: string,
+	scenario: {
+		intent: "todo" | "project" | "person" | "conversation";
+		todo?: { title: string; note?: string; due_at?: string; defer_at?: string };
+		project?: { name: string; outcome?: string };
+		person?: { name: string; note?: string; aliases?: string[] };
+		enrich?: {
+			person_name?: string;
+			person_role?: "waiting_on" | "related";
+			project_name?: string;
+		};
+	},
+): void {
+	writeFileSync(file, JSON.stringify(scenario));
 }
 
 /** Count accepted entities of a given type. */
