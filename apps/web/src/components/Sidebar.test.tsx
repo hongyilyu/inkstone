@@ -506,6 +506,21 @@ describe("Sidebar", () => {
 		await runtime.dispose();
 	});
 
+	it("the Archived nav row calls onOpenArchived", async () => {
+		const user = userEvent.setup();
+		const runtime = makeStubRuntime();
+		const onOpenArchived = vi.fn();
+
+		renderChatRoute(<Sidebar onOpenArchived={onOpenArchived} />, { runtime });
+
+		await user.click(
+			await screen.findByRole("button", { name: /^archived$/i }),
+		);
+		expect(onOpenArchived).toHaveBeenCalledTimes(1);
+
+		await runtime.dispose();
+	});
+
 	it("archiving a non-focused thread does NOT navigate", async () => {
 		const user = userEvent.setup();
 		const { runtime, threadArchive } = makeRecordingRuntime();

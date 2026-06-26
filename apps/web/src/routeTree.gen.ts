@@ -20,6 +20,7 @@ import { Route as LibraryScheduledRouteImport } from './routes/library/scheduled
 import { Route as LibraryReviewRouteImport } from './routes/library/review'
 import { Route as LibraryInboxRouteImport } from './routes/library/inbox'
 import { Route as LibraryKindRouteImport } from './routes/library/$kind'
+import { Route as ChatArchivedRouteImport } from './routes/_chat/archived'
 import { Route as ChatThreadThreadIdRouteImport } from './routes/_chat/thread.$threadId'
 
 const ChatRoute = ChatRouteImport.update({
@@ -76,6 +77,11 @@ const LibraryKindRoute = LibraryKindRouteImport.update({
   path: '/$kind',
   getParentRoute: () => LibraryRouteRoute,
 } as any)
+const ChatArchivedRoute = ChatArchivedRouteImport.update({
+  id: '/archived',
+  path: '/archived',
+  getParentRoute: () => ChatRoute,
+} as any)
 const ChatThreadThreadIdRoute = ChatThreadThreadIdRouteImport.update({
   id: '/thread/$threadId',
   path: '/thread/$threadId',
@@ -86,6 +92,7 @@ export interface FileRoutesByFullPath {
   '/library': typeof LibraryRouteRouteWithChildren
   '/settings': typeof SettingsRouteRouteWithChildren
   '/': typeof ChatIndexRoute
+  '/archived': typeof ChatArchivedRoute
   '/library/$kind': typeof LibraryKindRoute
   '/library/inbox': typeof LibraryInboxRoute
   '/library/review': typeof LibraryReviewRoute
@@ -97,6 +104,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/settings': typeof SettingsRouteRouteWithChildren
+  '/archived': typeof ChatArchivedRoute
   '/library/$kind': typeof LibraryKindRoute
   '/library/inbox': typeof LibraryInboxRoute
   '/library/review': typeof LibraryReviewRoute
@@ -112,6 +120,7 @@ export interface FileRoutesById {
   '/library': typeof LibraryRouteRouteWithChildren
   '/settings': typeof SettingsRouteRouteWithChildren
   '/_chat': typeof ChatRouteWithChildren
+  '/_chat/archived': typeof ChatArchivedRoute
   '/library/$kind': typeof LibraryKindRoute
   '/library/inbox': typeof LibraryInboxRoute
   '/library/review': typeof LibraryReviewRoute
@@ -128,6 +137,7 @@ export interface FileRouteTypes {
     | '/library'
     | '/settings'
     | '/'
+    | '/archived'
     | '/library/$kind'
     | '/library/inbox'
     | '/library/review'
@@ -139,6 +149,7 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/settings'
+    | '/archived'
     | '/library/$kind'
     | '/library/inbox'
     | '/library/review'
@@ -153,6 +164,7 @@ export interface FileRouteTypes {
     | '/library'
     | '/settings'
     | '/_chat'
+    | '/_chat/archived'
     | '/library/$kind'
     | '/library/inbox'
     | '/library/review'
@@ -249,6 +261,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof LibraryKindRouteImport
       parentRoute: typeof LibraryRouteRoute
     }
+    '/_chat/archived': {
+      id: '/_chat/archived'
+      path: '/archived'
+      fullPath: '/archived'
+      preLoaderRoute: typeof ChatArchivedRouteImport
+      parentRoute: typeof ChatRoute
+    }
     '/_chat/thread/$threadId': {
       id: '/_chat/thread/$threadId'
       path: '/thread/$threadId'
@@ -294,11 +313,13 @@ const SettingsRouteRouteWithChildren = SettingsRouteRoute._addFileChildren(
 )
 
 interface ChatRouteChildren {
+  ChatArchivedRoute: typeof ChatArchivedRoute
   ChatIndexRoute: typeof ChatIndexRoute
   ChatThreadThreadIdRoute: typeof ChatThreadThreadIdRoute
 }
 
 const ChatRouteChildren: ChatRouteChildren = {
+  ChatArchivedRoute: ChatArchivedRoute,
   ChatIndexRoute: ChatIndexRoute,
   ChatThreadThreadIdRoute: ChatThreadThreadIdRoute,
 }

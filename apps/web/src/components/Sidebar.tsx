@@ -12,11 +12,13 @@ import { CopyOutcome } from "./CopyOutcome.js";
 
 export function Sidebar({
 	onOpenLibrary,
+	onOpenArchived,
 	onOpenSettings,
 	onOpenThread,
 	onNewChat,
 }: {
 	onOpenLibrary?: () => void;
+	onOpenArchived?: () => void;
 	onOpenSettings?: () => void;
 	onOpenThread?: (threadId: string) => void;
 	onNewChat?: () => void;
@@ -41,6 +43,14 @@ export function Sidebar({
 				>
 					<Library className="size-4 shrink-0" aria-hidden />
 					Library
+				</button>
+				<button
+					type="button"
+					onClick={onOpenArchived}
+					className={cn(navRow, "w-full")}
+				>
+					<Archive className="size-4 shrink-0" aria-hidden />
+					Archived
 				</button>
 				<button
 					type="button"

@@ -18,6 +18,7 @@ function ChatLayout() {
 			nav={
 				<Sidebar
 					onOpenLibrary={() => navigate({ to: "/library" })}
+					onOpenArchived={() => navigate({ to: "/archived" })}
 					onOpenSettings={() => navigate({ to: "/settings/models" })}
 					onNewChat={() => navigate({ to: "/" })}
 					onOpenThread={(threadId) =>
