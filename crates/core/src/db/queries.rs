@@ -56,15 +56,71 @@ where
         .map(|_| ())
 }
 
-/// Read every Thread for `thread/list`, most-recent-activity-first. Returns
+/// Read every ACTIVE Thread for `thread/list`, most-recent-activity-first.
+/// `WHERE archived_at IS NULL` excludes archived Threads (ADR-0052). Returns
 /// `(id, title, last_activity_at)` rows.
 pub(super) async fn list_threads<'e, E>(executor: E) -> sqlx::Result<Vec<(String, String, i64)>>
 where
     E: Executor<'e, Database = Sqlite>,
 {
-    sqlx::query_as("SELECT id, title, last_activity_at FROM threads ORDER BY last_activity_at DESC")
-        .fetch_all(executor)
+    sqlx::query_as(
+        "SELECT id, title, last_activity_at FROM threads \
+         WHERE archived_at IS NULL ORDER BY last_activity_at DESC",
+    )
+    .fetch_all(executor)
+    .await
+}
+
+/// Read the ARCHIVED Threads for `thread/list_archived` (ADR-0052),
+/// newest-archived first (`ORDER BY archived_at DESC`). Same
+/// `(id, title, last_activity_at)` tuple shape as [`list_threads`], so the
+/// archived view reuses the same row consumer.
+pub(super) async fn list_archived_threads<'e, E>(
+    executor: E,
+) -> sqlx::Result<Vec<(String, String, i64)>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_as(
+        "SELECT id, title, last_activity_at FROM threads \
+         WHERE archived_at IS NOT NULL ORDER BY archived_at DESC",
+    )
+    .fetch_all(executor)
+    .await
+}
+
+/// Stamp a Thread's `archived_at` (ms-epoch) to archive it (ADR-0052). Touches
+/// ONLY `archived_at` — does NOT cascade to messages/runs/provenance (the whole
+/// point of archive-not-delete) and does NOT bump `last_activity_at`. Mirrors
+/// [`update_thread_title`]'s single-column UPDATE shape; a missing row matches
+/// nothing (the verb guards existence, ADR-0052).
+pub(super) async fn archive_thread<'e, E>(
+    executor: E,
+    thread_id: Uuid,
+    now_ms: i64,
+) -> sqlx::Result<()>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query("UPDATE threads SET archived_at = ?2 WHERE id = ?1")
+        .bind(thread_id.to_string())
+        .bind(now_ms)
+        .execute(executor)
         .await
+        .map(|_| ())
+}
+
+/// Clear a Thread's `archived_at` to un-archive it (ADR-0052), restoring it to
+/// the default `list_threads`. The inverse of [`archive_thread`].
+pub(super) async fn unarchive_thread<'e, E>(executor: E, thread_id: Uuid) -> sqlx::Result<()>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query("UPDATE threads SET archived_at = NULL WHERE id = ?1")
+        .bind(thread_id.to_string())
+        .execute(executor)
+        .await
+        .map(|_| ())
 }
 
 /// Read a Thread's `title` by id for `thread/get`. `None` means the Thread

@@ -3,7 +3,8 @@ CREATE TABLE threads (
   id                TEXT PRIMARY KEY,            -- UUIDv7
   title             TEXT NOT NULL,
   created_at        INTEGER NOT NULL,
-  last_activity_at  INTEGER NOT NULL
+  last_activity_at  INTEGER NOT NULL,
+  archived_at       INTEGER                      -- ms-epoch; NULL = active, a number = archived-at (ADR-0052)
 );
 
 -- Runs -----------------------------------------------------------------
