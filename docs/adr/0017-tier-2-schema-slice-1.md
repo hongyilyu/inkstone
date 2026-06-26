@@ -2,16 +2,9 @@
 
 This ADR pins the canonical SQLite schema (tier 2 per [ADR-0004](./0004-three-tier-storage-authority.md)) for the chat-driven MVP slice. The schema is the smallest set of tables that supports the slice 1 flows end-to-end (post a user message → spawn Run → stream text → submit Proposal → park → user approves → apply atomically → render history). It was revised after four independent reviews against agentic frameworks, AI chat tools, local-first PKM apps, and the existing t3code event-sourced reference.
 
-> **As-built note (read the whole ADR as the slice-1 snapshot).** The table counts
-> and the "one tier-3 table" claims throughout describe slice 1 as authored. That
-> single tier-3 table — the entity `fts` virtual table flagged at its DDL below —
-> was removed in the pre-1.0 feature-cut sweep, so the current schema has **no**
-> tier-3 `fts` table (and has grown otherwise since slice 1). This ADR is retained
-> append-only as the historical record, not the live schema source of truth.
-
 ## The schema
 
-Twelve tables. Eleven tier-2, one tier-3. All primary keys are **UUIDv7** (time-ordered; `ORDER BY id` yields chronological iteration without a separate index).
+Eleven tables, all tier-2. All primary keys are **UUIDv7** (time-ordered; `ORDER BY id` yields chronological iteration without a separate index).
 
 ```sql
 -- Threads --------------------------------------------------------------
@@ -152,21 +145,9 @@ CREATE TABLE entity_revisions (
   created_at   INTEGER NOT NULL,
   PRIMARY KEY (entity_id, seq)
 );
-
--- Tier 3 ---------------------------------------------------------------
-CREATE VIRTUAL TABLE fts USING fts5(
-  entity_id UNINDEXED,
-  searchable_text
-);
 ```
 
-> **As-built note:** this entity `fts` virtual table was never written or read and
-> was removed in the pre-1.0 feature-cut sweep (see the removal amendment in
-> [ADR-0035](./0035-message-full-text-search.md)). The slice-1 snapshot above is
-> retained as the historical record (append-only ADR); the current schema has no
-> `fts` table.
-
-There is no `turns` table.
+There is no `turns` table. Slice 1 also defined an entity `fts` FTS5 virtual table (tier 3), but it was never written or read and was removed pre-1.0; the schema carries no tier-3 table here. (Message search, added later, scans `message_parts` live with no index — [ADR-0035](./0035-message-full-text-search.md).)
 
 ## Invariants beyond the schema
 
@@ -297,7 +278,7 @@ The alternative — making one side nullable — was rejected because both direc
 
 ### Tier-2 vs tier-3 separation
 
-[ADR-0004](./0004-three-tier-storage-authority.md) §"Schema separation" calls for tier-2 and tier-3 tables to be mechanically distinguishable. Slice 1 has exactly one tier-3 table (`fts`); the boundary is documented in this ADR. If tier 3 grows beyond one table, revisit naming.
+[ADR-0004](./0004-three-tier-storage-authority.md) §"Schema separation" calls for tier-2 and tier-3 tables to be mechanically distinguishable. Slice 1 originally shipped one tier-3 table (the entity `fts` FTS5 table), since removed; the schema is now all tier-2. The boundary stays documented here, to revisit when tier 3 returns.
 
 ## Identity model
 
@@ -312,10 +293,9 @@ The inkstone-poc's `messages` table uses Bun's `randomUUIDv7()`. We follow the s
 
 ## What this ADR does not decide
 
-- **Hash algorithm for `entity_fts` content hashing.** Tier-3 implementation detail.
 - **Migration tooling** (Drizzle, sqlx-migrate, Diesel). Decided at code-write time.
 - **Specific shapes for `entities.data` per `type`.** Each Entity type's JSON schema is defined in code, not in this ADR. `entities.schema_version` lets shapes evolve.
-- **Whether tier-3 grows beyond `fts`** in slice 2 (backlinks, extraction candidates, dashboards). Out of scope.
+- **What tier 3 holds** (backlinks, extraction candidates, dashboards, a search index). Out of scope; the slice-1 entity `fts` table was the only tier-3 table and has since been removed, leaving tier 3 empty for now.
 - **External-ingestion bookkeeping** (file-tracking, `snapshots`, `ingestion_log` tables). Removed: there is no external authoring path to ingest. SQLite is the single source of truth per [ADR-0004](./0004-three-tier-storage-authority.md). The canonical content table(s) for non-chat content are left open pending use-case exploration; `proposals.mutation_kind` plus tool-call payload JSON can carry future content-creation Proposals when their shape is decided.
 - **A Workflows table.** Workflows are pure code in slice 1 per [ADR-0011](./0011-per-run-workflow-dispatch.md); `runs.workflow_name + workflow_version` is a string identifier resolved against in-process code.
 - **Parallel Proposals in one Turn.** `runs.awaiting_tool_call_id` is singular: a Run can park on at most one Proposal at a time. CONTEXT.md allows a Turn to emit multiple tool calls, but slice 1 Workflows submit at most one Proposal per Turn. When a Workflow needs parallel Proposals, generalise to `awaiting_tool_call_ids JSON` and adjust the resume logic to track per-call decisions.

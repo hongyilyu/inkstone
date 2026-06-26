@@ -1,126 +1,74 @@
-# Message full-text search: a trigram FTS projection over message text
-
-> **As-built amendment (removal) — the FTS projection is gone; the capability
-> stays.** A pre-1.0 feature-cut sweep removed the `message_fts` virtual table,
-> its two write seams (`persist_initial_run` user-text index +
-> `RunStatus::complete` assistant-text index), and the on-open
-> `rebuild_message_fts` self-heal. **The `message/search` capability is
-> unchanged** — same wire shape (`MessageSearchParams`/`MessageSearchResult`/
-> `MessageHit`), same ⌘K "Messages" group, same recency order, same
-> byte-safe-snippet, same literal-wildcard + blank-query guards, same
-> deep-link-to-message. The query simply runs a `LIKE '%' || ? || '%'` over the
-> assembled `message_parts` text of `completed` messages (the canonical
-> `text_parts_by_message` concat) instead of over a denormalized mirror column.
-> **Why this is purely internal:** the table was never an FTS5 `MATCH` query — it
-> was already `LIKE`, so the trigram column was only a substring *accelerator*,
-> and ADR-0035 itself (lines 47-48) concedes the scan "is free at single-user
-> scale." Removing it deletes a redundant projection + a per-boot rebuild while
-> the user-visible behavior is byte-identical. If a real corpus-scale problem
-> ever appears, re-introducing a trigram (or `MATCH`+bm25) index is a fresh,
-> additive table behind the unchanged `message/search` seam — exactly the
-> "rebuild is a different table + query path" note in Consequences. The dead
-> entity `fts` table referenced in "Why a separate table" (line 58) was removed
-> in the same sweep.
+# Message search: a substring scan over completed message text
 
 / builds on [ADR-0004](./0004-three-tier-storage-authority.md), [ADR-0009](./0009-protocol-strategy.md), [ADR-0014](./0014-client-core-wire-protocol.md), [ADR-0028](./0028-run-status-materialized-transitions.md), [ADR-0029](./0029-request-handler-seam.md)
-
-> _The Context and Decision below are the original FTS design, retained as the
-> historical record; read them as amended by the removal note at the top — the
-> `message_fts` projection is gone, but the `message/search` capability it
-> describes is unchanged (now a `LIKE` scan over `message_parts`)._
 
 PRODUCT.md's success criterion is that knowledge be "browsable **and findable**
 rather than buried in conversation." The Library made Entities browsable, and the
 ⌘K palette searches Entity titles and Thread titles. But the conversations
-themselves — what the user actually typed, and what the assistant replied — are
-unsearchable: nothing indexes `message_parts.text`, and the palette matches Thread
-*titles* only. You cannot find "the thread where I worked through the daycare
-schedule" unless "daycare" happened to make it into the auto-generated title.
+themselves — what the user actually typed, and what the assistant replied — were
+unsearchable: the palette matched Thread *titles* only. You could not find "the
+thread where I worked through the daycare schedule" unless "daycare" happened to
+make it into the auto-generated title.
 
 This ADR makes message text findable.
 
 ## Decision
 
-> **Superseded by the removal amendment at the top of this ADR.** The
-> `message_fts` table, its two indexing write-seams, and the rebuild-on-open
-> described in this section and the three that follow ("Why trigram + LIKE…",
-> "Why a separate table…", "Why index at completion…") were removed in the
-> feature-cut sweep. The `message/search` request, its hit shape, and the ⌘K
-> "Messages" group are unchanged; only the data source moved to a live `LIKE`
-> scan over assembled `message_parts`. The sections below are retained as the
-> historical design record (this ADR is append-only).
+A `message/search` request runs a case-insensitive substring query over the text
+of every **completed** Message (both `user` and `assistant` roles), assembled live
+from tier-2 `message_parts`, and returns recency-ordered hits each carrying enough
+context to navigate to the source Thread. The ⌘K command palette gains a
+"Messages" group backed by this request.
 
-A tier-3 FTS5 table, `message_fts`, indexes the text of every **completed**
-Message (both `user` and `assistant` roles). A new `message/search` request runs a
-case-insensitive substring query over it and returns ranked-by-recency hits, each
-carrying enough context to navigate to the source Thread. The ⌘K command palette
-gains a "Messages" group backed by this request.
+The query is a plain `LIKE`, scanned directly over the canonical assembled text —
+there is **no derived index**:
 
 ```sql
-CREATE VIRTUAL TABLE message_fts USING fts5(
-  message_id UNINDEXED,
-  thread_id  UNINDEXED,
-  run_id     UNINDEXED,
-  role       UNINDEXED,
-  text,
-  tokenize = 'trigram'
-);
+WHERE <assembled message_parts text> LIKE '%' || ? || '%'
 ```
+
+where the assembled text is the `group_concat` of each Message's `type='text'`
+parts in `seq` order (the same `text_parts_by_message` concat `history_for_run`
+uses), filtered to `messages.status = 'completed'`.
 
 A search returns, per hit:
 `{ message_id, thread_id, run_id, role, snippet, thread_title, created_at }`.
 
-## Why trigram + LIKE, not the default tokenizer + MATCH
+## Why a plain LIKE scan, no index
 
-The match semantics are **substring**, not token-prefix: `mail` must find
-`email`, `care` must find `daycare`. Only the `trigram` tokenizer supports
-arbitrary substring matching in FTS5.
+The match semantics are **substring**, not token-prefix: `mail` must find `email`,
+`care` must find `daycare`. A uniform `WHERE text LIKE '%' || ? || '%'` delivers
+that at any query length with **no `MATCH` query-syntax to sanitize** (a user
+typing `AND`, `"`, `*`, or `NEAR(` is just literal text) — `%`/`_` are escaped so
+they match literally, and a blank query short-circuits to no hits (an empty needle
+would otherwise `LIKE '%%'` the whole corpus). FTS-hostile input can never produce
+a query error.
 
-A trigram-indexed column accelerates `LIKE '%q%'` directly, so the query path is a
-uniform `WHERE text LIKE '%' || ? || '%'` — **no `MATCH` query-syntax to
-sanitize** (a user typing `AND`, `"`, `*`, or `NEAR(` is just literal text), and
-**no separate branch for 1–2 character queries** (`LIKE` is correct at any length;
-trigram merely accelerates queries of 3+ characters and falls back to a scan below
-that, which is free at single-user scale). The table earns its keep purely as a
-substring-search accelerator, and FTS-hostile input can never produce a query
-error.
+At single-user scale a full scan is free — the message corpus is small and the
+palette queries on demand, off any path the user waits on — so a standing index
+earns nothing. (An earlier slice did build a tier-3 `message_fts` FTS5 trigram
+projection for exactly this query; because the query was always `LIKE` and never
+`MATCH`, the trigram column was a pure substring *accelerator* over a mirror of
+`message_parts`. The pre-1.0 feature-cut sweep removed it — the table, its two
+indexing write-seams, and the on-open rebuild — for the live scan, with
+byte-identical results.) If a real corpus-scale problem ever appears, a trigram
+(or default-tokenizer + `MATCH` + bm25) index is a fresh, additive table behind
+this unchanged `message/search` seam.
 
-The cost, accepted: trigram carries **no relevance ranking** (bm25 requires
-`MATCH`). Results order by `created_at DESC` — "find that recent conversation" is a
-recency-ordered need anyway, so this is the right default, not a compromise. The
-snippet is rendered in SQL with `substr`/`instr` around the first match, not the
-FTS5 `snippet()` helper (which also requires `MATCH`).
+The cost, accepted: a substring scan carries **no relevance ranking**. Results
+order by `created_at DESC` — "find that recent conversation" is a recency-ordered
+need anyway, so this is the right default, not a compromise. The snippet is
+rendered in SQL with `substr`/`instr` around the first match.
 
-## Why a separate table from the pre-existing `fts`
+## Completed-only
 
-`0001_initial.sql` already defines an `fts(entity_id UNINDEXED, searchable_text)`
-table — entity-shaped, never written or read. Message search is keyed on
-`message_id` / `thread_id` / `run_id` and must round-trip a hit to a Thread, so it
-needs its own table. The dead entity `fts` table is left untouched here; reviving
-or removing it is separate work (entity search was found to be churn at
-single-user scale — the data is already client-side — whereas message text is the
-unbounded, large-per-row table where an index genuinely pays off).
-
-## Why index at completion, synced at two seams, rebuilt on open
-
-`message_fts` is a tier-3 Derived Projection (ADR-0004): authoritative for nothing,
-re-derivable from `message_parts` at any time.
-
-- **Completed-only.** The index holds only `completed` Messages — mirroring
-  `history_for_run`'s existing "completed drops partial/errored assistant text"
-  rule. Half-streamed and errored assistant text is never searchable.
-- **Two sync seams.** User text is complete the moment a Run is created, so it is
-  indexed in `persist_initial_run`. Assistant text accumulates via streaming
-  `text_delta` appends and is finalized only when the Run completes, so it is
-  indexed in the `RunStatus::complete` transition (ADR-0028), right after
-  `mark_assistant_messages_completed`. No other transition produces a completed
-  Message.
-- **Rebuild on open.** Core rebuilds `message_fts` from `message_parts` (via the
-  canonical `text_parts_by_message` assembly) on every workspace open. This
-  backfills existing databases, self-heals drift, and keeps the projection
-  honestly tier-3: delete it and it comes back. The rebuild is O(all completed
-  messages) per boot — single-digit milliseconds at single-user scale, on a path
-  the user never waits on.
+The search sees only `completed` Messages — mirroring `history_for_run`'s existing
+"completed drops partial/errored assistant text" rule. User text is `completed`
+the moment a Run is created (searchable immediately); assistant text accumulates
+via streaming `text_delta` appends and becomes `completed` only at the
+`RunStatus::complete` transition (ADR-0028). Half-streamed and errored assistant
+text is never searchable. Because the scan reads `message_parts` live, there is no
+projection to sync or rebuild — the canonical text *is* the search corpus.
 
 ## Why `message/search` on the existing socket
 
@@ -135,12 +83,11 @@ outcome. New protocol types (`MessageSearchParams` / `MessageSearchResult` /
 
 ## Consequences
 
-- **New capability, not a re-skin.** Finding a conversation by its body text is
-  impossible today; this is the first surface that does it.
+- **New capability, not a re-skin.** Finding a conversation by its body text was
+  impossible before this; this is the first surface that does it.
 - **Recency, not relevance.** Hits order newest-first. If relevance ranking is ever
-  wanted, it requires the default tokenizer + `MATCH` + bm25 — a different table
-  and a different query path, i.e. a rebuild. The trigram choice is baked into the
-  table at creation.
+  wanted, it requires a default-tokenizer FTS index + `MATCH` + bm25 — a new table
+  and a different query path, added behind the unchanged `message/search` seam.
 - **⌘K only.** The feature surfaces in the command palette's new "Messages" group;
   the existing Threads and recents groups are untouched and stay client-side. No
   chat-sidebar search surface in this feature.

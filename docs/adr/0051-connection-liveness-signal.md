@@ -1,36 +1,21 @@
 # Socket-liveness signal + unbounded reconnect
 
-> **As-built amendment (removal) — the visible indicator is retired; the
-> reconnect transport stays.** A pre-1.0 feature-cut sweep removed the
-> always-visible `ConnectionStatusIndicator` from the `NavShell` footer, the
-> `connectionStatus()` → zustand bridge fork, and the `useConnectionStatus`
-> store. For a localhost single-user tool whose Core is a sibling child process,
-> "connected" is near-always true, so a standing connected dot is ambient chrome
-> the local-first-calm thesis (PRODUCT.md) does not need. **What this amendment
-> does NOT touch:** the unbounded two-phase reconnect (the `SubscriptionRef`,
-> `reconnectDelay`, `connected | reconnecting | disconnected` derivation) stays
-> intact inside the `WsClient` Layer — the link still heals a dropped connection
-> with no page reload. The `client.connectionStatus()` stream stays on the SDK
-> interface (an untouched, tested seam a future surface can re-consume), and the
-> per-send connection-failure copy (`connectionFailureCopy.ts`, which parses
-> `WsError.reason`, never the ambient signal) is independent and also stays. If
-> an ambient liveness surface is wanted again, re-mounting a component off the
-> still-live `connectionStatus()` stream is a few lines — no transport rework.
-
-> _The summary and body below are the original design, retained as the historical
-> record; read them as amended by the removal note above — the always-visible
-> indicator is gone, while the signal, the unbounded reconnect, and the per-send
-> failure copy are retained._
-
 The `WsClient` Layer exposes a **connection-liveness signal** —
 `connected | reconnecting | disconnected` — derived purely from the socket
 lifecycle it already owns (`onOpen` / per-drop `failPending` / retry cadence),
 held in a `SubscriptionRef` and streamed to the Web Client as
-`connectionStatus()`. The shell renders an always-visible status indicator off
-it, and connection-caused send failures surface connection-specific copy. To
-make a `disconnected` state recoverable **without a page reload**, the Layer's
-bounded `times: 5` reconnect becomes **unbounded** (fast ramp → steady), so a
-dropped link re-opens itself when Core returns.
+`connectionStatus()`. Connection-caused send failures surface
+connection-specific copy. To make a `disconnected` state recoverable **without a
+page reload**, the Layer's bounded `times: 5` reconnect becomes **unbounded**
+(fast ramp → steady), so a dropped link re-opens itself when Core returns.
+
+The signal feeds no standing UI: a localhost single-user tool whose Core is a
+sibling child process is "connected" near-always, so an ambient connected
+indicator is chrome the local-first-calm thesis (PRODUCT.md) does not need. The
+`connectionStatus()` stream stays on the SDK interface — a tested seam a future
+surface can re-consume by mounting a component off it, no transport rework. The
+unbounded reconnect and the per-send failure copy carry the user-visible value
+without a persistent dot.
 
 This is the **first liveness signal** out of the transport layer. It is
 **socket liveness**, NOT `provider/connected` (ADR-0049, OAuth-credential
@@ -66,31 +51,23 @@ the staleness seam inkstone's in-Layer signal avoids.
 
 ## Decision
 
-> **Partly superseded by the removal amendment at the top of this ADR.** The
-> `SubscriptionRef`/`connectionStatus()` signal and the unbounded two-phase
-> reconnect (the first two decision bullets) are **retained and live**. The
-> **always-visible NavShell indicator** (the third bullet) was removed in the
-> feature-cut sweep; the per-send connection-failure copy (fourth bullet) is
-> retained. The bullets below are the original design record (append-only ADR);
-> read the indicator bullet as retired history.
-
 - **A `SubscriptionRef<ConnectionStatus>` inside the Layer scope, exposed as
   `connectionStatus(): Stream` via `SubscriptionRef.changes`.** `ConnectionStatus`
   is `connected | reconnecting | disconnected`. The ref is set at the three
   lifecycle points the Layer already owns: `connected` in `onOpen`, `reconnecting`
   when a drop enters the fast-ramp retry, `disconnected` once the fast ramp
   settles into the steady retry phase. `SubscriptionRef.changes` **replays the
-  current value on subscribe** — the indicator mounts long after the socket opened
-  (the shell renders per-route; the socket opens once at boot), so it needs the
-  *current* value, not just future transitions. This is the property a
+  current value on subscribe** — a consumer subscribes long after the socket
+  opened (the shell renders per-route; the socket opens once at boot), so it needs
+  the *current* value, not just future transitions. This is the property a
   `Queue`-backed stream (the `proposalNotifications()` pattern,
   [ADR-0025](./0025-proposal-park-and-resume.md)) lacks: a
-  Queue delivers only future offers, so an indicator mounting after the last
+  Queue delivers only future offers, so a consumer subscribing after the last
   transition would render "unknown" indefinitely. A proposal is a discrete
   *event* (Queue-shaped); connection status is *state* (Ref-shaped). The
   `SubscriptionRef` is a new primitive but is **confined to the Layer** that
-  already owns the socket; `.changes` hands the bridge a plain `Stream`, so the
-  established Queue+zustand bridge pattern downstream is unchanged.
+  already owns the socket; `.changes` hands a plain `Stream`, so the established
+  Queue+zustand bridge pattern downstream is unchanged.
 
 - **Reconnect becomes unbounded (two-phase), redefining `disconnected`.** The
   `times: 5` cap is removed. A drop retries forever: the existing ~50ms
@@ -104,21 +81,18 @@ the staleness seam inkstone's in-Layer signal avoids.
   is still a defect that dies the layer build (ADR-0020), only *post-open* drops
   reconnect.
 
-- **Always-visible indicator in the shared nav footer (`NavShell`), stream wired
-  at `__root.tsx`.** `NavShell`'s footer row (account glyph + settings gear) is
-  the one chrome shared by both the chat Sidebar and the Library nav, so an
-  indicator there is visible on every authenticated route. It renders a quiet
-  connected affordance (a small dot), morphs to a loading/spinner on
-  `reconnecting`, and to a "Lost connection" treatment on `disconnected`. The
-  *stream fiber* starts at `__root.tsx` (alongside `startProposalStream` /
-  `setOnRunSettled`), mirroring the established bridge; only the visible element
-  lives in the shell. Color is drawn from the existing palette (`muted` /
-  `destructive`) — **no new `--warning` token** for a transient state — and is
-  never the sole cue: an icon + `role="status" aria-live="polite"` region
-  (inkstone's own `CopyOutcome` precedent) announces transitions, satisfying
-  PRODUCT.md's "never encode meaning in color alone." Every reference repo is a
-  *negative* example on a11y (color-only or `title`-only); this is the one place
-  inkstone leads with its own pattern.
+- **No standing connection UI; the signal is a dormant, re-consumable seam.** The
+  `connectionStatus()` stream is built and tested but feeds no mounted component:
+  on a localhost single-user tool whose Core is a sibling child process,
+  "connected" is near-always true, so a persistent connected dot is ambient chrome
+  the local-first-calm thesis (PRODUCT.md) does not need. The user-visible value
+  lives in the unbounded reconnect (the link self-heals) and the per-send failure
+  copy below. If an ambient liveness surface is wanted later, it mounts a component
+  off the still-live `connectionStatus()` stream — and would owe a non-color cue
+  (icon + `role="status"` region, the `CopyOutcome` precedent) per PRODUCT.md's
+  "never encode meaning in color alone." (An earlier slice did ship an
+  always-visible `NavShell` indicator; it was removed in the pre-1.0 feature-cut
+  sweep as unearned chrome, leaving the signal seam intact.)
 
 - **Connection-caused send failures parse `WsError.reason`, not the ambient
   signal.** `send()` / `sendNewThread()` already return `{ ok: false, error }`
@@ -129,8 +103,8 @@ the staleness seam inkstone's in-Layer signal avoids.
   running") for those two reasons, falling back to the generic copy otherwise.
   The **error is authoritative for *this* send**; reading the ambient
   `SubscriptionRef` at catch-time races a concurrent reconnect (the socket may
-  have just re-opened while this write already failed). The indicator and the
-  per-send copy stay independent surfaces.
+  have just re-opened while this write already failed). The per-send copy is thus
+  independent of the ambient signal.
 
 - **No Rust, no wire protocol, no parity gate.** The signal is derived purely
   from the client's own socket lifecycle. Adding a wire-level connection message
