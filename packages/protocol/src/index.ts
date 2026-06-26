@@ -445,12 +445,15 @@ export type TodoPersonRefView = S.Schema.Type<typeof TodoPersonRefView>;
  * ADR-0030). A FLAT optional shape, safe because Core is the sole producer and
  * fills it from one `entity_sources` row whose CHECK guarantees exactly one
  * source kind: a user Message source carries `thread_id` + `thread_title` (link
- * back to the Thread); a Journal-Entry source carries `journal_entry_id` (link to
- * it in the Library). Read `journal_entry_id` first, else the Thread fields.
+ * back to the Thread) plus the capturing `message_id` (so the Client can
+ * deep-link to the exact message, #184); a Journal-Entry source carries
+ * `journal_entry_id` (link to it in the Library). Read `journal_entry_id` first,
+ * else the Thread fields (`message_id` rides along with them).
  */
 export const EntitySourceView = S.Struct({
 	thread_id: S.optional(S.String),
 	thread_title: S.optional(S.String),
+	message_id: S.optional(S.String),
 	journal_entry_id: S.optional(S.String),
 });
 export type EntitySourceView = S.Schema.Type<typeof EntitySourceView>;

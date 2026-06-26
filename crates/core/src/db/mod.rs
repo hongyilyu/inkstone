@@ -186,8 +186,13 @@ pub struct EntityRow {
 /// of two shapes, mirroring the `entity_sources` CHECK (exactly one source kind):
 /// a user Message (carrying the Thread to link back to) or a source Journal Entry.
 pub enum EntityProvenance {
-    /// `created_from` a user Message: link back to its Thread.
-    Message { thread_id: String, thread_title: String },
+    /// `created_from` a user Message: link back to its Thread, plus the capturing
+    /// message id so the Client can deep-link to the exact message (#184).
+    Message {
+        thread_id: String,
+        thread_title: String,
+        message_id: Option<String>,
+    },
     /// `created_from` a source Entity (a Journal Entry): link to it in the Library.
     JournalEntry { journal_entry_id: String },
 }
@@ -390,7 +395,7 @@ async fn attach_provenance(pool: &SqlitePool, rows: &mut [EntityRow]) -> sqlx::R
     let entity_ids = rows.iter().map(|row| row.id.clone()).collect::<Vec<_>>();
     let provenance = queries::provenance_for_entities(pool, &entity_ids).await?;
     let mut provenance_by_entity = HashMap::<String, EntityProvenance>::new();
-    for (entity_id, source_entity_id, thread_id, thread_title) in provenance {
+    for (entity_id, source_entity_id, thread_id, thread_title, message_id) in provenance {
         provenance_by_entity
             .entry(entity_id)
             .or_insert_with(|| match source_entity_id {
@@ -398,6 +403,7 @@ async fn attach_provenance(pool: &SqlitePool, rows: &mut [EntityRow]) -> sqlx::R
                 None => EntityProvenance::Message {
                     thread_id: thread_id.unwrap_or_default(),
                     thread_title: thread_title.unwrap_or_default(),
+                    message_id,
                 },
             });
     }
@@ -2850,10 +2856,12 @@ mod tests {
         assert!(
             matches!(
                 from_msg.source.as_ref(),
-                Some(EntityProvenance::Message { thread_id, thread_title })
-                    if thread_id == "thr-1" && thread_title == "Morning brain dump"
+                Some(EntityProvenance::Message { thread_id, thread_title, message_id })
+                    if thread_id == "thr-1"
+                        && thread_title == "Morning brain dump"
+                        && message_id.as_deref() == Some("msg-1")
             ),
-            "Message-sourced Todo reports its Thread; updated_from does not override created_from"
+            "Message-sourced Todo reports its Thread + capturing message; updated_from does not override created_from"
         );
 
         let user = rows.iter().find(|r| r.id == "t-user").expect("t-user");

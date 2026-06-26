@@ -47,14 +47,17 @@ fn entity_row_to_wire(row: db::EntityRow) -> EntityRow {
             EntityProvenance::Message {
                 thread_id,
                 thread_title,
+                message_id,
             } => EntitySourceView {
                 thread_id: Some(thread_id),
                 thread_title: Some(thread_title),
+                message_id,
                 journal_entry_id: None,
             },
             EntityProvenance::JournalEntry { journal_entry_id } => EntitySourceView {
                 thread_id: None,
                 thread_title: None,
+                message_id: None,
                 journal_entry_id: Some(journal_entry_id),
             },
         }),

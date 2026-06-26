@@ -947,7 +947,7 @@ describe("EntityDetail Journal Entry rescan", () => {
 // ── Captured-from provenance footer (ADR-0030) ───────────────────────────────
 
 describe("EntityDetail Captured from", () => {
-	it("links a Thread-sourced Entity back to its originating chat", async () => {
+	it("links a Thread-sourced Entity back to its originating chat (no capturing message)", async () => {
 		const user = userEvent.setup();
 		const todo = todoItem("t_msg", {
 			title: "Buy milk",
@@ -963,10 +963,44 @@ describe("EntityDetail Captured from", () => {
 			screen.getByRole("button", { name: /Morning brain dump/ }),
 		);
 
-		// The source-thread link navigates to that Thread's route (ADR-0042).
+		// No capturing message id → plain thread-open, no anchor (empty search omits
+		// the optional focusedMessageId param, #184).
 		expect(navigate).toHaveBeenCalledWith({
 			to: "/thread/$threadId",
 			params: { threadId: "thr_1" },
+			search: {},
+		});
+		// `toHaveBeenCalledWith({ search: {} })` can't tell `{}` from
+		// `{ focusedMessageId: undefined }` (vitest deep-equality), so assert the key
+		// is genuinely ABSENT — this is what reds a regression to an always-set
+		// `search: { focusedMessageId }` that emits `undefined` when there's no id.
+		const noAnchorArg = navigate.mock.calls[0][0] as { search: object };
+		expect(noAnchorArg.search).not.toHaveProperty("focusedMessageId");
+	});
+
+	it("deep-links to the capturing message when the source carries one (#184)", async () => {
+		const user = userEvent.setup();
+		const todo = todoItem("t_msg", {
+			title: "Buy milk",
+			source: {
+				kind: "thread",
+				threadId: "thr_1",
+				threadTitle: "Morning brain dump",
+				messageId: "msg_1",
+			},
+		});
+		renderDetail(<EntityDetail entity={todo} allEntities={[todo]} />);
+
+		await user.click(
+			screen.getByRole("button", { name: /Morning brain dump/ }),
+		);
+
+		// Carries the capturing message id → land on that exact message via the
+		// existing scroll/highlight/strip machinery (ADR-0042, #138/#169).
+		expect(navigate).toHaveBeenCalledWith({
+			to: "/thread/$threadId",
+			params: { threadId: "thr_1" },
+			search: { focusedMessageId: "msg_1" },
 		});
 	});
 
