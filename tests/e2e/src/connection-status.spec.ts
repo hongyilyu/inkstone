@@ -1,31 +1,71 @@
 import { expect, test } from "./fixtures.js";
 
 /**
- * Socket-liveness indicator + connection-specific send copy on a real SIGTERM
+ * Socket-liveness indicator + connection-specific send copy on a dropped link
  * (ADR-0051): real Core + built Web Client. This is the user-visible DEGRADED
  * state — the always-on NavShell indicator morphing to "Lost connection" once
- * the client's own socket drops and its unbounded reconnect can't re-open
- * (Core is gone), plus a send attempted while offline surfacing the
- * connection-specific copy (not the generic "Couldn't send…" fallback).
+ * the client's own socket drops and its unbounded reconnect can't re-open, plus
+ * a send whose in-flight request is dropped surfacing the connection-specific
+ * copy (not the generic "Couldn't send…" fallback).
  *
- * Auto-recovery (reconnect → connected) is deliberately NOT covered here:
- * `spawnCore` uses a random port + fresh tempdir, so a same-port Core RESTART
- * isn't supported by the harness. The recovery round-trip is proven in ui-sdk
- * vitest (slice 1). Do NOT try to restart Core in this spec.
+ * The drop is forced with `page.routeWebSocket` rather than a SIGTERM race: the
+ * route proxies `/ws` to real Core verbatim, then CLOSES the link the instant the
+ * client sends a `thread/create` frame — so the in-flight request fails
+ * `connection_lost` regardless of how fast Core would have replied (the old
+ * send-then-SIGTERM approach raced Core's reply and flaked on CI). The proxy
+ * never reconnects, so the indicator also settles to "Lost connection".
+ *
+ * Auto-recovery (reconnect → connected) is deliberately NOT covered here; it is
+ * proven in ui-sdk vitest (slice 1).
  *
  * Selector choice: target the indicator by its visible "Lost connection" label
  * text (`getByText("Lost connection", { exact: true })`) — the page-object idiom
  * (no impl-only testid), which doubles as the assertion that the disconnected
  * treatment rendered. EXACT text isolates the visible glyph from the sr-only
- * role="status" span, whose copy also begins "Lost connection…". The default
- * `coreOptions: {}` (gate fixture) is fine: the test never completes a Run — it
- * sends, kills Core, then probes the degraded surface.
+ * role="status" span, whose copy also begins "Lost connection…".
  */
-test("SIGTERM Core: indicator shows Lost connection and an offline send shows the connection copy", async ({
+test("dropped socket: indicator shows Lost connection and an in-flight send shows the connection copy", async ({
 	chat,
-	core,
 }) => {
 	const { page } = chat;
+
+	// Drop the client's socket DETERMINISTICALLY the instant the `thread/create` request
+	// is sent — independent of Core's reply speed. The old approach (send, then SIGTERM
+	// Core) raced the kill against Core answering the create: on CI the tiny DB-write
+	// reply often won (send succeeds → navigates, no alert) or the frame hadn't flushed
+	// yet (no in-flight request) — connection-status.spec.ts flaked on CI (and reds master)
+	// while passing locally. `routeWebSocket` proxies `/ws` to real Core and forwards both
+	// directions verbatim, UNTIL the client sends a `thread/create` frame; then it CLOSES
+	// the proxy (the in-flight request never gets a reply → `connection_lost` → the
+	// connection-specific copy) and never reconnects (Core is unreachable through the dead
+	// proxy), so the indicator settles to "Lost connection" too. No wall-clock dependence,
+	// so no SIGTERM is needed for the drop. Registered BEFORE goto so the socket-open is
+	// intercepted.
+	let linkDropped = false;
+	await page.routeWebSocket(/\/ws$/, (ws) => {
+		// Once dropped, REFUSE every reconnect: closing without connecting to Core keeps
+		// the client retrying forever, so the indicator settles to "Lost connection"
+		// instead of healing. (Without this, the client's reconnect would re-proxy to
+		// live Core and flip back to "connected", never reaching the disconnected state.)
+		if (linkDropped) {
+			ws.close();
+			return;
+		}
+		const server = ws.connectToServer();
+		ws.onMessage((message) => {
+			const text = typeof message === "string" ? message : message.toString();
+			if (text.includes('"method":"thread/create"')) {
+				// The request is now in flight; drop the link so it fails connection_lost
+				// and latch the drop so reconnects keep failing.
+				linkDropped = true;
+				ws.close();
+				server.close();
+				return;
+			}
+			server.send(message);
+		});
+		server.onMessage((message) => ws.send(message));
+	});
 
 	await chat.goto();
 
@@ -34,16 +74,11 @@ test("SIGTERM Core: indicator shows Lost connection and an offline send shows th
 	await expect(page.getByText(/lost connection/i)).toHaveCount(0);
 	await expect(page.getByText(/reconnecting/i)).toHaveCount(0);
 
-	// Fire a send, THEN SIGTERM Core so the in-flight request is dropped before Core
-	// answers it. `chat.goto()` landed on the welcome (no focused thread), so this
-	// mints a thread → `sendNewThread` → `thread/create` request, written over the
-	// open socket and awaiting a reply. Killing Core mid-flight fails that pending
-	// request with `connection_lost`, which ChatColumn maps to the connection-
-	// specific copy. (A send issued AFTER the link is fully down instead blocks on
-	// the SDK's writer latch — open-gated — so the in-flight drop is the
-	// deterministic way to surface the failure with Core gone for good.)
+	// `chat.goto()` landed on the welcome (no focused thread), so this send mints a thread
+	// → `sendNewThread` → a `thread/create` request. The route above drops the socket the
+	// moment that frame is sent, failing the in-flight request with `connection_lost`,
+	// which ChatColumn maps to the connection-specific copy.
 	await chat.send("are you there?");
-	await core.shutdown();
 
 	// The send-error alert shows the CONNECTION-SPECIFIC copy. The /lost its
 	// connection/i pattern matches CONNECTION_SEND_FAILURE ("Inkstone may have lost

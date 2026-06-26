@@ -26,9 +26,11 @@ const JOURNAL_TEXT = "Caught up with Alice over coffee.";
 // Known id for the seeded Person so case (a) can assert entity_refs.target_entity_id.
 const SEEDED_PERSON_ID = "01900000-0000-7000-8000-0000000004a1";
 
-test.afterAll(() => {
-	rmSync(scenarioDir, { recursive: true, force: true });
-});
+// NO file-level afterAll rmSync here: under `fullyParallel` (workers: 4) a file-level
+// afterAll fires once PER WORKER, so a worker draining the nested describe would delete
+// this shared dir while a top-level test on another worker is still mid-write → ENOENT.
+// The dir holds one static JSON written in beforeAll; leaving it for the OS tmpdir reaper
+// removes the race at its source. (The nested describe owns its OWN dir + afterAll below.)
 
 test.use({
 	coreOptions: {

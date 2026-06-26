@@ -272,6 +272,10 @@
           {
             "additionalProperties": false,
             "properties": {
+              "append_text": {
+                "minLength": 1,
+                "type": "string"
+              },
               "from": {
                 "minLength": 1,
                 "type": "string"

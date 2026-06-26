@@ -388,6 +388,7 @@ const intentGraphJournalRefLink = S.Struct({
 	from: handle,
 	to: handle,
 	match_text: S.optional(nonEmptyString),
+	append_text: S.optional(nonEmptyString),
 });
 
 /** `apply_intent_graph` payload: optional `journal_entry`, `>= 1` entity nodes,

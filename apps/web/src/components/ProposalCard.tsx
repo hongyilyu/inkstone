@@ -33,6 +33,7 @@ import {
 } from "@/lib/entityFields";
 import { useLibraryItems } from "@/lib/hooks/useLibraryItems";
 import {
+	appendedClauses,
 	buildDecisions,
 	buildEditedFields,
 	candidateSubtitle,
@@ -1411,6 +1412,12 @@ function IntentGraphReviewCard({
 	const isError = status === "error";
 
 	const notices = downgradeNotices(plan, links, buffer, repoints);
+	// The clauses Core will APPEND to a saved entry's prose for accepted `journal_ref`s
+	// carrying `append_text` (ADR-0042 #221). This new prose exists only in the proposal,
+	// so the card MUST show it — the approval contract is the user reading the sentence
+	// before accepting it. (A `match_text` ref chips prose the entry already shows, so it
+	// needs no preview.)
+	const appendClauses = appendedClauses(plan, links, buffer, repoints);
 	// The decision vector is the SINGLE source of truth for what Apply sends — build
 	// it once and derive the count + reject-all path from it (not a parallel `stageFor`
 	// pass), so the "Apply N items" label and the scalar decision can never disagree
@@ -1570,6 +1577,27 @@ function IntentGraphReviewCard({
 					Some items match more than one existing entry — pick which to reuse,
 					or reject them.
 				</p>
+			) : null}
+
+			{appendClauses.length > 0 ? (
+				<div className="flex flex-col gap-1.5">
+					<p className="text-xs font-medium text-muted-foreground">
+						Will add to the entry:
+					</p>
+					<ul className="flex flex-col gap-1">
+						{appendClauses.map((clause) => (
+							<li
+								// `clause.key` is unique per source link (two journal_refs to one
+								// entity with identical text are still distinct rows), so the key
+								// never collides — unlike handle or handle:text alone.
+								key={clause.key}
+								className="border-border/60 border-l-2 pl-2.5 text-sm leading-relaxed text-foreground"
+							>
+								{clause.text}
+							</li>
+						))}
+					</ul>
+				</div>
 			) : null}
 
 			{notices.length > 0 ? (

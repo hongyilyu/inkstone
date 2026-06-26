@@ -104,6 +104,12 @@ struct Link {
     /// the model recognized, for later stored-body splicing (ADR-0042). `None` for
     /// the other kinds.
     match_text: Option<String>,
+    /// The `journal_ref` link's optional `append_text` — a model-proposed clause for an
+    /// entity NOT in the entry's prose, appended to the stored body with the chip
+    /// spliced inside it (ADR-0042 amendment, #221). Exactly one of `match_text` /
+    /// `append_text` is set per anchor-reuse `journal_ref` (enforced at apply). `None`
+    /// for the other kinds.
+    append_text: Option<String>,
 }
 
 /// The three link kinds (ADR-0042). `JournalRef` (JE → entity) is woven into the JE
@@ -859,13 +865,15 @@ async fn weave_and_mint_journal_entry(
 /// 2. Read the existing JE's STORED body via `current_journal_entry_by_id` (the JE
 ///    vanished under the parked Proposal → `TargetMissing`).
 /// 3. For each surviving `journal_ref` link (`from == @je`, `to` not rejected and
-///    resolved): require its `match_text` (a re-scan ref has no placement without it
-///    → `InvalidMutation`); create/reuse an `entity_ref` id keyed by the resolved
-///    TARGET ENTITY id (so two handles resolving to one entity share one ref_id, like
-///    the create-mode weave); splice the chip into the running body at the first
-///    un-chipped occurrence of `match_text` (slice-2 `splice_entity_ref_into_body`,
-///    which fails LOUD if the text is gone — the whole tx rolls back); plan the
-///    backlink row.
+///    resolved): require EXACTLY ONE of `match_text` / `append_text` (both-set or
+///    neither-set → `InvalidMutation`); create/reuse an `entity_ref` id keyed by the
+///    resolved TARGET ENTITY id (so two handles resolving to one entity share one
+///    ref_id, like the create-mode weave); then place the chip. `match_text` splices it
+///    into the EXISTING prose at the first un-chipped occurrence (#221's original
+///    re-scan path); `append_text` APPENDS the model-proposed clause as a new body text
+///    node and splices the chip on the entity's name WITHIN it (the ADR-0042
+///    amendment). Both go through `splice_entity_ref_into_body`, which fails LOUD if the
+///    substring is gone — the whole tx rolls back. Plan the backlink row.
 /// 4. Write the modified body as ONE new revision of the EXISTING JE (update_entity +
 ///    insert_entity_revision — NO new `entities` row), then insert the backlink rows
 ///    (source = the existing JE id, target = the resolved entity; ON CONFLICT DO
@@ -939,15 +947,31 @@ async fn anchor_reuse_journal_entry(
             // The target resolved to no id (rejected, or a degenerate handle): drop it.
             continue;
         };
-        // A re-scan ref has no placement without a match_text (ADR-0042: the chip
-        // splices at the recognized substring). A pure backlink with no in-prose
-        // mention is the case we did NOT choose, so require it → fail loud.
-        let match_text = link.match_text.as_deref().filter(|s| !s.is_empty()).ok_or_else(|| {
-            ApplyError::InvalidMutation(format!(
-                "intent graph anchor-reuse journal_ref to {:?} needs a match_text to splice the body",
-                link.to
-            ))
-        })?;
+        // A re-scan ref needs exactly ONE placement (ADR-0042 amendment, #221):
+        // `match_text` splices the chip at a substring already in the entry's prose
+        // (the original re-scan path); `append_text` appends a model-proposed clause
+        // (the entity is NOT yet in the prose) and splices the chip inside it. Both-set
+        // or neither-set fails loud here — the whole tx rolls back — so the four cases
+        // are enumerated ONCE and the rest of the loop branches on a `Placement` value.
+        let placement = match (
+            link.match_text.as_deref().filter(|s| !s.is_empty()),
+            link.append_text.as_deref().filter(|s| !s.is_empty()),
+        ) {
+            (Some(match_text), None) => Placement::Splice(match_text),
+            (None, Some(append_text)) => Placement::Append(append_text),
+            (Some(_), Some(_)) => {
+                return Err(ApplyError::InvalidMutation(format!(
+                    "intent graph anchor-reuse journal_ref to {:?} sets both match_text and append_text; exactly one is required",
+                    link.to
+                )));
+            }
+            (None, None) => {
+                return Err(ApplyError::InvalidMutation(format!(
+                    "intent graph anchor-reuse journal_ref to {:?} needs match_text or append_text to place the chip",
+                    link.to
+                )));
+            }
+        };
         // Reuse this entity's authoritative ref_id if a prior link this call already
         // resolved it; else insert the backlink + read the row's real id.
         let ref_id = match entity_ref_id.get(entity_id) {
@@ -982,9 +1006,44 @@ async fn anchor_reuse_journal_entry(
                 authoritative
             }
         };
-        // Splice the chip into the running body — fails LOUD (whole tx rolls back) if
-        // the recognized substring is gone from the stored prose.
-        body = splice_entity_ref_into_body(&body, match_text, &ref_id)?;
+        // Place the chip per the resolved `Placement`.
+        match placement {
+            // `match_text`: splice into the EXISTING prose — fails LOUD (whole tx rolls
+            // back) if the recognized substring is gone.
+            Placement::Splice(match_text) => {
+                body = splice_entity_ref_into_body(&body, match_text, &ref_id)?;
+            }
+            // `append_text`: splice the chip on the entity's recognized NAME within the
+            // just-appended clause ALONE (a 1-element slice), then extend the body. Splicing
+            // in isolation means the chip can ONLY land in the new clause — if the label
+            // also appears in the original prose, that occurrence is left untouched and
+            // every original node stays byte-identical (see the prose-collision test). The
+            // separating space between prose and clause is a STRUCTURAL JOIN (Core's job);
+            // `join_with_separator` folds it onto a real text node at the boundary (never a
+            // standalone `{text:" "}` node, which `validate_woven_journal_body` rejects). The
+            // clause CONTENT stays the model's; its label must be a verbatim substring (else
+            // fail loud).
+            Placement::Append(append_text) => {
+                let label = handle_to_label.get(&link.to).map(String::as_str).ok_or_else(|| {
+                    ApplyError::InvalidMutation(format!(
+                        "intent graph anchor-reuse journal_ref to {:?} has no recognized name to splice into its append_text clause",
+                        link.to
+                    ))
+                })?;
+                // Core OWNS the prose↔clause join space (`join_with_separator`), so any
+                // incidental leading/trailing whitespace the model put on the clause is
+                // not content — trim it. This also removes the failure mode where a
+                // clause like " Priya was also there." (leading space AND label-leading)
+                // splices to a standalone `{text:" "}` node that `validate_woven_journal_body`
+                // rejects. The trim stays non-empty (the field is schema-validated non-blank).
+                let appended_node =
+                    serde_json::json!({ "type": "text", "text": append_text.trim() });
+                let mut spliced_clause =
+                    splice_entity_ref_into_body(&[appended_node], label, &ref_id)?;
+                join_with_separator(&mut body, &mut spliced_clause);
+                body.extend(spliced_clause);
+            }
+        }
     }
 
     // Defense in depth (ADR-0042 parity with the create-mode weave): the spliced body
@@ -1081,6 +1140,54 @@ fn weave_journal_body(
         };
     }
     Ok(())
+}
+
+/// Where an anchor-reuse `journal_ref` chip lands (ADR-0042 amendment, #221). Exactly
+/// one variant per link; the XOR is validated once, at parse-of-the-loop, so the body
+/// dispatch never has to re-decode "both/neither".
+enum Placement<'a> {
+    /// `match_text`: splice the chip at this substring already in the stored prose.
+    Splice(&'a str),
+    /// `append_text`: append this model-proposed clause, chip spliced inside it.
+    Append(&'a str),
+}
+
+/// Fold a single separating space onto a real text node at the boundary between the
+/// existing `body` and an appended `clause`, so the clause does not weld onto the
+/// prior prose ("…Lead Ads." + "Followed…" → "…Lead Ads. Followed…"). The space MUST
+/// land inside an existing text node — a standalone `{text:" "}` node is rejected by
+/// `validate_woven_journal_body`. Preference order, covering every boundary shape:
+///   1. clause opens with text (the common "Followed up with …" case) → prepend " "
+///      to the clause's first node. This is correct even when the body's trailing node
+///      is a chip (an end-of-prose mention).
+///   2. else (clause opens with the chip — a label-leading clause) the space can only
+///      ride on the body side → append " " to the body's trailing text node.
+///   3. else both sides meet at a chip (label-leading clause after a chip-trailing
+///      body): no text node to carry the space, so leave it — inter-chip spacing is the
+///      renderer's concern, and a `{text:" "}` node would fail validation.
+/// No-op on an empty body (nothing to separate from), and on a boundary that ALREADY
+/// carries whitespace (an already-spaced clause/prose) — so the join never double-spaces.
+fn join_with_separator(body: &mut [serde_json::Value], clause: &mut [serde_json::Value]) {
+    if body.is_empty() {
+        return;
+    }
+    if let Some(first) = clause.first_mut() {
+        if let Some(text) = first.get("text").and_then(serde_json::Value::as_str) {
+            // Skip if the clause already opens with whitespace (no double space).
+            if !text.starts_with(char::is_whitespace) {
+                first["text"] = serde_json::Value::String(format!(" {text}"));
+            }
+            return;
+        }
+    }
+    if let Some(last) = body.last_mut() {
+        if let Some(text) = last.get("text").and_then(serde_json::Value::as_str) {
+            // Skip if the prose already ends in whitespace (no double space).
+            if !text.ends_with(char::is_whitespace) {
+                last["text"] = serde_json::Value::String(format!("{text} "));
+            }
+        }
+    }
 }
 
 /// Splice a NEW `entity_ref` chip into a STORED JE body at the FIRST un-chipped
@@ -1731,12 +1838,19 @@ fn parse_link(value: &serde_json::Value) -> Result<Link, ApplyError> {
         .get("match_text")
         .and_then(serde_json::Value::as_str)
         .map(str::to_string);
+    // The optional `journal_ref` append_text (parsed generically like `match_text`;
+    // only meaningful for journal_ref) — the model-proposed clause to append.
+    let append_text = obj
+        .get("append_text")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
     Ok(Link {
         kind,
         from,
         to,
         role,
         match_text,
+        append_text,
     })
 }
 
@@ -3077,5 +3191,539 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(je_rows, 1, "no new JE minted on the rejected empty-body create");
+    }
+
+    // Test — anchor-reuse APPEND (#221, ADR-0042 amendment): a journal_ref carrying
+    // `append_text` (and NO match_text) for a name NOT in the entry's prose mints the
+    // new Person, APPENDS the model-proposed clause as a new body node, splices the
+    // entity's chip inside that appended clause, writes the backlink, and lands ONE new
+    // revision of the SAME JE row. The ORIGINAL prose (head of body) is byte-identical.
+    #[tokio::test]
+    async fn anchor_reuse_append_text_appends_clause_chip_and_backlink() {
+        let pool = memory_pool().await;
+        // The entry's own prose never names Priya.
+        let original_head = serde_json::json!({ "type": "text", "text": "synced with the team today" });
+        let scaffold = seed_anchor_reuse(&pool, serde_json::json!([original_head])).await;
+        let payload = serde_json::json!({
+            "journal_entry": {
+                "handle": "@je", "existing_id": scaffold.je_id, "occurred_at": "2026-06-10T10:30:00"
+            },
+            "entities": [{ "handle": "@priya", "type": "person", "name": "Priya" }],
+            "links": [{
+                "kind": "journal_ref", "from": "@je", "to": "@priya",
+                "append_text": "Followed up with Priya."
+            }]
+        });
+
+        let outcome = apply_intent_graph_proposal(
+            &pool,
+            scaffold.run_id,
+            &scaffold.proposal_id,
+            &scaffold.tool_call_id,
+            &payload,
+            None,
+            None,
+            |a| a.to_string(),
+            crate::db::now_ms(),
+        )
+        .await
+        .expect("append-mode anchor-reuse applies");
+        match outcome {
+            IntentGraphOutcome::Applied(anchor) => assert_eq!(anchor, scaffold.je_id),
+            IntentGraphOutcome::RejectedAll => panic!("expected Applied"),
+        }
+
+        // (a) a new Person "Priya" was minted.
+        let priya = person_id_named(&pool, "Priya").await.expect("Priya minted");
+        // (b) a backlink row source=J target=priya exists.
+        assert_eq!(entity_ref_count(&pool, &scaffold.je_id, &priya).await, 1);
+        // (c) exactly ONE journal_entry row (still J) and J gained a SECOND revision.
+        let (je_rows, revisions) = je_row_and_revision_counts(&pool, &scaffold.je_id).await;
+        assert_eq!(je_rows, 1, "no new journal_entry row was minted");
+        assert_eq!(revisions, 2, "the appended body is one new revision");
+
+        // (d) the latest body keeps the ORIGINAL head byte-identical, then carries the
+        //     appended clause split around exactly ONE new chip whose ref_id == the
+        //     backlink id.
+        let body = current_je_body(&pool, &scaffold.je_id).await;
+        let chip_ref_id = body
+            .iter()
+            .find_map(|n| n.get("ref_id").and_then(serde_json::Value::as_str))
+            .expect("a chip with a ref_id");
+        // The backlink id the chip must point at.
+        let backlink_id: String = sqlx::query_scalar(
+            "SELECT id FROM entity_refs WHERE source_entity_id = ?1 AND target_entity_id = ?2",
+        )
+        .bind(&scaffold.je_id)
+        .bind(&priya)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(chip_ref_id, backlink_id, "the appended chip points at the backlink row");
+        // Core folds the single separating space onto the appended clause's leading text
+        // node (a STRUCTURAL JOIN concern): the original head stays byte-identical and the
+        // clause opens " Followed up with [chip].", so the rendered prose reads
+        // "…today Followed up with [chip]." with proper separation, not a "todayFollowed"
+        // collision.
+        assert_eq!(
+            body,
+            vec![
+                original_head,
+                serde_json::json!({ "type": "text", "text": " Followed up with " }),
+                serde_json::json!({ "type": "entity_ref", "ref_id": chip_ref_id }),
+                serde_json::json!({ "type": "text", "text": "." }),
+            ]
+        );
+    }
+
+    // Test — anchor-reuse APPEND with a label COLLISION in the original prose (#221):
+    // the entity's label ALSO occurs as plain text in the existing prose, ahead of the
+    // appended clause. The chip must land in the APPENDED clause, NOT weld into the
+    // earlier plain-text occurrence. This pins the iteration-2 fix: the append chip is
+    // spliced within the just-appended node in isolation, so the original prose stays
+    // byte-identical and the appended clause carries the only new chip.
+    #[tokio::test]
+    async fn anchor_reuse_append_text_label_also_in_existing_prose_chips_appended_clause() {
+        let pool = memory_pool().await;
+        // The ORIGINAL prose names "Priya" as plain text (a missed mention the user is
+        // NOT chipping here) — it must survive byte-identical and un-chipped.
+        let original_head =
+            serde_json::json!({ "type": "text", "text": "Met with Priya's manager about Q3" });
+        let scaffold = seed_anchor_reuse(&pool, serde_json::json!([original_head])).await;
+        let payload = serde_json::json!({
+            "journal_entry": {
+                "handle": "@je", "existing_id": scaffold.je_id, "occurred_at": "2026-06-10T10:30:00"
+            },
+            "entities": [{ "handle": "@priya", "type": "person", "name": "Priya" }],
+            "links": [{
+                "kind": "journal_ref", "from": "@je", "to": "@priya",
+                "append_text": "Looped in Priya directly afterwards."
+            }]
+        });
+
+        let outcome = apply_intent_graph_proposal(
+            &pool,
+            scaffold.run_id,
+            &scaffold.proposal_id,
+            &scaffold.tool_call_id,
+            &payload,
+            None,
+            None,
+            |a| a.to_string(),
+            crate::db::now_ms(),
+        )
+        .await
+        .expect("append-mode anchor-reuse applies even when the label is in the prose");
+        match outcome {
+            IntentGraphOutcome::Applied(anchor) => assert_eq!(anchor, scaffold.je_id),
+            IntentGraphOutcome::RejectedAll => panic!("expected Applied"),
+        }
+
+        // (a) a backlink row J → priya exists; still exactly ONE journal_entry row.
+        let priya = person_id_named(&pool, "Priya").await.expect("Priya minted");
+        assert_eq!(entity_ref_count(&pool, &scaffold.je_id, &priya).await, 1);
+        let (je_rows, _) = je_row_and_revision_counts(&pool, &scaffold.je_id).await;
+        assert_eq!(je_rows, 1, "no new journal_entry row was minted");
+
+        // (b) exactly ONE entity_ref chip lives in the body…
+        let body = current_je_body(&pool, &scaffold.je_id).await;
+        let chip_count =
+            body.iter().filter(|n| n.get("type").and_then(|t| t.as_str()) == Some("entity_ref")).count();
+        assert_eq!(chip_count, 1, "exactly one chip — the front-scan bug would still be one chip, so position is what matters");
+        let chip_ref_id = body
+            .iter()
+            .find_map(|n| n.get("ref_id").and_then(serde_json::Value::as_str))
+            .expect("a chip with a ref_id");
+
+        // (c) the ORIGINAL prose node is byte-identical and un-chipped — the head is the
+        //     whole "Met with Priya's manager about Q3" string, NOT split around a chip,
+        //     and NOT mutated (the join-space rides on the clause's leading node, below).
+        //     This is what the front-scan impl would FAIL: it would split this node.
+        assert_eq!(
+            body[0],
+            serde_json::json!({ "type": "text", "text": "Met with Priya's manager about Q3" }),
+            "the original prose stays byte-identical, the 'Priya' in it is NOT chipped"
+        );
+
+        // (d) the chip sits INSIDE the appended clause region (the body tail), with the
+        //     surrounding clause text split byte-faithfully around it. The separating space
+        //     is folded onto the clause's leading node, so the tail opens " Looped in ".
+        assert_eq!(
+            body,
+            vec![
+                serde_json::json!({ "type": "text", "text": "Met with Priya's manager about Q3" }),
+                serde_json::json!({ "type": "text", "text": " Looped in " }),
+                serde_json::json!({ "type": "entity_ref", "ref_id": chip_ref_id }),
+                serde_json::json!({ "type": "text", "text": " directly afterwards." }),
+            ]
+        );
+    }
+
+    // Test — anchor-reuse APPEND whose clause OPENS with the entity's name (#221): a
+    // legitimate clause like "Priya was also there." (label is the first token). The
+    // separating space must NOT become a standalone `{text:" "}` node (which
+    // `validate_woven_journal_body` rejects → whole tx rolls back) — it is folded onto
+    // the existing prose's trailing text node instead, so the clause splices cleanly to
+    // `[chip][" was also there."]` and the apply SUCCEEDS.
+    #[tokio::test]
+    async fn anchor_reuse_append_text_label_leading_clause_applies() {
+        let pool = memory_pool().await;
+        let original_head = serde_json::json!({ "type": "text", "text": "stand-up notes" });
+        let scaffold = seed_anchor_reuse(&pool, serde_json::json!([original_head])).await;
+        let payload = serde_json::json!({
+            "journal_entry": {
+                "handle": "@je", "existing_id": scaffold.je_id, "occurred_at": "2026-06-10T10:30:00"
+            },
+            "entities": [{ "handle": "@priya", "type": "person", "name": "Priya" }],
+            "links": [{
+                "kind": "journal_ref", "from": "@je", "to": "@priya",
+                "append_text": "Priya was also there."
+            }]
+        });
+
+        let outcome = apply_intent_graph_proposal(
+            &pool,
+            scaffold.run_id,
+            &scaffold.proposal_id,
+            &scaffold.tool_call_id,
+            &payload,
+            None,
+            None,
+            |a| a.to_string(),
+            crate::db::now_ms(),
+        )
+        .await
+        .expect("a clause that opens with the entity name applies (no standalone-space rejection)");
+        assert!(matches!(outcome, IntentGraphOutcome::Applied(_)));
+
+        let priya = person_id_named(&pool, "Priya").await.expect("Priya minted");
+        assert_eq!(entity_ref_count(&pool, &scaffold.je_id, &priya).await, 1);
+        let body = current_je_body(&pool, &scaffold.je_id).await;
+        let chip_ref_id = body
+            .iter()
+            .find_map(|n| n.get("ref_id").and_then(serde_json::Value::as_str))
+            .expect("a chip with a ref_id");
+        // The separator rides on the prose head ("stand-up notes "), the chip leads the
+        // clause, and no `{text:" "}` node exists (which would have rolled the tx back).
+        assert_eq!(
+            body,
+            vec![
+                serde_json::json!({ "type": "text", "text": "stand-up notes " }),
+                serde_json::json!({ "type": "entity_ref", "ref_id": chip_ref_id }),
+                serde_json::json!({ "type": "text", "text": " was also there." }),
+            ]
+        );
+    }
+
+    // Test — anchor-reuse APPEND onto a stored body that ALREADY ENDS in a chip (#221):
+    // an earlier mention was chipped at the end of the prose ("…synced with [chip]"),
+    // and now a new entity is folded in by appending. The separator must NOT be lost at
+    // the chip→clause boundary (a "welding" regression): for a label-mid clause it folds
+    // onto the CLAUSE's leading text node, so the new clause still opens with a space and
+    // does not abut the prior chip.
+    #[tokio::test]
+    async fn anchor_reuse_append_text_after_chip_trailing_body_keeps_separator() {
+        let pool = memory_pool().await;
+        // A stored body whose LAST node is an entity_ref chip (an end-of-prose mention).
+        let stored = serde_json::json!([
+            { "type": "text", "text": "synced with " },
+            { "type": "entity_ref", "ref_id": "019f0000-0000-7000-8000-0000000000aa" },
+        ]);
+        let scaffold = seed_anchor_reuse(&pool, stored).await;
+        let payload = serde_json::json!({
+            "journal_entry": {
+                "handle": "@je", "existing_id": scaffold.je_id, "occurred_at": "2026-06-10T10:30:00"
+            },
+            "entities": [{ "handle": "@priya", "type": "person", "name": "Priya" }],
+            "links": [{
+                "kind": "journal_ref", "from": "@je", "to": "@priya",
+                "append_text": "Looped in Priya too."
+            }]
+        });
+
+        let outcome = apply_intent_graph_proposal(
+            &pool,
+            scaffold.run_id,
+            &scaffold.proposal_id,
+            &scaffold.tool_call_id,
+            &payload,
+            None,
+            None,
+            |a| a.to_string(),
+            crate::db::now_ms(),
+        )
+        .await
+        .expect("append onto a chip-trailing body applies");
+        assert!(matches!(outcome, IntentGraphOutcome::Applied(_)));
+
+        let priya = person_id_named(&pool, "Priya").await.expect("Priya minted");
+        let body = current_je_body(&pool, &scaffold.je_id).await;
+        let new_chip_ref_id = body
+            .iter()
+            .filter_map(|n| n.get("ref_id").and_then(serde_json::Value::as_str))
+            .find(|id| *id != "019f0000-0000-7000-8000-0000000000aa")
+            .expect("the new chip");
+        // The clause folds the separator onto ITS OWN leading node (" Looped in "), so the
+        // prior trailing chip is followed by a space-led clause, never welded.
+        assert_eq!(
+            body,
+            vec![
+                serde_json::json!({ "type": "text", "text": "synced with " }),
+                serde_json::json!({ "type": "entity_ref", "ref_id": "019f0000-0000-7000-8000-0000000000aa" }),
+                serde_json::json!({ "type": "text", "text": " Looped in " }),
+                serde_json::json!({ "type": "entity_ref", "ref_id": new_chip_ref_id }),
+                serde_json::json!({ "type": "text", "text": " too." }),
+            ]
+        );
+        assert_eq!(entity_ref_count(&pool, &scaffold.je_id, &priya).await, 1);
+    }
+
+    // Test — anchor-reuse APPEND of a LABEL-LEADING clause onto a CHIP-TRAILING body
+    // (#221, the chip↔chip boundary `join_with_separator` deliberately leaves
+    // unseparated): the stored body ends in a chip AND the clause opens with the entity
+    // name, so neither side has a text node to carry the join space. Core must NOT emit a
+    // standalone `{text:" "}` node (it would roll the tx back); the two chips sit adjacent
+    // and inter-chip spacing is the renderer's concern. The apply still SUCCEEDS.
+    #[tokio::test]
+    async fn anchor_reuse_append_label_leading_after_chip_trailing_body_applies() {
+        let pool = memory_pool().await;
+        let stored = serde_json::json!([
+            { "type": "text", "text": "saw " },
+            { "type": "entity_ref", "ref_id": "019f0000-0000-7000-8000-0000000000bb" },
+        ]);
+        let scaffold = seed_anchor_reuse(&pool, stored).await;
+        let payload = serde_json::json!({
+            "journal_entry": {
+                "handle": "@je", "existing_id": scaffold.je_id, "occurred_at": "2026-06-10T10:30:00"
+            },
+            "entities": [{ "handle": "@priya", "type": "person", "name": "Priya" }],
+            "links": [{
+                "kind": "journal_ref", "from": "@je", "to": "@priya",
+                "append_text": "Priya joined late."
+            }]
+        });
+
+        let outcome = apply_intent_graph_proposal(
+            &pool,
+            scaffold.run_id,
+            &scaffold.proposal_id,
+            &scaffold.tool_call_id,
+            &payload,
+            None,
+            None,
+            |a| a.to_string(),
+            crate::db::now_ms(),
+        )
+        .await
+        .expect("label-leading clause onto a chip-trailing body applies (no standalone-space node)");
+        assert!(matches!(outcome, IntentGraphOutcome::Applied(_)));
+
+        let body = current_je_body(&pool, &scaffold.je_id).await;
+        // No `{type:text, text:" "}` node exists anywhere (it would have failed validation).
+        assert!(
+            !body.iter().any(|n| n.get("text").and_then(serde_json::Value::as_str) == Some(" ")),
+            "no standalone separator node",
+        );
+        let new_chip_ref_id = body
+            .iter()
+            .filter_map(|n| n.get("ref_id").and_then(serde_json::Value::as_str))
+            .find(|id| *id != "019f0000-0000-7000-8000-0000000000bb")
+            .expect("the new chip");
+        // The prior trailing chip is followed directly by the clause's leading chip (the
+        // chip↔chip boundary), then the clause tail. No join space between the two chips.
+        assert_eq!(
+            body,
+            vec![
+                serde_json::json!({ "type": "text", "text": "saw " }),
+                serde_json::json!({ "type": "entity_ref", "ref_id": "019f0000-0000-7000-8000-0000000000bb" }),
+                serde_json::json!({ "type": "entity_ref", "ref_id": new_chip_ref_id }),
+                serde_json::json!({ "type": "text", "text": " joined late." }),
+            ]
+        );
+    }
+
+    // Test — anchor-reuse APPEND of an already-space-led clause (#221): the model emits
+    // `append_text` that already opens with a space. Core trims the incidental whitespace
+    // (it owns the join space), so the result is a SINGLE leading space, not "  Followed".
+    #[tokio::test]
+    async fn anchor_reuse_append_text_already_spaced_clause_is_not_double_spaced() {
+        let pool = memory_pool().await;
+        let original_head = serde_json::json!({ "type": "text", "text": "morning sync" });
+        let scaffold = seed_anchor_reuse(&pool, serde_json::json!([original_head])).await;
+        let payload = serde_json::json!({
+            "journal_entry": {
+                "handle": "@je", "existing_id": scaffold.je_id, "occurred_at": "2026-06-10T10:30:00"
+            },
+            "entities": [{ "handle": "@priya", "type": "person", "name": "Priya" }],
+            "links": [{
+                "kind": "journal_ref", "from": "@je", "to": "@priya",
+                // NOTE the leading space the model already supplied.
+                "append_text": " Followed up with Priya."
+            }]
+        });
+
+        let outcome = apply_intent_graph_proposal(
+            &pool,
+            scaffold.run_id,
+            &scaffold.proposal_id,
+            &scaffold.tool_call_id,
+            &payload,
+            None,
+            None,
+            |a| a.to_string(),
+            crate::db::now_ms(),
+        )
+        .await
+        .expect("an already-spaced clause applies");
+        assert!(matches!(outcome, IntentGraphOutcome::Applied(_)));
+
+        let body = current_je_body(&pool, &scaffold.je_id).await;
+        let chip_ref_id = body
+            .iter()
+            .find_map(|n| n.get("ref_id").and_then(serde_json::Value::as_str))
+            .expect("a chip");
+        // Exactly ONE leading space on the clause's first node — not two.
+        assert_eq!(
+            body,
+            vec![
+                serde_json::json!({ "type": "text", "text": "morning sync" }),
+                serde_json::json!({ "type": "text", "text": " Followed up with " }),
+                serde_json::json!({ "type": "entity_ref", "ref_id": chip_ref_id }),
+                serde_json::json!({ "type": "text", "text": "." }),
+            ]
+        );
+    }
+
+    // Test — anchor-reuse APPEND of a clause that BOTH leads with whitespace AND opens
+    // with the label (#221, CodeRabbit): `" Priya was also there."`. Without the trim,
+    // the splice on "Priya" yields a `before = " "` standalone whitespace node that
+    // `validate_woven_journal_body` rejects → tx rollback. Core trims the clause first,
+    // so it applies cleanly and the join space rides on the prose head ("morning sync ").
+    #[tokio::test]
+    async fn anchor_reuse_append_text_leading_space_and_label_leading_applies() {
+        let pool = memory_pool().await;
+        let original_head = serde_json::json!({ "type": "text", "text": "morning sync" });
+        let scaffold = seed_anchor_reuse(&pool, serde_json::json!([original_head])).await;
+        let payload = serde_json::json!({
+            "journal_entry": {
+                "handle": "@je", "existing_id": scaffold.je_id, "occurred_at": "2026-06-10T10:30:00"
+            },
+            "entities": [{ "handle": "@priya", "type": "person", "name": "Priya" }],
+            "links": [{
+                "kind": "journal_ref", "from": "@je", "to": "@priya",
+                // Leading space AND the label leads the clause — the rejected-node case.
+                "append_text": " Priya was also there."
+            }]
+        });
+
+        let outcome = apply_intent_graph_proposal(
+            &pool,
+            scaffold.run_id,
+            &scaffold.proposal_id,
+            &scaffold.tool_call_id,
+            &payload,
+            None,
+            None,
+            |a| a.to_string(),
+            crate::db::now_ms(),
+        )
+        .await
+        .expect("a leading-space label-leading clause applies (trimmed, no standalone-space node)");
+        assert!(matches!(outcome, IntentGraphOutcome::Applied(_)));
+
+        let body = current_je_body(&pool, &scaffold.je_id).await;
+        assert!(
+            !body.iter().any(|n| n.get("text").and_then(serde_json::Value::as_str) == Some(" ")),
+            "no standalone separator node",
+        );
+        let chip_ref_id = body
+            .iter()
+            .find_map(|n| n.get("ref_id").and_then(serde_json::Value::as_str))
+            .expect("a chip");
+        // The clause trims to "Priya was also there."; the chip leads it, and the join
+        // space folds onto the prose head ("morning sync ").
+        assert_eq!(
+            body,
+            vec![
+                serde_json::json!({ "type": "text", "text": "morning sync " }),
+                serde_json::json!({ "type": "entity_ref", "ref_id": chip_ref_id }),
+                serde_json::json!({ "type": "text", "text": " was also there." }),
+            ]
+        );
+    }
+
+    // Test — XOR reject (BOTH): a journal_ref carrying both match_text AND append_text
+    // is InvalidMutation; the tx rolls back (no Person, no new revision).
+    #[tokio::test]
+    async fn anchor_reuse_journal_ref_both_placements_reject() {
+        let pool = memory_pool().await;
+        let original_body =
+            serde_json::json!([{ "type": "text", "text": "synced with Priya today" }]);
+        let scaffold = seed_anchor_reuse(&pool, original_body.clone()).await;
+        let payload = serde_json::json!({
+            "journal_entry": {
+                "handle": "@je", "existing_id": scaffold.je_id, "occurred_at": "2026-06-10T10:30:00"
+            },
+            "entities": [{ "handle": "@priya", "type": "person", "name": "Priya" }],
+            "links": [{
+                "kind": "journal_ref", "from": "@je", "to": "@priya",
+                "match_text": "Priya", "append_text": "Followed up with Priya."
+            }]
+        });
+        let result = apply_intent_graph_proposal(
+            &pool,
+            scaffold.run_id,
+            &scaffold.proposal_id,
+            &scaffold.tool_call_id,
+            &payload,
+            None,
+            None,
+            |a| a.to_string(),
+            crate::db::now_ms(),
+        )
+        .await;
+        match result {
+            Err(ApplyError::InvalidMutation(_)) => {}
+            other => panic!("expected InvalidMutation, got {:?}", other.err()),
+        }
+        assert!(person_id_named(&pool, "Priya").await.is_none(), "no Person minted");
+        let (_, revisions) = je_row_and_revision_counts(&pool, &scaffold.je_id).await;
+        assert_eq!(revisions, 1, "the rolled-back both-set apply writes no revision");
+    }
+
+    // Test — XOR reject (NEITHER): a journal_ref carrying neither match_text nor
+    // append_text is InvalidMutation; the tx rolls back.
+    #[tokio::test]
+    async fn anchor_reuse_journal_ref_no_placement_reject() {
+        let pool = memory_pool().await;
+        let original_body =
+            serde_json::json!([{ "type": "text", "text": "synced with Priya today" }]);
+        let scaffold = seed_anchor_reuse(&pool, original_body.clone()).await;
+        let payload = serde_json::json!({
+            "journal_entry": {
+                "handle": "@je", "existing_id": scaffold.je_id, "occurred_at": "2026-06-10T10:30:00"
+            },
+            "entities": [{ "handle": "@priya", "type": "person", "name": "Priya" }],
+            "links": [{ "kind": "journal_ref", "from": "@je", "to": "@priya" }]
+        });
+        let result = apply_intent_graph_proposal(
+            &pool,
+            scaffold.run_id,
+            &scaffold.proposal_id,
+            &scaffold.tool_call_id,
+            &payload,
+            None,
+            None,
+            |a| a.to_string(),
+            crate::db::now_ms(),
+        )
+        .await;
+        match result {
+            Err(ApplyError::InvalidMutation(_)) => {}
+            other => panic!("expected InvalidMutation, got {:?}", other.err()),
+        }
+        assert!(person_id_named(&pool, "Priya").await.is_none(), "no Person minted");
+        let (_, revisions) = je_row_and_revision_counts(&pool, &scaffold.je_id).await;
+        assert_eq!(revisions, 1, "the rolled-back neither-set apply writes no revision");
     }
 }
