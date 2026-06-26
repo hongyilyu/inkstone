@@ -27,6 +27,25 @@ test("SIGTERM Core: indicator shows Lost connection and an offline send shows th
 }) => {
 	const { page } = chat;
 
+	// Watch the client's `/ws` frames so we can observe the `thread/create` REQUEST
+	// leaving the socket (registered BEFORE goto so the socket-open is not missed). The
+	// resolver below makes "the request is in flight" an OBSERVED fact, not a wall-clock
+	// guess — load-bearing for the deterministic kill ordering further down.
+	let resolveThreadCreateSent: () => void;
+	const threadCreateSent = new Promise<void>((resolve) => {
+		resolveThreadCreateSent = resolve;
+	});
+	page.on("websocket", (ws) => {
+		ws.on("framesent", (frame) => {
+			if (
+				typeof frame.payload === "string" &&
+				frame.payload.includes('"method":"thread/create"')
+			) {
+				resolveThreadCreateSent();
+			}
+		});
+	});
+
 	await chat.goto();
 
 	// Connected resting state: the quiet dot carries no word, so the connected
@@ -34,15 +53,20 @@ test("SIGTERM Core: indicator shows Lost connection and an offline send shows th
 	await expect(page.getByText(/lost connection/i)).toHaveCount(0);
 	await expect(page.getByText(/reconnecting/i)).toHaveCount(0);
 
-	// Fire a send, THEN SIGTERM Core so the in-flight request is dropped before Core
-	// answers it. `chat.goto()` landed on the welcome (no focused thread), so this
-	// mints a thread → `sendNewThread` → `thread/create` request, written over the
-	// open socket and awaiting a reply. Killing Core mid-flight fails that pending
-	// request with `connection_lost`, which ChatColumn maps to the connection-
-	// specific copy. (A send issued AFTER the link is fully down instead blocks on
-	// the SDK's writer latch — open-gated — so the in-flight drop is the
-	// deterministic way to surface the failure with Core gone for good.)
+	// Drop the in-flight request to surface the connection-specific copy. `chat.goto()`
+	// landed on the welcome (no focused thread), so the send mints a thread →
+	// `sendNewThread` → a `thread/create` request, written over the open socket and
+	// awaiting a reply; killing Core mid-flight fails that pending request with
+	// `connection_lost`, which ChatColumn maps to the connection copy. (A send issued
+	// AFTER the link is fully down instead blocks on the SDK's writer latch — open-gated.)
+	//
+	// The ordering must be DETERMINISTIC, not a wall-clock race: wait until the
+	// `thread/create` request frame has actually been SENT before killing Core. This rules
+	// out both CI-flaky outcomes — Core answering the create before the kill (send succeeds
+	// → navigates, no alert), and the frame not yet flushed when Core dies (request never
+	// entered flight).
 	await chat.send("are you there?");
+	await threadCreateSent;
 	await core.shutdown();
 
 	// The send-error alert shows the CONNECTION-SPECIFIC copy. The /lost its
