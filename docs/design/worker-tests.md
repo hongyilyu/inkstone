@@ -12,7 +12,7 @@ The faux response factory reads the live context the REAL transform produced, pr
 
 ## models-catalog.test.ts — "model catalog drift"
 
-Drift guard (ADR-0024): Core embeds the `openai-codex` model catalog as a JSON file hand-mirrored from `pi-ai`'s `MODELS`. This test re-derives the catalog from the installed `pi-ai` and asserts the committed JSON matches it exactly — so a `pi-ai` bump that adds/removes/retypes an `openai-codex` model fails CI here, prompting a regenerate of the JSON rather than silent drift.
+Drift guard (ADR-0024): Core embeds the `openai-codex` model catalog as a JSON file hand-mirrored from `pi-ai`'s `MODELS`. This test re-derives the catalog from the installed `pi-ai` and asserts the committed JSON matches the retained `ModelInfo` subset (`id`/`name`/`reasoning`/`input` — `cost` was dropped in the feature-cut sweep and is projected away before comparison) — so a `pi-ai` bump that adds/removes/retypes an `openai-codex` model fails CI here, prompting a regenerate of the JSON rather than silent drift.
 
 `pi-ai` does not re-export `MODELS` from its package entry, and its `exports` map blocks the deep `dist/models.generated.js` path via specifier, so the test resolves the package's main entry and imports the sibling generated file by absolute URL (which bypasses the exports gate).
 
