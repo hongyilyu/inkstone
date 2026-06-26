@@ -182,8 +182,12 @@ function InspectorShell({
 				{renderBody(goToEntity)}
 				<CapturedFrom
 					entity={entity}
-					onOpenThread={(threadId) =>
-						navigate({ to: "/thread/$threadId", params: { threadId } })
+					onOpenThread={(threadId, messageId) =>
+						navigate({
+							to: "/thread/$threadId",
+							params: { threadId },
+							search: messageId ? { focusedMessageId: messageId } : {},
+						})
 					}
 				/>
 			</div>
@@ -443,7 +447,7 @@ function CapturedFrom({
 	onOpenThread,
 }: {
 	entity: LibraryItem;
-	onOpenThread: (threadId: string) => void;
+	onOpenThread: (threadId: string, messageId?: string) => void;
 }) {
 	const source = entity.source;
 	if (!source || source.kind !== "thread") return null;
@@ -454,7 +458,7 @@ function CapturedFrom({
 				icon={<MessageSquareText className="size-4 shrink-0" aria-hidden />}
 				title={source.threadTitle || "Untitled thread"}
 				date={entity.createdAt}
-				onClick={() => onOpenThread(source.threadId)}
+				onClick={() => onOpenThread(source.threadId, source.messageId)}
 			/>
 		</ProvenanceFrame>
 	);

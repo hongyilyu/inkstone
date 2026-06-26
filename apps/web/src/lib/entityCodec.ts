@@ -63,6 +63,7 @@ export interface LiveEntityRow {
 export interface LiveEntitySource {
 	readonly thread_id?: string;
 	readonly thread_title?: string;
+	readonly message_id?: string;
 	readonly journal_entry_id?: string;
 }
 
@@ -108,6 +109,7 @@ function parseSource(
 			threadId,
 			threadTitle:
 				typeof source.thread_title === "string" ? source.thread_title : "",
+			messageId: nonEmptyId(source.message_id),
 		};
 	}
 	return undefined;

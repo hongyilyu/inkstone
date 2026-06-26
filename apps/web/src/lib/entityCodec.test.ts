@@ -281,6 +281,52 @@ describe("entityCodec parse — todo", () => {
 			kind: "thread",
 			threadId: "thr_1",
 			threadTitle: "Morning brain dump",
+			messageId: undefined,
+		});
+	});
+
+	it("surfaces the capturing messageId on a Thread source (#184)", () => {
+		const vm = parseTodo(
+			row(
+				{},
+				{
+					source: {
+						thread_id: "thr_1",
+						thread_title: "Morning brain dump",
+						message_id: "msg_1",
+					},
+				},
+			),
+		);
+		expect(vm.source).toEqual({
+			kind: "thread",
+			threadId: "thr_1",
+			threadTitle: "Morning brain dump",
+			messageId: "msg_1",
+		});
+	});
+
+	it("treats an empty-string message_id as absent (anchorless fallback, #184)", () => {
+		// The empty-id guard mirrors thread_id/journal_entry_id: a blank message id
+		// is malformed, not a valid anchor — surface messageId: undefined so the
+		// "Captured from" deep-link falls back to a plain thread-open.
+		const vm = parseTodo(
+			row(
+				{},
+				{
+					source: {
+						thread_id: "thr_1",
+						thread_title: "Morning brain dump",
+						message_id: "  ",
+					},
+				},
+			),
+		);
+		expect(vm.source).toEqual({
+			kind: "thread",
+			threadId: "thr_1",
+			threadTitle: "Morning brain dump",
+			messageId: undefined,
 		});
 	});
 
