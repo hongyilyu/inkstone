@@ -31,6 +31,18 @@ export const RunCancelResult = S.Struct({
 });
 export type RunCancelResult = S.Schema.Type<typeof RunCancelResult>;
 
+/** `run/retry` params (ADR-0028 retry amendment, #230): the errored Run to re-drive in place. */
+export const RunRetryParams = S.Struct({ run_id: S.String });
+export type RunRetryParams = S.Schema.Type<typeof RunRetryParams>;
+
+/** `run/retry` result (ADR-0028 retry amendment, #230): `accepted` (won the
+ * `errored → running` flip, now re-driving), `not_errored` (the Run was not
+ * errored — a normal response value, not an error frame), or `unknown_run`. */
+export const RunRetryResult = S.Struct({
+	outcome: S.Literal("accepted", "not_errored", "unknown_run"),
+});
+export type RunRetryResult = S.Schema.Type<typeof RunRetryResult>;
+
 export const ThreadCreateParams = S.Struct({ prompt: S.String });
 export type ThreadCreateParams = S.Schema.Type<typeof ThreadCreateParams>;
 

@@ -4,7 +4,7 @@
 // to. It pins three views of the in-scope set equal:
 //   1. the distinct `message` values the registry actually asserts,
 //   2. the committed fixture filenames on disk (both `emitted/` and `authored/`),
-//   3. `CANONICAL_MESSAGES` — the hand-maintained list mirroring the 31 in-scope
+//   3. `CANONICAL_MESSAGES` — the hand-maintained list mirroring the 33 in-scope
 //      Rust wire structs.
 // Plus an explicit per-union variant count: a tagged union must contribute
 // exactly one fixture per wire variant, so a silently-dropped variant reds.
