@@ -17,6 +17,11 @@
 > an ambient liveness surface is wanted again, re-mounting a component off the
 > still-live `connectionStatus()` stream is a few lines — no transport rework.
 
+> _The summary and body below are the original design, retained as the historical
+> record; read them as amended by the removal note above — the always-visible
+> indicator is gone, while the signal, the unbounded reconnect, and the per-send
+> failure copy are retained._
+
 The `WsClient` Layer exposes a **connection-liveness signal** —
 `connected | reconnecting | disconnected` — derived purely from the socket
 lifecycle it already owns (`onOpen` / per-drop `failPending` / retry cadence),

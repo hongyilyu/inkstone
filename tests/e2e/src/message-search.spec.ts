@@ -21,7 +21,7 @@ test.use({
 // The user message body. The thread title is the prompt's word-boundary slug
 // (crates/core thread_create / ADR-0048: ≤ 32 scalars, last whole word), so the
 // coined token "zylophant" (index 100) lands FAR PAST the slug cutoff: the title
-// can't match it, only the indexed body can — which is exactly what proves the
+// can't match it, only the message body can — which is exactly what proves the
 // message-search path, not thread-title match.
 const MESSAGE_BODY =
 	"Reminder to myself: I really need to sort out the family logistics before next week, especially the zylophant daycare schedule and pickup times.";
@@ -35,7 +35,7 @@ test("⌘K finds a message by a body substring and navigates to its thread", asy
 }) => {
 	await chat.goto();
 
-	// Drive a genuine Run: indexes the user message at creation and completes the
+	// Drive a genuine Run: persists the user message at creation and completes the
 	// assistant message at run completion, through the real Core seams.
 	await chat.send(MESSAGE_BODY);
 	await chat.waitForAssistantText("noted, I will remember that");

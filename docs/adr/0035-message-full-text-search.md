@@ -24,6 +24,11 @@
 
 / builds on [ADR-0004](./0004-three-tier-storage-authority.md), [ADR-0009](./0009-protocol-strategy.md), [ADR-0014](./0014-client-core-wire-protocol.md), [ADR-0028](./0028-run-status-materialized-transitions.md), [ADR-0029](./0029-request-handler-seam.md)
 
+> _The Context and Decision below are the original FTS design, retained as the
+> historical record; read them as amended by the removal note at the top — the
+> `message_fts` projection is gone, but the `message/search` capability it
+> describes is unchanged (now a `LIKE` scan over `message_parts`)._
+
 PRODUCT.md's success criterion is that knowledge be "browsable **and findable**
 rather than buried in conversation." The Library made Entities browsable, and the
 ⌘K palette searches Entity titles and Thread titles. But the conversations
