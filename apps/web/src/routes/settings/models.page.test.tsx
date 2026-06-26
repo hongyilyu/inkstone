@@ -51,6 +51,7 @@ function makeRuntime(opts: {
 		entityMutate: die,
 		subscribeRun: dieStream,
 		cancelRun: die,
+		retryRun: die,
 		providerStatus: () =>
 			Effect.succeed({
 				providers: [{ id: "openai-codex", connected: opts.connected ?? false }],
@@ -164,6 +165,7 @@ describe("Models settings page (ADR-0024)", () => {
 			entityMutate: die,
 			subscribeRun: dieStream,
 			cancelRun: die,
+			retryRun: die,
 			providerStatus: () =>
 				Effect.succeed({
 					providers: [{ id: "openai-codex", connected: false }],
@@ -319,6 +321,7 @@ describe("Models settings page (ADR-0024)", () => {
 			entityMutate: die,
 			subscribeRun: dieStream,
 			cancelRun: die,
+			retryRun: die,
 			providerStatus: () =>
 				Effect.succeed({
 					providers: [{ id: "openai-codex", connected: true }],
@@ -419,6 +422,7 @@ function makeFlippingRuntime() {
 		entityMutate: die,
 		subscribeRun: dieStream,
 		cancelRun: die,
+		retryRun: die,
 		providerStatus,
 		providerLoginStart: () =>
 			Effect.succeed({ authorize_url: "https://auth.example/x" }),

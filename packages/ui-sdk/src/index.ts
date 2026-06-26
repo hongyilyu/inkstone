@@ -21,6 +21,7 @@ import {
 	type RunEvent,
 	RunEvent as RunEventSchema,
 	RunHistoryResult,
+	RunRetryResult,
 	SettingsResult,
 	ThreadCreateResult,
 	ThreadGetResult,
@@ -246,6 +247,7 @@ export class WsClient extends Context.Tag("@inkstone/ui-sdk/WsClient")<
 		readonly cancelRun: (
 			runId: RunId,
 		) => Effect.Effect<RunCancelResult, WsError>;
+		readonly retryRun: (runId: RunId) => Effect.Effect<RunRetryResult, WsError>;
 		readonly providerStatus: () => Effect.Effect<ProviderStatusResult, WsError>;
 		readonly providerLoginStart: (
 			provider: string,
@@ -652,6 +654,13 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 			): Effect.Effect<RunCancelResult, WsError> =>
 				request("run/cancel", { run_id: runId }, RunCancelResult);
 
+			// run/retry (ADR-0028 retry amendment, #230): ask Core to re-drive an
+			// errored Run IN PLACE on the same run id. `accepted` means Core won the
+			// `errored → running` flip and is re-streaming (its terminal arrives over
+			// subscribeRun); `not_errored`/`unknown_run` are normal response values.
+			const retryRun = (runId: RunId): Effect.Effect<RunRetryResult, WsError> =>
+				request("run/retry", { run_id: runId }, RunRetryResult);
+
 			// provider/* (ADR-0023): connection status + begin OAuth login.
 			const providerStatus = (): Effect.Effect<ProviderStatusResult, WsError> =>
 				request("provider/status", {}, ProviderStatusResult);
@@ -713,6 +722,7 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 				messageSearch,
 				subscribeRun,
 				cancelRun,
+				retryRun,
 				providerStatus,
 				providerLoginStart,
 				modelCatalog,

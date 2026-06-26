@@ -32,6 +32,7 @@ function makeStubRuntime(opts: {
 	readonly events: readonly RunEventValue[];
 	readonly threadId?: string;
 	readonly cancelRun?: WsClient["Type"]["cancelRun"];
+	readonly retryRun?: WsClient["Type"]["retryRun"];
 	// When set, both the focused-thread send (`postMessage`) and the mint-on-send
 	// (`threadCreate`) fail in the SDK's E channel with this WsError — so the real
 	// bridge `send`/`sendNewThread` squash path surfaces it (slice 4).
@@ -66,6 +67,8 @@ function makeStubRuntime(opts: {
 		cancelRun:
 			opts.cancelRun ??
 			(() => Effect.succeed({ outcome: "accepted" as const })),
+		retryRun:
+			opts.retryRun ?? (() => Effect.succeed({ outcome: "accepted" as const })),
 		providerStatus: () => unused,
 		providerLoginStart: () => unused,
 		modelCatalog: () => unused,
@@ -259,6 +262,7 @@ describe("ChatColumn", () => {
 			entityMutate: () => unused,
 			subscribeRun: () => Stream.empty,
 			cancelRun: () => unused,
+			retryRun: () => unused,
 			providerStatus: () => unused,
 			providerLoginStart: () => unused,
 			modelCatalog: () => unused,
@@ -311,6 +315,7 @@ describe("ChatColumn", () => {
 			entityMutate: () => unused,
 			subscribeRun: () => Stream.empty,
 			cancelRun: () => unused,
+			retryRun: () => unused,
 			providerStatus: () => unused,
 			providerLoginStart: () => unused,
 			modelCatalog: () => unused,
@@ -1017,6 +1022,7 @@ describe("ChatColumn", () => {
 			entityMutate: () => unused,
 			subscribeRun: () => Stream.empty,
 			cancelRun: () => unused,
+			retryRun: () => unused,
 			providerStatus: () => unused,
 			providerLoginStart: () => unused,
 			modelCatalog: () => unused,
@@ -1253,11 +1259,16 @@ describe("ChatColumn", () => {
 		await runtime.dispose();
 	});
 
-	it("offers Try again on an interrupted reply and re-sends the previous turn", async () => {
+	it("offers Try again on an errored reply and re-drives the SAME run in place (no duplicated turn, #230)", async () => {
 		const user = userEvent.setup();
+		// run/retry accepted → the bridge re-streams the SAME run via subscribeRun.
+		const retrySpy = vi.fn((_runId: string) =>
+			Effect.succeed({ outcome: "accepted" as const }),
+		);
 		const runtime = makeStubRuntime({
-			runId: "run-retry",
+			runId: "r-fail",
 			events: [{ kind: "text_delta", delta: "recovered" }, { kind: "done" }],
+			retryRun: retrySpy,
 		});
 		appendUserMessage("threadA", {
 			id: "u1",
@@ -1282,7 +1293,14 @@ describe("ChatColumn", () => {
 
 		await user.click(screen.getByRole("button", { name: /try again/i }));
 
+		// The retried run streams its new text into the SAME bubble.
 		expect(await screen.findByText("recovered")).toBeInTheDocument();
+		// run/retry was fired for the errored bubble's OWN run id — NOT a re-send.
+		expect(retrySpy).toHaveBeenCalledWith("r-fail");
+		// No seedTurn duplication: still one user + one assistant message.
+		const msgs = getChatState().threads.threadA?.messages ?? [];
+		expect(msgs.filter((m) => m.role === "user")).toHaveLength(1);
+		expect(msgs.filter((m) => m.role === "assistant")).toHaveLength(1);
 
 		await runtime.dispose();
 	});

@@ -38,6 +38,7 @@ function makeRuntime(sub: SubscriptionRef.SubscriptionRef<ConnectionStatus>) {
 		entityMutate: () => unused,
 		subscribeRun: (): Stream.Stream<RunEventValue, WsError> => Stream.empty,
 		cancelRun: () => unused,
+		retryRun: () => unused,
 		providerStatus: () => unused,
 		providerLoginStart: () => unused,
 		modelCatalog: () => unused,

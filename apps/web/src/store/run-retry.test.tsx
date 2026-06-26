@@ -1,15 +1,10 @@
-import {
-	type RunEventValue,
-	type RunId,
-	type RunRetryResult,
-	WsClient,
-} from "@inkstone/ui-sdk";
+import type { RunRetryResult } from "@inkstone/protocol";
+import { type RunEventValue, type RunId, WsClient } from "@inkstone/ui-sdk";
 import { Effect, Layer, ManagedRuntime, Queue, Stream } from "effect";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { awaitRun, resetBridge, retryRun } from "./bridge.js";
 import {
 	appendUserMessage,
-	applyEvent,
 	concatText,
 	getChatState,
 	getRun,
@@ -32,7 +27,9 @@ function makeStubRuntime(
 	retryOutcome: RunRetryResult["outcome"],
 ) {
 	const unused = Effect.die("not used in this test");
-	const retrySpy = vi.fn((_runId: RunId) => Effect.succeed({ outcome: retryOutcome }));
+	const retrySpy = vi.fn((_runId: RunId) =>
+		Effect.succeed({ outcome: retryOutcome }),
+	);
 	const stub = WsClient.of({
 		threadCreate: () => unused,
 		postMessage: () => unused,

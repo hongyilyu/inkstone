@@ -16,6 +16,7 @@ import { cn } from "@/lib/utils";
 import { useRuntime } from "@/runtime";
 import {
 	cancelRun,
+	retryRun,
 	send,
 	sendNewThread,
 	startProposalStream,
@@ -202,8 +203,11 @@ export function ChatColumn() {
 		void hydrateThread(runtime, focusedThreadId);
 	};
 
-	// Re-issue a previous user turn after a failed/interrupted Run; always the `send` path since the thread already exists.
-	const retry = (text: string) => {
+	// Re-issue a CANCELLED turn: a user `cancelled` Run is NOT errored, so Core's
+	// run/retry would return `not_errored` for it (#230). A cancel is a deliberate
+	// stop, and a fresh `send` is the right recovery — it mints a new Run for the
+	// same prior prompt. (The ERROR tone routes through {@link retryErroredRun}.)
+	const resend = (text: string) => {
 		if (focusedThreadId === null) return;
 		setSendError(null);
 		void send(runtime, focusedThreadId, text).then(async (result) => {
@@ -213,7 +217,21 @@ export function ChatColumn() {
 				);
 			}
 			// Refresh both reads this surface shows: the sidebar's thread list and
-			// the right-rail recent-Runs feed (the retried send births/advances a Run).
+			// the right-rail recent-Runs feed (the resent turn births/advances a Run).
+			await queryClient.invalidateQueries({ queryKey: ["threads"] });
+			await queryClient.invalidateQueries({ queryKey: ["run-history"] });
+		});
+	};
+
+	// Re-drive an ERRORED Run IN PLACE (ADR-0028 retry amendment, #230): call
+	// `run/retry` for the failed bubble's OWN run id — re-streaming the SAME Run,
+	// NOT seeding a duplicate user+assistant turn (the bug today's `send` re-issue
+	// produced). Refresh the recent-Runs feed once the retried Run settles, so the
+	// feed shows it re-running then its real terminal.
+	const retryErroredRun = (runId: string) => {
+		if (focusedThreadId === null) return;
+		setSendError(null);
+		void retryRun(runtime, focusedThreadId, runId).then(async () => {
 			await queryClient.invalidateQueries({ queryKey: ["threads"] });
 			await queryClient.invalidateQueries({ queryKey: ["run-history"] });
 		});
@@ -245,9 +263,17 @@ export function ChatColumn() {
 									message={message}
 									highlighted={message.id === highlightId}
 									onRetry={
-										focusedThreadId !== null && messages[i - 1]?.role === "user"
-											? () => retry(concatText(messages[i - 1].segments))
-											: undefined
+										focusedThreadId === null
+											? undefined
+											: // An ERRORED turn re-drives its OWN Run in place (#230); a
+												// user-CANCELLED turn (not errored) re-sends the prior prompt
+												// as a fresh Run. The cancelled path needs the prior user
+												// text, so it's only offered when a user turn precedes this one.
+												message.cancelled
+												? messages[i - 1]?.role === "user"
+													? () => resend(concatText(messages[i - 1].segments))
+													: undefined
+												: () => retryErroredRun(message.run_id)
 									}
 								/>
 							),
