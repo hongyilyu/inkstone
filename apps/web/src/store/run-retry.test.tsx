@@ -114,6 +114,42 @@ describe("resetMessageForRetry — flips an errored bubble back to streaming", (
 		expect(msg?.segments).toEqual([]);
 	});
 
+	it("clears NON-text segments too (tool_call / proposal artifacts), not just text", () => {
+		// The segment-clear is the ONLY web-side discard of a failed attempt's
+		// tool_call/proposal segments — the cumulative-text SET only replaces TEXT
+		// segments, so a reset that filtered to text (instead of clearing all) would
+		// leak the failed attempt's tool/proposal rows into the re-driven timeline.
+		appendUserMessage("t1", {
+			id: "u1",
+			role: "user",
+			status: "completed",
+			segments: [{ kind: "text", text: "do it" }],
+			run_id: "",
+		});
+		seedAssistantMessage("t1", {
+			id: "a1",
+			role: "assistant",
+			status: "incomplete",
+			segments: [
+				{
+					kind: "tool_call",
+					call: { id: "tc1", name: "search", status: "error" },
+				},
+				{ kind: "text", text: "half " },
+				{ kind: "proposal", runId: "run-1" },
+			],
+			error: "boom",
+			run_id: "run-1",
+		});
+
+		resetMessageForRetry("t1", "run-1");
+
+		const msg = getChatState().threads.t1?.messages.find((m) => m.id === "a1");
+		expect(msg?.status).toBe("streaming");
+		// EVERY segment is gone — text, tool_call, AND proposal.
+		expect(msg?.segments).toEqual([]);
+	});
+
 	it("also clears a `cancelled` flag if one was set", () => {
 		appendUserMessage("t1", {
 			id: "u1",

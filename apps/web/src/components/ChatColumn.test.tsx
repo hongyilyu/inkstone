@@ -1305,6 +1305,46 @@ describe("ChatColumn", () => {
 		await runtime.dispose();
 	});
 
+	it("re-SENDS (not run/retry) when a failed-send bubble has no run id yet (#230 regression guard)", async () => {
+		const user = userEvent.setup();
+		// A bubble whose SEND failed before Core minted a Run keeps run_id "" (seedTurn
+		// seeds "", a postMessage failure only flips status to incomplete). Its "Try
+		// again" must re-SEND the prior prompt as a fresh Run — `run/retry` needs a real
+		// errored run id, and an empty one is a dead button (Core rejects invalid_params).
+		const retrySpy = vi.fn((_runId: string) =>
+			Effect.succeed({ outcome: "accepted" as const }),
+		);
+		const runtime = makeStubRuntime({
+			runId: "r-resent",
+			events: [{ kind: "text_delta", delta: "resent reply" }, { kind: "done" }],
+			retryRun: retrySpy,
+		});
+		appendUserMessage("threadA", {
+			id: "u1",
+			role: "user",
+			status: "completed",
+			segments: [{ kind: "text", text: "do it" }],
+			run_id: "",
+		});
+		seedAssistantMessage("threadA", {
+			id: "a-nosend",
+			role: "assistant",
+			status: "incomplete",
+			segments: [],
+			run_id: "", // never reached Core — no run id
+		});
+
+		await renderFocused(runtime, "threadA");
+		await user.click(screen.getByRole("button", { name: /try again/i }));
+
+		// The resend path streams a fresh Run's reply; run/retry is NEVER called for
+		// the empty id (the dead-button regression).
+		expect(await screen.findByText("resent reply")).toBeInTheDocument();
+		expect(retrySpy).not.toHaveBeenCalled();
+
+		await runtime.dispose();
+	});
+
 	it("shows the connection-specific copy when a focused-thread send fails because the link is down (ADR-0051)", async () => {
 		const user = userEvent.setup();
 		// The SDK postMessage rejects in the E channel with a connection-caused

@@ -265,11 +265,15 @@ export function ChatColumn() {
 									onRetry={
 										focusedThreadId === null
 											? undefined
-											: // An ERRORED turn re-drives its OWN Run in place (#230); a
-												// user-CANCELLED turn (not errored) re-sends the prior prompt
-												// as a fresh Run. The cancelled path needs the prior user
-												// text, so it's only offered when a user turn precedes this one.
-												message.cancelled
+											: // An ERRORED turn that reached Core re-drives its OWN Run in
+												// place (#230). A user-CANCELLED turn — OR a turn whose SEND
+												// failed before Core minted a Run (no `run_id` yet) — instead
+												// re-sends the prior prompt as a fresh Run: `run/retry` needs a
+												// real errored `run_id`, and an empty one would be a dead button
+												// (Core rejects it as invalid_params). Both re-send paths need the
+												// prior user text, so they're only offered when a user turn
+												// precedes this one.
+												message.cancelled || message.run_id === ""
 												? messages[i - 1]?.role === "user"
 													? () => resend(concatText(messages[i - 1].segments))
 													: undefined
