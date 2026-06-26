@@ -1,7 +1,10 @@
 import { useParams } from "@tanstack/react-router";
-import { Library, Plus, Search } from "lucide-react";
+import { Archive, Library, Plus, Search } from "lucide-react";
+import { useState } from "react";
+import { Input } from "@/components/ui/input.js";
 import { NavShell, navRow } from "@/components/ui/nav-shell";
 import { useCopyToClipboard } from "@/lib/hooks/useCopyToClipboard";
+import { useThreadMutations } from "@/lib/hooks/useThreadMutations";
 import { useThreads } from "@/lib/hooks/useThreads";
 import { openCommand } from "@/store/command";
 import { cn } from "../lib/utils.js";
@@ -88,50 +91,150 @@ export function Sidebar({
 								{group.label}
 							</h2>
 							<ul className="flex flex-col gap-1">
-								{group.threads.map((item) => {
-									const isCurrent = item.id === focusedThreadId;
-									return (
-										<li
-											key={item.id}
-											className={cn(
-												"group relative flex h-10 items-center rounded-lg pr-1 transition-colors",
-												isCurrent ? "bg-secondary/70" : "hover:bg-primary/10",
-											)}
-										>
-											{isCurrent && (
-												<span
-													aria-hidden="true"
-													className="pointer-events-none absolute top-1/2 left-2 size-[5px] -translate-y-1/2 rounded-full bg-primary"
-												/>
-											)}
-											<button
-												type="button"
-												onClick={() => onOpenThread?.(item.id)}
-												aria-current={isCurrent ? "true" : undefined}
-												// Long titles clip with CSS `truncate`; a native tooltip
-												// reveals the full title (a generated title, or the
-												// prompt-derived fallback slug — ADR-0048) on hover
-												// without a layout shift.
-												title={item.title}
-												className={cn(
-													"h-full min-w-0 flex-1 cursor-pointer truncate rounded-lg py-0 pr-3 pl-[18px] text-left text-sm focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring",
-													isCurrent
-														? "font-semibold text-secondary-foreground"
-														: "text-sidebar-foreground",
-												)}
-											>
-												{item.title}
-											</button>
-											<CopyThreadIdButton id={item.id} title={item.title} />
-										</li>
-									);
-								})}
+								{group.threads.map((item) => (
+									<ThreadRow
+										key={item.id}
+										item={item}
+										isCurrent={item.id === focusedThreadId}
+										onOpenThread={onOpenThread}
+										onReselect={onNewChat}
+									/>
+								))}
 							</ul>
 						</section>
 					))
 				)}
 			</div>
 		</NavShell>
+	);
+}
+
+/** One sidebar Thread row. Owns inline-rename state (double-click the title →
+ * `<Input>`; Enter/blur commit a trimmed, *changed* title via `threadRename`;
+ * Escape restores and exits — empty or unchanged is a no-op) and the archive
+ * action. While editing, the row does NOT navigate. */
+function ThreadRow({
+	item,
+	isCurrent,
+	onOpenThread,
+	onReselect,
+}: {
+	item: Thread;
+	isCurrent: boolean;
+	onOpenThread?: (threadId: string) => void;
+	onReselect?: () => void;
+}) {
+	const { rename, archive } = useThreadMutations();
+	const [editing, setEditing] = useState(false);
+	const [draft, setDraft] = useState(item.title);
+
+	const beginEdit = () => {
+		setDraft(item.title);
+		setEditing(true);
+	};
+
+	const commit = () => {
+		setEditing(false);
+		const trimmed = draft.trim();
+		// Empty or unchanged is a no-op (Core rejects an empty title anyway).
+		if (trimmed && trimmed !== item.title) {
+			rename.mutate({ threadId: item.id, title: trimmed });
+		}
+	};
+
+	const cancel = () => setEditing(false);
+
+	return (
+		<li
+			className={cn(
+				"group relative flex h-10 items-center rounded-lg pr-1 transition-colors",
+				isCurrent ? "bg-secondary/70" : "hover:bg-primary/10",
+			)}
+		>
+			{isCurrent && (
+				<span
+					aria-hidden="true"
+					className="pointer-events-none absolute top-1/2 left-2 size-[5px] -translate-y-1/2 rounded-full bg-primary"
+				/>
+			)}
+			{editing ? (
+				<Input
+					autoFocus
+					aria-label={`Rename thread ${item.title}`}
+					value={draft}
+					onChange={(e) => setDraft(e.target.value)}
+					onKeyDown={(e) => {
+						if (e.key === "Enter") commit();
+						else if (e.key === "Escape") cancel();
+					}}
+					onBlur={commit}
+					className="h-full min-w-0 flex-1 rounded-lg py-0 pr-3 pl-[18px] text-sm focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+				/>
+			) : (
+				<button
+					type="button"
+					onClick={() => onOpenThread?.(item.id)}
+					onDoubleClick={beginEdit}
+					aria-current={isCurrent ? "true" : undefined}
+					// Long titles clip with CSS `truncate`; a native tooltip
+					// reveals the full title (a generated title, or the
+					// prompt-derived fallback slug — ADR-0048) on hover
+					// without a layout shift.
+					title={item.title}
+					className={cn(
+						"h-full min-w-0 flex-1 cursor-pointer truncate rounded-lg py-0 pr-3 pl-[18px] text-left text-sm focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring",
+						isCurrent
+							? "font-semibold text-secondary-foreground"
+							: "text-sidebar-foreground",
+					)}
+				>
+					{item.title}
+				</button>
+			)}
+			{!editing && (
+				<>
+					<ArchiveThreadButton
+						title={item.title}
+						onArchive={() =>
+							// Reselect fires on the mutation's SUCCESS, not synchronously:
+							// archiving the focused Thread (ADR-0042 — focus IS the route)
+							// must drop us off `/thread/$id`. Reuse `onNewChat` (wired to
+							// navigate({to:"/"}) in _chat.tsx) — landing on the welcome route
+							// is exactly the reselect we want, so no extra nav prop.
+							archive.mutate(item.id, {
+								onSuccess: () => {
+									if (isCurrent) onReselect?.();
+								},
+							})
+						}
+					/>
+					<CopyThreadIdButton id={item.id} title={item.title} />
+				</>
+			)}
+		</li>
+	);
+}
+
+/** The per-row hover-reveal archive control (mirrors {@link CopyThreadIdButton}'s
+ * slot + reveal treatment). Archive is reversible (ADR-0052) so there's no confirm
+ * dialog. */
+function ArchiveThreadButton({
+	title,
+	onArchive,
+}: {
+	title: string;
+	onArchive: () => void;
+}) {
+	return (
+		<button
+			type="button"
+			aria-label={`Archive thread ${title}`}
+			title="Archive"
+			onClick={onArchive}
+			className="flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-sidebar-foreground/80 opacity-0 transition-opacity hover:bg-foreground/10 hover:text-foreground focus-visible:opacity-100 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring group-hover:opacity-100"
+		>
+			<Archive className="size-4" aria-hidden />
+		</button>
 	);
 }
 
