@@ -51,7 +51,7 @@ mod tests {
     use crate::workflow::Workflow;
 
     /// A migrated in-memory pool (mirrors the `message_fts`/`db` test helpers) so
-    /// the `message_fts` virtual table and the `runs`/`messages` CHECKs hold.
+    /// the `runs`/`messages` CHECKs hold.
     async fn memory_pool() -> SqlitePool {
         let options = SqliteConnectOptions::new()
             .filename(":memory:")
