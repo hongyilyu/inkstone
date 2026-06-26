@@ -681,8 +681,6 @@ export const ModelInfo = S.Struct({
 	name: S.String,
 	reasoning: S.Boolean,
 	input: S.Array(S.String),
-	cost_input: S.Number,
-	cost_output: S.Number,
 });
 export type ModelInfo = S.Schema.Type<typeof ModelInfo>;
 

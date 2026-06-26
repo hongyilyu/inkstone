@@ -51,10 +51,6 @@ fn model_catalog_returns_openai_codex_models() {
             serde_json::json!(true),
             "gpt-5.5 is reasoning-capable"
         );
-        assert!(
-            gpt55["cost_input"].is_number(),
-            "cost_input is a bare number"
-        );
 
         ws.close(None).await.ok();
     });

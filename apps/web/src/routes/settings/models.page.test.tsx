@@ -239,16 +239,12 @@ describe("Models settings page (ADR-0024)", () => {
 				name: "GPT-5.5",
 				reasoning: true,
 				input: ["text", "image"],
-				cost_input: 5,
-				cost_output: 30,
 			},
 			{
 				id: "gpt-5.4-mini",
 				name: "GPT-5.4 Mini",
 				reasoning: true,
 				input: ["text", "image"],
-				cost_input: 0.75,
-				cost_output: 4.5,
 			},
 		];
 		const { runtime, settingsSet } = makeRuntime({ connected: true, models });
@@ -279,16 +275,12 @@ describe("Models settings page (ADR-0024)", () => {
 				name: "GPT-5.5",
 				reasoning: true,
 				input: ["text"],
-				cost_input: 5,
-				cost_output: 30,
 			},
 			{
 				id: "gpt-5.4-mini",
 				name: "GPT-5.4 Mini",
 				reasoning: true,
 				input: ["text"],
-				cost_input: 0.75,
-				cost_output: 4.5,
 			},
 		];
 		// Gate each settings/set so the FIRST click's response resolves AFTER the

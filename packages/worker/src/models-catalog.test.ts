@@ -27,8 +27,6 @@ describe("model catalog drift", () => {
 			name: m.name,
 			reasoning: !!m.reasoning,
 			input: m.input,
-			cost_input: m.cost.input,
-			cost_output: m.cost.output,
 		}));
 
 		const jsonUrl = new URL(

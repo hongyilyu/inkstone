@@ -1,57 +1,64 @@
 import type { ModelInfo } from "@inkstone/protocol";
-import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { cleanup, render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ModelCatalogTable } from "./ModelCatalogTable.js";
 
 afterEach(cleanup);
 
-function model(id: string, cost_output: number): ModelInfo {
+function model(
+	id: string,
+	opts: { reasoning?: boolean; input?: string[] } = {},
+): ModelInfo {
 	return {
 		id,
 		name: id,
-		reasoning: false,
-		input: ["text"],
-		cost_input: 0,
-		cost_output,
+		reasoning: opts.reasoning ?? false,
+		input: opts.input ?? ["text"],
 	};
 }
 
-describe("ModelCatalogTable cost badge", () => {
-	const tiers = [
-		{ id: "free", cost: 0, label: "Free", glyph: "$0", count: 1 },
-		{ id: "low", cost: 2, label: "Low cost", glyph: "$", count: 1 },
-		{ id: "medium", cost: 10, label: "Medium cost", glyph: "$", count: 2 },
-		{ id: "high", cost: 30, label: "High cost", glyph: "$", count: 3 },
-	];
-
-	for (const tier of tiers) {
-		it(`exposes "${tier.label}" with the right glyph at cost ${tier.cost}`, () => {
-			render(
-				<ModelCatalogTable
-					models={[model(tier.id, tier.cost)]}
-					selectedId={null}
-					onSelect={() => {}}
-				/>,
-			);
-			const badge = screen.getByRole("img", { name: tier.label });
-			if (tier.glyph === "$0") {
-				expect(badge).toHaveTextContent("$0");
-			} else {
-				expect(badge.textContent).toBe("$".repeat(tier.count));
-			}
-		});
-	}
-
-	it("uses no emerald/amber/rose hue on any cost tier", () => {
-		const { container } = render(
+describe("ModelCatalogTable", () => {
+	it("marks the selected model Preferred and offers Set as preferred on others", async () => {
+		const user = userEvent.setup();
+		const onSelect = vi.fn();
+		render(
 			<ModelCatalogTable
-				models={tiers.map((t) => model(t.id, t.cost))}
+				models={[model("alpha"), model("bravo")]}
+				selectedId="alpha"
+				onSelect={onSelect}
+			/>,
+		);
+
+		const preferredRow = screen.getByRole("row", { name: /alpha/ });
+		expect(within(preferredRow).getByText(/preferred/i)).toBeInTheDocument();
+
+		// Only the non-selected row exposes the action.
+		await user.click(screen.getByRole("button", { name: /set as preferred/i }));
+		expect(onSelect).toHaveBeenCalledWith("bravo");
+	});
+
+	it("shows Reasoning and Vision chips per capability", () => {
+		render(
+			<ModelCatalogTable
+				models={[model("vis", { reasoning: true, input: ["text", "image"] })]}
 				selectedId={null}
 				onSelect={() => {}}
 			/>,
 		);
-		expect(container.querySelector('[class*="emerald"]')).toBeNull();
-		expect(container.querySelector('[class*="amber"]')).toBeNull();
-		expect(container.querySelector('[class*="rose"]')).toBeNull();
+		expect(screen.getByText("Reasoning")).toBeInTheDocument();
+		expect(screen.getByText("Vision")).toBeInTheDocument();
+	});
+
+	it("omits the Vision chip when image input is unsupported", () => {
+		render(
+			<ModelCatalogTable
+				models={[model("txt", { reasoning: false, input: ["text"] })]}
+				selectedId={null}
+				onSelect={() => {}}
+			/>,
+		);
+		expect(screen.queryByText("Vision")).toBeNull();
+		expect(screen.queryByText("Reasoning")).toBeNull();
 	});
 });
