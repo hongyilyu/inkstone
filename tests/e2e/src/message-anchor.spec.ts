@@ -13,11 +13,17 @@ import { dbPathFor, seedEntities, sqlite } from "./seed.js";
  *   machinery (already shipped for ⌘K message search, ADR-0042).
  * The unit/component suites cover each hop alone; only this spec proves the wire.
  *
- * We seed several user messages with the TARGET first and six more after it, in a
- * SHORT (600px) viewport so the transcript overflows and the target starts
- * decisively ABOVE the fold. A passing `toBeInViewport()` on the target can
- * therefore only be the scroll-to-message jump the anchor fires, never the
- * initial paint (which would land at the top/bottom, not on the early message).
+ * We seed six filler messages FIRST and the TARGET last, in a SHORT (600px)
+ * viewport so the transcript overflows. A pending `?focusedMessageId` SUPPRESSES
+ * the cold-load bottom-pin (ChatColumn's bottom-scroll effect early-returns when an
+ * anchor is set), so a cold mount sits at the TOP (`scrollTop 0`) showing the
+ * fillers, leaving the last-position target decisively BELOW the fold. A passing
+ * `toBeInViewport()` on the target can therefore only be the scroll-to-message jump
+ * the anchor fires, never the initial paint (which leaves the bottom target
+ * off-screen). [If the target sat FIRST it would already be in view at `scrollTop
+ * 0` and the assertion wouldn't be load-bearing — `[data-highlighted]` and the
+ * anchor-strip would still prove the wire, but the scroll proof needs the target
+ * off the initial fold.]
  *
  * The Entity's `entity_sources` row points at the target message (`created_from`),
  * which is what makes it "captured from" that message; the seeded `threads.title`
@@ -34,8 +40,9 @@ import { dbPathFor, seedEntities, sqlite } from "./seed.js";
  * by the EntityDetail unit suite (the `search: {}` case).
  */
 
-// A short viewport forces the transcript to overflow so the early target is above
-// the fold — the in-viewport assertion then can only be the scroll jump.
+// A short viewport forces the transcript to overflow so the last-position target
+// is below the fold at the top-pinned cold mount — the in-viewport assertion then
+// can only be the scroll jump.
 test.use({ viewport: { width: 1024, height: 600 } });
 
 const THREAD_ID = "01900000-0000-7000-8000-000000000200";
@@ -46,21 +53,22 @@ const SOURCE_ID = "01900000-0000-7000-8000-000000000203";
 const THREAD_TITLE = "Trip planning brain dump";
 const TODO_TITLE = "Book the lighthouse tour";
 
-// The capturing message — FIRST in the transcript, so six later messages push it
-// off the fold once the thread renders. Its body is a distinctive phrase we locate
-// with `chat.userBubble`.
-const TARGET_PHRASE = "remember the zylophant ferry timetable for Friday";
-
-// Six later messages, each long enough that the six together overflow the 600px
-// viewport and bury the target above the fold.
-const LATER_MESSAGES = [
+// Six EARLIER messages, each long enough that the six together overflow the 600px
+// viewport and fill the top-pinned cold mount, burying the last-position target
+// below the fold.
+const EARLIER_MESSAGES = [
 	"Also I need to compare the coastal hotels and pick one with parking near the harbour.",
 	"Then sort out the rental car insurance and the airport pickup window times.",
 	"Confirm the dinner reservation for the second night somewhere with a sea view.",
 	"Check whether the museum passes are cheaper bought as a bundle in advance.",
 	"Pack the binoculars and the rain jackets in case the weather turns on us.",
-	"That is everything I can think of for the trip planning for now, thanks.",
+	"Double-check the ferry crossing options and the harbour parking once more.",
 ];
+
+// The capturing message — LAST in the transcript, so the six earlier messages push
+// it below the fold at the top-pinned cold mount. Its body is a distinctive phrase
+// we locate with `chat.userBubble`.
+const TARGET_PHRASE = "remember the zylophant ferry timetable for Friday";
 
 test("a Captured-from link deep-links to the exact capturing message, highlighted and in view", async ({
 	chat,
@@ -87,8 +95,8 @@ test("a Captured-from link deep-links to the exact capturing message, highlighte
 
 	// The target is the exact message that was anchored — not just "some message in
 	// the thread". It carries the lamplight ring (assert while it's up; it
-	// self-clears after ~1.6s) and it was scrolled into view despite starting above
-	// the fold, which can only be the anchor's scroll jump.
+	// self-clears after ~1.6s) and it was scrolled into view despite starting below
+	// the fold at the top-pinned cold mount, which can only be the anchor's scroll jump.
 	const target = chat.userBubble(TARGET_PHRASE);
 	await expect(target).toHaveCount(1, { timeout: 15_000 });
 	await expect(target.locator("[data-highlighted]")).toHaveCount(1);
@@ -101,7 +109,7 @@ test("a Captured-from link deep-links to the exact capturing message, highlighte
 
 /**
  * Seed the Todo (via `seedEntities`), then in one tx: a titled thread, one
- * completed run, several user messages (the TARGET first, then six later ones), and
+ * completed run, several user messages (six earlier ones, then the TARGET last), and
  * an `entity_sources` row tying the Todo to the TARGET message (`created_from`).
  * The cross-FK between `runs.user_message_id` and `messages.run_id` resolves at
  * COMMIT (both are DEFERRABLE INITIALLY DEFERRED), so the run can name a message
@@ -114,10 +122,11 @@ test("a Captured-from link deep-links to the exact capturing message, highlighte
  */
 function seedThreadEntityAndSource(dbPath: string): void {
 	const base = Date.now();
-	const bodies = [TARGET_PHRASE, ...LATER_MESSAGES];
+	const bodies = [...EARLIER_MESSAGES, TARGET_PHRASE];
 	const messageId = (i: number) =>
 		`01900000-0000-7000-8000-0000000003${String(i).padStart(2, "0")}`;
-	const targetMessageId = messageId(0);
+	// The TARGET is the LAST message — its id is what `entity_sources` points at.
+	const targetMessageId = messageId(bodies.length - 1);
 
 	// The captured Entity itself must exist BEFORE the `entity_sources` row that
 	// references it (`entity_sources.entity_id` is a non-deferrable FK to
@@ -130,7 +139,7 @@ function seedThreadEntityAndSource(dbPath: string): void {
 	const messageStmts = bodies
 		.map((body, i) => {
 			// Strictly increasing created_at keeps the chronological order stable, so
-			// the TARGET (i=0) renders first and stays above the fold.
+			// the TARGET (last) renders last and sits below the fold at cold mount.
 			const at = base + i;
 			const id = messageId(i);
 			return `

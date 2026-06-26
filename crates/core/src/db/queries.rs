@@ -540,9 +540,9 @@ where
 /// (the schema's CHECK guarantees exactly one is non-NULL):
 ///
 /// - a user Message source → its `thread_id` + the Thread `title` (resolved
-///   through `messages`→`threads`) plus the capturing message `id` (so the Client
-///   can deep-link to the exact message, #184), so the Client can link back to the
-///   Thread;
+///   through `messages`→`threads`), so the Client can link back to the Thread,
+///   plus the capturing message `id` so it can deep-link to the exact message
+///   (#184);
 /// - a source-Entity (Journal Entry) source → its `source_entity_id`.
 ///
 /// `created_from` is the ORIGIN relation — `updated_from` rows (a later proposal
