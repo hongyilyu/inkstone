@@ -1,0 +1,209 @@
+import {
+	type RunEventValue,
+	type RunId,
+	type RunRetryResult,
+	WsClient,
+} from "@inkstone/ui-sdk";
+import { Effect, Layer, ManagedRuntime, Queue, Stream } from "effect";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { awaitRun, resetBridge, retryRun } from "./bridge.js";
+import {
+	appendUserMessage,
+	applyEvent,
+	concatText,
+	getChatState,
+	getRun,
+	resetChatStore,
+	resetMessageForRetry,
+	seedAssistantMessage,
+} from "./chat.js";
+
+// Slice 2 of run/retry (ADR-0028 retry amendment, #230): the Web Retry button
+// re-drives the SAME errored Run in place — it MUST NOT seed a second user/
+// assistant turn (the #230 bug today's seedTurn re-send produces).
+
+/**
+ * Stub WsClient whose `retryRun` is spied + scripted, and whose `subscribeRun`
+ * yields a caller-controlled queue (mirrors run-record.test.tsx). `retryRun`
+ * records the run id it was called with so the test can assert the wiring.
+ */
+function makeStubRuntime(
+	queue: Queue.Queue<RunEventValue>,
+	retryOutcome: RunRetryResult["outcome"],
+) {
+	const unused = Effect.die("not used in this test");
+	const retrySpy = vi.fn((_runId: RunId) => Effect.succeed({ outcome: retryOutcome }));
+	const stub = WsClient.of({
+		threadCreate: () => unused,
+		postMessage: () => unused,
+		threadList: () => unused,
+		getRunHistory: () => unused,
+		recurrencePreview: () => unused,
+		threadGet: () => unused,
+		listEntities: () => unused,
+		getBacklinks: () => unused,
+		entityMutate: () => unused,
+		subscribeRun: () => Stream.fromQueue(queue),
+		cancelRun: () => unused,
+		retryRun: retrySpy,
+		providerStatus: () => unused,
+		providerLoginStart: () => unused,
+		modelCatalog: () => unused,
+		settingsGet: () => unused,
+		settingsSet: () => unused,
+		proposalGet: () => unused,
+		rescanJournalEntry: () => unused,
+		proposalDecide: () => unused,
+		messageSearch: () => unused,
+		proposalNotifications: () => Stream.empty,
+		connectionStatus: () => Stream.empty,
+	});
+	return {
+		runtime: ManagedRuntime.make(Layer.succeed(WsClient, stub)),
+		retrySpy,
+	};
+}
+
+/** Seed a thread with one completed user message + one errored assistant message
+ * bound to `runId` (the errored bubble): status `incomplete` + an `error` set. */
+function seedErroredTurn(runId: RunId): void {
+	appendUserMessage("t1", {
+		id: "u1",
+		role: "user",
+		status: "completed",
+		segments: [{ kind: "text", text: "do it" }],
+		run_id: "",
+	});
+	seedAssistantMessage("t1", {
+		id: "a1",
+		role: "assistant",
+		status: "incomplete",
+		segments: [{ kind: "text", text: "half " }],
+		error: "the model fell over",
+		run_id: runId,
+	});
+}
+
+beforeEach(() => {
+	resetChatStore();
+	resetBridge();
+});
+
+describe("resetMessageForRetry — flips an errored bubble back to streaming", () => {
+	it("incomplete + error → streaming, error cleared", () => {
+		appendUserMessage("t1", {
+			id: "u1",
+			role: "user",
+			status: "completed",
+			segments: [{ kind: "text", text: "do it" }],
+			run_id: "",
+		});
+		seedAssistantMessage("t1", {
+			id: "a1",
+			role: "assistant",
+			status: "incomplete",
+			segments: [{ kind: "text", text: "half " }],
+			error: "boom",
+			run_id: "run-1",
+		});
+
+		resetMessageForRetry("t1", "run-1");
+
+		const msg = getChatState().threads.t1?.messages.find((m) => m.id === "a1");
+		expect(msg?.status).toBe("streaming");
+		expect(msg?.error).toBeUndefined();
+		// Segments are cleared so the cumulative-SET snapshot lands on a clean
+		// timeline (the failed attempt's text/tool/proposal artifacts are discarded).
+		expect(msg?.segments).toEqual([]);
+	});
+
+	it("also clears a `cancelled` flag if one was set", () => {
+		appendUserMessage("t1", {
+			id: "u1",
+			role: "user",
+			status: "completed",
+			segments: [{ kind: "text", text: "do it" }],
+			run_id: "",
+		});
+		seedAssistantMessage("t1", {
+			id: "a1",
+			role: "assistant",
+			status: "incomplete",
+			segments: [],
+			cancelled: true,
+			run_id: "run-1",
+		});
+
+		resetMessageForRetry("t1", "run-1");
+
+		const msg = getChatState().threads.t1?.messages.find((m) => m.id === "a1");
+		expect(msg?.status).toBe("streaming");
+		expect(msg?.cancelled).toBeUndefined();
+	});
+});
+
+describe("retryRun bridge — re-drives the SAME Run, no seeded turn", () => {
+	it("onRetry_re_drives_same_run_without_seeding_a_turn", async () => {
+		const runId = "run-err" as RunId;
+		seedErroredTurn(runId);
+
+		const queue = Effect.runSync(Queue.unbounded<RunEventValue>());
+		const { runtime, retrySpy } = makeStubRuntime(queue, "accepted");
+
+		await retryRun(runtime, "t1", runId);
+
+		// (a) the SDK retryRun was called with exactly this run id.
+		expect(retrySpy).toHaveBeenCalledTimes(1);
+		expect(retrySpy).toHaveBeenCalledWith(runId);
+
+		// (b) the thread STILL has exactly one user + one assistant message (no
+		// seedTurn duplication — the #230 bug).
+		const msgs = () => getChatState().threads.t1?.messages ?? [];
+		expect(msgs().filter((m) => m.role === "user")).toHaveLength(1);
+		expect(msgs().filter((m) => m.role === "assistant")).toHaveLength(1);
+
+		// (c) the existing assistant message reset to `streaming`, error cleared.
+		const assistant = () => msgs().find((m) => m.role === "assistant");
+		expect(assistant()?.id).toBe("a1"); // same message id throughout
+		expect(assistant()?.status).toBe("streaming");
+		expect(assistant()?.error).toBeUndefined();
+		// The same run record is re-armed for the cumulative snapshot.
+		expect(getRun(runId)?.status).toBe("running");
+		expect(getRun(runId)?.snapshotArmed).toBe(true);
+
+		// (d) after a text_delta then done on the queue, the assistant shows the NEW
+		// text only (the stale "half " is replaced by the cumulative snapshot) and
+		// settles `completed` — same message id throughout.
+		Queue.unsafeOffer(queue, { kind: "text_delta", delta: "full answer" });
+		Queue.unsafeOffer(queue, { kind: "done" });
+		await awaitRun(runtime, runId);
+
+		expect(assistant()?.id).toBe("a1");
+		expect(assistant()?.status).toBe("completed");
+		expect(concatText(assistant()?.segments ?? [])).toBe("full answer");
+
+		await runtime.dispose();
+	});
+
+	it("a not_errored outcome is a benign no-op (no re-subscribe, bubble unchanged)", async () => {
+		const runId = "run-cancelled" as RunId;
+		seedErroredTurn(runId);
+
+		const queue = Effect.runSync(Queue.unbounded<RunEventValue>());
+		const { runtime, retrySpy } = makeStubRuntime(queue, "not_errored");
+
+		await retryRun(runtime, "t1", runId);
+
+		// The SDK was asked, but a non-errored Run is not re-driven: no run record
+		// is armed and the bubble keeps its errored state.
+		expect(retrySpy).toHaveBeenCalledWith(runId);
+		expect(getRun(runId)).toBeUndefined();
+		const assistant = getChatState().threads.t1?.messages.find(
+			(m) => m.role === "assistant",
+		);
+		expect(assistant?.status).toBe("incomplete");
+		expect(assistant?.error).toBe("the model fell over");
+
+		await runtime.dispose();
+	});
+});
