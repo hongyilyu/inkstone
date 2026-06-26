@@ -1,4 +1,3 @@
-import { useQueryClient } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { ArchiveRestore } from "lucide-react";
 import { useArchivedThreads } from "@/lib/hooks/useArchivedThreads";
@@ -9,13 +8,13 @@ import { cn } from "@/lib/utils.js";
  * `/archived` — the Archived-Threads view (ADR-0052). A `_chat` child route, so it
  * renders in the shell's `<Outlet/>` with the Sidebar + recent-Runs rail still
  * mounted. Lists archived Threads (`thread/list_archived`) with a per-row Restore
- * (`thread/unarchive`). On restore, the hook's `unarchive` already invalidates the
- * active `["threads"]` list (slice 4); a per-call `onSuccess` here also invalidates
- * `["threads","archived"]` so the restored row leaves this list. A simple utility
- * list — NOT the Library shell.
+ * (`thread/unarchive`). The hook's `unarchive` invalidates `["threads"]`, which
+ * prefix-matches `["threads","archived"]` (v5 invalidation is non-exact by
+ * default) — so BOTH this list and the sidebar refresh from that one call; no
+ * per-view invalidation is needed here. A simple utility list — NOT the Library
+ * shell.
  */
 function ArchivedView() {
-	const queryClient = useQueryClient();
 	const { data, isPending, isError } = useArchivedThreads();
 	const { unarchive } = useThreadMutations();
 
@@ -59,14 +58,7 @@ function ArchivedView() {
 								type="button"
 								aria-label={`Restore thread ${item.title}`}
 								title="Restore"
-								onClick={() =>
-									unarchive.mutate(item.id, {
-										onSuccess: () =>
-											queryClient.invalidateQueries({
-												queryKey: ["threads", "archived"],
-											}),
-									})
-								}
+								onClick={() => unarchive.mutate(item.id)}
 								className={cn(
 									"flex h-8 shrink-0 cursor-pointer items-center gap-1.5 rounded-md px-2.5 text-sidebar-foreground/80 text-sm transition-colors hover:bg-foreground/10 hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring",
 								)}

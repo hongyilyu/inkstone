@@ -16,14 +16,21 @@ import { useRuntime } from "@/runtime";
  *
  * Deliberately navigation-free: archiving the *focused* Thread must also reselect
  * the route, but that decision needs `useParams` + the navigation handler, which
- * live in the Sidebar — the caller owns it (per-call `onSuccess`).
+ * live in the Sidebar — the caller owns it (per-call `onSuccess`). Returning the
+ * `invalidateQueries` promise here would make React Query AWAIT the `["threads"]`
+ * refetch before running that per-call `onSuccess`, delaying the reselect off
+ * `/thread/$id`; `void` keeps the invalidation fire-and-forget so reselect is
+ * immediate. The `["threads"]` key prefix-matches `["threads","archived"]` (v5
+ * invalidation is non-exact by default), so the archived list refreshes too — no
+ * per-view invalidation is needed at the call sites.
  */
 export function useThreadMutations() {
 	const runtime = useRuntime();
 	const queryClient = useQueryClient();
 
-	const invalidate = () =>
-		queryClient.invalidateQueries({ queryKey: ["threads"] });
+	const invalidate = () => {
+		void queryClient.invalidateQueries({ queryKey: ["threads"] });
+	};
 
 	const rename = useMutation<
 		ThreadMutateResult,
