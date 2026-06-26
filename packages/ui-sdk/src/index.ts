@@ -25,6 +25,7 @@ import {
 	ThreadCreateResult,
 	ThreadGetResult,
 	ThreadListResult,
+	ThreadMutateResult,
 } from "@inkstone/protocol";
 import {
 	Cause,
@@ -209,6 +210,21 @@ export class WsClient extends Context.Tag("@inkstone/ui-sdk/WsClient")<
 		readonly threadGet: (
 			threadId: string,
 		) => Effect.Effect<ThreadGetResult, WsError>;
+		// thread/{rename,archive,unarchive,list_archived} (ADR-0052): the four
+		// mutating/archived-list Thread verbs. The three mutators share
+		// ThreadMutateResult (the affected thread_id); list_archived mirrors
+		// thread/list but reads the archived set.
+		readonly threadRename: (
+			threadId: string,
+			title: string,
+		) => Effect.Effect<ThreadMutateResult, WsError>;
+		readonly threadArchive: (
+			threadId: string,
+		) => Effect.Effect<ThreadMutateResult, WsError>;
+		readonly threadUnarchive: (
+			threadId: string,
+		) => Effect.Effect<ThreadMutateResult, WsError>;
+		readonly threadListArchived: () => Effect.Effect<ThreadListResult, WsError>;
 		readonly listEntities: (
 			type: string,
 		) => Effect.Effect<EntityListResult, WsError>;
@@ -541,6 +557,39 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 			): Effect.Effect<ThreadGetResult, WsError> =>
 				request("thread/get", { thread_id: threadId }, ThreadGetResult);
 
+			// thread/rename (ADR-0052): retitle a Thread (Core rejects an
+			// empty/whitespace title); acks the affected thread_id.
+			const threadRename = (
+				threadId: string,
+				title: string,
+			): Effect.Effect<ThreadMutateResult, WsError> =>
+				request(
+					"thread/rename",
+					{ thread_id: threadId, title },
+					ThreadMutateResult,
+				);
+
+			// thread/archive (ADR-0052): hide a Thread from the default sidebar list.
+			const threadArchive = (
+				threadId: string,
+			): Effect.Effect<ThreadMutateResult, WsError> =>
+				request("thread/archive", { thread_id: threadId }, ThreadMutateResult);
+
+			// thread/unarchive (ADR-0052): restore an archived Thread to the list.
+			const threadUnarchive = (
+				threadId: string,
+			): Effect.Effect<ThreadMutateResult, WsError> =>
+				request(
+					"thread/unarchive",
+					{ thread_id: threadId },
+					ThreadMutateResult,
+				);
+
+			// thread/list_archived (ADR-0052): the archived counterpart of
+			// thread/list — same ThreadListResult shape, the archived set.
+			const threadListArchived = (): Effect.Effect<ThreadListResult, WsError> =>
+				request("thread/list_archived", {}, ThreadListResult);
+
 			// entity/list (ADR-0004): accepted Entities of one type (e.g. journal_entry, todo).
 			const listEntities = (
 				type: string,
@@ -653,6 +702,10 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 				getRunHistory,
 				recurrencePreview,
 				threadGet,
+				threadRename,
+				threadArchive,
+				threadUnarchive,
+				threadListArchived,
 				listEntities,
 				getBacklinks,
 				entityMutate,

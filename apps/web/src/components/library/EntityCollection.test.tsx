@@ -44,6 +44,10 @@ function makeRuntime(
 		getRunHistory: () => unused,
 		recurrencePreview: () => Effect.die("not exercised in this test"),
 		threadGet: () => unused,
+		threadRename: () => unused,
+		threadArchive: () => unused,
+		threadUnarchive: () => unused,
+		threadListArchived: () => unused,
 		listEntities: (type) => {
 			if (type === "person") return Effect.succeed({ entities: people });
 			if (type === "todo") return Effect.succeed({ entities: todos });
@@ -156,6 +160,10 @@ describe("EntityCollection", () => {
 			getRunHistory: () => Effect.die("unused"),
 			recurrencePreview: () => Effect.die("not exercised in this test"),
 			threadGet: () => Effect.die("unused"),
+			threadRename: () => Effect.die("unused"),
+			threadArchive: () => Effect.die("unused"),
+			threadUnarchive: () => Effect.die("unused"),
+			threadListArchived: () => Effect.die("unused"),
 			listEntities: (type) =>
 				type === "todo"
 					? Effect.die("todo read failed")

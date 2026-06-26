@@ -33,6 +33,10 @@ function makeRuntime(
 		getRunHistory: () => unused,
 		recurrencePreview: () => Effect.die("not exercised in this test"),
 		threadGet: () => unused,
+		threadRename: () => unused,
+		threadArchive: () => unused,
+		threadUnarchive: () => unused,
+		threadListArchived: () => unused,
 		listEntities: (type) => {
 			if (type === "project") return Effect.succeed({ entities: projects });
 			if (type === "todo") return Effect.succeed({ entities: todos });
@@ -300,6 +304,10 @@ describe("ProjectReviewView (focused queue)", () => {
 			getRunHistory: () => never,
 			recurrencePreview: () => Effect.die("not exercised in this test"),
 			threadGet: () => never,
+			threadRename: () => never,
+			threadArchive: () => never,
+			threadUnarchive: () => never,
+			threadListArchived: () => never,
 			listEntities: () => never,
 			getBacklinks: () => never,
 			entityMutate: () => never,

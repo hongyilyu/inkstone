@@ -50,6 +50,34 @@ export type ThreadSummary = S.Schema.Type<typeof ThreadSummary>;
 export const ThreadListResult = S.Struct({ threads: S.Array(ThreadSummary) });
 export type ThreadListResult = S.Schema.Type<typeof ThreadListResult>;
 
+/** `thread/rename` params (ADR-0052): the Thread to rename + its new title.
+ * `thread_id` is a bare string here (the gate advertises a string; Core
+ * UUID-checks it — the {@link ThreadGetParams} precedent). An empty/whitespace
+ * title is rejected by Core, not the schema. */
+export const ThreadRenameParams = S.Struct({
+	thread_id: S.String,
+	title: S.String,
+});
+export type ThreadRenameParams = S.Schema.Type<typeof ThreadRenameParams>;
+
+/** `thread/archive` params (ADR-0052): the Thread to archive (hide from the
+ * default sidebar list). `thread_id` is a bare string (Core UUID-checks it). */
+export const ThreadArchiveParams = S.Struct({ thread_id: S.String });
+export type ThreadArchiveParams = S.Schema.Type<typeof ThreadArchiveParams>;
+
+/** `thread/unarchive` params (ADR-0052): the Thread to restore to the default
+ * list. `thread_id` is a bare string (Core UUID-checks it). */
+export const ThreadUnarchiveParams = S.Struct({ thread_id: S.String });
+export type ThreadUnarchiveParams = S.Schema.Type<typeof ThreadUnarchiveParams>;
+
+/** The shared ack for the three mutating Thread verbs (`thread/rename`,
+ * `thread/archive`, `thread/unarchive`, ADR-0052): the affected `thread_id`.
+ * Mirrors {@link EntityMutateResult} but `thread_id` is non-optional — every
+ * mutating verb has a target Thread; the Web reconciles by invalidating its
+ * `["threads"]` query and re-reading. */
+export const ThreadMutateResult = S.Struct({ thread_id: S.String });
+export type ThreadMutateResult = S.Schema.Type<typeof ThreadMutateResult>;
+
 /** The seven Run Log milestone kinds (ADR-0028). `run/get_history` surfaces a
  * Run's latest one verbatim — deliberately not folded into the five Run-status
  * values (a resumed-still-working Run reads `proposal_decided`, since `resume`

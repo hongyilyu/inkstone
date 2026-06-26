@@ -55,6 +55,10 @@ function makeStubRuntime(opts: {
 		recurrencePreview: () => Effect.die("not exercised in this test"),
 		// Park hydrate-on-focus: a focused thread stays `loading` (these tests drive messages directly, not via thread/get).
 		threadGet: () => Effect.never,
+		threadRename: () => unused,
+		threadArchive: () => unused,
+		threadUnarchive: () => unused,
+		threadListArchived: () => unused,
 		listEntities: () => unused,
 		getBacklinks: () => unused,
 		entityMutate: () => unused,
@@ -246,6 +250,10 @@ describe("ChatColumn", () => {
 					? Effect.fail(new WsRequestError({ reason: "boom" }))
 					: Effect.succeed(history);
 			},
+			threadRename: () => unused,
+			threadArchive: () => unused,
+			threadUnarchive: () => unused,
+			threadListArchived: () => unused,
 			listEntities: () => unused,
 			getBacklinks: () => unused,
 			entityMutate: () => unused,
@@ -294,6 +302,10 @@ describe("ChatColumn", () => {
 			recurrencePreview: () => Effect.die("not exercised in this test"),
 			threadGet: () =>
 				Effect.fail(new UnknownThreadError({ message: "no such thread" })),
+			threadRename: () => unused,
+			threadArchive: () => unused,
+			threadUnarchive: () => unused,
+			threadListArchived: () => unused,
 			listEntities: () => unused,
 			getBacklinks: () => unused,
 			entityMutate: () => unused,
@@ -996,6 +1008,10 @@ describe("ChatColumn", () => {
 			getRunHistory: () => unused,
 			recurrencePreview: () => Effect.die("not exercised in this test"),
 			threadGet: () => Deferred.await(gate),
+			threadRename: () => unused,
+			threadArchive: () => unused,
+			threadUnarchive: () => unused,
+			threadListArchived: () => unused,
 			listEntities: () => unused,
 			getBacklinks: () => unused,
 			entityMutate: () => unused,

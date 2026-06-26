@@ -121,10 +121,39 @@ pub async fn thread_exists(pool: &SqlitePool, thread_id: Uuid) -> sqlx::Result<b
     queries::thread_exists(pool, thread_id).await
 }
 
-/// Read all Threads for `thread/list` (ADR-0022), most-recent-activity-first,
-/// as `(id, title, last_activity_at)` rows.
+/// Read all ACTIVE Threads for `thread/list` (ADR-0022), most-recent-activity-
+/// first, as `(id, title, last_activity_at)` rows. Archived Threads (ADR-0052)
+/// are excluded.
 pub async fn list_threads(pool: &SqlitePool) -> sqlx::Result<Vec<(String, String, i64)>> {
     queries::list_threads(pool).await
+}
+
+/// Read the ARCHIVED Threads for `thread/list_archived` (ADR-0052),
+/// newest-archived first, as `(id, title, last_activity_at)` rows — the same
+/// tuple shape `list_threads` returns, so the Archived view reuses it.
+pub async fn list_archived_threads(
+    pool: &SqlitePool,
+) -> sqlx::Result<Vec<(String, String, i64)>> {
+    queries::list_archived_threads(pool).await
+}
+
+/// Archive a Thread by stamping `archived_at` (ms-epoch), hiding it from the
+/// default `list_threads` (ADR-0052). Does NOT cascade — the Thread's messages,
+/// runs, and "Captured from" provenance survive (archive-not-delete; a hard
+/// delete would cascade away the Message an Entity's provenance points at). Does
+/// NOT bump `last_activity_at`.
+pub async fn archive_thread(
+    pool: &SqlitePool,
+    thread_id: Uuid,
+    now_ms: i64,
+) -> sqlx::Result<()> {
+    queries::archive_thread(pool, thread_id, now_ms).await
+}
+
+/// Un-archive a Thread by clearing `archived_at`, returning it to the default
+/// `list_threads` (ADR-0052). The inverse of [`archive_thread`].
+pub async fn unarchive_thread(pool: &SqlitePool, thread_id: Uuid) -> sqlx::Result<()> {
+    queries::unarchive_thread(pool, thread_id).await
 }
 
 /// Overwrite a Thread's title by id (the generated-title write). A silent no-op
@@ -4808,6 +4837,204 @@ mod tests {
         assert!(
             empty.mentioned_in.is_empty() && empty.linked_todos.is_empty(),
             "a referenced-by-nothing entity yields empty sets"
+        );
+    }
+
+    // ─── thread archive lifecycle (ADR-0052) ──────────────────────────────
+
+    /// Seed a Thread carrying a Run, a Message, an Entity, and an
+    /// `entity_sources` row pointing at that Message — the minimal provenance
+    /// chain an archive must NOT cascade away. Returns the Thread id.
+    async fn seed_thread_with_provenance(pool: &SqlitePool, suffix: &str) -> Uuid {
+        let thread_id = Uuid::now_v7();
+        let run_id = format!("run-{suffix}");
+        let msg_id = format!("msg-{suffix}");
+        let entity_id = format!("ent-{suffix}");
+        let source_id = format!("src-{suffix}");
+
+        let mut tx = pool.begin().await.expect("begin");
+        sqlx::query(
+            "INSERT INTO threads (id, title, created_at, last_activity_at) VALUES (?, ?, 1, 1)",
+        )
+        .bind(thread_id.to_string())
+        .bind(format!("Thread {suffix}"))
+        .execute(&mut *tx)
+        .await
+        .expect("insert thread");
+        // user_message_id FK is DEFERRABLE (resolved at COMMIT).
+        sqlx::query(
+            "INSERT INTO runs \
+             (id, thread_id, workflow_name, workflow_version, provider, model, \
+              thinking_level, user_message_id, status, started_at) \
+             VALUES (?, ?, 'w', '1', 'p', 'm', 'off', ?, 'completed', 1)",
+        )
+        .bind(&run_id)
+        .bind(thread_id.to_string())
+        .bind(&msg_id)
+        .execute(&mut *tx)
+        .await
+        .expect("insert run");
+        sqlx::query(
+            "INSERT INTO messages (id, thread_id, run_id, role, status, created_at, updated_at) \
+             VALUES (?, ?, ?, 'user', 'completed', 1, 1)",
+        )
+        .bind(&msg_id)
+        .bind(thread_id.to_string())
+        .bind(&run_id)
+        .execute(&mut *tx)
+        .await
+        .expect("insert message");
+        sqlx::query(
+            "INSERT INTO entities \
+             (id, type, schema_version, data, created_by, created_via_proposal_id, \
+              created_at, updated_at) \
+             VALUES (?, 'todo', 1, '{}', 'user', NULL, 1, 1)",
+        )
+        .bind(&entity_id)
+        .execute(&mut *tx)
+        .await
+        .expect("insert entity");
+        sqlx::query(
+            "INSERT INTO entity_sources \
+             (id, entity_id, source_message_id, relation, created_at) \
+             VALUES (?, ?, ?, 'created_from', 1)",
+        )
+        .bind(&source_id)
+        .bind(&entity_id)
+        .bind(&msg_id)
+        .execute(&mut *tx)
+        .await
+        .expect("insert entity_source");
+        tx.commit().await.expect("commit seed");
+        thread_id
+    }
+
+    async fn count_rows(pool: &SqlitePool, sql: &str, bind: &str) -> i64 {
+        sqlx::query_scalar(sql)
+            .bind(bind)
+            .fetch_one(pool)
+            .await
+            .expect("count")
+    }
+
+    /// Archiving drops a Thread from the default `list_threads` and moves it to
+    /// `list_archived_threads`, WITHOUT cascading away its messages or
+    /// entity_sources (archive-not-delete, ADR-0052); unarchiving restores it.
+    #[tokio::test]
+    async fn archive_hides_from_default_list_and_preserves_provenance() {
+        let pool = memory_pool().await;
+        let thread_id = seed_thread_with_provenance(&pool, "a").await;
+        let msg_id = "msg-a".to_string();
+        let entity_id = "ent-a".to_string();
+
+        // Active: in the default list, absent from the archived list.
+        let active = list_threads(&pool).await.expect("list active");
+        assert!(
+            active.iter().any(|(id, ..)| *id == thread_id.to_string()),
+            "a fresh Thread is in the default list"
+        );
+        let archived = list_archived_threads(&pool).await.expect("list archived");
+        assert!(
+            archived.is_empty(),
+            "no Thread is archived yet, got {archived:?}"
+        );
+
+        // Archive → leaves the default list, enters the archived list.
+        archive_thread(&pool, thread_id, 1234).await.expect("archive");
+        let active = list_threads(&pool).await.expect("list after archive");
+        assert!(
+            !active.iter().any(|(id, ..)| *id == thread_id.to_string()),
+            "an archived Thread is hidden from the default list"
+        );
+        let archived = list_archived_threads(&pool)
+            .await
+            .expect("list archived after archive");
+        assert_eq!(
+            archived.iter().map(|(id, ..)| id.clone()).collect::<Vec<_>>(),
+            vec![thread_id.to_string()],
+            "the archived Thread is in the archived list"
+        );
+
+        // Provenance survives: the Message and its entity_source still exist.
+        let msg_count = count_rows(
+            &pool,
+            "SELECT COUNT(*) FROM messages WHERE id = ?1",
+            &msg_id,
+        )
+        .await;
+        assert_eq!(msg_count, 1, "archive did not cascade away the Message");
+        let source_count = count_rows(
+            &pool,
+            "SELECT COUNT(*) FROM entity_sources WHERE entity_id = ?1",
+            &entity_id,
+        )
+        .await;
+        assert_eq!(
+            source_count, 1,
+            "archive did not cascade away the entity_source"
+        );
+
+        // Unarchive → back in the default list, gone from the archived list.
+        unarchive_thread(&pool, thread_id).await.expect("unarchive");
+        let active = list_threads(&pool).await.expect("list after unarchive");
+        assert!(
+            active.iter().any(|(id, ..)| *id == thread_id.to_string()),
+            "an unarchived Thread returns to the default list"
+        );
+        let archived = list_archived_threads(&pool)
+            .await
+            .expect("list archived after unarchive");
+        assert!(
+            archived.is_empty(),
+            "an unarchived Thread leaves the archived list, got {archived:?}"
+        );
+    }
+
+    /// `list_archived_threads` orders newest-archived first (`archived_at DESC`).
+    #[tokio::test]
+    async fn archive_orders_newest_archived_first() {
+        let pool = memory_pool().await;
+        let older = seed_thread_with_provenance(&pool, "old").await;
+        let newer = seed_thread_with_provenance(&pool, "new").await;
+
+        // Archive `older` first (smaller archived_at), then `newer`.
+        archive_thread(&pool, older, 1000).await.expect("archive older");
+        archive_thread(&pool, newer, 2000).await.expect("archive newer");
+
+        let archived = list_archived_threads(&pool).await.expect("list archived");
+        let ids: Vec<String> = archived.iter().map(|(id, ..)| id.clone()).collect();
+        assert_eq!(
+            ids,
+            vec![newer.to_string(), older.to_string()],
+            "archived list is newest-archived first"
+        );
+    }
+
+    /// Renaming via `update_thread_title` overwrites the title but leaves
+    /// `last_activity_at` untouched (titling is not activity, ADR-0046/0052) —
+    /// guards the slice-2 rename verb's no-reorder invariant.
+    #[tokio::test]
+    async fn rename_does_not_bump_last_activity() {
+        let pool = memory_pool().await;
+        let thread_id = Uuid::now_v7();
+        queries::insert_thread(&pool, thread_id, "Original", 7777)
+            .await
+            .expect("insert thread");
+
+        update_thread_title(&pool, thread_id, "Renamed")
+            .await
+            .expect("rename");
+
+        let row: (String, i64) =
+            sqlx::query_as("SELECT title, last_activity_at FROM threads WHERE id = ?1")
+                .bind(thread_id.to_string())
+                .fetch_one(&pool)
+                .await
+                .expect("read renamed thread");
+        assert_eq!(row.0, "Renamed", "title is overwritten");
+        assert_eq!(
+            row.1, 7777,
+            "rename does NOT bump last_activity_at (no feed reorder)"
         );
     }
 }

@@ -23,6 +23,10 @@ function makeStubRuntime() {
 				],
 			}),
 		threadGet: () => unused,
+		threadRename: () => unused,
+		threadArchive: () => unused,
+		threadUnarchive: () => unused,
+		threadListArchived: () => unused,
 		getRunHistory: () => Effect.die("not exercised"),
 		recurrencePreview: () => Effect.die("not exercised in this test"),
 		listEntities: () => unused,
@@ -43,6 +47,62 @@ function makeStubRuntime() {
 		connectionStatus: () => Stream.empty,
 	});
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
+}
+
+// Stub WsClient whose `threadRename`/`threadArchive` RECORD their calls (instead
+// of the `Effect.die` placeholders in makeStubRuntime), so the rename/archive
+// ACTIONS can be asserted. `threadList` returns the same fixed pair.
+function makeRecordingRuntime() {
+	const unused = Effect.die("not exercised in this test");
+	const threadRename = vi.fn((_id: string, _title: string) => {});
+	const threadArchive = vi.fn((_id: string) => {});
+	const stub = WsClient.of({
+		threadCreate: () => unused,
+		postMessage: () => unused,
+		threadList: () =>
+			Effect.succeed({
+				threads: [
+					{ id: "t-1", title: "Standup digest", last_activity_at: 2 },
+					{ id: "t-2", title: "API rename plan", last_activity_at: 1 },
+				],
+			}),
+		threadGet: () => unused,
+		threadRename: (threadId: string, title: string) =>
+			Effect.sync(() => {
+				threadRename(threadId, title);
+				return { thread_id: threadId };
+			}),
+		threadArchive: (threadId: string) =>
+			Effect.sync(() => {
+				threadArchive(threadId);
+				return { thread_id: threadId };
+			}),
+		threadUnarchive: () => unused,
+		threadListArchived: () => unused,
+		getRunHistory: () => Effect.die("not exercised"),
+		recurrencePreview: () => Effect.die("not exercised in this test"),
+		listEntities: () => unused,
+		getBacklinks: () => unused,
+		entityMutate: () => unused,
+		subscribeRun: () => unused,
+		cancelRun: () => unused,
+		providerStatus: () => unused,
+		providerLoginStart: () => unused,
+		modelCatalog: () => unused,
+		settingsGet: () => unused,
+		settingsSet: () => unused,
+		proposalGet: () => unused,
+		rescanJournalEntry: () => unused,
+		proposalDecide: () => unused,
+		messageSearch: () => unused,
+		proposalNotifications: () => unused,
+		connectionStatus: () => Stream.empty,
+	});
+	return {
+		runtime: ManagedRuntime.make(Layer.succeed(WsClient, stub)),
+		threadRename,
+		threadArchive,
+	};
 }
 
 // Stub whose thread list grows on `threadCreate`, so a fresh read after creation includes the new thread.
@@ -67,6 +127,10 @@ function makeGrowingStubRuntime(opts: {
 		getRunHistory: () => Effect.die("not exercised"),
 		recurrencePreview: () => Effect.die("not exercised in this test"),
 		threadGet: () => Effect.die("not exercised"),
+		threadRename: () => Effect.die("not exercised"),
+		threadArchive: () => Effect.die("not exercised"),
+		threadUnarchive: () => Effect.die("not exercised"),
+		threadListArchived: () => Effect.die("not exercised"),
 		listEntities: () => Effect.die("not exercised"),
 		getBacklinks: () => Effect.die("not exercised"),
 		entityMutate: () => Effect.die("not exercised"),
@@ -269,6 +333,212 @@ describe("Sidebar", () => {
 			expect(copyBtn).toHaveAttribute("title", "Couldn't copy"),
 		);
 		expect(copyBtn).not.toHaveAttribute("title", "Copied");
+
+		await runtime.dispose();
+	});
+
+	it("inline rename commits on Enter and cancels on Escape", async () => {
+		const user = userEvent.setup();
+		const { runtime, threadRename } = makeRecordingRuntime();
+
+		renderChatRoute(<Sidebar />, { runtime });
+
+		// Double-click the title → an input seeded with the current title appears.
+		const title = await screen.findByRole("button", { name: "Standup digest" });
+		await user.dblClick(title);
+		const input = screen.getByRole("textbox", { name: /rename thread/i });
+		expect(input).toHaveValue("Standup digest");
+
+		// Type a new title + Enter → threadRename(id, newTitle), input gone.
+		await user.clear(input);
+		await user.type(input, "Daily standup{Enter}");
+		await waitFor(() =>
+			expect(threadRename).toHaveBeenCalledWith("t-1", "Daily standup"),
+		);
+		expect(
+			screen.queryByRole("textbox", { name: /rename thread/i }),
+		).not.toBeInTheDocument();
+
+		// Re-open then Escape → input gone, title unchanged, NO further rename call.
+		await user.dblClick(
+			await screen.findByRole("button", { name: "API rename plan" }),
+		);
+		const second = screen.getByRole("textbox", { name: /rename thread/i });
+		await user.clear(second);
+		await user.type(second, "scrapped{Escape}");
+		expect(
+			screen.queryByRole("textbox", { name: /rename thread/i }),
+		).not.toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: "API rename plan" }),
+		).toBeInTheDocument();
+		expect(threadRename).toHaveBeenCalledTimes(1);
+
+		await runtime.dispose();
+	});
+
+	it("inline rename is a no-op on an empty title", async () => {
+		const user = userEvent.setup();
+		const { runtime, threadRename } = makeRecordingRuntime();
+
+		renderChatRoute(<Sidebar />, { runtime });
+
+		// Double-click → clear the field to empty → Enter. The commit guard
+		// (`trimmed && …`) treats a blank title as a no-op: no threadRename, and
+		// the row falls back to its original title (Core rejects empty anyway).
+		await user.dblClick(
+			await screen.findByRole("button", { name: "Standup digest" }),
+		);
+		const input = screen.getByRole("textbox", { name: /rename thread/i });
+		await user.clear(input);
+		await user.type(input, "{Enter}");
+
+		expect(threadRename).toHaveBeenCalledTimes(0);
+		expect(
+			screen.queryByRole("textbox", { name: /rename thread/i }),
+		).not.toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: "Standup digest" }),
+		).toBeInTheDocument();
+
+		await runtime.dispose();
+	});
+
+	it("inline rename is a no-op on a whitespace-only title", async () => {
+		const user = userEvent.setup();
+		const { runtime, threadRename } = makeRecordingRuntime();
+
+		renderChatRoute(<Sidebar />, { runtime });
+
+		// Whitespace trims to empty → same no-op branch as a blank field.
+		await user.dblClick(
+			await screen.findByRole("button", { name: "Standup digest" }),
+		);
+		const input = screen.getByRole("textbox", { name: /rename thread/i });
+		await user.clear(input);
+		await user.type(input, "   {Enter}");
+
+		expect(threadRename).toHaveBeenCalledTimes(0);
+		expect(
+			screen.queryByRole("textbox", { name: /rename thread/i }),
+		).not.toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: "Standup digest" }),
+		).toBeInTheDocument();
+
+		await runtime.dispose();
+	});
+
+	it("inline rename is a no-op when the title is unchanged", async () => {
+		const user = userEvent.setup();
+		const { runtime, threadRename } = makeRecordingRuntime();
+
+		renderChatRoute(<Sidebar />, { runtime });
+
+		// Double-click → Enter without editing. `trimmed !== item.title` is false,
+		// so the commit guard skips threadRename even though the input is non-empty.
+		await user.dblClick(
+			await screen.findByRole("button", { name: "Standup digest" }),
+		);
+		const input = screen.getByRole("textbox", { name: /rename thread/i });
+		expect(input).toHaveValue("Standup digest");
+		await user.type(input, "{Enter}");
+
+		expect(threadRename).toHaveBeenCalledTimes(0);
+		expect(
+			screen.queryByRole("textbox", { name: /rename thread/i }),
+		).not.toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: "Standup digest" }),
+		).toBeInTheDocument();
+
+		await runtime.dispose();
+	});
+
+	it("inline rename commits on blur", async () => {
+		const user = userEvent.setup();
+		const { runtime, threadRename } = makeRecordingRuntime();
+
+		renderChatRoute(<Sidebar />, { runtime });
+
+		// Double-click → type a new title → blur (focus moves away via Tab). The
+		// input's onBlur is wired to commit, so a changed title persists even
+		// without pressing Enter.
+		await user.dblClick(
+			await screen.findByRole("button", { name: "Standup digest" }),
+		);
+		const input = screen.getByRole("textbox", { name: /rename thread/i });
+		await user.clear(input);
+		await user.type(input, "Daily standup");
+		await user.tab();
+
+		await waitFor(() =>
+			expect(threadRename).toHaveBeenCalledWith("t-1", "Daily standup"),
+		);
+		expect(threadRename).toHaveBeenCalledTimes(1);
+		expect(
+			screen.queryByRole("textbox", { name: /rename thread/i }),
+		).not.toBeInTheDocument();
+
+		await runtime.dispose();
+	});
+
+	it("archiving the focused thread navigates to the welcome route", async () => {
+		const user = userEvent.setup();
+		const { runtime, threadArchive } = makeRecordingRuntime();
+		const onNewChat = vi.fn();
+
+		// Focused on t-1: archiving it must reselect via onNewChat (→ "/").
+		renderChatRoute(<Sidebar onNewChat={onNewChat} />, {
+			runtime,
+			path: "/thread/t-1",
+		});
+
+		await screen.findByText("Standup digest");
+		await user.click(
+			screen.getByRole("button", { name: "Archive thread Standup digest" }),
+		);
+
+		// The reselect fires on the mutation's SUCCESS, so await it.
+		await waitFor(() => expect(threadArchive).toHaveBeenCalledWith("t-1"));
+		await waitFor(() => expect(onNewChat).toHaveBeenCalledTimes(1));
+
+		await runtime.dispose();
+	});
+
+	it("the Archived nav row calls onOpenArchived", async () => {
+		const user = userEvent.setup();
+		const runtime = makeStubRuntime();
+		const onOpenArchived = vi.fn();
+
+		renderChatRoute(<Sidebar onOpenArchived={onOpenArchived} />, { runtime });
+
+		await user.click(
+			await screen.findByRole("button", { name: /^archived$/i }),
+		);
+		expect(onOpenArchived).toHaveBeenCalledTimes(1);
+
+		await runtime.dispose();
+	});
+
+	it("archiving a non-focused thread does NOT navigate", async () => {
+		const user = userEvent.setup();
+		const { runtime, threadArchive } = makeRecordingRuntime();
+		const onNewChat = vi.fn();
+
+		// Focused on t-1; archive t-2 → no reselect.
+		renderChatRoute(<Sidebar onNewChat={onNewChat} />, {
+			runtime,
+			path: "/thread/t-1",
+		});
+
+		await screen.findByText("API rename plan");
+		await user.click(
+			screen.getByRole("button", { name: "Archive thread API rename plan" }),
+		);
+
+		await waitFor(() => expect(threadArchive).toHaveBeenCalledWith("t-2"));
+		expect(onNewChat).not.toHaveBeenCalled();
 
 		await runtime.dispose();
 	});
