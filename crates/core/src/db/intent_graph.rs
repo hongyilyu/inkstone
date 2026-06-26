@@ -1158,20 +1158,27 @@ enum Placement<'a> {
 ///   3. else both sides meet at a chip (label-leading clause after a chip-trailing
 ///      body): no text node to carry the space, so leave it — inter-chip spacing is the
 ///      renderer's concern, and a `{text:" "}` node would fail validation.
-/// No-op on an empty body (nothing to separate from).
+/// No-op on an empty body (nothing to separate from), and on a boundary that ALREADY
+/// carries whitespace (an already-spaced clause/prose) — so the join never double-spaces.
 fn join_with_separator(body: &mut [serde_json::Value], clause: &mut [serde_json::Value]) {
     if body.is_empty() {
         return;
     }
     if let Some(first) = clause.first_mut() {
         if let Some(text) = first.get("text").and_then(serde_json::Value::as_str) {
-            first["text"] = serde_json::Value::String(format!(" {text}"));
+            // Skip if the clause already opens with whitespace (no double space).
+            if !text.starts_with(char::is_whitespace) {
+                first["text"] = serde_json::Value::String(format!(" {text}"));
+            }
             return;
         }
     }
     if let Some(last) = body.last_mut() {
         if let Some(text) = last.get("text").and_then(serde_json::Value::as_str) {
-            last["text"] = serde_json::Value::String(format!("{text} "));
+            // Skip if the prose already ends in whitespace (no double space).
+            if !text.ends_with(char::is_whitespace) {
+                last["text"] = serde_json::Value::String(format!("{text} "));
+            }
         }
     }
 }
@@ -3462,6 +3469,122 @@ mod tests {
             ]
         );
         assert_eq!(entity_ref_count(&pool, &scaffold.je_id, &priya).await, 1);
+    }
+
+    // Test — anchor-reuse APPEND of a LABEL-LEADING clause onto a CHIP-TRAILING body
+    // (#221, the chip↔chip boundary `join_with_separator` deliberately leaves
+    // unseparated): the stored body ends in a chip AND the clause opens with the entity
+    // name, so neither side has a text node to carry the join space. Core must NOT emit a
+    // standalone `{text:" "}` node (it would roll the tx back); the two chips sit adjacent
+    // and inter-chip spacing is the renderer's concern. The apply still SUCCEEDS.
+    #[tokio::test]
+    async fn anchor_reuse_append_label_leading_after_chip_trailing_body_applies() {
+        let pool = memory_pool().await;
+        let stored = serde_json::json!([
+            { "type": "text", "text": "saw " },
+            { "type": "entity_ref", "ref_id": "019f0000-0000-7000-8000-0000000000bb" },
+        ]);
+        let scaffold = seed_anchor_reuse(&pool, stored).await;
+        let payload = serde_json::json!({
+            "journal_entry": {
+                "handle": "@je", "existing_id": scaffold.je_id, "occurred_at": "2026-06-10T10:30:00"
+            },
+            "entities": [{ "handle": "@priya", "type": "person", "name": "Priya" }],
+            "links": [{
+                "kind": "journal_ref", "from": "@je", "to": "@priya",
+                "append_text": "Priya joined late."
+            }]
+        });
+
+        let outcome = apply_intent_graph_proposal(
+            &pool,
+            scaffold.run_id,
+            &scaffold.proposal_id,
+            &scaffold.tool_call_id,
+            &payload,
+            None,
+            None,
+            |a| a.to_string(),
+            crate::db::now_ms(),
+        )
+        .await
+        .expect("label-leading clause onto a chip-trailing body applies (no standalone-space node)");
+        assert!(matches!(outcome, IntentGraphOutcome::Applied(_)));
+
+        let body = current_je_body(&pool, &scaffold.je_id).await;
+        // No `{type:text, text:" "}` node exists anywhere (it would have failed validation).
+        assert!(
+            !body.iter().any(|n| n.get("text").and_then(serde_json::Value::as_str) == Some(" ")),
+            "no standalone separator node",
+        );
+        let new_chip_ref_id = body
+            .iter()
+            .filter_map(|n| n.get("ref_id").and_then(serde_json::Value::as_str))
+            .find(|id| *id != "019f0000-0000-7000-8000-0000000000bb")
+            .expect("the new chip");
+        // The prior trailing chip is followed directly by the clause's leading chip (the
+        // chip↔chip boundary), then the clause tail. No join space between the two chips.
+        assert_eq!(
+            body,
+            vec![
+                serde_json::json!({ "type": "text", "text": "saw " }),
+                serde_json::json!({ "type": "entity_ref", "ref_id": "019f0000-0000-7000-8000-0000000000bb" }),
+                serde_json::json!({ "type": "entity_ref", "ref_id": new_chip_ref_id }),
+                serde_json::json!({ "type": "text", "text": " joined late." }),
+            ]
+        );
+    }
+
+    // Test — anchor-reuse APPEND of an already-space-led clause (#221): the model emits
+    // `append_text` that already opens with a space. The join must NOT add a SECOND space
+    // (no "  Followed") — it folds a separator only when the boundary lacks whitespace.
+    #[tokio::test]
+    async fn anchor_reuse_append_text_already_spaced_clause_is_not_double_spaced() {
+        let pool = memory_pool().await;
+        let original_head = serde_json::json!({ "type": "text", "text": "morning sync" });
+        let scaffold = seed_anchor_reuse(&pool, serde_json::json!([original_head])).await;
+        let payload = serde_json::json!({
+            "journal_entry": {
+                "handle": "@je", "existing_id": scaffold.je_id, "occurred_at": "2026-06-10T10:30:00"
+            },
+            "entities": [{ "handle": "@priya", "type": "person", "name": "Priya" }],
+            "links": [{
+                "kind": "journal_ref", "from": "@je", "to": "@priya",
+                // NOTE the leading space the model already supplied.
+                "append_text": " Followed up with Priya."
+            }]
+        });
+
+        let outcome = apply_intent_graph_proposal(
+            &pool,
+            scaffold.run_id,
+            &scaffold.proposal_id,
+            &scaffold.tool_call_id,
+            &payload,
+            None,
+            None,
+            |a| a.to_string(),
+            crate::db::now_ms(),
+        )
+        .await
+        .expect("an already-spaced clause applies");
+        assert!(matches!(outcome, IntentGraphOutcome::Applied(_)));
+
+        let body = current_je_body(&pool, &scaffold.je_id).await;
+        let chip_ref_id = body
+            .iter()
+            .find_map(|n| n.get("ref_id").and_then(serde_json::Value::as_str))
+            .expect("a chip");
+        // Exactly ONE leading space on the clause's first node — not two.
+        assert_eq!(
+            body,
+            vec![
+                serde_json::json!({ "type": "text", "text": "morning sync" }),
+                serde_json::json!({ "type": "text", "text": " Followed up with " }),
+                serde_json::json!({ "type": "entity_ref", "ref_id": chip_ref_id }),
+                serde_json::json!({ "type": "text", "text": "." }),
+            ]
+        );
     }
 
     // Test — XOR reject (BOTH): a journal_ref carrying both match_text AND append_text
