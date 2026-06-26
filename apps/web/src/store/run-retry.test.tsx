@@ -1,5 +1,10 @@
 import type { RunRetryResult } from "@inkstone/protocol";
-import { type RunEventValue, type RunId, WsClient } from "@inkstone/ui-sdk";
+import {
+	type RunEventValue,
+	type RunId,
+	WsClient,
+	WsRequestError,
+} from "@inkstone/ui-sdk";
 import { Effect, Layer, ManagedRuntime, Queue, Stream } from "effect";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { awaitRun, hasRunFiber, resetBridge, retryRun } from "./bridge.js";
@@ -252,6 +257,62 @@ describe("retryRun bridge — re-drives the SAME Run, no seeded turn", () => {
 		// Same shape as not_errored: Core did not flip the Run, so nothing is
 		// re-driven — no run record armed, the bubble keeps its errored state.
 		expect(retrySpy).toHaveBeenCalledWith(runId);
+		expect(getRun(runId)).toBeUndefined();
+		expect(hasRunFiber(runId)).toBe(false);
+		const assistant = getChatState().threads.t1?.messages.find(
+			(m) => m.role === "assistant",
+		);
+		expect(assistant?.status).toBe("incomplete");
+		expect(assistant?.error).toBe("the model fell over");
+
+		await runtime.dispose();
+	});
+
+	it("propagates a failed retry REQUEST as { ok: false } so the caller can show connection copy", async () => {
+		// A transport/decode failure of run/retry itself (NOT a not_errored/unknown_run
+		// outcome) must surface to the caller — else the retry button is a silent no-op
+		// (CodeRabbit #244). The bubble is left as-is; the caller renders the failure.
+		const runId = "run-down" as RunId;
+		seedErroredTurn(runId);
+
+		const unused = Effect.die("not used in this test");
+		const stub = WsClient.of({
+			threadCreate: () => unused,
+			postMessage: () => unused,
+			threadList: () => unused,
+			getRunHistory: () => unused,
+			recurrencePreview: () => unused,
+			threadGet: () => unused,
+			listEntities: () => unused,
+			getBacklinks: () => unused,
+			entityMutate: () => unused,
+			subscribeRun: () => Stream.empty,
+			cancelRun: () => unused,
+			retryRun: () =>
+				Effect.fail(new WsRequestError({ reason: "connection_lost" })),
+			providerStatus: () => unused,
+			providerLoginStart: () => unused,
+			modelCatalog: () => unused,
+			settingsGet: () => unused,
+			settingsSet: () => unused,
+			proposalGet: () => unused,
+			rescanJournalEntry: () => unused,
+			proposalDecide: () => unused,
+			messageSearch: () => unused,
+			proposalNotifications: () => Stream.empty,
+			connectionStatus: () => Stream.empty,
+		});
+		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
+
+		const result = await retryRun(runtime, "t1", runId);
+
+		// The request failed → { ok: false } carrying the real WsError (its `reason`
+		// drives ChatColumn's connection-specific copy, mirroring a failed send).
+		expect(result.ok).toBe(false);
+		if (!result.ok) {
+			expect((result.error as WsRequestError).reason).toBe("connection_lost");
+		}
+		// Nothing was re-driven: no run record armed, no fiber, bubble unchanged.
 		expect(getRun(runId)).toBeUndefined();
 		expect(hasRunFiber(runId)).toBe(false);
 		const assistant = getChatState().threads.t1?.messages.find(

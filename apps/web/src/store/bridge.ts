@@ -396,31 +396,34 @@ export async function cancelRun(
  * first retry `text_delta` SETs the new text over the cleared timeline.
  *
  * `not_errored`/`unknown_run` are benign no-ops: the bubble already shows its
- * terminal state (a non-errored Run can't be retried). A thrown request error is
- * best-effort — leave the bubble as-is (mirrors {@link cancelRun}).
+ * terminal state (a non-errored Run can't be retried), so both return `{ ok: true }`.
+ * A failed REQUEST (transport/decode) returns `{ ok: false, error }` carrying the
+ * squashed {@link WsError} — so the caller can surface the SAME connection-failure
+ * copy `resend` does, instead of the retry button being a silent no-op (CodeRabbit
+ * #244). Uses `runPromiseExit` + `Cause.squash` for the real `WsError`, mirroring
+ * {@link send}.
  */
 export async function retryRun(
 	runtime: WsRuntime,
 	threadId: string,
 	runId: RunId,
-): Promise<void> {
+): Promise<SendResult> {
 	const program = Effect.gen(function* () {
 		const client = yield* WsClient;
 		return yield* client.retryRun(runId);
 	});
 
-	let outcome: "accepted" | "not_errored" | "unknown_run";
-	try {
-		outcome = (await runtime.runPromise(program)).outcome;
-	} catch {
-		// Retry is best-effort; a failed request leaves the errored bubble as-is.
-		return;
+	const exit = await runtime.runPromiseExit(program);
+	if (Exit.isFailure(exit)) {
+		// The retry request itself failed (link down, decode) — surface the squashed
+		// WsError so the caller shows the connection-specific copy, like a failed send.
+		return { ok: false, error: Cause.squash(exit.cause) };
 	}
 
-	if (outcome !== "accepted") {
+	if (exit.value.outcome !== "accepted") {
 		// not_errored / unknown_run: nothing to re-drive — the bubble keeps its
-		// terminal state (Core did not flip the Run).
-		return;
+		// terminal state (Core did not flip the Run). Not a failure.
+		return { ok: true };
 	}
 
 	// Reset the errored bubble to live, then re-stream the SAME run. startRunStream
@@ -433,6 +436,7 @@ export async function retryRun(
 	resetMessageForRetry(threadId, runId);
 	interruptRun(runtime, runId);
 	startRunStream(runtime, threadId, runId);
+	return { ok: true };
 }
 
 /** Fork the global `proposalNotifications()` stream into the store, fetching+attaching on `pending` (idempotent; ADR-0025). */

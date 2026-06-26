@@ -231,7 +231,15 @@ export function ChatColumn() {
 	const retryErroredRun = (runId: string) => {
 		if (focusedThreadId === null) return;
 		setSendError(null);
-		void retryRun(runtime, focusedThreadId, runId).then(async () => {
+		void retryRun(runtime, focusedThreadId, runId).then(async (result) => {
+			// A failed retry REQUEST (link down / decode) surfaces the same
+			// connection-specific copy a failed send shows, instead of the button
+			// silently doing nothing (CodeRabbit #244).
+			if (!result.ok) {
+				setSendError(
+					connectionFailureCopy(result.error) ?? GENERIC_SEND_FAILURE,
+				);
+			}
 			await queryClient.invalidateQueries({ queryKey: ["threads"] });
 			await queryClient.invalidateQueries({ queryKey: ["run-history"] });
 		});

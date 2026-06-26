@@ -67,8 +67,10 @@ function makeStubRuntime(opts: {
 		cancelRun:
 			opts.cancelRun ??
 			(() => Effect.succeed({ outcome: "accepted" as const })),
-		retryRun:
-			opts.retryRun ?? (() => Effect.succeed({ outcome: "accepted" as const })),
+		// Fail fast on an UNEXPECTED retry path: a test that drives run/retry must
+		// opt in via `opts.retryRun`; an accidental retry in an unrelated test dies
+		// rather than silently passing on a default "accepted" (CodeRabbit #244).
+		retryRun: opts.retryRun ?? (() => unused),
 		providerStatus: () => unused,
 		providerLoginStart: () => unused,
 		modelCatalog: () => unused,

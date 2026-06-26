@@ -1672,13 +1672,17 @@ pub async fn prepare_retry(
     }
 
     // Clear the failed attempt's OWN rows, sparing a prior decided proposal's
-    // committed history. run_steps first (the dropped `message` steps' composite FK
-    // references message_parts, and the dropped `tool_call` steps FK tool_calls),
-    // then the assistant parts, then the unproposed tool_calls.
-    queries::delete_run_steps_except_proposals(&mut *tx, run_id).await?;
+    // committed history. The assistant message id is read FIRST: the run_steps
+    // delete scopes message-step removal to it (so the user-prompt step survives —
+    // a later park/resume must still reconstruct the user turn), and the parts
+    // delete + streaming re-flip target it. run_steps go first (the dropped
+    // `message` steps' composite FK references message_parts, and the dropped
+    // `tool_call` steps FK tool_calls), then the assistant parts, then the
+    // unproposed tool_calls.
     if let Some(assistant_message_id) =
         queries::assistant_message_id_for_run(&mut *tx, run_id).await?
     {
+        queries::delete_run_steps_except_proposals(&mut *tx, run_id, &assistant_message_id).await?;
         queries::delete_message_parts(&mut *tx, &assistant_message_id).await?;
         queries::mark_message_streaming(&mut *tx, &assistant_message_id, now_ms).await?;
     }

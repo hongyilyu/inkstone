@@ -1417,7 +1417,7 @@ where
 }
 
 /// Delete a Run's `run_steps` EXCEPT the steps of a kept (proposal-backed)
-/// tool_call (run-retry, ADR-0028 amendment): the failed attempt's assistant
+/// tool_call (run-retry, ADR-0028 amendment): the failed attempt's ASSISTANT
 /// `message` steps (the partial text/reasoning that pollutes
 /// `select_run_snapshot`'s `group_concat`) and its NON-proposal `tool_call` steps
 /// are dropped, but a `tool_call` step whose `tool_call_id` has a `proposals`
@@ -1425,12 +1425,20 @@ where
 /// must still rehydrate as a `proposal` segment via [`segment_timeline`]. A kept
 /// step's FK to the kept tool_call ([`delete_unproposed_tool_calls`]) stays valid.
 ///
+/// The `message`-step deletion is SCOPED to `assistant_message_id`: a Run's
+/// user-prompt step is ALSO a `kind='message'` (`tool_call_id IS NULL`) row, so a
+/// blanket `tool_call_id IS NULL` would strip the user turn too — and a later
+/// park/resume of this same Run would then reconstruct a transcript missing the
+/// user message (`resume::reconstruct` walks `run_timeline`). Only the assistant's
+/// own message steps are the failed attempt's output; the user-prompt step survives.
+///
 /// Deleted BEFORE [`delete_message_parts`] (the dropped `message` steps' composite
 /// FK references the parts) and BEFORE [`delete_unproposed_tool_calls`] (the
 /// dropped `tool_call` steps FK those tool_calls). Runs inside the retry tx.
 pub(super) async fn delete_run_steps_except_proposals<'e, E>(
     executor: E,
     run_id: Uuid,
+    assistant_message_id: &str,
 ) -> sqlx::Result<u64>
 where
     E: Executor<'e, Database = Sqlite>,
@@ -1438,10 +1446,12 @@ where
     sqlx::query(
         "DELETE FROM run_steps \
          WHERE run_id = ?1 \
-           AND (tool_call_id IS NULL \
-                OR tool_call_id NOT IN (SELECT tool_call_id FROM proposals))",
+           AND ((tool_call_id IS NULL AND message_id = ?2) \
+                OR (tool_call_id IS NOT NULL \
+                    AND tool_call_id NOT IN (SELECT tool_call_id FROM proposals)))",
     )
     .bind(run_id.to_string())
+    .bind(assistant_message_id)
     .execute(executor)
     .await
     .map(|r| r.rows_affected())

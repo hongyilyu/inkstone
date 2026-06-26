@@ -1353,6 +1353,39 @@ mod tests {
         );
         assert_eq!(message_role_counts(&pool, run_id).await, (1, 1));
 
+        // The USER-prompt run_step SURVIVES the cleanup (CodeRabbit #244): the
+        // delete is scoped to the assistant message, so a later park/resume can
+        // still reconstruct the user turn from `run_timeline`. The assistant's own
+        // `message` steps are gone (their parts were cleared above). Mutation: a
+        // blanket `tool_call_id IS NULL` delete would strip the user step → this
+        // count drops to 0.
+        let user_message_id: String =
+            sqlx::query_scalar("SELECT user_message_id FROM runs WHERE id = ?1")
+                .bind(run_id.to_string())
+                .fetch_one(&pool)
+                .await
+                .expect("read user_message_id");
+        let user_steps: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM run_steps \
+             WHERE run_id = ?1 AND kind = 'message' AND message_id = ?2",
+        )
+        .bind(run_id.to_string())
+        .bind(&user_message_id)
+        .fetch_one(&pool)
+        .await
+        .expect("count user run_steps");
+        assert_eq!(user_steps, 1, "the user-prompt run_step survives retry cleanup");
+        let assistant_steps: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM run_steps \
+             WHERE run_id = ?1 AND kind = 'message' AND message_id = ?2",
+        )
+        .bind(run_id.to_string())
+        .bind(amid.to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("count assistant run_steps");
+        assert_eq!(assistant_steps, 0, "the failed attempt's assistant message steps are cleared");
+
         // Model column re-snapshotted from the freshly-resolved Workflow.
         let model: String = sqlx::query_scalar("SELECT model FROM runs WHERE id = ?1")
             .bind(run_id.to_string())
