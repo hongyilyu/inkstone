@@ -1,5 +1,22 @@
 # Socket-liveness signal + unbounded reconnect
 
+> **As-built amendment (removal) — the visible indicator is retired; the
+> reconnect transport stays.** A pre-1.0 feature-cut sweep removed the
+> always-visible `ConnectionStatusIndicator` from the `NavShell` footer, the
+> `connectionStatus()` → zustand bridge fork, and the `useConnectionStatus`
+> store. For a localhost single-user tool whose Core is a sibling child process,
+> "connected" is near-always true, so a standing connected dot is ambient chrome
+> the local-first-calm thesis (PRODUCT.md) does not need. **What this amendment
+> does NOT touch:** the unbounded two-phase reconnect (the `SubscriptionRef`,
+> `reconnectDelay`, `connected | reconnecting | disconnected` derivation) stays
+> intact inside the `WsClient` Layer — the link still heals a dropped connection
+> with no page reload. The `client.connectionStatus()` stream stays on the SDK
+> interface (an untouched, tested seam a future surface can re-consume), and the
+> per-send connection-failure copy (`connectionFailureCopy.ts`, which parses
+> `WsError.reason`, never the ambient signal) is independent and also stays. If
+> an ambient liveness surface is wanted again, re-mounting a component off the
+> still-live `connectionStatus()` stream is a few lines — no transport rework.
+
 The `WsClient` Layer exposes a **connection-liveness signal** —
 `connected | reconnecting | disconnected` — derived purely from the socket
 lifecycle it already owns (`onOpen` / per-drop `failPending` / retry cadence),

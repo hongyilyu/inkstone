@@ -1,5 +1,17 @@
 # User-configurable model and effort; model leaves the Workflow TOML
 
+> **As-built amendment (removal) — model-catalog cost fields dropped.** A pre-1.0
+> feature-cut sweep removed `cost_input` / `cost_output` from the `ModelInfo` wire
+> type (Rust `protocol.rs` + `@inkstone/protocol` TS + the embedded
+> `openai-codex.json` + parity fixture + drift test) and the `$/$$/$$$`
+> `CostBadge` from the catalog table UI. The user is OAuth-billed against their
+> own ChatGPT account (ADR-0023), so a per-token cost tier signals nothing
+> actionable — it was dashboard chrome the catalog did not need. **What stays:**
+> the preferred-model selection (the `model:<workflow_name>` setting), the catalog
+> table itself, and the capability chips (Vision / Reasoning). This is a contract
+> change (the `ModelInfo` shape narrows), atomic across Rust+TS+fixture per
+> ADR-0009; re-adding a cost field later is additive on the same hand-mirror.
+
 A user picks **which model** the assistant uses and a **global effort level** from
 the Web Client. Both are persisted by Core and override what a Workflow's TOML
 declares. This amends [ADR-0018](./0018-workflow-and-tools-definition.md) (which

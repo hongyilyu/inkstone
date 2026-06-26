@@ -1,5 +1,27 @@
 # Message full-text search: a trigram FTS projection over message text
 
+> **As-built amendment (removal) — the FTS projection is gone; the capability
+> stays.** A pre-1.0 feature-cut sweep removed the `message_fts` virtual table,
+> its two write seams (`persist_initial_run` user-text index +
+> `RunStatus::complete` assistant-text index), and the on-open
+> `rebuild_message_fts` self-heal. **The `message/search` capability is
+> unchanged** — same wire shape (`MessageSearchParams`/`MessageSearchResult`/
+> `MessageHit`), same ⌘K "Messages" group, same recency order, same
+> byte-safe-snippet, same literal-wildcard + blank-query guards, same
+> deep-link-to-message. The query simply runs a `LIKE '%' || ? || '%'` over the
+> assembled `message_parts` text of `completed` messages (the canonical
+> `text_parts_by_message` concat) instead of over a denormalized mirror column.
+> **Why this is purely internal:** the table was never an FTS5 `MATCH` query — it
+> was already `LIKE`, so the trigram column was only a substring *accelerator*,
+> and ADR-0035 itself (lines 47-48) concedes the scan "is free at single-user
+> scale." Removing it deletes a redundant projection + a per-boot rebuild while
+> the user-visible behavior is byte-identical. If a real corpus-scale problem
+> ever appears, re-introducing a trigram (or `MATCH`+bm25) index is a fresh,
+> additive table behind the unchanged `message/search` seam — exactly the
+> "rebuild is a different table + query path" note in Consequences. The dead
+> entity `fts` table referenced in "Why a separate table" (line 58) was removed
+> in the same sweep.
+
 / builds on [ADR-0004](./0004-three-tier-storage-authority.md), [ADR-0009](./0009-protocol-strategy.md), [ADR-0014](./0014-client-core-wire-protocol.md), [ADR-0028](./0028-run-status-materialized-transitions.md), [ADR-0029](./0029-request-handler-seam.md)
 
 PRODUCT.md's success criterion is that knowledge be "browsable **and findable**
