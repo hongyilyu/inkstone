@@ -1,12 +1,10 @@
-//! Message full-text search: the tier-3 `message_fts` projection (ADR-0035).
-//!
-//! `message_fts` indexes the text of every `completed` Message. User text is
-//! complete at Run creation, so it is indexed at the `persist_initial_run` seam
-//! (see [`super::insert_initial_run_rows`]); assistant text is indexed at Run
-//! completion (slice 2). The projection is tier-3 (ADR-0004) — re-derivable from
-//! `message_parts` via [`rebuild_message_fts`], which Core runs on every open.
+//! Message search (ADR-0035): a case-insensitive substring scan over each
+//! `completed` Message's text, assembled live from tier-2 `message_parts` — no
+//! standing projection to maintain. User text is `completed` at Run creation
+//! (searchable immediately); assistant text becomes `completed` only at Run
+//! completion. The SQL lives in [`queries::search_messages`].
 
-use sqlx::{Executor, Sqlite, SqlitePool};
+use sqlx::SqlitePool;
 
 use super::queries;
 
@@ -23,31 +21,10 @@ pub struct MessageHit {
     pub created_at: i64,
 }
 
-/// Index one Message's text into `message_fts` within the caller's executor
-/// (a transaction at the user-create seam, the pool during a rebuild). Empty
-/// text is skipped — an empty row would match no substring query and only add
-/// noise. Used by [`super::insert_initial_run_rows`] and [`rebuild_message_fts`].
-pub(super) async fn index_message<'e, E>(
-    executor: E,
-    message_id: &str,
-    thread_id: &str,
-    run_id: &str,
-    role: &str,
-    text: &str,
-) -> sqlx::Result<()>
-where
-    E: Executor<'e, Database = Sqlite>,
-{
-    if text.is_empty() {
-        return Ok(());
-    }
-    queries::insert_message_fts_row(executor, message_id, thread_id, run_id, role, text).await
-}
-
-/// Substring-search the message index (ADR-0035): a case-insensitive
-/// `LIKE '%query%'` over `message_fts.text`, newest-first, with the snippet
-/// rendered in SQL (`instr`/`substr`) around the first match. Wired to the
-/// `message/search` handler (slice 3).
+/// Substring-search Messages (ADR-0035): a case-insensitive `LIKE '%query%'` over
+/// each `completed` Message's live-assembled `message_parts` text, newest-first,
+/// with the snippet rendered in SQL (`instr`/`substr`) around the first match.
+/// Wired to the `message/search` handler (slice 3).
 pub async fn search_messages(pool: &SqlitePool, query: &str) -> sqlx::Result<Vec<MessageHit>> {
     let rows = queries::search_messages(pool, query).await?;
     Ok(rows
@@ -66,35 +43,17 @@ pub async fn search_messages(pool: &SqlitePool, query: &str) -> sqlx::Result<Vec
         .collect())
 }
 
-/// Rebuild `message_fts` from tier-2 `message_parts` (ADR-0035): wipe the table
-/// and re-index every `completed` Message's assembled text via the canonical
-/// `text_parts_by_message` concat (the path `history_for_run` uses). Run on every
-/// Core open so an existing DB backfills and any drift self-heals — the
-/// projection is honestly tier-3 (ADR-0004): delete it and it comes back.
-pub async fn rebuild_message_fts(pool: &SqlitePool) -> sqlx::Result<()> {
-    let mut tx = pool.begin().await?;
-    queries::clear_message_fts(&mut *tx).await?;
-    let messages = queries::completed_messages_for_fts(&mut *tx).await?;
-    for (message_id, thread_id, run_id, role) in messages {
-        let text = queries::text_parts_by_message(&mut *tx, &message_id)
-            .await?
-            .concat();
-        index_message(&mut *tx, &message_id, &thread_id, &run_id, &role, &text).await?;
-    }
-    tx.commit().await
-}
-
 #[cfg(test)]
 mod tests {
     use sqlx::SqlitePool;
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
     use uuid::Uuid;
 
-    use crate::db::{rebuild_message_fts, search_messages};
+    use crate::db::search_messages;
     use crate::workflow::Workflow;
 
     /// A migrated in-memory pool (mirrors the `db::tests` helper) so the
-    /// `message_fts` virtual table and the `runs`/`messages` CHECKs are in force.
+    /// `runs`/`messages` CHECKs are in force.
     async fn memory_pool() -> SqlitePool {
         let options = SqliteConnectOptions::new()
             .filename(":memory:")
@@ -124,8 +83,8 @@ mod tests {
     }
 
     /// Seed one Thread + a completed user Message carrying `prompt`, via the real
-    /// `persist_thread_with_first_run` path (which routes through
-    /// `insert_initial_run_rows` — the user-text indexing seam under test).
+    /// `persist_thread_with_first_run` path — so the user text lands in
+    /// `message_parts` exactly as a real send would, ready for the live search.
     /// Returns `(thread_id, run_id, user_message_id)`.
     async fn seed_thread_with_user_message(
         pool: &SqlitePool,
@@ -332,9 +291,10 @@ mod tests {
     }
 
     /// After a Run completes, the assistant Message's finalized text is searchable
-    /// by substring with role "assistant" — the `RunStatus::complete` seam indexes
-    /// it (ADR-0035). The user Message of the same Run is already indexed (slice 1);
-    /// this proves the assistant side.
+    /// by substring with role "assistant" — `RunStatus::complete` flips it to
+    /// `completed`, which is the gate the live search filters on (ADR-0035). The
+    /// user Message of the same Run is already `completed`; this proves the
+    /// assistant side.
     #[tokio::test]
     async fn search_finds_assistant_message_after_completion() {
         let pool = memory_pool().await;
@@ -354,7 +314,7 @@ mod tests {
                 .expect("search before complete")
                 .len(),
             0,
-            "streaming assistant text is not indexed until completion"
+            "streaming assistant text is not searchable until completion"
         );
 
         crate::db::complete_run(&pool, run_id, 2000)
@@ -382,7 +342,7 @@ mod tests {
 
     /// Completed-only (ADR-0035): assistant text that never reaches `completed` —
     /// left `streaming`, or flipped to `incomplete` by `error_run` — contributes
-    /// no search hit. Only `RunStatus::complete` indexes assistant text.
+    /// no search hit. Only `completed` assistant text is searchable.
     #[tokio::test]
     async fn incomplete_assistant_text_is_not_searchable() {
         let pool = memory_pool().await;
@@ -418,53 +378,8 @@ mod tests {
                 .expect("search streaming/errored")
                 .len(),
             0,
-            "neither streaming nor errored assistant text is indexed"
+            "neither streaming nor errored assistant text is searchable"
         );
-    }
-
-    /// `rebuild_message_fts` reconstructs the index from `message_parts` after the
-    /// table is wiped — proving the projection is honestly tier-3 (ADR-0004).
-    #[tokio::test]
-    async fn rebuild_reconstructs_index_from_message_parts() {
-        let pool = memory_pool().await;
-        let (_thread, _run, msg) = seed_thread_with_user_message(
-            &pool,
-            "Daycare planning",
-            "Sort out the daycare schedule",
-            1000,
-        )
-        .await;
-
-        // Sanity: present before the wipe.
-        assert_eq!(
-            search_messages(&pool, "daycare")
-                .await
-                .expect("search")
-                .len(),
-            1
-        );
-
-        // Wipe the projection — the canonical message_parts are untouched.
-        sqlx::query("DELETE FROM message_fts")
-            .execute(&pool)
-            .await
-            .expect("wipe message_fts");
-        assert_eq!(
-            search_messages(&pool, "daycare")
-                .await
-                .expect("search after wipe")
-                .len(),
-            0,
-            "wiped index returns no hits"
-        );
-
-        // Rebuild from message_parts restores the hit.
-        rebuild_message_fts(&pool).await.expect("rebuild");
-        let hits = search_messages(&pool, "daycare")
-            .await
-            .expect("search after rebuild");
-        assert_eq!(hits.len(), 1, "rebuild reconstructs the user message hit");
-        assert_eq!(hits[0].message_id, msg.to_string());
     }
 
     /// A common substring that matches far more than the cap returns at most 50

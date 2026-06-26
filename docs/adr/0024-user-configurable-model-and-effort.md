@@ -38,10 +38,15 @@ Dispatcher seam from [ADR-0011](./0011-per-run-workflow-dispatch.md).
   the six thinking levels, rejecting with `invalid_params` per
   [ADR-0014](./0014-client-core-wire-protocol.md)).
 - **The model catalog is a JSON file embedded in Core** (`include_str!`),
-  hand-mirrored from `pi-ai`'s `MODELS["openai-codex"]`. A Worker-side test guards
-  drift: it imports `pi-ai`'s catalog and asserts equality, so a `pi-ai` bump that
-  changes the model set fails CI rather than silently diverging. This is the
-  ADR-0009 "hand-mirror + contract test" discipline applied to the catalog.
+  hand-mirrored from `pi-ai`'s `MODELS["openai-codex"]`. Each `ModelInfo` carries
+  `id`, `name`, `reasoning`, and `input` (capabilities) — no cost fields: the user
+  is OAuth-billed against their own ChatGPT account (ADR-0023), so a per-token cost
+  tier signals nothing actionable, and the catalog table shows capability chips
+  (Vision / Reasoning), not a cost badge. A Worker-side test guards drift: it
+  imports `pi-ai`'s catalog, projects it to that retained subset, and asserts
+  equality, so a `pi-ai` bump that changes the model set fails CI rather than
+  silently diverging. This is the ADR-0009 "hand-mirror + contract test"
+  discipline applied to the catalog.
 
 ## Why these choices
 

@@ -1,6 +1,5 @@
 import { Moon, Settings2, Sun } from "lucide-react";
 import type { ElementType, ReactNode } from "react";
-import { ConnectionStatusIndicator } from "@/components/ConnectionStatusIndicator";
 import { useTheme } from "@/lib/hooks/useTheme";
 
 /** Shared nav row idiom (chat Sidebar + Library nav): rounded row that washes to `sidebar-accent` on hover; `navRowActive` marks the current route. */
@@ -49,16 +48,12 @@ export function NavShell({
 
 			{/* `pb-5` lifts this row 32px off the grid bottom to align the account glyph with the chat composer's control row. */}
 			<div className="flex items-center justify-between px-1 pt-2 pb-5">
-				<div className="flex min-w-0 items-center gap-2.5">
-					<span
-						className="flex size-8 shrink-0 items-center justify-center rounded-full bg-primary font-medium text-primary-foreground text-sm"
-						aria-hidden
-					>
-						H
-					</span>
-					{/* Always-visible socket-liveness indicator (ADR-0051) — shared by chat + Library shells. */}
-					<ConnectionStatusIndicator />
-				</div>
+				<span
+					className="flex size-8 shrink-0 items-center justify-center rounded-full bg-primary font-medium text-primary-foreground text-sm"
+					aria-hidden
+				>
+					H
+				</span>
 				{onOpenSettings && (
 					<button
 						type="button"

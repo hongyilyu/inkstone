@@ -38,7 +38,6 @@ import {
 	setPendingProposal,
 	setProposalStatus,
 } from "./chat.js";
-import { setConnectionStatus } from "./connection.js";
 
 // Thin imperative seam between Effect (owns wire/streams) and the plain React store — see docs/design/web-store.md (ADR-0020).
 // Each run's stream fiber is retained keyed by run id so it can be interrupted on unmount (structured cancellation, Q18 A′).
@@ -46,9 +45,6 @@ const fibers = new Map<RunId, Fiber.RuntimeFiber<void, WsError>>();
 
 /** The global proposal-notification stream fiber, if started. */
 let proposalFiber: Fiber.RuntimeFiber<void> | undefined;
-
-/** The global connection-status stream fiber, if started (ADR-0051). */
-let connectionFiber: Fiber.RuntimeFiber<void> | undefined;
 
 /**
  * Notified once per Run when its stream reaches a terminal (done/error/cancelled,
@@ -68,7 +64,6 @@ export function setOnRunSettled(fn: (() => void) | undefined): void {
 export function resetBridge(): void {
 	fibers.clear();
 	proposalFiber = undefined;
-	connectionFiber = undefined;
 	onRunSettled = undefined;
 }
 
@@ -469,25 +464,6 @@ export function startProposalStream(runtime: WsRuntime): void {
 	}).pipe(Effect.ensuring(Effect.sync(() => (proposalFiber = undefined))));
 
 	proposalFiber = runtime.runFork(program);
-}
-
-/** Fork the global `connectionStatus()` stream into the connection store (idempotent; ADR-0051).
- * `connectionStatus()` is a pure state stream with NO error channel (socket liveness can't
- * "fail" — a drop is just a `disconnected` value), so unlike {@link startProposalStream} there
- * is no per-item `Effect.catchAll`. The slice-1 `SubscriptionRef.changes` replays the current
- * status on subscribe, so the fork re-asserts the true value the instant it starts. */
-export function startConnectionStream(runtime: WsRuntime): void {
-	if (connectionFiber !== undefined) {
-		return;
-	}
-	const program = Effect.gen(function* () {
-		const client = yield* WsClient;
-		yield* Stream.runForEach(client.connectionStatus(), (s) =>
-			Effect.sync(() => setConnectionStatus(s)),
-		);
-	}).pipe(Effect.ensuring(Effect.sync(() => (connectionFiber = undefined))));
-
-	connectionFiber = runtime.runFork(program);
 }
 
 /** Decide a parked Run's Proposal (accept/reject/edit) and re-subscribe for the

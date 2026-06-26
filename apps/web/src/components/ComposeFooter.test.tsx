@@ -46,8 +46,6 @@ function makeRuntime() {
 								name: "GPT-5.5",
 								reasoning: true,
 								input: ["text", "image"],
-								cost_input: 5,
-								cost_output: 30,
 							},
 						],
 					},

@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 
 // Drift guard for the embedded openai-codex catalog (ADR-0024) — see docs/design/worker-tests.md
 describe("model catalog drift", () => {
-	it("crates/core/src/models/openai-codex.json equals pi-ai MODELS['openai-codex']", async () => {
+	it("crates/core/src/models/openai-codex.json matches the retained ModelInfo subset of pi-ai MODELS['openai-codex']", async () => {
 		const mainUrl = import.meta.resolve("@earendil-works/pi-ai");
 		const genUrl = new URL("./models.generated.js", mainUrl);
 		const { MODELS } = (await import(genUrl.href)) as {
@@ -27,8 +27,6 @@ describe("model catalog drift", () => {
 			name: m.name,
 			reasoning: !!m.reasoning,
 			input: m.input,
-			cost_input: m.cost.input,
-			cost_output: m.cost.output,
 		}));
 
 		const jsonUrl = new URL(

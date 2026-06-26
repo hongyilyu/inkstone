@@ -2,32 +2,6 @@ import type { ModelInfo } from "@inkstone/protocol";
 import { Brain, Eye, Star } from "lucide-react";
 import { Badge } from "./ui/badge.js";
 
-/** Map a model's output price to a t3-style cost tier badge. */
-function CostBadge({ cost }: { cost: number }) {
-	const { label, dollars } =
-		cost <= 0
-			? { label: "Free", dollars: 0 }
-			: cost < 5
-				? { label: "Low cost", dollars: 1 }
-				: cost < 15
-					? { label: "Medium cost", dollars: 2 }
-					: { label: "High cost", dollars: 3 };
-	return (
-		<span
-			role="img"
-			aria-label={label}
-			className="inline-flex items-center font-mono font-semibold text-[10px] text-muted-foreground tabular-nums tracking-tight"
-		>
-			{dollars === 0
-				? "$0"
-				: Array.from({ length: dollars }, (_, i) => (
-						// biome-ignore lint/suspicious/noArrayIndexKey: fixed-length glyph repeat
-						<span key={i}>$</span>
-					))}
-		</span>
-	);
-}
-
 export interface ModelCatalogTableProps {
 	models: readonly ModelInfo[];
 	selectedId: string | null;
@@ -35,7 +9,7 @@ export interface ModelCatalogTableProps {
 	disabled?: boolean;
 }
 
-/** Model catalog as a table (ADR-0024): one row per model with name, cost tier, capability chips; one row is "Preferred", others reveal a "Set as preferred" action. Presentational. */
+/** Model catalog as a table (ADR-0024): one row per model with name and capability chips; one row is "Preferred", others reveal a "Set as preferred" action. Presentational. */
 export function ModelCatalogTable({
 	models,
 	selectedId,
@@ -71,7 +45,6 @@ export function ModelCatalogTable({
 												<span className="truncate font-medium text-sm">
 													{m.name}
 												</span>
-												<CostBadge cost={m.cost_output} />
 											</div>
 											<div className="flex items-center gap-2 text-muted-foreground">
 												{m.reasoning ? (

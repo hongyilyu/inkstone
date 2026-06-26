@@ -9,11 +9,12 @@ use super::handler::{self, HandlerError};
 use crate::db;
 use crate::protocol::{MessageHit, MessageSearchParams, MessageSearchResult};
 
-/// `message/search` handler (ADR-0035): decode the query, run the tier-3
-/// substring search ([`db::search_messages`]), and map the rows to wire hits
-/// (newest-first, as the query returns them). A DB fault maps to
-/// `HandlerError::Internal` (-32603); a non-string query fails at decode as
-/// `invalid_params` inside the combinator.
+/// `message/search` handler (ADR-0035): decode the query, run the substring
+/// search ([`db::search_messages`], a `LIKE` scan over completed Messages'
+/// assembled `message_parts` text), and map the rows to wire hits (newest-first,
+/// as the query returns them). A DB fault maps to `HandlerError::Internal`
+/// (-32603); a non-string query fails at decode as `invalid_params` inside the
+/// combinator.
 pub(super) async fn handle_search(
     pool: &SqlitePool,
     id: serde_json::Value,
@@ -50,8 +51,8 @@ mod tests {
 
     use crate::workflow::Workflow;
 
-    /// A migrated in-memory pool (mirrors the `message_fts`/`db` test helpers) so
-    /// the `message_fts` virtual table and the `runs`/`messages` CHECKs hold.
+    /// A migrated in-memory pool (mirrors the `db` test helpers) so the
+    /// `runs`/`messages` CHECKs hold.
     async fn memory_pool() -> SqlitePool {
         let options = SqliteConnectOptions::new()
             .filename(":memory:")
@@ -81,8 +82,8 @@ mod tests {
     }
 
     /// Seed one Thread + a completed user Message carrying `prompt`, via the real
-    /// `persist_thread_with_first_run` path (the user-text indexing seam).
-    /// Returns `(thread_id, run_id, user_message_id)`.
+    /// `persist_thread_with_first_run` path (persists the user text into
+    /// `message_parts`). Returns `(thread_id, run_id, user_message_id)`.
     async fn seed_thread_with_user_message(
         pool: &SqlitePool,
         title: &str,
@@ -160,9 +161,10 @@ mod tests {
         assert_eq!(second["created_at"], json!(1000));
     }
 
-    /// A query carrying FTS/SQL-special characters (`"`, `*`, `%`, `_`, and the
-    /// word `AND`) returns a normal (non-error) JSON-RPC RESPONSE — no panic, no
-    /// error frame. Slice 1 made `%`/`_` literal; this pins the wire path robust.
+    /// A query carrying LIKE-wildcard / SQL-special characters (`"`, `*`, `%`, `_`,
+    /// and the word `AND`) returns a normal (non-error) JSON-RPC RESPONSE — no
+    /// panic, no error frame. `%`/`_` are matched literally; this pins the wire
+    /// path robust.
     #[tokio::test]
     async fn special_character_query_frames_a_normal_response() {
         let pool = memory_pool().await;

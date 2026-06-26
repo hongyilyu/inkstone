@@ -16,8 +16,7 @@ import { Button } from "./ui/button.js";
  * The recent-Runs feed (ADR-0028 as-built): a calm, recency-grouped list of the
  * agent's recent Runs, backed by the live `run/get_history` reader. Each row
  * shows the owning Thread's title plus a label/icon for the Run's latest
- * lifecycle milestone; clicking a row opens that Run's Thread. Replaces the
- * visual-only ActivityRail (ADR-0010) in the chat surface's right rail.
+ * lifecycle milestone; clicking a row opens that Run's Thread.
  */
 export function RunFeed({
 	onOpenThread,

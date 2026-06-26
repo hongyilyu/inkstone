@@ -31,7 +31,7 @@ Light/dark uses **semantic tokens that flip values under `[data-theme]`**, not T
 
 ## Primitives layout
 
-Reusable styled primitives — `Button`, `Card`, `Badge`, `Input`, `Textarea`, `Disclosure`, etc. — live under `apps/web/src/components/ui/` (shadcn convention). Each is a thin wrapper that composes a base-ui primitive (where one exists) with `cva` variants and `cn` (clsx + tailwind-merge). Slice-level components (`Sidebar`, `ChatColumn`, `ActivityRail`, `ProposalCard`, etc.) live one level up at `apps/web/src/components/` and import from `components/ui/`.
+Reusable styled primitives — `Button`, `Card`, `Badge`, `Input`, `Textarea`, `Disclosure`, etc. — live under `apps/web/src/components/ui/` (shadcn convention). Each is a thin wrapper that composes a base-ui primitive (where one exists) with `cva` variants and `cn` (clsx + tailwind-merge). Slice-level components (`Sidebar`, `ChatColumn`, `RunFeed`, `ProposalCard`, etc.) live one level up at `apps/web/src/components/` and import from `components/ui/`.
 
 Shared **layout** shells live here too: `NavShell` (the left nav both surfaces render into) and `WorkspaceShell` (the three-region frame — left nav, framed middle, collapsible right rail — that the chat `/` and `/library` surfaces both compose). Page surfaces pass the slots; the shell owns the grid, the collapse state, and the framed-card chrome.
 

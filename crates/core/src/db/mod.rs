@@ -40,8 +40,9 @@ pub use lifecycle::TerminalReason;
 // `search_messages` is the message-search read surface (ADR-0035), consumed by
 // the `message/search` handler (slice 3); it returns `message_fts::MessageHit`,
 // which the handler maps field-for-field to the wire `protocol::MessageHit`
-// without naming the db type. `rebuild_message_fts` runs on open.
-pub use message_fts::{rebuild_message_fts, search_messages};
+// without naming the db type. The search assembles text live from `message_parts`
+// at query time — no standing projection to maintain or rebuild.
+pub use message_fts::search_messages;
 
 /// Current wall-clock time as ms since UNIX_EPOCH (the `*_at` columns).
 pub(crate) fn now_ms() -> i64 {
@@ -973,18 +974,6 @@ async fn insert_initial_run_rows(
     )
     .await?;
     queries::insert_text_part(&mut **tx, user_message_id, 0, prompt).await?;
-    // Index the completed user Message into the tier-3 search projection
-    // (ADR-0035), atomic with the Message in this tx. The assistant Message is
-    // `streaming`/empty here — it is indexed at Run completion (slice 2).
-    message_fts::index_message(
-        &mut **tx,
-        &user_message_id.to_string(),
-        &thread_id.to_string(),
-        &run_id.to_string(),
-        "user",
-        prompt,
-    )
-    .await?;
 
     queries::insert_message(
         &mut **tx,

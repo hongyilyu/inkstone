@@ -846,8 +846,6 @@ pub struct ModelInfo {
     pub name: String,
     pub reasoning: bool,
     pub input: Vec<String>,
-    pub cost_input: f64,
-    pub cost_output: f64,
 }
 
 /// One provider's model group in `model/catalog`.
@@ -1615,8 +1613,7 @@ mod mirror_tests {
         assert!(matches!(done, WorkerStdout::Done));
     }
 
-    // --- model/catalog (round-trip, ADR-0024): `cost_input`/`cost_output` are
-    // bare JSON numbers (the TS mirror is `S.Number`); `input` is a string array. ---
+    // --- model/catalog (round-trip, ADR-0024): `input` is a string array. ---
 
     #[test]
     fn model_catalog_result_round_trips_snake_case() {
@@ -1628,9 +1625,7 @@ mod mirror_tests {
                     "id": "gpt-5.5",
                     "name": "GPT-5.5",
                     "reasoning": true,
-                    "input": ["text", "image"],
-                    "cost_input": 5.0,
-                    "cost_output": 30.0
+                    "input": ["text", "image"]
                 }]
             }]
         });
@@ -2222,8 +2217,6 @@ mod parity_fixtures {
                             name: "GPT-5.5".to_string(),
                             reasoning: true,
                             input: vec!["text".to_string(), "image".to_string()],
-                            cost_input: 5.0,
-                            cost_output: 30.0,
                         }],
                     }],
                 }
