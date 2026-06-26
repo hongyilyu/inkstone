@@ -5037,4 +5037,74 @@ mod tests {
             "rename does NOT bump last_activity_at (no feed reorder)"
         );
     }
+
+    /// Drive a bare Run to `errored` directly (terminal fields stamped), to seed
+    /// the retry verb's `from` state. Mirrors what `RunStatus::fail` leaves behind.
+    async fn mark_bare_run_errored(pool: &SqlitePool, run_id: &str) {
+        sqlx::query(
+            "UPDATE runs SET status = 'errored', terminal_reason = 'errored', \
+             error_code = 'agent_error', error_message = 'boom', ended_at = 99 \
+             WHERE id = ?1",
+        )
+        .bind(run_id)
+        .execute(pool)
+        .await
+        .expect("mark errored");
+    }
+
+    /// `RunStatus::retry` lock (ADR-0028 retry amendment, #230): the guarded
+    /// `errored → running` flip wins only from `errored`, clears the four terminal
+    /// fields, and a `running`/`completed`/`parked`/`cancelled` Run loses (0 rows,
+    /// no mutation). The single outbound edge `errored` gains.
+    #[tokio::test]
+    async fn retry_verb_flips_errored_to_running_and_clears_terminal_fields() {
+        let pool = memory_pool().await;
+        let run_id = Uuid::now_v7();
+        let run = run_id.to_string();
+        insert_bare_run(&pool, &run, "running").await;
+        mark_bare_run_errored(&pool, &run).await;
+
+        // Won: errored → running, terminal fields cleared.
+        let mut tx = pool.begin().await.expect("begin");
+        let moved = RunStatus::retry(&mut tx, run_id, 100).await.expect("retry");
+        tx.commit().await.expect("commit");
+        assert_eq!(moved, Moved::Won);
+
+        let (status, tr, ec, em, ended): (String, Option<String>, Option<String>, Option<String>, Option<i64>) =
+            sqlx::query_as(
+                "SELECT status, terminal_reason, error_code, error_message, ended_at \
+                 FROM runs WHERE id = ?1",
+            )
+            .bind(&run)
+            .fetch_one(&pool)
+            .await
+            .expect("read run");
+        assert_eq!(status, "running");
+        assert_eq!(tr, None, "terminal_reason cleared");
+        assert_eq!(ec, None, "error_code cleared");
+        assert_eq!(em, None, "error_message cleared");
+        assert_eq!(ended, None, "ended_at cleared");
+
+        // A retry milestone reuses RunLogKind::Running (no new kind).
+        let last_kind: String = sqlx::query_scalar(
+            "SELECT kind FROM run_log WHERE run_id = ?1 ORDER BY run_seq DESC LIMIT 1",
+        )
+        .bind(&run)
+        .fetch_one(&pool)
+        .await
+        .expect("read run_log");
+        assert_eq!(last_kind, "running");
+
+        // Lost: a non-errored Run matches 0 rows and is untouched.
+        for status in ["running", "completed", "parked", "cancelled"] {
+            let other = Uuid::now_v7();
+            let other_s = other.to_string();
+            insert_bare_run(&pool, &other_s, status).await;
+            let mut tx = pool.begin().await.expect("begin");
+            let moved = RunStatus::retry(&mut tx, other, 100).await.expect("retry lost");
+            tx.commit().await.expect("commit");
+            assert_eq!(moved, Moved::Lost, "{status} run cannot be retried");
+            assert_eq!(run_status_of(&pool, &other_s).await, status, "{status} unchanged");
+        }
+    }
 }

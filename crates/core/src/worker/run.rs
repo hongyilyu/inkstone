@@ -1241,4 +1241,193 @@ mod tests {
             "the loop publishes no Done when its terminal transition lost"
         );
     }
+
+    // ── run/retry (ADR-0028 retry amendment, #230) ────────────────────────────
+
+    /// Drive a fresh ScriptedWorker `[TextDelta("half "), Error]` through
+    /// `run_loop` so the Run lands `errored` with PARTIAL assistant text
+    /// persisted — the failed attempt the retry must discard.
+    async fn drive_to_errored_with_partial(
+        pool: &SqlitePool,
+        run_id: Uuid,
+        amid: Uuid,
+        wf: &Workflow,
+    ) {
+        let (hubs, run_hub) = fixtures(run_id);
+        let (worker, _sent, _sd) = ScriptedWorker::new(vec![
+            WorkerStdout::TextDelta {
+                delta: "half ".to_string(),
+            },
+            WorkerStdout::Error {
+                message: "boom".to_string(),
+            },
+        ]);
+        let exit = run_loop(
+            worker,
+            run_id,
+            wf.clone(),
+            pool.clone(),
+            amid,
+            hubs,
+            run_hub.tx.clone(),
+            run_hub.gate.clone(),
+            run_hub.cancel_rx(),
+        )
+        .await;
+        assert!(matches!(exit, Exit::Errored(_)), "errored on first attempt");
+        assert_eq!(
+            db::run_status(pool, run_id).await.unwrap().map(db::RunStatus::as_str),
+            Some("errored")
+        );
+    }
+
+    /// Count a Run's messages by role for the single-turn assertion.
+    async fn message_role_counts(pool: &SqlitePool, run_id: Uuid) -> (i64, i64) {
+        let user: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM messages WHERE run_id = ?1 AND role = 'user'",
+        )
+        .bind(run_id.to_string())
+        .fetch_one(pool)
+        .await
+        .expect("count user msgs");
+        let assistant: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM messages WHERE run_id = ?1 AND role = 'assistant'",
+        )
+        .bind(run_id.to_string())
+        .fetch_one(pool)
+        .await
+        .expect("count assistant msgs");
+        (user, assistant)
+    }
+
+    /// Test A — the authoritative "in place, cleared, single turn" proof.
+    /// After driving a Run to `errored` with partial assistant text,
+    /// `db::prepare_retry` flips it back to `running`, clears the failed parts,
+    /// re-flips the assistant Message to `streaming`, and re-snapshots the model
+    /// columns — leaving exactly one user + one assistant row, the SAME ids.
+    #[tokio::test]
+    async fn prepare_retry_clears_failed_output_in_place() {
+        let pool = memory_pool().await;
+        let wf = test_workflow(&[]);
+        let (run_id, _thread_id, amid) = seed_run(&pool, &wf).await;
+        drive_to_errored_with_partial(&pool, run_id, amid, &wf).await;
+
+        // The failed attempt persisted partial text.
+        let before = db::select_run_snapshot(&pool, run_id).await.unwrap().unwrap();
+        assert_eq!(before.text, "half ", "the failed attempt streamed partial text");
+
+        // Re-snapshot to a DIFFERENT model so we can assert the columns moved.
+        let retry_wf = Workflow {
+            model: Some("gpt-retry".to_string()),
+            ..wf.clone()
+        };
+        let moved = db::prepare_retry(&pool, run_id, &retry_wf, db::now_ms())
+            .await
+            .expect("prepare_retry");
+        assert!(moved.won(), "the errored Run won the retry flip");
+
+        // Status back to running, terminal fields gone; assistant Message streaming.
+        assert_eq!(
+            db::run_status(&pool, run_id).await.unwrap().map(db::RunStatus::as_str),
+            Some("running")
+        );
+        let amid_str = amid.to_string();
+        let msg_status: String =
+            sqlx::query_scalar("SELECT status FROM messages WHERE id = ?1")
+                .bind(&amid_str)
+                .fetch_one(&pool)
+                .await
+                .expect("read message status");
+        assert_eq!(msg_status, "streaming", "assistant Message re-armed for streaming");
+
+        // The failed parts are GONE — snapshot text empty, no stale message_parts /
+        // run_steps for the assistant message.
+        let after = db::select_run_snapshot(&pool, run_id).await.unwrap().unwrap();
+        assert_eq!(after.text, "", "the failed partial text was cleared, not carried");
+
+        // Same ids; exactly one user + one assistant row.
+        assert_eq!(
+            db::assistant_message_id_for_run(&pool, run_id).await.unwrap(),
+            Some(amid),
+            "the assistant_message_id is reused"
+        );
+        assert_eq!(message_role_counts(&pool, run_id).await, (1, 1));
+
+        // Model column re-snapshotted from the freshly-resolved Workflow.
+        let model: String = sqlx::query_scalar("SELECT model FROM runs WHERE id = ?1")
+            .bind(run_id.to_string())
+            .fetch_one(&pool)
+            .await
+            .expect("read model");
+        assert_eq!(model, "gpt-retry", "the runs.model column was re-snapshotted");
+    }
+
+    /// Test C — full re-drive. After `prepare_retry`, a fresh `run_loop` streaming
+    /// `[TextDelta("full answer"), Done]` into the REUSED assistant_message_id
+    /// produces ONLY the new text (NOT "half full answer") and completes.
+    #[tokio::test]
+    async fn retry_then_run_loop_streams_only_new_text() {
+        let pool = memory_pool().await;
+        let wf = test_workflow(&[]);
+        let (run_id, _thread_id, amid) = seed_run(&pool, &wf).await;
+        drive_to_errored_with_partial(&pool, run_id, amid, &wf).await;
+
+        db::prepare_retry(&pool, run_id, &wf, db::now_ms())
+            .await
+            .expect("prepare_retry");
+
+        // Re-drive into the SAME run_id + SAME assistant_message_id.
+        let (hubs, run_hub) = fixtures(run_id);
+        let (worker, _sent, _sd) = ScriptedWorker::new(vec![
+            WorkerStdout::TextDelta {
+                delta: "full answer".to_string(),
+            },
+            WorkerStdout::Done,
+        ]);
+        let exit = run_loop(
+            worker,
+            run_id,
+            wf,
+            pool.clone(),
+            amid,
+            hubs,
+            run_hub.tx.clone(),
+            run_hub.gate.clone(),
+            run_hub.cancel_rx(),
+        )
+        .await;
+
+        assert_eq!(exit, Exit::Done);
+        assert_eq!(
+            db::run_status(&pool, run_id).await.unwrap().map(db::RunStatus::as_str),
+            Some("completed")
+        );
+        let snap = db::select_run_snapshot(&pool, run_id).await.unwrap().unwrap();
+        assert_eq!(snap.text, "full answer", "only the retry's text, not concatenated");
+        assert_eq!(message_role_counts(&pool, run_id).await, (1, 1));
+    }
+
+    /// Test D — outcome mapping inputs. `prepare_retry` on a non-errored Run
+    /// reports the flip LOST (caller maps to `not_errored`) and mutates nothing;
+    /// an unknown run id reads `run_status == None` (caller maps to `unknown_run`).
+    #[tokio::test]
+    async fn prepare_retry_on_non_errored_loses_and_unknown_is_none() {
+        let pool = memory_pool().await;
+        let wf = test_workflow(&[]);
+
+        // A `running` Run (never errored) loses the flip; no spawn would follow.
+        let (run_id, _thread_id, _amid) = seed_run(&pool, &wf).await;
+        let moved = db::prepare_retry(&pool, run_id, &wf, db::now_ms())
+            .await
+            .expect("prepare_retry");
+        assert!(!moved.won(), "a running Run cannot be retried → not_errored");
+        assert_eq!(
+            db::run_status(&pool, run_id).await.unwrap().map(db::RunStatus::as_str),
+            Some("running"),
+            "the running Run is untouched"
+        );
+
+        // An unknown run id has no status row → unknown_run.
+        assert_eq!(db::run_status(&pool, Uuid::now_v7()).await.unwrap(), None);
+    }
 }
