@@ -2,6 +2,13 @@
 
 This ADR pins the canonical SQLite schema (tier 2 per [ADR-0004](./0004-three-tier-storage-authority.md)) for the chat-driven MVP slice. The schema is the smallest set of tables that supports the slice 1 flows end-to-end (post a user message → spawn Run → stream text → submit Proposal → park → user approves → apply atomically → render history). It was revised after four independent reviews against agentic frameworks, AI chat tools, local-first PKM apps, and the existing t3code event-sourced reference.
 
+> **As-built note (read the whole ADR as the slice-1 snapshot).** The table counts
+> and the "one tier-3 table" claims throughout describe slice 1 as authored. That
+> single tier-3 table — the entity `fts` virtual table flagged at its DDL below —
+> was removed in the pre-1.0 feature-cut sweep, so the current schema has **no**
+> tier-3 `fts` table (and has grown otherwise since slice 1). This ADR is retained
+> append-only as the historical record, not the live schema source of truth.
+
 ## The schema
 
 Twelve tables. Eleven tier-2, one tier-3. All primary keys are **UUIDv7** (time-ordered; `ORDER BY id` yields chronological iteration without a separate index).

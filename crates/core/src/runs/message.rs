@@ -9,11 +9,12 @@ use super::handler::{self, HandlerError};
 use crate::db;
 use crate::protocol::{MessageHit, MessageSearchParams, MessageSearchResult};
 
-/// `message/search` handler (ADR-0035): decode the query, run the tier-3
-/// substring search ([`db::search_messages`]), and map the rows to wire hits
-/// (newest-first, as the query returns them). A DB fault maps to
-/// `HandlerError::Internal` (-32603); a non-string query fails at decode as
-/// `invalid_params` inside the combinator.
+/// `message/search` handler (ADR-0035): decode the query, run the substring
+/// search ([`db::search_messages`], a `LIKE` scan over completed Messages'
+/// assembled `message_parts` text), and map the rows to wire hits (newest-first,
+/// as the query returns them). A DB fault maps to `HandlerError::Internal`
+/// (-32603); a non-string query fails at decode as `invalid_params` inside the
+/// combinator.
 pub(super) async fn handle_search(
     pool: &SqlitePool,
     id: serde_json::Value,
@@ -81,8 +82,8 @@ mod tests {
     }
 
     /// Seed one Thread + a completed user Message carrying `prompt`, via the real
-    /// `persist_thread_with_first_run` path (the user-text indexing seam).
-    /// Returns `(thread_id, run_id, user_message_id)`.
+    /// `persist_thread_with_first_run` path (persists the user text into
+    /// `message_parts`). Returns `(thread_id, run_id, user_message_id)`.
     async fn seed_thread_with_user_message(
         pool: &SqlitePool,
         title: &str,
