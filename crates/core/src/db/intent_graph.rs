@@ -1029,7 +1029,21 @@ async fn anchor_reuse_journal_entry(
                         link.to
                     ))
                 })?;
-                let appended_node = serde_json::json!({ "type": "text", "text": append_text });
+                // Separation is a STRUCTURAL JOIN concern (Core's job): when the body
+                // already carries prose, prepend a single ASCII space so the clause does
+                // not weld onto the prior text ("…Lead Ads." + "Followed…" →
+                // "…Lead Ads.Followed…"). The clause CONTENT (phrasing, capitalization)
+                // stays the model's. The label is still a verbatim substring of the
+                // clause, so the in-isolation splice below still finds it — and the leading
+                // " " rides on the before-fragment, giving "… Lead Ads. Followed up with
+                // [chip].". Guard on non-empty body (anchor-reuse prose is never empty —
+                // defensive against a hypothetical empty body gaining a leading space).
+                let clause = if body.is_empty() {
+                    append_text.to_string()
+                } else {
+                    format!(" {append_text}")
+                };
+                let appended_node = serde_json::json!({ "type": "text", "text": clause });
                 let spliced_clause =
                     splice_entity_ref_into_body(&[appended_node], label, &ref_id)?;
                 body.extend(spliced_clause);
@@ -3205,11 +3219,15 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(chip_ref_id, backlink_id, "the appended chip points at the backlink row");
+        // Core prepends a single separating space to the appended clause (a STRUCTURAL
+        // JOIN concern): the original prose ends "…today" and the clause opens " Followed
+        // up with …", so the rendered prose reads "…today Followed up with [chip]." with
+        // proper separation instead of a "todayFollowed" collision.
         assert_eq!(
             body,
             vec![
                 original_head,
-                serde_json::json!({ "type": "text", "text": "Followed up with " }),
+                serde_json::json!({ "type": "text", "text": " Followed up with " }),
                 serde_json::json!({ "type": "entity_ref", "ref_id": chip_ref_id }),
                 serde_json::json!({ "type": "text", "text": "." }),
             ]
@@ -3286,11 +3304,13 @@ mod tests {
 
         // (d) the chip sits INSIDE the appended clause region (the body tail), with the
         //     surrounding clause text split byte-faithfully around it.
+        // The appended clause is space-separated from the existing prose (STRUCTURAL JOIN):
+        // the leading " " rides on the before-fragment, so the tail opens " Looped in ".
         assert_eq!(
             body,
             vec![
                 serde_json::json!({ "type": "text", "text": "Met with Priya's manager about Q3" }),
-                serde_json::json!({ "type": "text", "text": "Looped in " }),
+                serde_json::json!({ "type": "text", "text": " Looped in " }),
                 serde_json::json!({ "type": "entity_ref", "ref_id": chip_ref_id }),
                 serde_json::json!({ "type": "text", "text": " directly afterwards." }),
             ]
