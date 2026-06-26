@@ -57,6 +57,10 @@ function makeStubRuntime(
 		rescanJournalEntry: () => unused,
 		proposalDecide: () => unused,
 		messageSearch: () => unused,
+		threadRename: () => unused,
+		threadArchive: () => unused,
+		threadUnarchive: () => unused,
+		threadListArchived: () => unused,
 		proposalNotifications: () => Stream.empty,
 		connectionStatus: () => Stream.empty,
 	});
@@ -299,6 +303,10 @@ describe("retryRun bridge — re-drives the SAME Run, no seeded turn", () => {
 			rescanJournalEntry: () => unused,
 			proposalDecide: () => unused,
 			messageSearch: () => unused,
+			threadRename: () => unused,
+			threadArchive: () => unused,
+			threadUnarchive: () => unused,
+			threadListArchived: () => unused,
 			proposalNotifications: () => Stream.empty,
 			connectionStatus: () => Stream.empty,
 		});
@@ -356,6 +364,10 @@ function makePerCallStubRuntime(queues: Queue.Queue<RunEventValue>[]) {
 		rescanJournalEntry: () => unused,
 		proposalDecide: () => unused,
 		messageSearch: () => unused,
+		threadRename: () => unused,
+		threadArchive: () => unused,
+		threadUnarchive: () => unused,
+		threadListArchived: () => unused,
 		proposalNotifications: () => Stream.empty,
 		connectionStatus: () => Stream.empty,
 	});
