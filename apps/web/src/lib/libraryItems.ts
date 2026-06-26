@@ -29,7 +29,12 @@ export type LibraryItemKind =
  * in the Library). Absent on a user-authored Entity (direct Library write).
  */
 export type EntitySource =
-	| { kind: "thread"; threadId: string; threadTitle: string; messageId?: string }
+	| {
+			kind: "thread";
+			threadId: string;
+			threadTitle: string;
+			messageId?: string;
+	  }
 	| { kind: "journal_entry"; journalEntryId: string };
 
 interface LibraryItemBase {
