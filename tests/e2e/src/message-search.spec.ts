@@ -2,13 +2,14 @@ import { expect, test } from "./fixtures.js";
 import { FAUX_WORKER_CMD } from "./spawnCore.js";
 
 /**
- * Slice 5 (end-to-end): a message becomes findable by a substring of its body
- * through the whole real stack — Core's indexing seam → `message_fts` →
- * `message/search` RPC → ui-sdk → the ⌘K palette → thread navigation.
+ * End-to-end: a message becomes findable by a substring of its body through the
+ * whole real stack — Core's `message/search` (a LIKE scan over the assembled
+ * `message_parts` text of completed messages) → ui-sdk → the ⌘K palette → thread
+ * navigation.
  *
  * We drive a REAL conversation through the faux interpreter Worker (not a direct
- * SQL seed): `message_fts` is populated at Core's indexing seams (user text at
- * run creation), so the only way to land an indexed row is to actually send.
+ * SQL seed): search reads the live `message_parts` of completed messages, so the
+ * only way to land a searchable row is to actually send.
  */
 test.use({
 	coreOptions: {
