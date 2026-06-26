@@ -154,26 +154,6 @@ Graph-internal structural errors (a link endpoint or body `target` naming an und
 
 ## The JE node is create-only
 
-> **As-built amendment (removal) — the standalone
-> `reference_existing_entity_from_journal_entry` kind is deleted.** This finishes
-> what the two amendments below already started. The original design routed
-> "reference a pre-existing entity into a JE" through a single-entity proposal
-> kind; the **anchor-reuse** amendment then reversed that ("re-scan IS a graph
-> operation") and the **`append_text`** amendment folded later-mentioned entities
-> into the same graph proposal — so the standalone kind was left with **no
-> production caller**: the shipped `default.toml` never steers the model to emit
-> `reference_existing_entity_from_journal_entry`, and only test fixtures + a faux
-> worker kept it reachable. A pre-1.0 feature-cut sweep removes it entirely:
-> `MutationKind::ReferenceExistingEntityFromJournalEntry` and its
-> `ProposableMutation::ALL` entry, its validator + decide/apply branches, the web
-> `payloads.ts` member + `PROPOSAL_VIEWS` entry, the parity `WIRE_KINDS` lock +
-> fixture, and the test-only `journal-entry-ref.spec.ts` + faux-worker emitter
-> that existed solely to keep it alive. This is a contract change (the closed
-> `mutation_kind` set narrows), atomic across Rust+TS+fixture per ADR-0009.
-> Referencing an existing entity from a journal entry remains fully supported —
-> through the intent-graph `journal_ref` weave (anchor-reuse + `append_text`),
-> which is the path #179 mandated and the prod prompt actually uses.
-
 The `journal_entry` node always **mints** a new Journal Entry; it carries no `disposition`. Extraction from a *pre-existing* accepted JE (re-scan / backfill of an old entry) is **not** a graph operation — it stays the existing single-entity `reference_existing_entity_from_journal_entry` path, deferred as a future extension. This keeps the cross-thread guard trivial (the JE's origin message is always this Run's) and avoids dragging ADR-0030's cross-thread deferral into the graph. A capture left undecided for hours/weeks is handled by the existing park mechanism (ADR-0025) — the JE node is decided *with* the extractions, never before, so there is no "accept the JE first" step.
 
 > **As-built amendment — re-scan IS a graph operation (anchor-reuse).** This reverses the deferral above for the **same-thread** case. The original plan routed re-scan through the single-entity `reference_existing_entity_from_journal_entry` path — but that path references an entity that **already exists**, so capturing an entity the first pass **missed** would force *create-then-reference* across two proposals: the exact #179 sequencing this ADR set out to kill. So re-scan is now a graph operation, with one narrow carve-out from "the JE node always mints."
