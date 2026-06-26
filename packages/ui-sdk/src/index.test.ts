@@ -1225,4 +1225,68 @@ describe("WsClient", () => {
 			await server.close();
 		}
 	}, 30_000);
+
+	it("threadArchive frames thread/archive and decodes ThreadMutateResult", async () => {
+		const expected = { thread_id: "t-1" };
+
+		let observed: WireRequest | undefined;
+		const server = await makeServer((ws, req) => {
+			if (req.method === "thread/archive") {
+				observed = req;
+				ws.send(
+					JSON.stringify({ jsonrpc: "2.0", id: req.id, result: expected }),
+				);
+			}
+		});
+
+		const program = Effect.gen(function* () {
+			const client = yield* WsClient;
+			return yield* client.threadArchive("t-1");
+		});
+
+		try {
+			const result = await Effect.runPromise(provide(server.url)(program));
+			expect(observed?.method).toBe("thread/archive");
+			expect(observed?.params).toEqual({ thread_id: "t-1" });
+			expect(result).toEqual(expected);
+		} finally {
+			await server.close();
+		}
+	});
+
+	it("threadListArchived frames thread/list_archived and decodes ThreadListResult", async () => {
+		const expected = {
+			threads: [
+				{
+					id: "01999999-0000-7000-8000-000000000002",
+					title: "Archived thread",
+					last_activity_at: 1717200000000,
+				},
+			],
+		};
+
+		let observed: WireRequest | undefined;
+		const server = await makeServer((ws, req) => {
+			if (req.method === "thread/list_archived") {
+				observed = req;
+				ws.send(
+					JSON.stringify({ jsonrpc: "2.0", id: req.id, result: expected }),
+				);
+			}
+		});
+
+		const program = Effect.gen(function* () {
+			const client = yield* WsClient;
+			return yield* client.threadListArchived();
+		});
+
+		try {
+			const result = await Effect.runPromise(provide(server.url)(program));
+			expect(observed?.method).toBe("thread/list_archived");
+			expect(observed?.params).toEqual({});
+			expect(result).toEqual(expected);
+		} finally {
+			await server.close();
+		}
+	});
 });
