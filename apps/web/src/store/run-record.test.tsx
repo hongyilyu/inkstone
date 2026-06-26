@@ -47,6 +47,7 @@ function makeStubRuntime(queue: Queue.Queue<RunEventValue>, runId: RunId) {
 		proposalDecide: () => unused,
 		messageSearch: () => unused,
 		proposalNotifications: () => Stream.empty,
+		connectionStatus: () => Stream.empty,
 	});
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 }

@@ -58,6 +58,7 @@ function makeFailingThreadCreateRuntime() {
 		proposalDecide: () => unused,
 		messageSearch: () => unused,
 		proposalNotifications: () => unused,
+		connectionStatus: () => Stream.empty,
 	});
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 }
@@ -106,6 +107,7 @@ describe("onRunSettled (terminal seam → recent-Runs refresh)", () => {
 			proposalDecide: () => Effect.die("unused"),
 			messageSearch: () => Effect.die("unused"),
 			proposalNotifications: () => Stream.empty,
+			connectionStatus: () => Stream.empty,
 		});
 		return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 	}
@@ -172,6 +174,7 @@ describe("onRunSettled (terminal seam → recent-Runs refresh)", () => {
 			proposalDecide: () => Effect.die("unused"),
 			messageSearch: () => Effect.die("unused"),
 			proposalNotifications: () => Stream.empty,
+			connectionStatus: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 		const runId = "run-drop" as RunId;
@@ -211,6 +214,7 @@ describe("onRunSettled (terminal seam → recent-Runs refresh)", () => {
 			proposalDecide: () => Effect.die("unused"),
 			messageSearch: () => Effect.die("unused"),
 			proposalNotifications: () => Stream.empty,
+			connectionStatus: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 		const runId = "run-interrupt" as RunId;
@@ -259,6 +263,7 @@ describe("decideProposal resume fiber tracking (M2)", () => {
 				Effect.succeed({ status: "accepted" as const, entity_id: "e1" }),
 			messageSearch: () => Effect.die("unused"),
 			proposalNotifications: () => Stream.empty,
+			connectionStatus: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
@@ -338,6 +343,7 @@ describe("cancelRun (ADR-0014)", () => {
 			proposalDecide: () => Effect.die("unused"),
 			messageSearch: () => Effect.die("unused"),
 			proposalNotifications: () => Stream.empty,
+			connectionStatus: () => Stream.empty,
 		});
 		return {
 			runtime: ManagedRuntime.make(Layer.succeed(WsClient, stub)),
@@ -496,6 +502,7 @@ describe("cancelRun (ADR-0014)", () => {
 			proposalDecide: () => Effect.die("unused"),
 			messageSearch: () => Effect.die("unused"),
 			proposalNotifications: () => Stream.empty,
+			connectionStatus: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 		const runId = "run-fail" as RunId;
@@ -552,6 +559,7 @@ describe("cancelRun (ADR-0014)", () => {
 				),
 			messageSearch: () => Effect.die("unused"),
 			proposalNotifications: () => Stream.empty,
+			connectionStatus: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 		const runId = "run-race" as RunId;

@@ -55,7 +55,9 @@ test("chat and Library wear the same shared nav chrome", async ({
 	// The Library nav renders the identical shell: brand wordmark + footer toggle.
 	const libNav = page.getByRole("navigation", { name: /library/i });
 	await expect(libNav).toBeVisible();
-	await expect(libNav.getByText("Inkstone")).toBeVisible();
+	// `exact` targets the wordmark, not the connection indicator's sr-only
+	// "Connected to Inkstone" status text that also lives in this nav (ADR-0051).
+	await expect(libNav.getByText("Inkstone", { exact: true })).toBeVisible();
 	await expect(
 		libNav.getByRole("button", { name: /toggle theme/i }),
 	).toBeVisible();

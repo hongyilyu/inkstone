@@ -100,6 +100,7 @@ function makeStubRuntime(opts: {
 				} as const)),
 		messageSearch: () => unused,
 		proposalNotifications: () => Stream.fromQueue(opts.proposalQueue),
+		connectionStatus: () => Stream.empty,
 	});
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 }

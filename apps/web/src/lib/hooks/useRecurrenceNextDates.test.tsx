@@ -39,6 +39,7 @@ function makeRuntime(recurrencePreview: WsClient["Type"]["recurrencePreview"]) {
 		proposalDecide: () => unused,
 		messageSearch: () => unused,
 		proposalNotifications: () => unused,
+		connectionStatus: () => unused,
 	});
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 }

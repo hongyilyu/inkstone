@@ -8,6 +8,10 @@ import {
 } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { assertNever } from "@/lib/assertNever";
+import {
+	connectionFailureCopy,
+	GENERIC_SEND_FAILURE,
+} from "@/lib/connectionFailureCopy";
 import { cn } from "@/lib/utils";
 import { useRuntime } from "@/runtime";
 import {
@@ -204,7 +208,9 @@ export function ChatColumn() {
 		setSendError(null);
 		void send(runtime, focusedThreadId, text).then(async (result) => {
 			if (!result.ok) {
-				setSendError("Couldn't send your message. Please try again.");
+				setSendError(
+					connectionFailureCopy(result.error) ?? GENERIC_SEND_FAILURE,
+				);
 			}
 			// Refresh both reads this surface shows: the sidebar's thread list and
 			// the right-rail recent-Runs feed (the retried send births/advances a Run).
@@ -270,7 +276,9 @@ export function ChatColumn() {
 					if (focusedThreadId !== null) {
 						const result = await send(runtime, focusedThreadId, text);
 						if (!result.ok) {
-							setSendError("Couldn't send your message. Please try again.");
+							setSendError(
+								connectionFailureCopy(result.error) ?? GENERIC_SEND_FAILURE,
+							);
 						}
 					} else {
 						// Mint-on-send: thread focus is the URL (ADR-0042), so on success
@@ -284,7 +292,9 @@ export function ChatColumn() {
 								params: { threadId: result.threadId },
 							});
 						} else {
-							setSendError("Couldn't send your message. Please try again.");
+							setSendError(
+								connectionFailureCopy(result.error) ?? GENERIC_SEND_FAILURE,
+							);
 						}
 					}
 					await queryClient.invalidateQueries({ queryKey: ["threads"] });

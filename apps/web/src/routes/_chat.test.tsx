@@ -7,7 +7,7 @@ import {
 } from "@tanstack/react-router";
 import { cleanup, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Effect, Layer, ManagedRuntime } from "effect";
+import { Effect, Layer, ManagedRuntime, Stream } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 import { routeTree } from "@/routeTree.gen";
 import { RuntimeProvider } from "@/runtime";
@@ -75,6 +75,7 @@ describe("_chat layout route (ADR-0042)", () => {
 			proposalDecide: () => unused,
 			messageSearch: () => unused,
 			proposalNotifications: () => unused,
+			connectionStatus: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 		const router = createRouter({

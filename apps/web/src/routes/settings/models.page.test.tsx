@@ -71,6 +71,7 @@ function makeRuntime(opts: {
 		proposalDecide: die,
 		messageSearch: die,
 		proposalNotifications: () => Stream.empty,
+		connectionStatus: () => Stream.empty,
 	});
 	return {
 		runtime: ManagedRuntime.make(Layer.succeed(WsClient, stub)),
@@ -176,6 +177,7 @@ describe("Models settings page (ADR-0024)", () => {
 			proposalDecide: die,
 			messageSearch: die,
 			proposalNotifications: () => Stream.empty,
+			connectionStatus: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 		renderPage(runtime);
@@ -326,6 +328,7 @@ describe("Models settings page (ADR-0024)", () => {
 			proposalDecide: die,
 			messageSearch: die,
 			proposalNotifications: () => Stream.empty,
+			connectionStatus: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 		renderPage(runtime);
@@ -416,6 +419,7 @@ function makeFlippingRuntime() {
 		proposalDecide: die,
 		messageSearch: die,
 		proposalNotifications: () => Stream.empty,
+		connectionStatus: () => Stream.empty,
 	});
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 }

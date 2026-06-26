@@ -76,6 +76,7 @@ describe("refresh-durable hydration", () => {
 			proposalDecide: () => Effect.die("unused"),
 			messageSearch: () => Effect.die("unused"),
 			proposalNotifications: () => Stream.empty,
+			connectionStatus: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
@@ -156,6 +157,7 @@ describe("refresh-durable hydration", () => {
 			proposalDecide: () => Effect.die("unused"),
 			messageSearch: () => Effect.die("unused"),
 			proposalNotifications: () => Stream.empty,
+			connectionStatus: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
@@ -228,6 +230,7 @@ describe("refresh-durable hydration", () => {
 			proposalDecide: () => Effect.die("unused"),
 			messageSearch: () => Effect.die("unused"),
 			proposalNotifications: () => Stream.empty,
+			connectionStatus: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
@@ -297,6 +300,7 @@ describe("refresh-durable hydration", () => {
 			proposalDecide: () => Effect.die("unused"),
 			messageSearch: () => Effect.die("unused"),
 			proposalNotifications: () => Stream.empty,
+			connectionStatus: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
@@ -367,6 +371,7 @@ describe("refresh-durable hydration", () => {
 			proposalDecide: () => Effect.die("unused"),
 			messageSearch: () => Effect.die("unused"),
 			proposalNotifications: () => Stream.empty,
+			connectionStatus: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
@@ -430,6 +435,7 @@ describe("refresh-durable hydration", () => {
 			proposalDecide: () => Effect.die("unused"),
 			messageSearch: () => Effect.die("unused"),
 			proposalNotifications: () => Stream.empty,
+			connectionStatus: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
@@ -487,6 +493,7 @@ describe("refresh-durable hydration", () => {
 			proposalDecide: () => Effect.die("unused"),
 			messageSearch: () => Effect.die("unused"),
 			proposalNotifications: () => Stream.empty,
+			connectionStatus: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
@@ -553,6 +560,7 @@ describe("refresh-durable hydration", () => {
 			proposalDecide: () => Effect.die("unused"),
 			messageSearch: () => Effect.die("unused"),
 			proposalNotifications: () => Stream.empty,
+			connectionStatus: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
@@ -614,6 +622,7 @@ describe("refresh-durable hydration", () => {
 			proposalDecide: () => Effect.die("unused"),
 			messageSearch: () => Effect.die("unused"),
 			proposalNotifications: () => Stream.empty,
+			connectionStatus: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
@@ -693,6 +702,7 @@ describe("refresh-durable hydration", () => {
 			proposalDecide: () => Effect.die("unused"),
 			messageSearch: () => Effect.die("unused"),
 			proposalNotifications: () => Stream.empty,
+			connectionStatus: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
@@ -763,6 +773,7 @@ describe("refresh-durable hydration", () => {
 			proposalDecide: () => Effect.die("unused"),
 			messageSearch: () => Effect.die("unused"),
 			proposalNotifications: () => Stream.empty,
+			connectionStatus: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
@@ -830,6 +841,7 @@ describe("refresh-durable hydration", () => {
 			proposalDecide: () => Effect.die("unused"),
 			messageSearch: () => Effect.die("unused"),
 			proposalNotifications: () => Stream.empty,
+			connectionStatus: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
@@ -871,6 +883,7 @@ describe("refresh-durable hydration", () => {
 			proposalDecide: () => Effect.die("unused"),
 			messageSearch: () => Effect.die("unused"),
 			proposalNotifications: () => Stream.empty,
+			connectionStatus: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
@@ -908,6 +921,7 @@ describe("refresh-durable hydration", () => {
 			proposalDecide: () => Effect.die("unused"),
 			messageSearch: () => Effect.die("unused"),
 			proposalNotifications: () => Stream.empty,
+			connectionStatus: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
@@ -961,6 +975,7 @@ describe("refresh-durable hydration", () => {
 			proposalDecide: () => Effect.die("unused"),
 			messageSearch: () => Effect.die("unused"),
 			proposalNotifications: () => Stream.empty,
+			connectionStatus: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
@@ -1005,6 +1020,7 @@ describe("refresh-durable hydration", () => {
 			proposalDecide: () => Effect.die("unused"),
 			messageSearch: () => Effect.die("unused"),
 			proposalNotifications: () => Stream.empty,
+			connectionStatus: () => Stream.empty,
 		});
 		const okRuntime = ManagedRuntime.make(Layer.succeed(WsClient, okStub));
 

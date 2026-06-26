@@ -48,6 +48,7 @@ function makeStubRuntime(queue: Queue.Queue<RunEventValue>, runId: RunId) {
 		proposalDecide: () => unused,
 		messageSearch: () => unused,
 		proposalNotifications: () => Stream.empty,
+		connectionStatus: () => Stream.empty,
 	});
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 }
@@ -194,6 +195,7 @@ describe("chat store + stream bridge", () => {
 			proposalDecide: () => Effect.die("unused"),
 			messageSearch: () => Effect.die("unused"),
 			proposalNotifications: () => Stream.empty,
+			connectionStatus: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
