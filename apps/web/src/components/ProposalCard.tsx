@@ -1587,7 +1587,10 @@ function IntentGraphReviewCard({
 					<ul className="flex flex-col gap-1">
 						{appendClauses.map((clause) => (
 							<li
-								key={clause.targetHandle}
+								// Two journal_refs can target one entity (Core appends both
+								// clauses), so targetHandle alone collides — key on a composite of
+								// handle + clause text, like the sibling downgradeNotices list.
+								key={`${clause.targetHandle}:${clause.text}`}
 								className="border-border/60 border-l-2 pl-2.5 text-sm leading-relaxed text-foreground"
 							>
 								{clause.text}

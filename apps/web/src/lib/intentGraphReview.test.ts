@@ -659,6 +659,24 @@ describe("appendedClauses", () => {
 		];
 		expect(appendedClauses(plan, links, {})).toEqual([]);
 	});
+
+	it("emits one clause per link, even for two journal_refs to the SAME entity", () => {
+		// Core appends BOTH clauses (the apply loop iterates every journal_ref), so the
+		// preview must show both — one entry per link, keyed distinctly by the card.
+		const links: GraphLink[] = [
+			{ kind: "journal_ref", from: "@je", to: "@priya", appendText: "Saw P." },
+			{
+				kind: "journal_ref",
+				from: "@je",
+				to: "@priya",
+				appendText: "And P. left.",
+			},
+		];
+		expect(appendedClauses(plan, links, {})).toEqual([
+			{ targetHandle: "@priya", text: "Saw P." },
+			{ targetHandle: "@priya", text: "And P. left." },
+		]);
+	});
 });
 
 // The graph payload carries each node's ORIGINAL proposed fields; editing reads from

@@ -422,10 +422,10 @@ test.describe("an append re-scan folds in a later-mentioned Person", () => {
 		// (d) J's LATEST revision body keeps the ORIGINAL prose node byte-identical at
 		// the head AND now ALSO carries the appended clause, split around exactly ONE
 		// new entity_ref chip whose ref_id is the backlink id. Core separates the
-		// clause from the prior prose with a single leading ASCII space (a structural
-		// join concern), so it appends " Followed up with Priya." and the splice rewrites
-		// it into text(" Followed up with ") + entity_ref(ref_id) + text("."). The body
-		// becomes:
+		// clause from the prior prose by folding a single ASCII space onto the clause's
+		// leading text node (a structural join concern), so it appends " Followed up with
+		// Priya." and the splice rewrites it into text(" Followed up with ") +
+		// entity_ref(ref_id) + text("."). The body becomes:
 		//   text("Synced with the team on Lead Ads.")  ← original, UNCHANGED
 		//   text(" Followed up with ")                   ← LEADING space (the separator)
 		//   entity_ref(ref_id)
@@ -451,7 +451,7 @@ test.describe("an append re-scan folds in a later-mentioned Person", () => {
 
 		// The ORIGINAL prose node is still present, byte-identical, at the head — the
 		// append never touches it (Priya's name was never in it, so there is nothing
-		// to splice there).
+		// to splice there; the join-space rides on the clause's leading node, below).
 		expect(body[0]).toEqual({ type: "text", text: APPEND_JE_PROSE });
 
 		// The appended clause is present: its full text (clause minus the chipped name)

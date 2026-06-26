@@ -1018,11 +1018,11 @@ async fn anchor_reuse_journal_entry(
             // in isolation means the chip can ONLY land in the new clause — if the label
             // also appears in the original prose, that occurrence is left untouched and
             // every original node stays byte-identical (see the prose-collision test). The
-            // separating space between prose and clause is a STRUCTURAL JOIN (Core's job),
-            // so it is folded onto the prose's trailing text node — NOT prepended to the
-            // clause, which would make a standalone `{text:" "}` node when the label leads
-            // the clause (rejected by `validate_woven_journal_body`). The clause CONTENT
-            // stays the model's; its label must be a verbatim substring (else fail loud).
+            // separating space between prose and clause is a STRUCTURAL JOIN (Core's job);
+            // `join_with_separator` folds it onto a real text node at the boundary (never a
+            // standalone `{text:" "}` node, which `validate_woven_journal_body` rejects). The
+            // clause CONTENT stays the model's; its label must be a verbatim substring (else
+            // fail loud).
             Placement::Append(append_text) => {
                 let label = handle_to_label.get(&link.to).map(String::as_str).ok_or_else(|| {
                     ApplyError::InvalidMutation(format!(
@@ -1031,9 +1031,9 @@ async fn anchor_reuse_journal_entry(
                     ))
                 })?;
                 let appended_node = serde_json::json!({ "type": "text", "text": append_text });
-                let spliced_clause =
+                let mut spliced_clause =
                     splice_entity_ref_into_body(&[appended_node], label, &ref_id)?;
-                append_separator_to_last_text(&mut body);
+                join_with_separator(&mut body, &mut spliced_clause);
                 body.extend(spliced_clause);
             }
         }
@@ -1145,18 +1145,33 @@ enum Placement<'a> {
     Append(&'a str),
 }
 
-/// Fold a single separating space onto the body's trailing text node, so an appended
-/// clause does not weld onto the prior prose ("…Lead Ads." + "Followed…" →
-/// "…Lead Ads. Followed…"). Attaching the space to the EXISTING prose's last text node
-/// (rather than prepending it to the clause) keeps it valid even when the clause's
-/// label leads — a clause-leading space would splice into a standalone `{text:" "}`
-/// node, which `validate_woven_journal_body` rejects. No-op on an empty body (no prose
-/// to separate from) or when the trailing node is a chip (no text to extend).
-fn append_separator_to_last_text(body: &mut [serde_json::Value]) {
+/// Fold a single separating space onto a real text node at the boundary between the
+/// existing `body` and an appended `clause`, so the clause does not weld onto the
+/// prior prose ("…Lead Ads." + "Followed…" → "…Lead Ads. Followed…"). The space MUST
+/// land inside an existing text node — a standalone `{text:" "}` node is rejected by
+/// `validate_woven_journal_body`. Preference order, covering every boundary shape:
+///   1. clause opens with text (the common "Followed up with …" case) → prepend " "
+///      to the clause's first node. This is correct even when the body's trailing node
+///      is a chip (an end-of-prose mention).
+///   2. else (clause opens with the chip — a label-leading clause) the space can only
+///      ride on the body side → append " " to the body's trailing text node.
+///   3. else both sides meet at a chip (label-leading clause after a chip-trailing
+///      body): no text node to carry the space, so leave it — inter-chip spacing is the
+///      renderer's concern, and a `{text:" "}` node would fail validation.
+/// No-op on an empty body (nothing to separate from).
+fn join_with_separator(body: &mut [serde_json::Value], clause: &mut [serde_json::Value]) {
+    if body.is_empty() {
+        return;
+    }
+    if let Some(first) = clause.first_mut() {
+        if let Some(text) = first.get("text").and_then(serde_json::Value::as_str) {
+            first["text"] = serde_json::Value::String(format!(" {text}"));
+            return;
+        }
+    }
     if let Some(last) = body.last_mut() {
         if let Some(text) = last.get("text").and_then(serde_json::Value::as_str) {
-            let joined = format!("{text} ");
-            last["text"] = serde_json::Value::String(joined);
+            last["text"] = serde_json::Value::String(format!("{text} "));
         }
     }
 }
@@ -3231,16 +3246,16 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(chip_ref_id, backlink_id, "the appended chip points at the backlink row");
-        // Core folds a single separating space onto the existing prose's trailing text
-        // node (a STRUCTURAL JOIN concern): the original "synced with the team today"
-        // becomes "synced with the team today " and the clause "Followed up with [chip]."
-        // follows, so the rendered prose reads "…today Followed up with [chip]." with
-        // proper separation instead of a "todayFollowed" collision.
+        // Core folds the single separating space onto the appended clause's leading text
+        // node (a STRUCTURAL JOIN concern): the original head stays byte-identical and the
+        // clause opens " Followed up with [chip].", so the rendered prose reads
+        // "…today Followed up with [chip]." with proper separation, not a "todayFollowed"
+        // collision.
         assert_eq!(
             body,
             vec![
-                serde_json::json!({ "type": "text", "text": "synced with the team today " }),
-                serde_json::json!({ "type": "text", "text": "Followed up with " }),
+                original_head,
+                serde_json::json!({ "type": "text", "text": " Followed up with " }),
                 serde_json::json!({ "type": "entity_ref", "ref_id": chip_ref_id }),
                 serde_json::json!({ "type": "text", "text": "." }),
             ]
@@ -3306,25 +3321,24 @@ mod tests {
             .find_map(|n| n.get("ref_id").and_then(serde_json::Value::as_str))
             .expect("a chip with a ref_id");
 
-        // (c) the ORIGINAL prose's "Priya" is NOT chipped — the head still carries the
-        //     whole "Met with Priya's manager about Q3" string un-split. (The trailing
-        //     separator space is folded onto it by the STRUCTURAL JOIN, but the prose
-        //     content is otherwise byte-identical and the in-prose "Priya" stays plain.)
+        // (c) the ORIGINAL prose node is byte-identical and un-chipped — the head is the
+        //     whole "Met with Priya's manager about Q3" string, NOT split around a chip,
+        //     and NOT mutated (the join-space rides on the clause's leading node, below).
         //     This is what the front-scan impl would FAIL: it would split this node.
         assert_eq!(
             body[0],
-            serde_json::json!({ "type": "text", "text": "Met with Priya's manager about Q3 " }),
-            "the original prose's 'Priya' is NOT chipped (only a trailing join-space is added)"
+            serde_json::json!({ "type": "text", "text": "Met with Priya's manager about Q3" }),
+            "the original prose stays byte-identical, the 'Priya' in it is NOT chipped"
         );
 
         // (d) the chip sits INSIDE the appended clause region (the body tail), with the
         //     surrounding clause text split byte-faithfully around it. The separating space
-        //     is folded onto the prose head (above), so the clause itself opens "Looped in ".
+        //     is folded onto the clause's leading node, so the tail opens " Looped in ".
         assert_eq!(
             body,
             vec![
-                serde_json::json!({ "type": "text", "text": "Met with Priya's manager about Q3 " }),
-                serde_json::json!({ "type": "text", "text": "Looped in " }),
+                serde_json::json!({ "type": "text", "text": "Met with Priya's manager about Q3" }),
+                serde_json::json!({ "type": "text", "text": " Looped in " }),
                 serde_json::json!({ "type": "entity_ref", "ref_id": chip_ref_id }),
                 serde_json::json!({ "type": "text", "text": " directly afterwards." }),
             ]
@@ -3385,6 +3399,69 @@ mod tests {
                 serde_json::json!({ "type": "text", "text": " was also there." }),
             ]
         );
+    }
+
+    // Test — anchor-reuse APPEND onto a stored body that ALREADY ENDS in a chip (#221):
+    // an earlier mention was chipped at the end of the prose ("…synced with [chip]"),
+    // and now a new entity is folded in by appending. The separator must NOT be lost at
+    // the chip→clause boundary (a "welding" regression): for a label-mid clause it folds
+    // onto the CLAUSE's leading text node, so the new clause still opens with a space and
+    // does not abut the prior chip.
+    #[tokio::test]
+    async fn anchor_reuse_append_text_after_chip_trailing_body_keeps_separator() {
+        let pool = memory_pool().await;
+        // A stored body whose LAST node is an entity_ref chip (an end-of-prose mention).
+        let stored = serde_json::json!([
+            { "type": "text", "text": "synced with " },
+            { "type": "entity_ref", "ref_id": "019f0000-0000-7000-8000-0000000000aa" },
+        ]);
+        let scaffold = seed_anchor_reuse(&pool, stored).await;
+        let payload = serde_json::json!({
+            "journal_entry": {
+                "handle": "@je", "existing_id": scaffold.je_id, "occurred_at": "2026-06-10T10:30:00"
+            },
+            "entities": [{ "handle": "@priya", "type": "person", "name": "Priya" }],
+            "links": [{
+                "kind": "journal_ref", "from": "@je", "to": "@priya",
+                "append_text": "Looped in Priya too."
+            }]
+        });
+
+        let outcome = apply_intent_graph_proposal(
+            &pool,
+            scaffold.run_id,
+            &scaffold.proposal_id,
+            &scaffold.tool_call_id,
+            &payload,
+            None,
+            None,
+            |a| a.to_string(),
+            crate::db::now_ms(),
+        )
+        .await
+        .expect("append onto a chip-trailing body applies");
+        assert!(matches!(outcome, IntentGraphOutcome::Applied(_)));
+
+        let priya = person_id_named(&pool, "Priya").await.expect("Priya minted");
+        let body = current_je_body(&pool, &scaffold.je_id).await;
+        let new_chip_ref_id = body
+            .iter()
+            .filter_map(|n| n.get("ref_id").and_then(serde_json::Value::as_str))
+            .find(|id| *id != "019f0000-0000-7000-8000-0000000000aa")
+            .expect("the new chip");
+        // The clause folds the separator onto ITS OWN leading node (" Looped in "), so the
+        // prior trailing chip is followed by a space-led clause, never welded.
+        assert_eq!(
+            body,
+            vec![
+                serde_json::json!({ "type": "text", "text": "synced with " }),
+                serde_json::json!({ "type": "entity_ref", "ref_id": "019f0000-0000-7000-8000-0000000000aa" }),
+                serde_json::json!({ "type": "text", "text": " Looped in " }),
+                serde_json::json!({ "type": "entity_ref", "ref_id": new_chip_ref_id }),
+                serde_json::json!({ "type": "text", "text": " too." }),
+            ]
+        );
+        assert_eq!(entity_ref_count(&pool, &scaffold.je_id, &priya).await, 1);
     }
 
     // Test — XOR reject (BOTH): a journal_ref carrying both match_text AND append_text
