@@ -402,14 +402,18 @@ pub struct EntityRow {
 /// optional shape, safe because Core is the sole producer and fills the fields
 /// from one `entity_sources` row whose CHECK guarantees exactly one source kind:
 /// a user Message source carries `thread_id` + `thread_title` (link back to the
-/// Thread); a Journal-Entry source carries `journal_entry_id` (link to it in the
-/// Library). The Client reads `journal_entry_id` first, else the Thread fields.
+/// Thread) plus the capturing `message_id` (so the Client can deep-link to the
+/// exact message, #184); a Journal-Entry source carries `journal_entry_id` (link
+/// to it in the Library). The Client reads `journal_entry_id` first, else the
+/// Thread fields (`message_id` rides along with them).
 #[derive(Debug, Serialize)]
 pub struct EntitySourceView {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thread_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thread_title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub journal_entry_id: Option<String>,
 }
@@ -1860,6 +1864,7 @@ mod parity_fixtures {
                         source: Some(EntitySourceView {
                             thread_id: Some(UUID_A.to_string()),
                             thread_title: Some("Morning brain dump".to_string()),
+                            message_id: Some(UUID_RUN.to_string()),
                             journal_entry_id: None,
                         }),
                     }],
@@ -1900,6 +1905,7 @@ mod parity_fixtures {
                         source: Some(EntitySourceView {
                             thread_id: None,
                             thread_title: None,
+                            message_id: None,
                             journal_entry_id: Some(UUID_B.to_string()),
                         }),
                     }],
@@ -1932,6 +1938,7 @@ mod parity_fixtures {
                         source: Some(EntitySourceView {
                             thread_id: Some(UUID_A.to_string()),
                             thread_title: Some("Morning brain dump".to_string()),
+                            message_id: Some(UUID_RUN.to_string()),
                             journal_entry_id: None,
                         }),
                     }],

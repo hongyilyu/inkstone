@@ -540,7 +540,9 @@ where
 /// (the schema's CHECK guarantees exactly one is non-NULL):
 ///
 /// - a user Message source → its `thread_id` + the Thread `title` (resolved
-///   through `messages`→`threads`), so the Client can link back to the Thread;
+///   through `messages`→`threads`) plus the capturing message `id` (so the Client
+///   can deep-link to the exact message, #184), so the Client can link back to the
+///   Thread;
 /// - a source-Entity (Journal Entry) source → its `source_entity_id`.
 ///
 /// `created_from` is the ORIGIN relation — `updated_from` rows (a later proposal
@@ -552,7 +554,7 @@ where
 pub(super) async fn provenance_for_entities<'e, E>(
     executor: E,
     entity_ids: &[String],
-) -> sqlx::Result<Vec<(String, Option<String>, Option<String>, Option<String>)>>
+) -> sqlx::Result<Vec<(String, Option<String>, Option<String>, Option<String>, Option<String>)>>
 where
     E: Executor<'e, Database = Sqlite>,
 {
@@ -562,7 +564,7 @@ where
 
     let mut query = QueryBuilder::<Sqlite>::new(
         "SELECT source.entity_id, source.source_entity_id, \
-                source_message.thread_id, source_thread.title \
+                source_message.thread_id, source_thread.title, source_message.id \
          FROM entity_sources source \
          LEFT JOIN messages source_message \
            ON source_message.id = source.source_message_id \
