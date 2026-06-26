@@ -1626,6 +1626,71 @@ pub async fn cancel_running_run(
     Ok(moved)
 }
 
+/// Prepare an errored Run for in-place retry (ADR-0028 retry amendment, #230) in
+/// ONE transaction: flip `errored → running` (the guarded [`RunStatus::retry`]),
+/// and — only if won — DISCARD the failed attempt's output so the re-drive starts
+/// clean. The Run keeps its `run_id` AND `assistant_message_id`; only the failed
+/// *contents* are dropped.
+///
+/// On `Moved::Lost` (the Run was not `errored` — a concurrent retry/sweep won, or
+/// it was never errored) nothing is cleared and the caller maps it to
+/// `not_errored`. On `Moved::Won`:
+///   - delete the assistant Message's stale `message_parts`, the Run's `run_steps`
+///     (assistant + tool_call steps), and any `tool_calls` — else
+///     `select_run_snapshot`'s `group_concat(text)` would append the retry text
+///     after the dead text and `thread/get`'s timeline would replay the failed
+///     segments. Order: `run_steps` first (its composite FK points at the parts;
+///     its tool_call rows FK `tool_calls`), then parts, then tool_calls;
+///   - re-flip the assistant Message `incomplete → streaming` so the streaming
+///     part writers (gated on `status='streaming'`) accept the re-driven deltas;
+///   - re-snapshot the Run's resolved Workflow columns from `workflow` (re-resolved
+///     LIVE by the caller via `dispatcher::dispatch_and_resolve`, so a model switch
+///     before retry takes effect — ADR-0024 contrast with resume's snapshot).
+///
+/// The caller owns the spawn: it reads back the `assistant_message_id` + history
+/// and `worker::spawn`s on the SAME ids (mode `None`/fresh).
+pub async fn prepare_retry(
+    pool: &SqlitePool,
+    run_id: Uuid,
+    workflow: &Workflow,
+    now_ms: i64,
+) -> sqlx::Result<Moved> {
+    let mut tx = pool.begin().await?;
+
+    let moved = RunStatus::retry(&mut *tx, run_id, now_ms).await?;
+    if !moved.won() {
+        // Not errored (lost the flip): clear nothing, leave the Run untouched.
+        return Ok(moved);
+    }
+
+    // Clear the failed attempt's rows. run_steps first (the assistant `message`
+    // steps' composite FK references message_parts, and `tool_call` steps FK
+    // tool_calls), then the parts, then the tool_calls.
+    queries::delete_run_steps(&mut *tx, run_id).await?;
+    if let Some(assistant_message_id) =
+        queries::assistant_message_id_for_run(&mut *tx, run_id).await?
+    {
+        queries::delete_message_parts(&mut *tx, &assistant_message_id).await?;
+        queries::mark_message_streaming(&mut *tx, &assistant_message_id, now_ms).await?;
+    }
+    queries::delete_tool_calls(&mut *tx, run_id).await?;
+
+    // Re-snapshot the Run's model columns from the freshly-resolved Workflow.
+    queries::resnapshot_run_workflow(
+        &mut *tx,
+        run_id,
+        &workflow.name,
+        &workflow.version,
+        &workflow.provider,
+        workflow.model.as_deref().unwrap_or_default(),
+        workflow.thinking_level.as_deref().unwrap_or_default(),
+    )
+    .await?;
+
+    tx.commit().await?;
+    Ok(moved)
+}
+
 /// The run's assistant Message id (the seq-0 streaming row resume continues
 /// appending into). `None` when the Run has no assistant message.
 pub async fn assistant_message_id_for_run(
@@ -1634,6 +1699,27 @@ pub async fn assistant_message_id_for_run(
 ) -> sqlx::Result<Option<Uuid>> {
     let id = queries::assistant_message_id_for_run(pool, run_id).await?;
     Ok(id.and_then(|s| Uuid::parse_str(&s).ok()))
+}
+
+/// A Run's original user prompt (its user Message's concatenated text) and
+/// `thread_id` (run-retry, ADR-0028 amendment, #230). `None` when the Run does
+/// not exist or its `thread_id` is unparseable. Retry re-drives this prompt as a
+/// fresh turn after re-resolving the Workflow from the Thread + prompt.
+pub async fn run_prompt_and_thread(
+    pool: &SqlitePool,
+    run_id: Uuid,
+) -> sqlx::Result<Option<(String, Uuid)>> {
+    let Some(thread_id) = queries::thread_id_for_run(pool, run_id).await? else {
+        return Ok(None);
+    };
+    let Ok(thread_uuid) = Uuid::parse_str(&thread_id) else {
+        return Ok(None);
+    };
+    let user_message_id = queries::user_message_id_for_run(pool, run_id).await?;
+    let prompt = queries::text_parts_by_message(pool, &user_message_id)
+        .await?
+        .concat();
+    Ok(Some((prompt, thread_uuid)))
 }
 
 /// One element of a Run's timeline for resume reconstruction (ADR-0025).

@@ -239,6 +239,32 @@ impl RunStatus {
         Ok(moved)
     }
 
+    /// Re-drive an errored Run in place (ADR-0028 retry amendment, #230): the lone
+    /// outbound edge `errored` gains. Self-guards on `WHERE status = 'errored'` (the
+    /// legality check AND the race choke — a concurrent second retry or boot sweep
+    /// that already moved the Run matches 0 rows → `Moved::Lost`). NOT `resume`:
+    /// `resume` guards `parked` and would match 0 rows here. On `won()` the terminal
+    /// fields are cleared back to live by the guarded query, and the retry milestone
+    /// reuses [`RunLogKind::Running`] — the same "now running" moment a fresh start
+    /// logs (no new kind, no `run_log` CHECK change). `is_terminal()` and the boot
+    /// sweep are unchanged; this is the single user-initiated exception.
+    pub(super) async fn retry(
+        conn: &mut SqliteConnection,
+        run_id: Uuid,
+        now_ms: i64,
+    ) -> sqlx::Result<Moved> {
+        debug_assert_eq!(Self::Errored.as_str(), "errored");
+        debug_assert_eq!(Self::Running.as_str(), "running");
+        let moved =
+            Moved::from_rows(queries::mark_errored_run_running(&mut *conn, run_id).await?);
+        if !moved.won() {
+            return Ok(moved);
+        }
+
+        run_log::append(&mut *conn, run_id, RunLogKind::Running, None, now_ms).await?;
+        Ok(moved)
+    }
+
     pub(super) async fn cancel(
         conn: &mut SqliteConnection,
         run_id: Uuid,

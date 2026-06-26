@@ -844,6 +844,21 @@ where
         .await
 }
 
+/// Read a Run's `thread_id`. `None` when no such Run exists. Backs `run/retry`'s
+/// re-resolution (the Workflow is dispatched from the Run's Thread + prompt).
+pub(super) async fn thread_id_for_run<'e, E>(
+    executor: E,
+    run_id: Uuid,
+) -> sqlx::Result<Option<String>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_scalar("SELECT thread_id FROM runs WHERE id = ?1")
+        .bind(run_id.to_string())
+        .fetch_optional(executor)
+        .await
+}
+
 pub(super) async fn insert_entity_source_from_message<'e, E>(
     executor: E,
     id: &str,
@@ -1356,6 +1371,136 @@ where
     .execute(executor)
     .await
     .map(|r| r.rows_affected())
+}
+
+/// Re-drive an errored Run in place (ADR-0028 retry amendment, #230): flip
+/// `errored → running` and co-move the terminal fields back to live —
+/// `terminal_reason`/`error_code`/`error_message`/`ended_at` all `NULL` — so the
+/// Run reads as a clean live Run and the loop's `complete`/`fail`/`cancel` verbs
+/// (guarded `status='running'`) re-apply on the re-driven attempt.
+///
+/// SELF-GUARDING on `status='errored'`: this is the legality check AND the race
+/// choke (a concurrent second retry, or a boot sweep, that already moved the Run
+/// matches 0 rows → `Moved::Lost`). It is NOT `mark_run_running`, which guards
+/// `status='parked'` and would match 0 rows on an errored Run. Returns the
+/// affected row count.
+pub(super) async fn mark_errored_run_running<'e, E>(executor: E, run_id: Uuid) -> sqlx::Result<u64>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query(
+        "UPDATE runs SET status = 'running', terminal_reason = NULL, \
+         error_code = NULL, error_message = NULL, ended_at = NULL \
+         WHERE id = ? AND status = 'errored'",
+    )
+    .bind(run_id.to_string())
+    .execute(executor)
+    .await
+    .map(|r| r.rows_affected())
+}
+
+/// Delete a Message's `message_parts` (run-retry, ADR-0028 amendment): the failed
+/// attempt's persisted text/reasoning parts, so `select_run_snapshot`'s
+/// `group_concat(text)` and `thread/get`'s segment timeline don't carry the failed
+/// attempt forward. The assistant `run_steps` reference these via the composite FK
+/// `(message_id, part_seq)`, so they MUST be deleted first (see
+/// [`delete_run_steps`]). Runs inside the retry tx.
+pub(super) async fn delete_message_parts<'e, E>(executor: E, message_id: &str) -> sqlx::Result<u64>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query("DELETE FROM message_parts WHERE message_id = ?1")
+        .bind(message_id)
+        .execute(executor)
+        .await
+        .map(|r| r.rows_affected())
+}
+
+/// Delete a Run's `run_steps` (run-retry, ADR-0028 amendment): both the assistant
+/// message steps and any tool_call steps the failed attempt wrote. Deleted BEFORE
+/// [`delete_message_parts`] would orphan the composite FK, and before
+/// [`delete_tool_calls`] (the `tool_call` steps FK `tool_calls`). Runs inside the
+/// retry tx.
+pub(super) async fn delete_run_steps<'e, E>(executor: E, run_id: Uuid) -> sqlx::Result<u64>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query("DELETE FROM run_steps WHERE run_id = ?1")
+        .bind(run_id.to_string())
+        .execute(executor)
+        .await
+        .map(|r| r.rows_affected())
+}
+
+/// Delete a Run's `tool_calls` (run-retry, ADR-0028 amendment): the failed
+/// attempt's tool I/O. Deleted AFTER [`delete_run_steps`] (whose `tool_call` rows
+/// FK these). Runs inside the retry tx.
+pub(super) async fn delete_tool_calls<'e, E>(executor: E, run_id: Uuid) -> sqlx::Result<u64>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query("DELETE FROM tool_calls WHERE run_id = ?1")
+        .bind(run_id.to_string())
+        .execute(executor)
+        .await
+        .map(|r| r.rows_affected())
+}
+
+/// Re-flip an assistant Message `incomplete → streaming` (run-retry, ADR-0028
+/// amendment): the failed attempt left it `incomplete` (via
+/// [`mark_streaming_messages_incomplete`]); the re-driven attempt streams into it,
+/// and `open_assistant_part`/`append_assistant_part` gate on `status='streaming'`.
+/// The Message id is reused so the bubble identity is stable. Returns the affected
+/// row count. Runs inside the retry tx.
+pub(super) async fn mark_message_streaming<'e, E>(
+    executor: E,
+    message_id: &str,
+    now_ms: i64,
+) -> sqlx::Result<u64>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query(
+        "UPDATE messages SET status = 'streaming', updated_at = ?1 \
+         WHERE id = ?2 AND status = 'incomplete'",
+    )
+    .bind(now_ms)
+    .bind(message_id)
+    .execute(executor)
+    .await
+    .map(|r| r.rows_affected())
+}
+
+/// Re-snapshot a Run's resolved Workflow columns (run-retry, ADR-0028 amendment):
+/// retry re-resolves the Workflow from LIVE settings (so "switch model, then
+/// retry" works), then overwrites the snapshot the original attempt stored —
+/// mirroring the columns [`insert_run`] sets at Run start. Runs inside the retry tx.
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn resnapshot_run_workflow<'e, E>(
+    executor: E,
+    run_id: Uuid,
+    workflow_name: &str,
+    workflow_version: &str,
+    provider: &str,
+    model: &str,
+    thinking_level: &str,
+) -> sqlx::Result<()>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query(
+        "UPDATE runs SET workflow_name = ?, workflow_version = ?, provider = ?, \
+         model = ?, thinking_level = ? WHERE id = ?",
+    )
+    .bind(workflow_name)
+    .bind(workflow_version)
+    .bind(provider)
+    .bind(model)
+    .bind(thinking_level)
+    .bind(run_id.to_string())
+    .execute(executor)
+    .await
+    .map(|_| ())
 }
 
 /// Cancel a parked Run (ADR-0014): flip `runs` to `cancelled` with
