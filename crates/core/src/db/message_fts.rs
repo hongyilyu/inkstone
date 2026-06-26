@@ -83,8 +83,8 @@ mod tests {
     }
 
     /// Seed one Thread + a completed user Message carrying `prompt`, via the real
-    /// `persist_thread_with_first_run` path (which routes through
-    /// `insert_initial_run_rows` — the user-text indexing seam under test).
+    /// `persist_thread_with_first_run` path — so the user text lands in
+    /// `message_parts` exactly as a real send would, ready for the live search.
     /// Returns `(thread_id, run_id, user_message_id)`.
     async fn seed_thread_with_user_message(
         pool: &SqlitePool,
@@ -291,9 +291,10 @@ mod tests {
     }
 
     /// After a Run completes, the assistant Message's finalized text is searchable
-    /// by substring with role "assistant" — the `RunStatus::complete` seam indexes
-    /// it (ADR-0035). The user Message of the same Run is already indexed (slice 1);
-    /// this proves the assistant side.
+    /// by substring with role "assistant" — `RunStatus::complete` flips it to
+    /// `completed`, which is the gate the live search filters on (ADR-0035). The
+    /// user Message of the same Run is already `completed`; this proves the
+    /// assistant side.
     #[tokio::test]
     async fn search_finds_assistant_message_after_completion() {
         let pool = memory_pool().await;

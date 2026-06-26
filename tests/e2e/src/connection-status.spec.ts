@@ -32,9 +32,8 @@ test("dropped socket: an in-flight send shows the connection-specific copy", asy
 	// directions verbatim, UNTIL the client sends a `thread/create` frame; then it CLOSES
 	// the proxy (the in-flight request never gets a reply → `connection_lost` → the
 	// connection-specific copy) and never reconnects (Core is unreachable through the dead
-	// proxy), so the indicator settles to "Lost connection" too. No wall-clock dependence,
-	// so no SIGTERM is needed for the drop. Registered BEFORE goto so the socket-open is
-	// intercepted.
+	// proxy). No wall-clock dependence, so no SIGTERM is needed for the drop. Registered
+	// BEFORE goto so the socket-open is intercepted.
 	let linkDropped = false;
 	await page.routeWebSocket(/\/ws$/, (ws) => {
 		// Once dropped, REFUSE every reconnect: closing without connecting to Core keeps

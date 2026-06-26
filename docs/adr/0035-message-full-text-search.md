@@ -36,6 +36,15 @@ This ADR makes message text findable.
 
 ## Decision
 
+> **Superseded by the removal amendment at the top of this ADR.** The
+> `message_fts` table, its two indexing write-seams, and the rebuild-on-open
+> described in this section and the three that follow ("Why trigram + LIKE…",
+> "Why a separate table…", "Why index at completion…") were removed in the
+> feature-cut sweep. The `message/search` request, its hit shape, and the ⌘K
+> "Messages" group are unchanged; only the data source moved to a live `LIKE`
+> scan over assembled `message_parts`. The sections below are retained as the
+> historical design record (this ADR is append-only).
+
 A tier-3 FTS5 table, `message_fts`, indexes the text of every **completed**
 Message (both `user` and `assistant` roles). A new `message/search` request runs a
 case-insensitive substring query over it and returns ranked-by-recency hits, each

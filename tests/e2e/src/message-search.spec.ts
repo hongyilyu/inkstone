@@ -26,8 +26,8 @@ test.use({
 const MESSAGE_BODY =
 	"Reminder to myself: I really need to sort out the family logistics before next week, especially the zylophant daycare schedule and pickup times.";
 
-// Interior fragment (drops the leading "z") — searching this proves substring /
-// trigram matching, not a prefix match.
+// Interior fragment (drops the leading "z") — searching this proves substring
+// matching (the LIKE '%needle%' scan), not a prefix match.
 const NEEDLE = "ylophant";
 
 test("⌘K finds a message by a body substring and navigates to its thread", async ({

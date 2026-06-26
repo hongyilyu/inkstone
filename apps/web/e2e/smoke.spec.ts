@@ -12,10 +12,10 @@ test("loads the chat shell and degrades gracefully without Core", async ({
 	await page.goto("/");
 
 	const sidebar = page.getByRole("complementary", { name: /sidebar/i });
-	const activity = page.getByRole("complementary", { name: /activity/i });
+	const recentRuns = page.getByRole("complementary", { name: /recent runs/i });
 	await expect(sidebar).toBeVisible();
 	await expect(page.getByRole("main")).toBeVisible();
-	await expect(activity).toBeVisible();
+	await expect(recentRuns).toBeVisible();
 
 	await expect(
 		sidebar.getByRole("button", { name: /new chat/i }),
@@ -29,13 +29,9 @@ test("loads the chat shell and degrades gracefully without Core", async ({
 	await expect(page.getByRole("textbox", { name: /message/i })).toBeVisible();
 	await expect(page.getByRole("button", { name: /^Send$/i })).toBeVisible();
 
-	await expect(activity.getByRole("button", { name: /^all$/i })).toBeVisible();
-	await expect(
-		activity.getByRole("button", { name: /^edits$/i }),
-	).toBeVisible();
-	await expect(
-		activity.getByRole("button", { name: /^automations$/i }),
-	).toBeVisible();
+	// The recent-runs rail renders its header even with no Core (the feed itself
+	// shows its loading/error state; the rail chrome is always present).
+	await expect(recentRuns.getByText(/^Runs$/)).toBeVisible();
 
 	await expect(
 		page.getByRole("button", { name: /toggle theme/i }),

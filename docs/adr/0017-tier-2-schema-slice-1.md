@@ -153,6 +153,12 @@ CREATE VIRTUAL TABLE fts USING fts5(
 );
 ```
 
+> **As-built note:** this entity `fts` virtual table was never written or read and
+> was removed in the pre-1.0 feature-cut sweep (see the removal amendment in
+> [ADR-0035](./0035-message-full-text-search.md)). The slice-1 snapshot above is
+> retained as the historical record (append-only ADR); the current schema has no
+> `fts` table.
+
 There is no `turns` table.
 
 ## Invariants beyond the schema

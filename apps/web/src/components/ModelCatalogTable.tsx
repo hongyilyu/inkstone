@@ -9,7 +9,7 @@ export interface ModelCatalogTableProps {
 	disabled?: boolean;
 }
 
-/** Model catalog as a table (ADR-0024): one row per model with name, cost tier, capability chips; one row is "Preferred", others reveal a "Set as preferred" action. Presentational. */
+/** Model catalog as a table (ADR-0024): one row per model with name and capability chips; one row is "Preferred", others reveal a "Set as preferred" action. Presentational. */
 export function ModelCatalogTable({
 	models,
 	selectedId,

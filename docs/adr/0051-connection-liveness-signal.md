@@ -61,6 +61,14 @@ the staleness seam inkstone's in-Layer signal avoids.
 
 ## Decision
 
+> **Partly superseded by the removal amendment at the top of this ADR.** The
+> `SubscriptionRef`/`connectionStatus()` signal and the unbounded two-phase
+> reconnect (the first two decision bullets) are **retained and live**. The
+> **always-visible NavShell indicator** (the third bullet) was removed in the
+> feature-cut sweep; the per-send connection-failure copy (fourth bullet) is
+> retained. The bullets below are the original design record (append-only ADR);
+> read the indicator bullet as retired history.
+
 - **A `SubscriptionRef<ConnectionStatus>` inside the Layer scope, exposed as
   `connectionStatus(): Stream` via `SubscriptionRef.changes`.** `ConnectionStatus`
   is `connected | reconnecting | disconnected`. The ref is set at the three
