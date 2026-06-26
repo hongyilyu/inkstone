@@ -8,8 +8,8 @@ import { useConnectionStatus } from "@/store/connection";
  * shell maps the ui-sdk enum here (the SDK emits the state; the UI decides how
  * it looks), so the mapping is a pure, independently unit-testable function.
  *
- * Per DESIGN.md:199 ("a tiny dot with a word; color is never the only signal"):
- * `connected` stays QUIET — a calm muted dot, no visible word — while
+ * Per DESIGN.md:199 (status pairs a tiny dot with a word; color is never the
+ * only signal): `connected` stays QUIET — a calm muted dot, no visible word — while
  * `reconnecting`/`disconnected` are more present. `tone` is an existing-palette
  * class only (`muted-foreground` / `destructive`); no new `--warning` token for
  * a transient state. `srLabel` always carries the meaning in TEXT for the
@@ -28,8 +28,10 @@ export function present(status: ConnectionStatus): {
 				label: "",
 				// Silent at rest (matches CopyOutcome's empty `role="status"`): the
 				// degraded states carry their meaning in visible word+icon, so the
-				// connected resting state has nothing to announce. Recovery is conveyed
-				// by the degraded srLabel clearing to "" (aria-live fires on change).
+				// connected resting state has nothing to announce. Recovery (back to
+				// connected) is INTENTIONALLY unannounced — a polite live region
+				// announces added/changed text, not a clear-to-empty — so the healthy
+				// state stays quiet (ADR-0051); only the degraded states speak.
 				srLabel: "",
 				tone: "text-muted-foreground",
 				Icon: null,
