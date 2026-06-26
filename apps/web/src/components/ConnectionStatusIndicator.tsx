@@ -12,12 +12,22 @@ import { useConnectionStatus } from "@/store/connection";
  * only signal): `connected` stays QUIET — a calm muted dot, no visible word — while
  * `reconnecting`/`disconnected` are more present. `tone` is an existing-palette
  * class only (`muted-foreground` / `destructive`); no new `--warning` token for
- * a transient state. `srLabel` always carries the meaning in TEXT for the
- * `role="status"` live region, so color/icon are never the sole cue.
+ * a transient state.
+ *
+ * Two independent a11y knobs (separated so the healthy state is discoverable but
+ * not noisy): `srLabel` is the text in the `role="status"` region — ALWAYS
+ * non-empty so a screen-reader user navigating the footer can read the current
+ * state (an empty region is undiscoverable; the visible dot/icon are
+ * `aria-hidden`). `live` is the region's `aria-live`: `"off"` for `connected` so
+ * the healthy state (incl. recovery back to connected) is present-but-NOT
+ * auto-announced (PRODUCT.md local-first calm — no unsolicited "Connected" on
+ * every mount/heal), `"polite"` for the degraded states so a drop/reconnect IS
+ * announced. Color/icon are thus never the sole cue.
  */
 export function present(status: ConnectionStatus): {
 	label: string;
 	srLabel: string;
+	live: "off" | "polite";
 	tone: string;
 	Icon: LucideIcon | null;
 	showSpinner: boolean;
@@ -26,13 +36,11 @@ export function present(status: ConnectionStatus): {
 		case "connected":
 			return {
 				label: "",
-				// Silent at rest (matches CopyOutcome's empty `role="status"`): the
-				// degraded states carry their meaning in visible word+icon, so the
-				// connected resting state has nothing to announce. Recovery (back to
-				// connected) is INTENTIONALLY unannounced — a polite live region
-				// announces added/changed text, not a clear-to-empty — so the healthy
-				// state stays quiet (ADR-0051); only the degraded states speak.
-				srLabel: "",
+				// Discoverable but silent: non-empty so SR users can read the healthy
+				// state on navigation, `live: "off"` so it (and recovery to it) is
+				// never auto-announced — only the degraded states speak (ADR-0051).
+				srLabel: "Connected to Inkstone",
+				live: "off",
 				tone: "text-muted-foreground",
 				Icon: null,
 				showSpinner: false,
@@ -41,6 +49,7 @@ export function present(status: ConnectionStatus): {
 			return {
 				label: "Reconnecting…",
 				srLabel: "Reconnecting to Inkstone…",
+				live: "polite",
 				tone: "text-muted-foreground",
 				Icon: null,
 				showSpinner: true,
@@ -49,6 +58,7 @@ export function present(status: ConnectionStatus): {
 			return {
 				label: "Lost connection",
 				srLabel: "Lost connection to Inkstone. Retrying…",
+				live: "polite",
 				tone: "text-destructive",
 				Icon: WifiOff,
 				showSpinner: false,
@@ -62,13 +72,15 @@ export function present(status: ConnectionStatus): {
  * Reads the global connection store itself (so NavShell needn't thread a prop).
  *
  * The visible glyph + label are the sighted cue; a visually-hidden
- * `role="status" aria-live="polite"` region announces the state in TEXT
- * (mirrors `CopyOutcome` — an icon/color change alone is a sighted-only cue),
+ * `role="status"` region carries the state in TEXT (mirrors `CopyOutcome` — an
+ * icon/color change alone is a sighted-only cue). Its `aria-live` is per-state
+ * (`present().live`): `off` for connected (readable on navigation, not
+ * auto-announced), `polite` for the degraded states (a drop/reconnect speaks),
  * satisfying DESIGN.md:199 + WCAG + ADR-0051.
  */
 export function ConnectionStatusIndicator() {
 	const status = useConnectionStatus();
-	const { label, srLabel, tone, Icon, showSpinner } = present(status);
+	const { label, srLabel, live, tone, Icon, showSpinner } = present(status);
 	return (
 		<div className={cn("flex items-center gap-1.5 text-xs", tone)}>
 			{showSpinner ? (
@@ -80,7 +92,7 @@ export function ConnectionStatusIndicator() {
 				<span className="size-2 rounded-full bg-current" aria-hidden />
 			)}
 			{label && <span>{label}</span>}
-			<span className="sr-only" role="status" aria-live="polite">
+			<span className="sr-only" role="status" aria-live={live}>
 				{srLabel}
 			</span>
 		</div>
