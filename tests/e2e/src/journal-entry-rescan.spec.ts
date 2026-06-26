@@ -350,7 +350,8 @@ test.describe("an append re-scan folds in a later-mentioned Person", () => {
 						},
 					],
 				},
-				rationale: "re-scan found a Person mentioned later but not in the entry",
+				rationale:
+					"re-scan found a Person mentioned later but not in the entry",
 			}),
 		);
 
