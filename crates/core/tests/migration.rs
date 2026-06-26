@@ -90,7 +90,6 @@ fn migration_creates_all_tables() {
         "entity_refs",
         "entity_revisions",
         "entity_sources",
-        "fts",
         "message_parts",
         "messages",
         "proposals",
