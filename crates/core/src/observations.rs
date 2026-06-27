@@ -5,9 +5,12 @@ use uuid::Uuid;
 use crate::db;
 use crate::entities::parse_local_datetime;
 use crate::field_spec::{Field, FieldSpec, PayloadSpec};
+use crate::mutation::EntityType;
 
 const BODYWEIGHT_SCHEMA_KEY: &str = "bodyweight";
 const BODYWEIGHT_SCHEMA_VERSION: i64 = 1;
+const HABIT_CHECKIN_SCHEMA_KEY: &str = "habit.checkin";
+const HABIT_CHECKIN_SCHEMA_VERSION: i64 = 1;
 
 #[derive(Clone, Debug)]
 pub(crate) struct RecordObservationsInput {
@@ -42,6 +45,7 @@ pub(crate) struct ObservationQuery {
     pub(crate) from: Option<String>,
     pub(crate) to: Option<String>,
     pub(crate) source: Option<ObservationSourceInput>,
+    pub(crate) related_entity_id: Option<String>,
     pub(crate) limit: Option<i64>,
 }
 
@@ -81,8 +85,10 @@ pub(crate) async fn record_observations(
 
     for record in input.observations {
         let schema = validate_record(&record).map_err(ObservationError::Invalid)?;
+        let (values, relations) = relation_checks(schema.relation_fields, &record.values)
+            .map_err(ObservationError::Invalid)?;
         let id = Uuid::now_v7().to_string();
-        let values_json = serde_json::to_string(&record.values)
+        let values_json = serde_json::to_string(&values)
             .map_err(|e| ObservationError::Internal(anyhow::Error::new(e)))?;
         let source = record
             .source
@@ -101,6 +107,7 @@ pub(crate) async fn record_observations(
             note: record.note.clone(),
             created_by: "user".to_string(),
             created_via_proposal_id: None,
+            relations,
             source: source.as_ref().map(|source| match source {
                 ObservationSource::JournalEntry { id } => {
                     db::ObservationSourceInsert::JournalEntry { id: id.clone() }
@@ -116,7 +123,7 @@ pub(crate) async fn record_observations(
             schema_version: schema.version,
             occurred_at: record.occurred_at,
             ended_at: record.ended_at,
-            values: record.values,
+            values,
             note: record.note,
             source,
             created_at: now_ms,
@@ -128,6 +135,9 @@ pub(crate) async fn record_observations(
         .await
         .map_err(|e| match e {
             db::ObservationInsertError::InvalidSource(reason) => ObservationError::Invalid(reason),
+            db::ObservationInsertError::InvalidRelation(reason) => {
+                ObservationError::Invalid(reason)
+            }
             db::ObservationInsertError::Sqlx(err) => ObservationError::Internal(err.into()),
         })?;
     Ok(observations)
@@ -138,6 +148,12 @@ pub(crate) async fn query_observations(
     filter: ObservationQuery,
 ) -> Result<Vec<Observation>, ObservationError> {
     validate_query(&filter).map_err(ObservationError::Invalid)?;
+    let related_entity_id = filter
+        .related_entity_id
+        .as_deref()
+        .map(|id| normalize_uuid(id, "related_entity_id"))
+        .transpose()
+        .map_err(ObservationError::Invalid)?;
     let source = filter.source.map(|source| match source {
         ObservationSourceInput::JournalEntry { id } => {
             db::ObservationSourceFilter::JournalEntry { id }
@@ -151,6 +167,7 @@ pub(crate) async fn query_observations(
             from: filter.from,
             to: filter.to,
             source,
+            related_entity_id,
             limit: filter.limit,
         },
     )
@@ -164,6 +181,12 @@ struct ObservationSchema {
     key: &'static str,
     version: i64,
     values: PayloadSpec,
+    relation_fields: &'static [ObservationRelationField],
+}
+
+struct ObservationRelationField {
+    name: &'static str,
+    target_entity_type: EntityType,
 }
 
 fn schema_for(schema_key: &str) -> Option<ObservationSchema> {
@@ -182,6 +205,41 @@ fn schema_for(schema_key: &str) -> Option<ObservationSchema> {
                     },
                 )],
             ),
+            relation_fields: &[],
+        }),
+        HABIT_CHECKIN_SCHEMA_KEY => Some(ObservationSchema {
+            key: HABIT_CHECKIN_SCHEMA_KEY,
+            version: HABIT_CHECKIN_SCHEMA_VERSION,
+            values: PayloadSpec::payload(
+                "habit.checkin values",
+                vec![
+                    Field::required(
+                        "habit_id",
+                        FieldSpec::Uuid {
+                            schema_regex: false,
+                        },
+                    ),
+                    Field::required(
+                        "state",
+                        FieldSpec::EnumStr {
+                            domain: &["done", "skipped", "missed"],
+                            err: "habit.checkin state must be one of done, skipped, missed",
+                        },
+                    ),
+                    Field::optional(
+                        "quantity",
+                        FieldSpec::Number {
+                            min: None,
+                            max: None,
+                            integer: false,
+                        },
+                    ),
+                ],
+            ),
+            relation_fields: &[ObservationRelationField {
+                name: "habit_id",
+                target_entity_type: EntityType::Habit,
+            }],
         }),
         _ => None,
     }
@@ -229,6 +287,9 @@ fn validate_query(filter: &ObservationQuery) -> Result<(), String> {
     if let Some(source) = &filter.source {
         validated_source(source)?;
     }
+    if let Some(related_entity_id) = &filter.related_entity_id {
+        parse_uuid(related_entity_id, "related_entity_id")?;
+    }
     Ok(())
 }
 
@@ -245,9 +306,40 @@ fn validated_source(source: &ObservationSourceInput) -> Result<ObservationSource
     }
 }
 
+fn relation_checks(
+    fields: &'static [ObservationRelationField],
+    values: &Value,
+) -> Result<(Value, Vec<db::ObservationRelationInsert>), String> {
+    let mut normalized_values = values.clone();
+    let mut relations = Vec::with_capacity(fields.len());
+    for field in fields {
+        let Some(entity_id) = values.get(field.name).and_then(Value::as_str) else {
+            return Err(format!("{} must be a UUID", field.name));
+        };
+        let canonical_entity_id = normalize_uuid(entity_id, field.name)?;
+        if let Some(object) = normalized_values.as_object_mut() {
+            object.insert(
+                field.name.to_string(),
+                Value::String(canonical_entity_id.clone()),
+            );
+        }
+        relations.push(db::ObservationRelationInsert {
+            field_name: field.name,
+            entity_id: canonical_entity_id,
+            target_entity_type: field.target_entity_type,
+        });
+    }
+    Ok((normalized_values, relations))
+}
+
 fn parse_uuid(value: &str, field: &str) -> Result<(), String> {
-    Uuid::parse_str(value).map_err(|_| format!("{field} must be a UUID"))?;
-    Ok(())
+    normalize_uuid(value, field).map(|_| ())
+}
+
+fn normalize_uuid(value: &str, field: &str) -> Result<String, String> {
+    Uuid::parse_str(value)
+        .map(|uuid| uuid.to_string())
+        .map_err(|_| format!("{field} must be a UUID"))
 }
 
 fn observation_from_row(row: db::ObservationRow) -> Result<Observation, ObservationError> {
@@ -393,6 +485,21 @@ mod observations_tests {
         }
     }
 
+    fn habit_checkin_at(occurred_at: &str, habit_id: &str, state: &str) -> ObservationRecordInput {
+        ObservationRecordInput {
+            schema_key: "habit.checkin".to_string(),
+            occurred_at: occurred_at.to_string(),
+            ended_at: None,
+            values: json!({
+                "habit_id": habit_id,
+                "state": state,
+                "quantity": 1
+            }),
+            note: None,
+            source: None,
+        }
+    }
+
     fn invalid_reason(err: ObservationError) -> String {
         match err {
             ObservationError::Invalid(reason) => reason,
@@ -440,6 +547,32 @@ mod observations_tests {
         .execute(pool)
         .await
         .expect("insert source entity");
+    }
+
+    async fn seed_habit(pool: &SqlitePool, entity_id: &str) {
+        sqlx::query(
+            "INSERT INTO entities \
+             (id, type, schema_version, data, created_by, created_at, updated_at) \
+             VALUES (?1, 'habit', 1, \
+                     '{\"name\":\"Morning walk\",\"cadence\":{\"interval\":1,\"unit\":\"day\"}}', \
+                     'user', 1, 1)",
+        )
+        .bind(entity_id)
+        .execute(pool)
+        .await
+        .expect("insert habit entity");
+    }
+
+    async fn seed_person(pool: &SqlitePool, entity_id: &str) {
+        sqlx::query(
+            "INSERT INTO entities \
+             (id, type, schema_version, data, created_by, created_at, updated_at) \
+             VALUES (?1, 'person', 1, '{\"name\":\"Al\"}', 'user', 1, 1)",
+        )
+        .bind(entity_id)
+        .execute(pool)
+        .await
+        .expect("insert person entity");
     }
 
     #[tokio::test]
@@ -697,6 +830,149 @@ mod observations_tests {
         let rows = query_observations(&pool, ObservationQuery::default())
             .await
             .expect("query after rolled-back batch");
+        assert_eq!(rows.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn observations_record_habit_checkin_validates_relation_and_query_filter() {
+        let pool = memory_pool().await;
+        let habit_id = "018f0000-0000-7000-8000-abcdefabcdef";
+        let habit_id_input = habit_id.to_ascii_uppercase();
+        let other_habit_id = "018f0000-0000-7000-8000-000000000103";
+        let person_id = "018f0000-0000-7000-8000-000000000102";
+        seed_habit(&pool, habit_id).await;
+        seed_habit(&pool, other_habit_id).await;
+        seed_person(&pool, person_id).await;
+
+        let recorded = record_observations(
+            &pool,
+            RecordObservationsInput {
+                observations: vec![
+                    habit_checkin_at("2026-06-01T07:30:00", &habit_id_input, "done"),
+                    habit_checkin_at("2026-06-01T08:30:00", other_habit_id, "done"),
+                ],
+            },
+        )
+        .await
+        .expect("record habit check-ins");
+        assert_eq!(recorded.len(), 2);
+        assert_eq!(recorded[0].schema_key, "habit.checkin");
+        assert_eq!(recorded[0].schema_version, 1);
+        assert_eq!(recorded[0].values["habit_id"], json!(habit_id));
+        assert_eq!(recorded[0].values["state"], json!("done"));
+
+        let by_habit = query_observations(
+            &pool,
+            ObservationQuery {
+                related_entity_id: Some(habit_id_input),
+                ..ObservationQuery::default()
+            },
+        )
+        .await
+        .expect("query check-ins by related habit");
+        assert_eq!(by_habit.len(), 1);
+        assert_eq!(by_habit[0].id, recorded[0].id);
+
+        let malformed = ObservationRecordInput {
+            values: json!({ "habit_id": "not-a-uuid", "state": "done" }),
+            ..habit_checkin_at("2026-06-02T07:30:00", habit_id, "done")
+        };
+        let reason = record_observations(
+            &pool,
+            RecordObservationsInput {
+                observations: vec![malformed],
+            },
+        )
+        .await
+        .expect_err("malformed habit_id rejects");
+        assert_eq!(invalid_reason(reason), "habit_id must be a UUID");
+
+        let missing_id = ObservationRecordInput {
+            values: json!({ "state": "done" }),
+            ..habit_checkin_at("2026-06-02T07:30:00", habit_id, "done")
+        };
+        let reason = record_observations(
+            &pool,
+            RecordObservationsInput {
+                observations: vec![missing_id],
+            },
+        )
+        .await
+        .expect_err("missing habit_id rejects");
+        assert_eq!(invalid_reason(reason), "habit_id is required");
+
+        let missing_target = habit_checkin_at(
+            "2026-06-02T07:30:00",
+            "018f0000-0000-7000-8000-000000000199",
+            "done",
+        );
+        let reason = record_observations(
+            &pool,
+            RecordObservationsInput {
+                observations: vec![missing_target],
+            },
+        )
+        .await
+        .expect_err("missing Habit target rejects");
+        assert_eq!(
+            invalid_reason(reason),
+            "observation habit_id must name a habit"
+        );
+
+        let wrong_type = habit_checkin_at("2026-06-02T07:30:00", person_id, "done");
+        let reason = record_observations(
+            &pool,
+            RecordObservationsInput {
+                observations: vec![wrong_type],
+            },
+        )
+        .await
+        .expect_err("non-Habit target rejects");
+        assert_eq!(
+            invalid_reason(reason),
+            "observation habit_id must name a habit"
+        );
+
+        let reason = query_observations(
+            &pool,
+            ObservationQuery {
+                related_entity_id: Some("not-a-uuid".to_string()),
+                ..ObservationQuery::default()
+            },
+        )
+        .await
+        .expect_err("malformed related_entity_id rejects");
+        assert_eq!(invalid_reason(reason), "related_entity_id must be a UUID");
+    }
+
+    #[tokio::test]
+    async fn observations_record_batch_rolls_back_when_later_relation_is_invalid() {
+        let pool = memory_pool().await;
+        let habit_id = "018f0000-0000-7000-8000-000000000201";
+        seed_habit(&pool, habit_id).await;
+        let valid = habit_checkin_at("2026-06-01T07:30:00", habit_id, "done");
+        let invalid_relation = habit_checkin_at(
+            "2026-06-02T07:30:00",
+            "018f0000-0000-7000-8000-000000000299",
+            "done",
+        );
+
+        let reason = record_observations(
+            &pool,
+            RecordObservationsInput {
+                observations: vec![valid, invalid_relation],
+            },
+        )
+        .await
+        .expect_err("invalid second relation rejects the batch");
+        assert_eq!(
+            invalid_reason(reason),
+            "observation habit_id must name a habit"
+        );
+
+        let rows = query_observations(&pool, ObservationQuery::default())
+            .await
+            .expect("query after rolled-back relation batch");
         assert_eq!(rows.len(), 0);
     }
 }

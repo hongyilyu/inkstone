@@ -196,6 +196,7 @@ export const ObservationQueryParams = S.Struct({
 	to: S.optional(S.String),
 	source_entity_id: S.optional(S.String),
 	source_message_id: S.optional(S.String),
+	related_entity_id: S.optional(S.String),
 	limit: S.optional(S.Number),
 });
 export type ObservationQueryParams = S.Schema.Type<

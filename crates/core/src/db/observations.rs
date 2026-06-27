@@ -6,6 +6,7 @@ use sqlx::SqlitePool;
 use uuid::Uuid;
 
 use super::queries;
+use crate::mutation::EntityType;
 
 pub(crate) struct ObservationInsert {
     pub id: String,
@@ -17,7 +18,14 @@ pub(crate) struct ObservationInsert {
     pub note: Option<String>,
     pub created_by: String,
     pub created_via_proposal_id: Option<String>,
+    pub relations: Vec<ObservationRelationInsert>,
     pub source: Option<ObservationSourceInsert>,
+}
+
+pub(crate) struct ObservationRelationInsert {
+    pub field_name: &'static str,
+    pub entity_id: String,
+    pub target_entity_type: EntityType,
 }
 
 pub(crate) enum ObservationSourceInsert {
@@ -53,6 +61,7 @@ pub(crate) struct ObservationFilter {
     pub from: Option<String>,
     pub to: Option<String>,
     pub source: Option<ObservationSourceFilter>,
+    pub related_entity_id: Option<String>,
     pub limit: Option<i64>,
 }
 
@@ -79,6 +88,7 @@ pub(crate) struct ObservationRow {
 #[derive(Debug)]
 pub(crate) enum ObservationInsertError {
     InvalidSource(String),
+    InvalidRelation(String),
     Sqlx(sqlx::Error),
 }
 
@@ -112,6 +122,21 @@ pub(crate) async fn insert_observations(
             now_ms,
         )
         .await?;
+        for relation in row.relations {
+            if !queries::entity_is_type(
+                &mut *tx,
+                &relation.entity_id,
+                relation.target_entity_type.as_str(),
+            )
+            .await?
+            {
+                return Err(ObservationInsertError::InvalidRelation(format!(
+                    "observation {} must name a {}",
+                    relation.field_name,
+                    relation.target_entity_type.as_str()
+                )));
+            }
+        }
         if let Some(source) = row.source {
             match &source {
                 ObservationSourceInsert::JournalEntry { id } => {

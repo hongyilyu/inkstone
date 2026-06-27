@@ -1042,6 +1042,13 @@ where
             }
         }
     }
+    if let Some(related_entity_id) = &filter.related_entity_id {
+        query.push(
+            " AND o.schema_key = 'habit.checkin' \
+              AND json_extract(o.values_json, '$.habit_id') = ",
+        );
+        query.push_bind(related_entity_id);
+    }
 
     query.push(" ORDER BY o.occurred_at DESC, o.created_at DESC, o.id DESC");
     if let Some(limit) = filter.limit {
@@ -1099,6 +1106,26 @@ where
                 )
                 .collect()
         })
+}
+
+pub(super) async fn habit_checkin_observations_exist<'e, E>(
+    executor: E,
+    habit_id: &str,
+) -> sqlx::Result<bool>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    let row: Option<i64> = sqlx::query_scalar(
+        "SELECT 1 \
+         FROM observations \
+         WHERE schema_key = 'habit.checkin' \
+           AND json_extract(values_json, '$.habit_id') = ?1 \
+         LIMIT 1",
+    )
+    .bind(habit_id)
+    .fetch_optional(executor)
+    .await?;
+    Ok(row.is_some())
 }
 
 pub(super) async fn journal_entry_target_is_valid<'e, E>(
