@@ -1558,6 +1558,36 @@ describe("ProposalCard", () => {
 			expect(onDecide).not.toHaveBeenCalled();
 		});
 
+		it("blocks a record_observations edit with fields Core would reject", () => {
+			const onDecide = vi.fn();
+			render(
+				<ProposalCard proposal={recordObservations} onDecide={onDecide} />,
+			);
+			fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+			fireEvent.change(screen.getByRole("textbox", { name: /payload/i }), {
+				target: {
+					value: JSON.stringify({
+						observations: [
+							{
+								schema_key: "bodyweight",
+								occurred_at: "2026-06-04T07:30:00",
+								values: { kg: 72.2 },
+								unit: "kg",
+							},
+						],
+					}),
+				},
+			});
+
+			expect(screen.getByRole("alert")).toHaveTextContent(
+				"payload must match the record_observations schema",
+			);
+			expect(
+				screen.getByRole("button", { name: /save changes/i }),
+			).toBeDisabled();
+			expect(onDecide).not.toHaveBeenCalled();
+		});
+
 		it("renders Core's record_observations validation error", () => {
 			render(
 				<ProposalCard

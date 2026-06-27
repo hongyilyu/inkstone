@@ -11,6 +11,7 @@ import { Button } from "./ui/button.js";
 
 const decodeObservationRecordParams = S.decodeUnknownEither(
 	ObservationRecordParams,
+	{ onExcessProperty: "error" },
 );
 
 function unknownField(payload: unknown, key: string): unknown {
