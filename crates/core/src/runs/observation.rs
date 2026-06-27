@@ -55,7 +55,13 @@ pub(super) async fn handle_query(
         id,
         params,
         out_tx,
-        |params: ObservationQueryParams| async move {
+        |raw: serde_json::Value| async move {
+            let params: ObservationQueryParams = if raw.is_null() {
+                ObservationQueryParams::default()
+            } else {
+                serde_json::from_value(raw)
+                    .map_err(|e| HandlerError::InvalidParams(format!("invalid params: {e}")))?
+            };
             let observations = observations::query_observations(
                 pool,
                 ObservationQuery {
@@ -185,20 +191,22 @@ mod tests {
     }
 
     async fn dispatch_rpc(pool: &SqlitePool, method: &str, params: Value) -> Value {
-        let hubs = hub::new_hubs();
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        super::super::dispatch(
+        dispatch_request(
             pool,
-            &hubs,
             JsonRpcRequest {
                 jsonrpc: "2.0".to_string(),
                 id: json!(1),
                 method: method.to_string(),
                 params,
             },
-            &tx,
         )
-        .await;
+        .await
+    }
+
+    async fn dispatch_request(pool: &SqlitePool, request: JsonRpcRequest) -> Value {
+        let hubs = hub::new_hubs();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        super::super::dispatch(pool, &hubs, request, &tx).await;
         recv_json(&mut rx)
     }
 
@@ -409,6 +417,50 @@ mod tests {
             .expect("latest observations array");
         assert_eq!(observations[0]["id"], bare_id);
         assert_eq!(observations[0]["source"], Value::Null);
+    }
+
+    #[tokio::test]
+    async fn observation_rpc_accepts_omitted_and_null_query_params() {
+        let pool = memory_pool().await;
+        let recorded = dispatch_rpc(
+            &pool,
+            "observation/record",
+            json!({
+                "observations": [{
+                    "schema_key": "bodyweight",
+                    "occurred_at": "2026-06-01T07:30:00",
+                    "values": { "kg": 72.4 }
+                }]
+            }),
+        )
+        .await;
+        assert!(recorded.get("error").is_none(), "{recorded:?}");
+
+        let null_params = dispatch_rpc(&pool, "observation/query", Value::Null).await;
+        assert!(null_params.get("error").is_none(), "{null_params:?}");
+        assert_eq!(
+            null_params["result"]["observations"]
+                .as_array()
+                .expect("null params observations")
+                .len(),
+            1
+        );
+
+        let omitted_request: JsonRpcRequest = serde_json::from_value(json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "observation/query"
+        }))
+        .expect("omitted params request decodes");
+        let omitted_params = dispatch_request(&pool, omitted_request).await;
+        assert!(omitted_params.get("error").is_none(), "{omitted_params:?}");
+        assert_eq!(
+            omitted_params["result"]["observations"]
+                .as_array()
+                .expect("omitted params observations")
+                .len(),
+            1
+        );
     }
 
     #[tokio::test]
