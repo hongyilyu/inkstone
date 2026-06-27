@@ -468,7 +468,7 @@ async fn apply_record_observations(
     let input = crate::observations::record_observations_input_from_payload(applied_payload)
         .map_err(DecideError::Invalid)?;
     let now_ms = db::now_ms();
-    let (inserts, _) = crate::observations::prepare_observations(
+    let (inserts, observations) = crate::observations::prepare_observations(
         input,
         "proposal",
         Some(proposal_id),
@@ -478,6 +478,11 @@ async fn apply_record_observations(
         crate::observations::ObservationError::Invalid(reason) => DecideError::Invalid(reason),
         crate::observations::ObservationError::Internal(err) => DecideError::Internal(err),
     })?;
+    let decision_result_payload = serde_json::json!({
+        "decision": "accept",
+        "content": crate::observations::render_accept(&observations),
+    })
+    .to_string();
 
     db::apply_record_observations_proposal(
         pool,
@@ -487,17 +492,7 @@ async fn apply_record_observations(
         inserts,
         edited_payload,
         idempotency_key,
-        |_| {
-            serde_json::json!({
-                "decision": "accept",
-                "content": entities::render_accept(
-                    ProposableMutation::RecordObservations,
-                    applied_payload,
-                    None,
-                ),
-            })
-            .to_string()
-        },
+        &decision_result_payload,
         now_ms,
     )
     .await?;

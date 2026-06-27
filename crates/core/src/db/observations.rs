@@ -197,11 +197,10 @@ pub(crate) async fn apply_record_observations_proposal(
     rows: Vec<ObservationInsert>,
     edited_payload: Option<&serde_json::Value>,
     decision_idempotency_key: Option<&str>,
-    decision_result_payload: impl FnOnce(usize) -> String,
+    decision_result_payload: &str,
     now_ms: i64,
 ) -> Result<(), ApplyError> {
     let edited_str = edited_payload.map(|v| v.to_string());
-    let observation_count = rows.len();
     let mut tx = pool.begin().await?;
 
     let accepted = ProposalStatus::accept(
@@ -221,12 +220,11 @@ pub(crate) async fn apply_record_observations_proposal(
         .await
         .map_err(observation_insert_to_apply)?;
 
-    let decision_result_payload = decision_result_payload(observation_count);
     queries::resolve_tool_call(
         &mut *tx,
         tool_call_id,
         "completed",
-        &decision_result_payload,
+        decision_result_payload,
         now_ms,
     )
     .await?;

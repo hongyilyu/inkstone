@@ -225,50 +225,9 @@ pub(crate) fn render_accept(
             )
         }
         P::RecordObservations => {
-            let observations = payload.get("observations").and_then(Value::as_array);
-            let count = observations.map_or(0, Vec::len);
-            let details = observations
-                .map(|items| {
-                    items
-                        .iter()
-                        .map(observation_accept_text)
-                        .collect::<Vec<_>>()
-                        .join("; ")
-                })
-                .unwrap_or_default();
-            if details.is_empty() {
-                format!("Accepted. Recorded {count} observations.")
-            } else {
-                format!("Accepted. Recorded {count} observations ({details}).")
-            }
+            unreachable!("record_observations accept rendering is owned by observations")
         }
     }
-}
-
-fn observation_accept_text(observation: &Value) -> String {
-    let schema_key = observation
-        .get("schema_key")
-        .and_then(Value::as_str)
-        .unwrap_or("unknown");
-    let occurred_at = observation
-        .get("occurred_at")
-        .and_then(Value::as_str)
-        .unwrap_or("unknown");
-    let ended_at = observation
-        .get("ended_at")
-        .and_then(Value::as_str)
-        .map(|value| format!(", ended_at={value}"))
-        .unwrap_or_default();
-    let values = observation
-        .get("values")
-        .map(Value::to_string)
-        .unwrap_or_else(|| "unknown".to_string());
-    let note = observation
-        .get("note")
-        .and_then(Value::as_str)
-        .map(|value| format!(", note={value}"))
-        .unwrap_or_default();
-    format!("{schema_key} at {occurred_at}{ended_at}, values={values}{note}")
 }
 
 fn journal_body_text(payload: &Value) -> String {
@@ -2219,31 +2178,6 @@ mod tests {
         assert!(
             text.contains("Created Todo") && text.contains("Ship it") && text.contains("active"),
             "confirmation names the created Todo fields: {text}"
-        );
-    }
-
-    #[test]
-    fn render_accept_record_observations_includes_committed_details() {
-        let text = render_accept(
-            "record_observations",
-            &json!({
-                "observations": [
-                    {
-                        "schema_key": "bodyweight",
-                        "occurred_at": "2026-06-04T07:30:00",
-                        "values": { "kg": 72.2 },
-                        "note": "corrected scale reading"
-                    }
-                ]
-            }),
-        );
-        assert!(
-            text.contains("Recorded 1 observations")
-                && text.contains("bodyweight")
-                && text.contains("2026-06-04T07:30:00")
-                && text.contains("72.2")
-                && text.contains("corrected scale reading"),
-            "confirmation names the committed Observation fields: {text}"
         );
     }
 

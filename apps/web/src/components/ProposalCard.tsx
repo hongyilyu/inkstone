@@ -86,6 +86,11 @@ import {
 	EditorSelect,
 	EditorTextarea,
 } from "./library/EntityEditor.js";
+import {
+	ObservationEditForm,
+	observationBatchSummary,
+	renderObservationBody,
+} from "./ProposalCardObservations.js";
 import { Badge, type BadgeProps } from "./ui/badge.js";
 import { Button } from "./ui/button.js";
 import { Card } from "./ui/card.js";
@@ -427,13 +432,6 @@ function arrayField(payload: unknown, key: string): unknown[] {
 		if (Array.isArray(value)) return value;
 	}
 	return [];
-}
-
-function unknownField(payload: unknown, key: string): unknown {
-	if (payload && typeof payload === "object" && key in payload) {
-		return (payload as Record<string, unknown>)[key];
-	}
-	return undefined;
 }
 
 function journalBody(payload: unknown): string {
@@ -945,94 +943,6 @@ function SingleEntityProposalCard({
 				</>
 			)}
 		</Card>
-	);
-}
-
-function prettyJson(value: unknown): string {
-	return JSON.stringify(value ?? {}, null, 2) ?? "{}";
-}
-
-function parseJsonObject(
-	text: string,
-):
-	| { value: Record<string, unknown>; error: null }
-	| { value: null; error: string } {
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(text);
-	} catch {
-		return { value: null, error: "payload must be valid JSON" };
-	}
-	if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-		return { value: null, error: "payload must be a JSON object" };
-	}
-	return { value: parsed as Record<string, unknown>, error: null };
-}
-
-function ObservationEditForm({
-	payload,
-	submitting,
-	onSave,
-	onCancel,
-}: {
-	payload: unknown;
-	submitting: boolean;
-	onSave: (editedPayload: Record<string, unknown>) => void;
-	onCancel: () => void;
-}): ReactNode {
-	const payloadInputId = useId();
-	const [text, setText] = useState(() => prettyJson(payload));
-	const parsed = useMemo(() => parseJsonObject(text), [text]);
-	const submit = () => {
-		if (submitting || parsed.value === null) return;
-		onSave(parsed.value);
-	};
-
-	return (
-		<form
-			onSubmit={(event) => {
-				event.preventDefault();
-				submit();
-			}}
-			className="flex flex-col gap-3 border-border border-t pt-3"
-		>
-			<EditorField label="Payload" htmlFor={payloadInputId}>
-				<EditorTextarea
-					id={payloadInputId}
-					autoFocus
-					value={text}
-					spellCheck={false}
-					onChange={(event) => setText(event.target.value)}
-				/>
-			</EditorField>
-			{parsed.error ? (
-				<p role="alert" className="text-sm text-destructive">
-					Edit required fields: {parsed.error}.
-				</p>
-			) : null}
-			<footer className="flex items-center gap-2 pt-1">
-				<Button
-					type="submit"
-					variant="primary"
-					size="row"
-					className="gap-1.5 px-3.5 py-2"
-					disabled={submitting || parsed.value === null}
-				>
-					<Check className="size-4" aria-hidden />
-					Save changes
-				</Button>
-				<Button
-					type="button"
-					variant="ghost"
-					size="sm"
-					className="ml-auto py-1.5 text-sm"
-					disabled={submitting}
-					onClick={onCancel}
-				>
-					Cancel
-				</Button>
-			</footer>
-		</form>
 	);
 }
 
@@ -2371,94 +2281,6 @@ function personRefFields(
 // mode-gated). Each owns the full detail body — including the `border-t` divider
 // the JSX fork used to wrap them in — and reads the opaque payload (and, for
 // journal diffs, the review context) only through the defensive helpers above.
-
-function observationValueText(value: unknown): string {
-	if (value === undefined) return "Unknown";
-	return JSON.stringify(value) ?? "Unknown";
-}
-
-function observationBatchSummary(payload: unknown): string {
-	const observations = arrayField(payload, "observations");
-	if (observations.length === 0) return "Observations";
-	if (observations.length === 1) {
-		return textField(observations[0], "schema_key") || "1 observation";
-	}
-	return `${observations.length} observations`;
-}
-
-function observationEvidenceText(payload: unknown): string {
-	const evidence = objectField(payload, "evidence");
-	const journalEntryId = textField(evidence, "journal_entry_id");
-	if (journalEntryId) return `Journal Entry: ${journalEntryId}`;
-	const messageId = textField(evidence, "message_id");
-	if (messageId) return `Message: ${messageId}`;
-	return "";
-}
-
-function renderObservationBody({ payload }: ProposalBodyArgs): ReactNode {
-	const observations = arrayField(payload, "observations");
-	const evidence = observationEvidenceText(payload);
-	const seen = new Map<string, number>();
-	return (
-		<div className="flex flex-col gap-3 border-border border-t pt-3">
-			<section className="flex flex-col gap-2">
-				<p className="text-xs font-medium tracking-normal text-muted-foreground">
-					Observations
-				</p>
-				{observations.length > 0 ? (
-					<div className="flex flex-col gap-3">
-						{observations.map((observation, position) => {
-							const schemaKey =
-								textField(observation, "schema_key") || "Observation";
-							const occurredAt = textField(observation, "occurred_at");
-							const endedAt = textField(observation, "ended_at");
-							const note = textField(observation, "note");
-							const values = observationValueText(
-								unknownField(observation, "values"),
-							);
-							const keySeed = `${schemaKey}:${occurredAt}:${values}`;
-							const nth = seen.get(keySeed) ?? 0;
-							seen.set(keySeed, nth + 1);
-							return (
-								<dl
-									key={`${keySeed}:${nth}`}
-									className="flex flex-col gap-1.5 text-sm"
-								>
-									<Field
-										label="Schema"
-										value={
-											observations.length === 1
-												? schemaKey
-												: `${position + 1}. ${schemaKey}`
-										}
-									/>
-									<Field label="Occurred" value={occurredAt || "Unknown"} />
-									{endedAt ? <Field label="Ended" value={endedAt} /> : null}
-									<Field label="Values" value={values} />
-									{note ? <Field label="Note" value={note} /> : null}
-								</dl>
-							);
-						})}
-					</div>
-				) : (
-					<p className="text-muted-foreground text-sm">
-						Observation details unavailable.
-					</p>
-				)}
-			</section>
-			{evidence ? (
-				<section className="flex flex-col gap-2">
-					<p className="text-xs font-medium tracking-normal text-muted-foreground">
-						Evidence
-					</p>
-					<dl className="flex flex-col gap-1.5 text-sm">
-						<Field label="Source" value={evidence} />
-					</dl>
-				</section>
-			) : null}
-		</div>
-	);
-}
 
 /** Kinds with no detail body (reference, fallback). */
 function renderNoBody(): ReactNode {

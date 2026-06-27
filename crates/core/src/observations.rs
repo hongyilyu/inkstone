@@ -184,6 +184,38 @@ pub(crate) fn prepare_observations(
     Ok((inserts, observations))
 }
 
+pub(crate) fn render_accept(observations: &[Observation]) -> String {
+    let count = observations.len();
+    let details = observations
+        .iter()
+        .map(observation_accept_text)
+        .collect::<Vec<_>>()
+        .join("; ");
+    if details.is_empty() {
+        format!("Accepted. Recorded {count} observations.")
+    } else {
+        format!("Accepted. Recorded {count} observations ({details}).")
+    }
+}
+
+fn observation_accept_text(observation: &Observation) -> String {
+    let ended_at = observation
+        .ended_at
+        .as_ref()
+        .map(|value| format!(", ended_at={value}"))
+        .unwrap_or_default();
+    let values = observation.values.to_string();
+    let note = observation
+        .note
+        .as_ref()
+        .map(|value| format!(", note={value}"))
+        .unwrap_or_default();
+    format!(
+        "{} at {}{}, values={}{}",
+        observation.schema_key, observation.occurred_at, ended_at, values, note
+    )
+}
+
 pub(crate) fn observation_insert_error(e: db::ObservationInsertError) -> ObservationError {
     match e {
         db::ObservationInsertError::InvalidSource(reason) => ObservationError::Invalid(reason),
@@ -203,12 +235,18 @@ pub(crate) async fn query_observations(
         .map(|id| normalize_uuid(id, "related_entity_id"))
         .transpose()
         .map_err(ObservationError::Invalid)?;
-    let source = filter.source.map(|source| match source {
-        ObservationSourceInput::JournalEntry { id } => {
-            db::ObservationSourceFilter::JournalEntry { id }
-        }
-        ObservationSourceInput::Message { id } => db::ObservationSourceFilter::Message { id },
-    });
+    let source = filter
+        .source
+        .as_ref()
+        .map(validated_source)
+        .transpose()
+        .map_err(ObservationError::Invalid)?
+        .map(|source| match source {
+            ObservationSource::JournalEntry { id } => {
+                db::ObservationSourceFilter::JournalEntry { id }
+            }
+            ObservationSource::Message { id } => db::ObservationSourceFilter::Message { id },
+        });
     let rows = db::query_observations(
         pool,
         db::ObservationFilter {
@@ -345,12 +383,12 @@ fn validate_query(filter: &ObservationQuery) -> Result<(), String> {
 fn validated_source(source: &ObservationSourceInput) -> Result<ObservationSource, String> {
     match source {
         ObservationSourceInput::JournalEntry { id } => {
-            parse_uuid(id, "source_entity_id")?;
-            Ok(ObservationSource::JournalEntry { id: id.clone() })
+            let id = normalize_uuid(id, "source_entity_id")?;
+            Ok(ObservationSource::JournalEntry { id })
         }
         ObservationSourceInput::Message { id } => {
-            parse_uuid(id, "source_message_id")?;
-            Ok(ObservationSource::Message { id: id.clone() })
+            let id = normalize_uuid(id, "source_message_id")?;
+            Ok(ObservationSource::Message { id })
         }
     }
 }
@@ -572,6 +610,40 @@ mod observations_tests {
         }
     }
 
+    #[test]
+    fn render_accept_uses_prepared_observation_rows() {
+        let raw_habit_id = "0190D3C1-ABCD-7000-8000-ABCDEF000001";
+        let expected_habit_id = "0190d3c1-abcd-7000-8000-abcdef000001";
+        let (_, observations) = prepare_observations(
+            RecordObservationsInput {
+                observations: vec![ObservationRecordInput {
+                    schema_key: "habit.checkin".to_string(),
+                    occurred_at: "2026-06-04T07:30:00".to_string(),
+                    ended_at: None,
+                    values: json!({
+                        "habit_id": raw_habit_id,
+                        "state": "done"
+                    }),
+                    note: Some("morning walk".to_string()),
+                    source: None,
+                }],
+            },
+            "proposal",
+            Some("proposal-observation-render"),
+            1,
+        )
+        .expect("prepare habit checkin");
+
+        let text = render_accept(&observations);
+
+        assert!(text.contains("Recorded 1 observations"));
+        assert!(text.contains("habit.checkin"));
+        assert!(text.contains("2026-06-04T07:30:00"));
+        assert!(text.contains(expected_habit_id));
+        assert!(!text.contains(raw_habit_id));
+        assert!(text.contains("morning walk"));
+    }
+
     async fn seed_message(pool: &SqlitePool, message_id: &str) {
         let mut tx = pool.begin().await.expect("begin source message seed");
         sqlx::query(
@@ -731,13 +803,17 @@ mod observations_tests {
         assert_eq!(by_time[0].note.as_deref(), Some("morning"));
         assert_eq!(by_time[0].updated_at, by_time[0].created_at);
 
+        let message_id_upper =
+            "018f0000-0000-7000-8000-000000000001".to_ascii_uppercase();
+        let journal_entry_id_upper =
+            "018f0000-0000-7000-8000-000000000002".to_ascii_uppercase();
         let mut from_message = bodyweight_at("2026-06-02T07:30:00", json!(72.1));
         from_message.source = Some(ObservationSourceInput::Message {
-            id: "018f0000-0000-7000-8000-000000000001".to_string(),
+            id: message_id_upper.clone(),
         });
         let mut from_entity = bodyweight_at("2026-06-03T07:30:00", json!(71.9));
         from_entity.source = Some(ObservationSourceInput::JournalEntry {
-            id: "018f0000-0000-7000-8000-000000000002".to_string(),
+            id: journal_entry_id_upper.clone(),
         });
         let sourced = record_observations(
             &pool,
@@ -752,7 +828,7 @@ mod observations_tests {
             &pool,
             ObservationQuery {
                 source: Some(ObservationSourceInput::Message {
-                    id: "018f0000-0000-7000-8000-000000000001".to_string(),
+                    id: message_id_upper,
                 }),
                 ..ObservationQuery::default()
             },
@@ -766,7 +842,7 @@ mod observations_tests {
             &pool,
             ObservationQuery {
                 source: Some(ObservationSourceInput::JournalEntry {
-                    id: "018f0000-0000-7000-8000-000000000002".to_string(),
+                    id: journal_entry_id_upper,
                 }),
                 ..ObservationQuery::default()
             },

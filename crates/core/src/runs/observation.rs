@@ -7,8 +7,8 @@ use tokio::sync::mpsc::UnboundedSender;
 use super::handler::{self, HandlerError};
 use crate::observations::{self, ObservationQuery, ObservationSource, ObservationSourceInput};
 use crate::protocol::{
-    ObservationQueryParams, ObservationQueryResult, ObservationRecordParams,
-    ObservationRecordResult, ObservationRow, ObservationSourceView,
+    ObservationQueryParams, ObservationQueryResult, ObservationRecordResult, ObservationRow,
+    ObservationSourceView,
 };
 
 pub(super) async fn handle_record(
@@ -21,8 +21,8 @@ pub(super) async fn handle_record(
         id,
         params,
         out_tx,
-        |params: ObservationRecordParams| async move {
-            let input = observations::record_observations_input_from_params(params)
+        |params: serde_json::Value| async move {
+            let input = observations::record_observations_input_from_payload(&params)
                 .map_err(HandlerError::InvalidParams)?;
             let recorded = observations::record_observations(pool, input)
                 .await
@@ -268,12 +268,14 @@ mod tests {
         let journal_entry_id = Uuid::now_v7();
         seed_message(&pool, message_id).await;
         seed_journal_entry(&pool, journal_entry_id).await;
+        let message_id_upper = message_id.to_string().to_ascii_uppercase();
+        let journal_entry_id_upper = journal_entry_id.to_string().to_ascii_uppercase();
 
         let recorded = dispatch_rpc(
             &pool,
             "observation/record",
             json!({
-                "evidence": { "message_id": message_id.to_string() },
+                "evidence": { "message_id": message_id_upper },
                 "observations": [
                     {
                         "schema_key": "bodyweight",
@@ -304,7 +306,7 @@ mod tests {
                 "schema_keys": ["bodyweight"],
                 "from": "2026-06-01T00:00:00",
                 "to": "2026-06-02T23:59:59",
-                "source_message_id": message_id.to_string(),
+                "source_message_id": message_id.to_string().to_ascii_uppercase(),
                 "limit": 1
             }),
         )
@@ -334,7 +336,7 @@ mod tests {
             &pool,
             "observation/record",
             json!({
-                "evidence": { "journal_entry_id": journal_entry_id.to_string() },
+                "evidence": { "journal_entry_id": journal_entry_id_upper },
                 "observations": [{
                     "schema_key": "bodyweight",
                     "occurred_at": "2026-06-03T07:30:00",
@@ -351,7 +353,7 @@ mod tests {
         let by_journal = dispatch_rpc(
             &pool,
             "observation/query",
-            json!({ "source_entity_id": journal_entry_id.to_string() }),
+            json!({ "source_entity_id": journal_entry_id.to_string().to_ascii_uppercase() }),
         )
         .await;
         let observations = by_journal["result"]["observations"]
@@ -368,7 +370,6 @@ mod tests {
             &pool,
             "observation/record",
             json!({
-                "evidence": {},
                 "observations": [{
                     "schema_key": "bodyweight",
                     "occurred_at": "2026-06-04T07:30:00",
@@ -501,6 +502,24 @@ mod tests {
     async fn observation_rpc_rejects_bad_record_params_as_invalid_params() {
         let pool = memory_pool().await;
 
+        let null_params = dispatch_rpc(&pool, "observation/record", Value::Null).await;
+        assert_invalid_params(&null_params);
+
+        let extra_top_level_key = dispatch_rpc(
+            &pool,
+            "observation/record",
+            json!({
+                "observations": [{
+                    "schema_key": "bodyweight",
+                    "occurred_at": "2026-06-01T07:30:00",
+                    "values": { "kg": 72.4 }
+                }],
+                "debug": true
+            }),
+        )
+        .await;
+        assert_invalid_params(&extra_top_level_key);
+
         let unknown_schema = dispatch_rpc(
             &pool,
             "observation/record",
@@ -546,6 +565,54 @@ mod tests {
         )
         .await;
         assert_invalid_params(&conflicting_evidence);
+
+        let empty_evidence = dispatch_rpc(
+            &pool,
+            "observation/record",
+            json!({
+                "evidence": {},
+                "observations": [{
+                    "schema_key": "bodyweight",
+                    "occurred_at": "2026-06-01T07:30:00",
+                    "values": { "kg": 72.4 }
+                }]
+            }),
+        )
+        .await;
+        assert_invalid_params(&empty_evidence);
+
+        let null_evidence = dispatch_rpc(
+            &pool,
+            "observation/record",
+            json!({
+                "evidence": null,
+                "observations": [{
+                    "schema_key": "bodyweight",
+                    "occurred_at": "2026-06-01T07:30:00",
+                    "values": { "kg": 72.4 }
+                }]
+            }),
+        )
+        .await;
+        assert_invalid_params(&null_evidence);
+
+        let extra_evidence_key = dispatch_rpc(
+            &pool,
+            "observation/record",
+            json!({
+                "evidence": {
+                    "message_id": Uuid::now_v7().to_string(),
+                    "source": "chat"
+                },
+                "observations": [{
+                    "schema_key": "bodyweight",
+                    "occurred_at": "2026-06-01T07:30:00",
+                    "values": { "kg": 72.4 }
+                }]
+            }),
+        )
+        .await;
+        assert_invalid_params(&extra_evidence_key);
 
         let person_id = Uuid::now_v7();
         seed_person(&pool, person_id).await;
