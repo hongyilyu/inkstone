@@ -236,10 +236,10 @@ async fn review_context_for_proposal(
         // `update_todo` is a partial MERGE (ADR-0033): omitted fields are NOT
         // dropped, so there is no "what a REPLACE removes" diff to surface — it
         // carries no review context (see `carries_review_context`). No proposable
-        // Bookmark kind carries review context either (Bookmark mutations are
-        // user-path-only). Both degrade gracefully rather than panic if a future
+        // Bookmark/Habit kind carries review context either (those mutations are
+        // user-path-only). These degrade gracefully rather than panic if a future
         // kind reaches here.
-        EntityType::Todo | EntityType::Bookmark => return Ok(None),
+        EntityType::Todo | EntityType::Bookmark | EntityType::Habit => return Ok(None),
     };
 
     Ok(Some(context))

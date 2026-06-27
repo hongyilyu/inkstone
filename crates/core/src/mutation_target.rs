@@ -203,6 +203,8 @@ pub(crate) async fn validate_mutation_target_refs(
             | MutationKind::DeleteTodo
             | MutationKind::UpdateBookmark
             | MutationKind::DeleteBookmark
+            | MutationKind::UpdateHabit
+            | MutationKind::DeleteHabit
     );
     if generic_type_check {
         let target_type = kind.describe().entity_type;
@@ -301,9 +303,10 @@ pub(crate) async fn validate_mutation_target_refs(
         return Ok(());
     }
 
-    // Remaining kinds (create_journal_entry, update_journal_entry,
-    // delete_journal_entry) carry no run-independent target reference here:
-    // create has nothing to resolve, and the journal update/delete target is
-    // validated by the same-thread guard in `decide`.
+    // Remaining kinds carry no run-independent target reference here: direct
+    // creates with no auxiliary refs have nothing to resolve, and
+    // apply_intent_graph owns its graph-level resolution in the graph apply path.
+    // Journal update/delete targets were type-checked above; `decide` adds the
+    // run-coupled same-thread guard on the agent path.
     Ok(())
 }

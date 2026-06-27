@@ -1,8 +1,8 @@
-//! The `search_entities` tool. Looks up accepted People, Projects, and Todos by
-//! type and a case-insensitive substring query, returning compact rows the model
-//! can use to reference or link them. Search is over accepted entities only
-//! (via `crate::db::list_by_type`); the tool exposes no arbitrary SQL or
-//! table-level CRUD.
+//! The `search_entities` tool. Looks up accepted People, Projects, Todos, and
+//! Habits by type and a case-insensitive substring query, returning compact
+//! lookup rows. Search is over accepted entities only (via
+//! `crate::db::list_by_type`); the tool exposes no arbitrary SQL or table-level
+//! CRUD.
 
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -13,7 +13,8 @@ use crate::mutation::{EntityType, EntityTypeSpec};
 use crate::protocol::{AgentToolResult, CoreToolDescriptor, ToolTextContent};
 
 pub const NAME: &str = "search_entities";
-const DESCRIPTION: &str = "Search accepted People, Projects, and Todos by type and query; returns compact rows for referencing or linking.";
+const DESCRIPTION: &str =
+    "Search accepted People, Projects, Todos, and Habits by type and query; returns compact lookup rows.";
 const LABEL: &str = "Search entities";
 
 /// Default and hard-cap on how many compact rows to return.
@@ -85,7 +86,7 @@ pub fn descriptor() -> CoreToolDescriptor {
 
 /// Search accepted entities of the requested `type` whose label — or, for a
 /// person, any alias — contains `query` (case-insensitive); an empty `query`
-/// matches all. Returns up to `limit` compact rows `{ id, type, label,
+/// matches all. Returns up to `limit` compact lookup rows `{ id, type, label,
 /// aliases? }` as a `{ "results": [...] }` text payload. Search is over
 /// accepted entities only (`crate::db::list_by_type`).
 pub async fn execute(pool: &SqlitePool, params: Value) -> Result<AgentToolResult, ToolError> {
@@ -325,6 +326,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn habit_matches_name_and_omits_aliases() {
+        let pool = memory_pool().await;
+        seed_entity(
+            &pool,
+            "00000000-0000-4000-8000-000000000012",
+            "habit",
+            r#"{"name":"Morning walk","cadence":{"interval":1,"unit":"day"}}"#,
+        )
+        .await;
+
+        let out = execute(&pool, json!({ "type": "habit", "query": "walk" }))
+            .await
+            .expect("search ok");
+        let rows = results(&out);
+        assert_eq!(rows.len(), 1, "one habit matches 'walk', got {rows:?}");
+        assert_eq!(rows[0]["type"], "habit");
+        assert_eq!(rows[0]["label"], "Morning walk");
+        assert!(
+            rows[0].get("aliases").is_none(),
+            "habits omit aliases, got {rows:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn empty_query_returns_all_of_type_and_limit_caps() {
         let pool = memory_pool().await;
         for i in 0..5 {
@@ -431,8 +456,8 @@ mod tests {
         let enum_values = &d.json_schema["properties"]["type"]["enum"];
         assert_eq!(
             enum_values,
-            &json!(["person", "project", "todo"]),
-            "type is a closed person/project/todo enum, got {}",
+            &json!(["person", "project", "todo", "habit"]),
+            "type is a closed searchable Entity Type enum, got {}",
             d.json_schema
         );
     }
