@@ -422,6 +422,99 @@ pub struct RecurrencePreviewResult {
     pub due_at: Option<String>,
 }
 
+/// One draft observation in `observation/record` params (ADR-0053). `values` is
+/// schema-specific opaque JSON; Core validates it against the observation schema
+/// registry before storage.
+#[derive(Debug, Deserialize)]
+pub struct ObservationRecordDraft {
+    pub schema_key: String,
+    pub occurred_at: String,
+    #[serde(default)]
+    pub ended_at: Option<String>,
+    pub values: serde_json::Value,
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+/// Optional evidence attached to a direct `observation/record` batch. Both
+/// fields are strings at the wire layer; Core validates identifiers when the RPC
+/// handler maps this shape into the observation module.
+#[derive(Debug, Deserialize)]
+pub struct ObservationEvidence {
+    #[serde(default)]
+    pub journal_entry_id: Option<String>,
+    #[serde(default)]
+    pub message_id: Option<String>,
+}
+
+/// `observation/record` params (ADR-0053): direct user-authored observation
+/// drafts plus optional shared evidence for the batch.
+#[derive(Debug, Deserialize)]
+pub struct ObservationRecordParams {
+    pub observations: Vec<ObservationRecordDraft>,
+    #[serde(default)]
+    pub evidence: Option<ObservationEvidence>,
+}
+
+/// `observation/record` result: ids of the created observations, in input order.
+#[derive(Debug, Serialize)]
+pub struct ObservationRecordResult {
+    pub observation_ids: Vec<String>,
+}
+
+/// `observation/query` params (ADR-0053): optional schema, time, source, and
+/// limit filters. `related_entity_id` is intentionally absent in the first
+/// relation-free proving slice.
+#[derive(Debug, Default, Deserialize)]
+pub struct ObservationQueryParams {
+    #[serde(default)]
+    pub schema_keys: Option<Vec<String>>,
+    #[serde(default)]
+    pub from: Option<String>,
+    #[serde(default)]
+    pub to: Option<String>,
+    #[serde(default)]
+    pub source_entity_id: Option<String>,
+    #[serde(default)]
+    pub source_message_id: Option<String>,
+    #[serde(default)]
+    pub limit: Option<i64>,
+}
+
+/// One observation source surfaced in `observation/query` results.
+#[derive(Debug, Serialize)]
+pub struct ObservationSourceView {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_entity_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_message_id: Option<String>,
+    pub relation: String,
+}
+
+/// One row in an `observation/query` result. Nullable fields serialize as
+/// explicit `null` so the Client can distinguish "known absent" from omitted
+/// request fields.
+#[derive(Debug, Serialize)]
+pub struct ObservationRow {
+    pub id: String,
+    pub schema_key: String,
+    pub schema_version: i64,
+    pub occurred_at: String,
+    pub ended_at: Option<String>,
+    pub values: serde_json::Value,
+    pub note: Option<String>,
+    pub source: Option<ObservationSourceView>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// `observation/query` result: matched observations, newest-first by Core query
+/// behavior once the handler is wired.
+#[derive(Debug, Serialize)]
+pub struct ObservationQueryResult {
+    pub observations: Vec<ObservationRow>,
+}
+
 /// `entity/list` params: the Entity `type` to list, one per call (e.g. `"todo"`,
 /// `"person"`). `r#type` serializes as the wire field `"type"`.
 #[derive(Debug, Deserialize)]
@@ -1440,6 +1533,82 @@ mod mirror_tests {
     }
 
     #[test]
+    fn observation_record_params_decodes_batch_and_evidence() {
+        let wire = json!({
+            "observations": [
+                {
+                    "schema_key": "bodyweight",
+                    "occurred_at": "2026-06-01T07:30:00",
+                    "ended_at": "2026-06-01T07:35:00",
+                    "values": { "kg": 72.4 },
+                    "note": "after morning run"
+                },
+                {
+                    "schema_key": "bodyweight",
+                    "occurred_at": "2026-06-02T07:30:00",
+                    "values": { "kg": 72.1 }
+                }
+            ],
+            "evidence": {
+                "journal_entry_id": UUID_A
+            }
+        });
+        let p: ObservationRecordParams = serde_json::from_value(wire).unwrap();
+        assert_eq!(p.observations.len(), 2);
+        assert_eq!(
+            p.observations[0].ended_at.as_deref(),
+            Some("2026-06-01T07:35:00")
+        );
+        assert_eq!(p.observations[0].values["kg"], json!(72.4));
+        assert_eq!(p.observations[0].note.as_deref(), Some("after morning run"));
+        assert!(p.observations[1].ended_at.is_none());
+        let evidence = p.evidence.expect("evidence present");
+        assert_eq!(evidence.journal_entry_id.as_deref(), Some(UUID_A));
+        assert_eq!(evidence.message_id, None);
+    }
+
+    #[test]
+    fn observation_query_params_decodes_omitted_filters() {
+        let p: ObservationQueryParams = serde_json::from_value(json!({})).unwrap();
+        assert!(p.schema_keys.is_none());
+        assert!(p.from.is_none());
+        assert!(p.to.is_none());
+        assert!(p.source_entity_id.is_none());
+        assert!(p.source_message_id.is_none());
+        assert!(p.limit.is_none());
+    }
+
+    #[test]
+    fn observation_results_encode_expected_shapes() {
+        let record = ObservationRecordResult {
+            observation_ids: vec![UUID_A.to_string(), UUID_B.to_string()],
+        };
+        assert_eq!(
+            serde_json::to_value(&record).unwrap(),
+            json!({ "observation_ids": [UUID_A, UUID_B] }),
+        );
+
+        let query = ObservationQueryResult {
+            observations: vec![ObservationRow {
+                id: UUID_A.to_string(),
+                schema_key: "bodyweight".to_string(),
+                schema_version: 1,
+                occurred_at: "2026-06-01T07:30:00".to_string(),
+                ended_at: None,
+                values: json!({ "kg": 72.4 }),
+                note: None,
+                source: None,
+                created_at: 1_700_000_000_000,
+                updated_at: 1_700_000_000_000,
+            }],
+        };
+        let row = &serde_json::to_value(&query).unwrap()["observations"][0];
+        assert_eq!(row["ended_at"], json!(null));
+        assert_eq!(row["note"], json!(null));
+        assert_eq!(row["source"], json!(null));
+    }
+
+    #[test]
     fn thread_get_params_decodes_thread_id() {
         let wire = json!({ "thread_id": UUID_A });
         let p: ThreadGetParams = serde_json::from_value(wire).unwrap();
@@ -1969,6 +2138,77 @@ mod parity_fixtures {
                     due_at: None,
                 }
             ),
+            // ── observation/* (ADR-0053) ──
+            fx!(
+                "observation_record_result.json",
+                ObservationRecordResult {
+                    observation_ids: vec![UUID_A.to_string(), UUID_B.to_string()],
+                }
+            ),
+            // Maximal row: nullable fields populated, opaque values present, and
+            // an entity source using the created_from relation.
+            fx!(
+                "observation_query_result.json",
+                ObservationQueryResult {
+                    observations: vec![ObservationRow {
+                        id: UUID_A.to_string(),
+                        schema_key: "bodyweight".to_string(),
+                        schema_version: 1,
+                        occurred_at: "2026-06-01T07:30:00".to_string(),
+                        ended_at: Some("2026-06-01T07:35:00".to_string()),
+                        values: serde_json::json!({ "kg": 72.4 }),
+                        note: Some("after morning run".to_string()),
+                        source: Some(ObservationSourceView {
+                            source_entity_id: Some(UUID_B.to_string()),
+                            source_message_id: None,
+                            relation: "created_from".to_string(),
+                        }),
+                        created_at: 1_700_000_000_000,
+                        updated_at: 1_700_000_000_001,
+                    }],
+                }
+            ),
+            // Message-source companion: exercises source_message_id without
+            // violating observation_sources' exactly-one source invariant.
+            fx!(
+                "observation_query_result.message_source.json",
+                ObservationQueryResult {
+                    observations: vec![ObservationRow {
+                        id: UUID_A.to_string(),
+                        schema_key: "bodyweight".to_string(),
+                        schema_version: 1,
+                        occurred_at: "2026-06-01T07:30:00".to_string(),
+                        ended_at: Some("2026-06-01T07:35:00".to_string()),
+                        values: serde_json::json!({ "kg": 72.4 }),
+                        note: Some("after morning run".to_string()),
+                        source: Some(ObservationSourceView {
+                            source_entity_id: None,
+                            source_message_id: Some(UUID_RUN.to_string()),
+                            relation: "evidenced_by".to_string(),
+                        }),
+                        created_at: 1_700_000_000_000,
+                        updated_at: 1_700_000_000_001,
+                    }],
+                }
+            ),
+            // Bare row: nullable result fields are explicit nulls, not omitted.
+            fx!(
+                "observation_query_result.bare.json",
+                ObservationQueryResult {
+                    observations: vec![ObservationRow {
+                        id: UUID_B.to_string(),
+                        schema_key: "bodyweight".to_string(),
+                        schema_version: 1,
+                        occurred_at: "2026-06-02T07:30:00".to_string(),
+                        ended_at: None,
+                        values: serde_json::json!({ "kg": 72.1 }),
+                        note: None,
+                        source: None,
+                        created_at: 1_700_000_000_000,
+                        updated_at: 1_700_000_000_000,
+                    }],
+                }
+            ),
             // ── entity/list (EntityRow maximal + bare, transitively) ──
             // Maximal row: refs + person_refs + source all present (covers
             // ResolvedEntityRef with its optionals, TodoPersonRefView, EntitySourceView
@@ -2451,6 +2691,10 @@ mod parity_fixtures {
             "run_history_result.json",
             "recurrence_preview_result.json",
             "recurrence_preview_result.ended.json",
+            "observation_record_result.json",
+            "observation_query_result.json",
+            "observation_query_result.message_source.json",
+            "observation_query_result.bare.json",
             "entity_list_result.json",
             "entity_list_result.bare.json",
             "entity_list_result.je_source.json",
@@ -2546,6 +2790,20 @@ mod parity_fixtures {
         parses!(
             RecurrencePreviewParams,
             "recurrence_preview_params.bare.json"
+        );
+        parses!(ObservationRecordParams, "observation_record_params.json");
+        parses!(
+            ObservationRecordParams,
+            "observation_record_params.bare.json"
+        );
+        parses!(ObservationQueryParams, "observation_query_params.json");
+        parses!(
+            ObservationQueryParams,
+            "observation_query_params.message_source.json"
+        );
+        parses!(
+            ObservationQueryParams,
+            "observation_query_params.bare.json"
         );
         parses!(EntityListParams, "entity_list_params.json");
         parses!(EntityBacklinksParams, "entity_backlinks_params.json");

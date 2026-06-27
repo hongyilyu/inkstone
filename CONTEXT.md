@@ -168,6 +168,10 @@ _Avoid_: accepted entity (as the umbrella — that term is the proposal-born sub
 **Accepted Entity**:
 A **Canonical Entity** that entered tier 2 by the user accepting a Proposal — the proposal-born subset, carrying a `created_via_proposal_id`. A user-authored Entity is canonical but *not* "accepted": there was no Proposal and nothing to accept (`created_by='user'`). Where the system needs to name a referenceable or stored Entity regardless of origin, the umbrella term is **Canonical Entity**.
 
+**Observation**:
+A tier-2 timestamped tracker fact, such as bodyweight, nutrition intake, exercise session, sleep segment, mood rating, or habit check-in. Observations are not Entity Types by default: they do not automatically appear in Library, do not grow the closed Entity Type enum, and are queried through observation-specific time-range reads. Core validates each Observation through a Core-owned schema registry; unknown schema keys are rejected. A Journal Entry or Message may source an Observation as evidence, but Journal Entry is not the Observation's parent.
+_Avoid_: tracker entity, log entity, journal child, arbitrary JSON blob.
+
 **Entity Type**:
 The kind of structured concept an Entity is — Journal Entry, Todo, Person, Project, Bookmark, etc. Determines how the Entity's content is validated, versioned, and described back to the Worker when a Proposal that creates it is accepted. Distinct from the *change* a Proposal makes (create / update / delete): the Entity Type is *what the thing is*, the change is *what is being done to it*.
 _Avoid_: kind (overloaded across unrelated discriminators), entity class, entity category.

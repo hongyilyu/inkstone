@@ -174,6 +174,49 @@ CREATE TABLE entity_refs (
 );
 CREATE INDEX idx_entity_refs_target_entity ON entity_refs(target_entity_id);
 
+-- Observations (ADR-0053) ---------------------------------------------
+-- Timestamped tracker facts, kept separate from identity-bearing Entities.
+CREATE TABLE observations (
+  id                       TEXT PRIMARY KEY,
+  schema_key               TEXT NOT NULL,
+  schema_version           INTEGER NOT NULL,
+  occurred_at              TEXT NOT NULL,             -- local wall-clock YYYY-MM-DDTHH:MM:SS
+  ended_at                 TEXT,                      -- same shape; NULL for point-in-time facts
+  values_json              TEXT NOT NULL,             -- schema-validated JSON object
+  note                     TEXT,
+  created_by               TEXT NOT NULL CHECK (created_by IN ('user','proposal')),
+  created_via_proposal_id  TEXT REFERENCES proposals(id),
+  created_at               INTEGER NOT NULL,
+  updated_at               INTEGER NOT NULL,
+  -- Stricter than entities: direct user observations must not carry a
+  -- proposal id, while proposal-born observations must carry one.
+  CHECK (
+    (created_by = 'user' AND created_via_proposal_id IS NULL) OR
+    (created_by = 'proposal' AND created_via_proposal_id IS NOT NULL)
+  )
+);
+CREATE INDEX idx_observations_schema_time ON observations(schema_key, occurred_at);
+CREATE INDEX idx_observations_time        ON observations(occurred_at);
+
+CREATE TABLE observation_sources (
+  id                 TEXT PRIMARY KEY,
+  observation_id     TEXT NOT NULL REFERENCES observations(id) ON DELETE CASCADE,
+  source_entity_id   TEXT REFERENCES entities(id) ON DELETE CASCADE,
+  source_message_id  TEXT REFERENCES messages(id) ON DELETE CASCADE,
+  -- No updated_from while observations are append-mostly and corrections are
+  -- delete-and-re-record.
+  relation           TEXT NOT NULL CHECK (relation IN ('created_from','evidenced_by')),
+  created_at         INTEGER NOT NULL,
+  CHECK (
+    (source_entity_id IS NOT NULL AND source_message_id IS NULL AND relation = 'created_from') OR
+    (source_entity_id IS NULL AND source_message_id IS NOT NULL AND relation = 'evidenced_by')
+  ),
+  UNIQUE (observation_id)
+);
+CREATE INDEX idx_observation_sources_observation ON observation_sources(observation_id);
+CREATE INDEX idx_observation_sources_entity      ON observation_sources(source_entity_id);
+CREATE INDEX idx_observation_sources_message     ON observation_sources(source_message_id);
+
 -- Todo Person References (ADR-0031) ------------------------------------
 -- A task-specific Person association on a Todo (not a generic relationship
 -- graph, not an Entity Reference). At most one row per (todo_id, person_id);

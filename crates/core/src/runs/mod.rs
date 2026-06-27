@@ -11,6 +11,7 @@ mod entity;
 mod handler;
 mod journal_entry;
 mod message;
+mod observation;
 mod post_message;
 mod proposal;
 mod provider;
@@ -106,6 +107,12 @@ pub async fn dispatch(
         }
         "message/search" => {
             message::handle_search(pool, req.id, req.params, out_tx).await;
+        }
+        "observation/record" => {
+            observation::handle_record(pool, req.id, req.params, out_tx).await;
+        }
+        "observation/query" => {
+            observation::handle_query(pool, req.id, req.params, out_tx).await;
         }
         "proposal/get" => {
             proposal::handle_get(pool, req.id, req.params, out_tx).await;

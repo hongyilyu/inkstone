@@ -12,6 +12,7 @@ mod models;
 mod mutate;
 mod mutation;
 mod mutation_target;
+mod observations;
 mod protocol;
 mod provider_auth;
 mod recurrence;

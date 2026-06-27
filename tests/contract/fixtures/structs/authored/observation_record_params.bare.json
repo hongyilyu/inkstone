@@ -1,0 +1,9 @@
+{
+  "observations": [
+    {
+      "schema_key": "bodyweight",
+      "occurred_at": "2026-06-01T07:30:00",
+      "values": { "kg": 72.4 }
+    }
+  ]
+}

@@ -30,6 +30,10 @@ import {
 	MessageSearchParams,
 	MessageSearchResult,
 	ModelCatalogResult,
+	ObservationQueryParams,
+	ObservationQueryResult,
+	ObservationRecordParams,
+	ObservationRecordResult,
 	PostMessageParams,
 	PostMessageResult,
 	ProposalChangedNotification,
@@ -190,6 +194,39 @@ export const fixtures: readonly FixtureEntry[] = [
 		message: "RecurrencePreviewParams",
 		file: "recurrence_preview_params.bare.json",
 		schema: RecurrencePreviewParams,
+		dir: "authored",
+	},
+	// ObservationRecordParams: maximal batched draft + evidence, and bare
+	// omitted optionals. ObservationQueryParams: entity-source maximal, a
+	// message-source companion, and bare `{}`.
+	{
+		message: "ObservationRecordParams",
+		file: "observation_record_params.json",
+		schema: ObservationRecordParams,
+		dir: "authored",
+	},
+	{
+		message: "ObservationRecordParams",
+		file: "observation_record_params.bare.json",
+		schema: ObservationRecordParams,
+		dir: "authored",
+	},
+	{
+		message: "ObservationQueryParams",
+		file: "observation_query_params.json",
+		schema: ObservationQueryParams,
+		dir: "authored",
+	},
+	{
+		message: "ObservationQueryParams",
+		file: "observation_query_params.message_source.json",
+		schema: ObservationQueryParams,
+		dir: "authored",
+	},
+	{
+		message: "ObservationQueryParams",
+		file: "observation_query_params.bare.json",
+		schema: ObservationQueryParams,
 		dir: "authored",
 	},
 	{
@@ -380,6 +417,32 @@ export const fixtures: readonly FixtureEntry[] = [
 		message: "RecurrencePreviewResult",
 		file: "recurrence_preview_result.ended.json",
 		schema: RecurrencePreviewResult,
+		dir: "emitted",
+	},
+	{
+		message: "ObservationRecordResult",
+		file: "observation_record_result.json",
+		schema: ObservationRecordResult,
+		dir: "emitted",
+	},
+	// ObservationQueryResult: entity-source row + message-source row + bare null
+	// ended_at/note/source.
+	{
+		message: "ObservationQueryResult",
+		file: "observation_query_result.json",
+		schema: ObservationQueryResult,
+		dir: "emitted",
+	},
+	{
+		message: "ObservationQueryResult",
+		file: "observation_query_result.message_source.json",
+		schema: ObservationQueryResult,
+		dir: "emitted",
+	},
+	{
+		message: "ObservationQueryResult",
+		file: "observation_query_result.bare.json",
+		schema: ObservationQueryResult,
 		dir: "emitted",
 	},
 	// EntityListResult: maximal row (refs + person_refs + message-source) + bare
@@ -607,7 +670,7 @@ export const fixtures: readonly FixtureEntry[] = [
 	},
 ];
 
-/** The hand-maintained canonical set of in-scope wire messages (37 at
+/** The hand-maintained canonical set of in-scope wire messages (41 at
  * completion; grows per slice). The completeness lock pins this equal to the
  * distinct `message` values in {@link fixtures}, so a message can't be covered
  * without being declared, nor declared without a fixture. */
@@ -625,6 +688,8 @@ export const CANONICAL_MESSAGES: readonly string[] = [
 	"ThreadCreateParams",
 	"RunGetHistoryParams",
 	"RecurrencePreviewParams",
+	"ObservationRecordParams",
+	"ObservationQueryParams",
 	"EntityListParams",
 	"EntityBacklinksParams",
 	"EntityMutateParams",
@@ -651,6 +716,8 @@ export const CANONICAL_MESSAGES: readonly string[] = [
 	"ThreadListResult",
 	"RunHistoryResult",
 	"RecurrencePreviewResult",
+	"ObservationRecordResult",
+	"ObservationQueryResult",
 	"EntityListResult",
 	"EntityBacklinksResult",
 	"EntityMutateResult",

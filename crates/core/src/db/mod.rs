@@ -6,6 +6,7 @@ mod apply;
 mod intent_graph;
 mod lifecycle;
 mod message_fts;
+mod observations;
 mod queries;
 mod run_log;
 
@@ -43,6 +44,10 @@ pub use lifecycle::TerminalReason;
 // without naming the db type. The search assembles text live from `message_parts`
 // at query time — no standing projection to maintain or rebuild.
 pub use message_fts::search_messages;
+pub(crate) use observations::{
+    ObservationFilter, ObservationInsert, ObservationInsertError, ObservationRow,
+    ObservationSourceFilter, ObservationSourceInsert, insert_observations, query_observations,
+};
 
 /// Current wall-clock time as ms since UNIX_EPOCH (the `*_at` columns).
 pub(crate) fn now_ms() -> i64 {

@@ -158,6 +158,78 @@ export type RecurrencePreviewResult = S.Schema.Type<
 	typeof RecurrencePreviewResult
 >;
 
+export const ObservationRecordDraft = S.Struct({
+	schema_key: S.String,
+	occurred_at: S.String,
+	ended_at: S.optional(S.String),
+	values: S.Unknown,
+	note: S.optional(S.String),
+});
+export type ObservationRecordDraft = S.Schema.Type<
+	typeof ObservationRecordDraft
+>;
+
+export const ObservationEvidence = S.Struct({
+	journal_entry_id: S.optional(S.String),
+	message_id: S.optional(S.String),
+});
+export type ObservationEvidence = S.Schema.Type<typeof ObservationEvidence>;
+
+export const ObservationRecordParams = S.Struct({
+	observations: S.Array(ObservationRecordDraft),
+	evidence: S.optional(ObservationEvidence),
+});
+export type ObservationRecordParams = S.Schema.Type<
+	typeof ObservationRecordParams
+>;
+
+export const ObservationRecordResult = S.Struct({
+	observation_ids: S.Array(S.String),
+});
+export type ObservationRecordResult = S.Schema.Type<
+	typeof ObservationRecordResult
+>;
+
+export const ObservationQueryParams = S.Struct({
+	schema_keys: S.optional(S.Array(S.String)),
+	from: S.optional(S.String),
+	to: S.optional(S.String),
+	source_entity_id: S.optional(S.String),
+	source_message_id: S.optional(S.String),
+	limit: S.optional(S.Number),
+});
+export type ObservationQueryParams = S.Schema.Type<
+	typeof ObservationQueryParams
+>;
+
+export const ObservationSourceView = S.Struct({
+	source_entity_id: S.optional(S.String),
+	source_message_id: S.optional(S.String),
+	relation: S.Literal("created_from", "evidenced_by"),
+});
+export type ObservationSourceView = S.Schema.Type<typeof ObservationSourceView>;
+
+export const ObservationRow = S.Struct({
+	id: S.String,
+	schema_key: S.String,
+	schema_version: S.Number,
+	occurred_at: S.String,
+	ended_at: S.NullOr(S.String),
+	values: S.Unknown,
+	note: S.NullOr(S.String),
+	source: S.NullOr(ObservationSourceView),
+	created_at: S.Number,
+	updated_at: S.Number,
+});
+export type ObservationRow = S.Schema.Type<typeof ObservationRow>;
+
+export const ObservationQueryResult = S.Struct({
+	observations: S.Array(ObservationRow),
+});
+export type ObservationQueryResult = S.Schema.Type<
+	typeof ObservationQueryResult
+>;
+
 export const ThreadGetParams = S.Struct({ thread_id: S.String });
 export type ThreadGetParams = S.Schema.Type<typeof ThreadGetParams>;
 
