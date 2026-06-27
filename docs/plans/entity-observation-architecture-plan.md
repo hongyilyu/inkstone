@@ -410,7 +410,8 @@ CREATE TABLE observation_sources (
   CHECK (
     (source_entity_id IS NOT NULL AND source_message_id IS NULL) OR
     (source_entity_id IS NULL AND source_message_id IS NOT NULL)
-  )
+  ),
+  UNIQUE (observation_id)
 );
 
 -- Observations start with created_from and evidenced_by only. There is no

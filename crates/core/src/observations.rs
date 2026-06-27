@@ -68,20 +68,31 @@ pub(crate) struct ObservationSource {
     pub(crate) source_message_id: Option<String>,
 }
 
+#[derive(Debug)]
+pub(crate) enum ObservationError {
+    Invalid(String),
+    Internal(anyhow::Error),
+}
+
 pub(crate) async fn record_observations(
     pool: &SqlitePool,
     input: RecordObservationsInput,
-) -> Result<Vec<Observation>, String> {
+) -> Result<Vec<Observation>, ObservationError> {
     let now_ms = db::now_ms();
     let mut inserts = Vec::with_capacity(input.observations.len());
     let mut observations = Vec::with_capacity(input.observations.len());
 
     for record in input.observations {
-        let schema = validate_record(&record)?;
+        let schema = validate_record(&record).map_err(ObservationError::Invalid)?;
         let id = Uuid::now_v7().to_string();
         let values_json = serde_json::to_string(&record.values)
-            .map_err(|e| format!("observation values could not be serialized: {e}"))?;
-        let source = record.source.as_ref().map(validated_source).transpose()?;
+            .map_err(|e| ObservationError::Internal(anyhow::Error::new(e)))?;
+        let source = record
+            .source
+            .as_ref()
+            .map(validated_source)
+            .transpose()
+            .map_err(ObservationError::Invalid)?;
 
         inserts.push(db::ObservationInsert {
             id: id.clone(),
@@ -115,15 +126,18 @@ pub(crate) async fn record_observations(
 
     db::insert_observations(pool, inserts, now_ms)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| match e {
+            db::ObservationInsertError::InvalidSource(reason) => ObservationError::Invalid(reason),
+            db::ObservationInsertError::Sqlx(err) => ObservationError::Internal(err.into()),
+        })?;
     Ok(observations)
 }
 
 pub(crate) async fn query_observations(
     pool: &SqlitePool,
     filter: ObservationQuery,
-) -> Result<Vec<Observation>, String> {
-    validate_query(&filter)?;
+) -> Result<Vec<Observation>, ObservationError> {
+    validate_query(&filter).map_err(ObservationError::Invalid)?;
     let rows = db::query_observations(
         pool,
         db::ObservationFilter {
@@ -136,7 +150,7 @@ pub(crate) async fn query_observations(
         },
     )
     .await
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| ObservationError::Internal(e.into()))?;
 
     rows.into_iter().map(observation_from_row).collect()
 }
@@ -180,9 +194,6 @@ fn validate_record(record: &ObservationRecordInput) -> Result<ObservationSchema,
         }
     }
     schema.values.check(&record.values)?;
-    if let Some(source) = &record.source {
-        validated_source(source)?;
-    }
     Ok(schema)
 }
 
@@ -252,21 +263,35 @@ fn parse_uuid(value: &str, field: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn observation_from_row(row: db::ObservationRow) -> Result<Observation, String> {
-    let values = serde_json::from_str(&row.values_json)
-        .map_err(|e| format!("observation {} values are malformed JSON: {e}", row.id))?;
+fn observation_from_row(row: db::ObservationRow) -> Result<Observation, ObservationError> {
+    let values = serde_json::from_str(&row.values_json).map_err(|e| {
+        ObservationError::Internal(anyhow::anyhow!(
+            "observation {} values are malformed JSON: {e}",
+            row.id
+        ))
+    })?;
     let source = match (
         row.source_relation,
         row.source_entity_id,
         row.source_message_id,
     ) {
         (Some(relation), source_entity_id, source_message_id) => Some(ObservationSource {
-            relation: relation_from_str(&relation)?,
+            relation: relation_from_str(&relation).map_err(|reason| {
+                ObservationError::Internal(anyhow::anyhow!(
+                    "observation {} source relation is malformed: {reason}",
+                    row.id
+                ))
+            })?,
             source_entity_id,
             source_message_id,
         }),
         (None, None, None) => None,
-        _ => return Err(format!("observation {} source row is malformed", row.id)),
+        _ => {
+            return Err(ObservationError::Internal(anyhow::anyhow!(
+                "observation {} source row is malformed",
+                row.id
+            )));
+        }
     };
     Ok(Observation {
         id: row.id,
@@ -291,7 +316,7 @@ fn relation_from_str(value: &str) -> Result<ObservationSourceRelation, String> {
 }
 
 impl ObservationSourceRelation {
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             ObservationSourceRelation::CreatedFrom => "created_from",
             ObservationSourceRelation::EvidencedBy => "evidenced_by",
@@ -329,6 +354,13 @@ mod observations_tests {
             values: json!({ "kg": kg }),
             note: None,
             source: None,
+        }
+    }
+
+    fn invalid_reason(err: ObservationError) -> String {
+        match err {
+            ObservationError::Invalid(reason) => reason,
+            ObservationError::Internal(err) => panic!("expected invalid observation error: {err:?}"),
         }
     }
 
@@ -464,7 +496,7 @@ mod observations_tests {
             source_entity_id: Some("018f0000-0000-7000-8000-000000000002".to_string()),
             source_message_id: None,
         });
-        record_observations(
+        let sourced = record_observations(
             &pool,
             RecordObservationsInput {
                 observations: vec![from_message, from_entity],
@@ -497,6 +529,18 @@ mod observations_tests {
         assert_eq!(by_entity.len(), 1);
         assert_eq!(by_entity[0].values, json!({ "kg": 71.9 }));
 
+        let duplicate_source = sqlx::query(
+            "INSERT INTO observation_sources \
+             (id, observation_id, source_message_id, relation, created_at) \
+             VALUES ('duplicate-observation-source', ?1, \
+                     '018f0000-0000-7000-8000-000000000001', 'evidenced_by', 1)",
+        )
+        .bind(&sourced[1].id)
+        .execute(&pool)
+        .await
+        .expect_err("one observation accepts at most one source row");
+        assert!(duplicate_source.to_string().contains("UNIQUE"));
+
         let limited = query_observations(
             &pool,
             ObservationQuery {
@@ -523,6 +567,7 @@ mod observations_tests {
         )
         .await
         .expect_err("unknown schema is rejected");
+        let reason = invalid_reason(reason);
         assert!(reason.contains("unknown observation schema"));
 
         let reason = record_observations(
@@ -533,6 +578,7 @@ mod observations_tests {
         )
         .await
         .expect_err("bodyweight kg must be numeric");
+        let reason = invalid_reason(reason);
         assert_eq!(reason, "kg must be a number");
 
         let reason = record_observations(
@@ -543,6 +589,7 @@ mod observations_tests {
         )
         .await
         .expect_err("negative bodyweight is rejected");
+        let reason = invalid_reason(reason);
         assert_eq!(reason, "kg must be at least 0");
 
         let ended_before_start = ObservationRecordInput {
@@ -557,6 +604,7 @@ mod observations_tests {
         )
         .await
         .expect_err("ended_at before occurred_at is rejected");
+        let reason = invalid_reason(reason);
         assert_eq!(
             reason,
             "ended_at must be greater than or equal to occurred_at"

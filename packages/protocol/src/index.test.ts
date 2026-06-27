@@ -463,7 +463,6 @@ describe("ObservationRecordParams", () => {
 		],
 		evidence: {
 			journal_entry_id: "0190d3c1-0000-7000-8000-000000000001",
-			message_id: "0190d3c1-0000-7000-8000-000000000003",
 		},
 	};
 

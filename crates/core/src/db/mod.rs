@@ -1966,6 +1966,19 @@ pub(crate) struct ObservationRow {
     pub source_message_id: Option<String>,
 }
 
+#[derive(Debug)]
+#[allow(dead_code)]
+pub(crate) enum ObservationInsertError {
+    InvalidSource(String),
+    Sqlx(sqlx::Error),
+}
+
+impl From<sqlx::Error> for ObservationInsertError {
+    fn from(value: sqlx::Error) -> Self {
+        ObservationInsertError::Sqlx(value)
+    }
+}
+
 /// Insert a batch of validated Observations atomically. Validation and JSON
 /// serialization live in `crate::observations`; this helper is storage-only.
 #[allow(dead_code)]
@@ -1973,7 +1986,7 @@ pub(crate) async fn insert_observations(
     pool: &SqlitePool,
     rows: Vec<ObservationInsert>,
     now_ms: i64,
-) -> sqlx::Result<()> {
+) -> Result<(), ObservationInsertError> {
     let mut tx = pool.begin().await?;
     for row in rows {
         queries::insert_observation(
@@ -1991,6 +2004,20 @@ pub(crate) async fn insert_observations(
         )
         .await?;
         if let Some(source) = row.source {
+            if let Some(source_entity_id) = &source.source_entity_id
+                && !queries::entity_is_type(&mut *tx, source_entity_id, "journal_entry").await?
+            {
+                return Err(ObservationInsertError::InvalidSource(
+                    "observation source_entity_id must name a journal_entry".to_string(),
+                ));
+            }
+            if let Some(source_message_id) = &source.source_message_id
+                && !queries::message_exists(&mut *tx, source_message_id).await?
+            {
+                return Err(ObservationInsertError::InvalidSource(
+                    "observation source_message_id must name an existing message".to_string(),
+                ));
+            }
             queries::insert_observation_source(
                 &mut *tx,
                 &Uuid::now_v7().to_string(),
@@ -2003,7 +2030,8 @@ pub(crate) async fn insert_observations(
             .await?;
         }
     }
-    tx.commit().await
+    tx.commit().await?;
+    Ok(())
 }
 
 /// Read stored Observations by schema/time/source filters. Raw JSON is returned

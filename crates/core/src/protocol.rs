@@ -1558,8 +1558,7 @@ mod mirror_tests {
                 }
             ],
             "evidence": {
-                "journal_entry_id": UUID_A,
-                "message_id": UUID_RUN
+                "journal_entry_id": UUID_A
             }
         });
         let p: ObservationRecordParams = serde_json::from_value(wire).unwrap();
@@ -1573,7 +1572,7 @@ mod mirror_tests {
         assert!(p.observations[1].ended_at.is_none());
         let evidence = p.evidence.expect("evidence present");
         assert_eq!(evidence.journal_entry_id.as_deref(), Some(UUID_A));
-        assert_eq!(evidence.message_id.as_deref(), Some(UUID_RUN));
+        assert_eq!(evidence.message_id, None);
     }
 
     #[test]

@@ -210,7 +210,8 @@ CREATE TABLE observation_sources (
   CHECK (
     (source_entity_id IS NOT NULL AND source_message_id IS NULL) OR
     (source_entity_id IS NULL AND source_message_id IS NOT NULL)
-  )
+  ),
+  UNIQUE (observation_id)
 );
 CREATE INDEX idx_observation_sources_observation ON observation_sources(observation_id);
 CREATE INDEX idx_observation_sources_entity      ON observation_sources(source_entity_id);

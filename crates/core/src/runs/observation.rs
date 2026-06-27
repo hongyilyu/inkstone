@@ -35,7 +35,7 @@ pub(super) async fn handle_record(
             let recorded =
                 observations::record_observations(pool, RecordObservationsInput { observations })
                     .await
-                    .map_err(HandlerError::InvalidParams)?;
+                    .map_err(observation_error_to_handler)?;
 
             Ok(ObservationRecordResult {
                 observation_ids: recorded.into_iter().map(|row| row.id).collect(),
@@ -68,7 +68,7 @@ pub(super) async fn handle_query(
                 },
             )
             .await
-            .map_err(HandlerError::InvalidParams)?;
+            .map_err(observation_error_to_handler)?;
 
             Ok(ObservationQueryResult {
                 observations: observations.into_iter().map(observation_to_wire).collect(),
@@ -76,6 +76,13 @@ pub(super) async fn handle_query(
         },
     )
     .await;
+}
+
+fn observation_error_to_handler(err: observations::ObservationError) -> HandlerError {
+    match err {
+        observations::ObservationError::Invalid(reason) => HandlerError::InvalidParams(reason),
+        observations::ObservationError::Internal(err) => HandlerError::Internal(err),
+    }
 }
 
 fn record_input(
@@ -137,11 +144,7 @@ fn source_to_wire(source: ObservationSource) -> ObservationSourceView {
     ObservationSourceView {
         source_entity_id: source.source_entity_id,
         source_message_id: source.source_message_id,
-        relation: match source.relation {
-            ObservationSourceRelation::CreatedFrom => "created_from",
-            ObservationSourceRelation::EvidencedBy => "evidenced_by",
-        }
-        .to_string(),
+        relation: source.relation.as_str().to_string(),
     }
 }
 
@@ -200,6 +203,12 @@ mod tests {
         assert!(value.get("result").is_none(), "{value:?}");
     }
 
+    fn assert_internal_error(value: &Value) {
+        assert_eq!(value["error"]["code"], json!(-32603), "{value:?}");
+        assert_eq!(value["error"]["message"], json!("internal error"), "{value:?}");
+        assert!(value.get("result").is_none(), "{value:?}");
+    }
+
     async fn seed_message(pool: &SqlitePool, message_id: Uuid) {
         let thread_id = Uuid::now_v7();
         let run_id = Uuid::now_v7();
@@ -247,6 +256,18 @@ mod tests {
         .execute(pool)
         .await
         .expect("insert journal entry");
+    }
+
+    async fn seed_person(pool: &SqlitePool, person_id: Uuid) {
+        sqlx::query(
+            "INSERT INTO entities \
+             (id, type, schema_version, data, created_by, created_at, updated_at) \
+             VALUES (?, 'person', 1, '{\"name\":\"Source Person\"}', 'user', 1, 1)",
+        )
+        .bind(person_id.to_string())
+        .execute(pool)
+        .await
+        .expect("insert person");
     }
 
     #[tokio::test]
@@ -430,6 +451,38 @@ mod tests {
         )
         .await;
         assert_invalid_params(&conflicting_evidence);
+
+        let person_id = Uuid::now_v7();
+        seed_person(&pool, person_id).await;
+        let non_journal_evidence = dispatch_rpc(
+            &pool,
+            "observation/record",
+            json!({
+                "evidence": { "journal_entry_id": person_id.to_string() },
+                "observations": [{
+                    "schema_key": "bodyweight",
+                    "occurred_at": "2026-06-01T07:30:00",
+                    "values": { "kg": 72.4 }
+                }]
+            }),
+        )
+        .await;
+        assert_invalid_params(&non_journal_evidence);
+
+        let missing_message_evidence = dispatch_rpc(
+            &pool,
+            "observation/record",
+            json!({
+                "evidence": { "message_id": Uuid::now_v7().to_string() },
+                "observations": [{
+                    "schema_key": "bodyweight",
+                    "occurred_at": "2026-06-01T07:30:00",
+                    "values": { "kg": 72.4 }
+                }]
+            }),
+        )
+        .await;
+        assert_invalid_params(&missing_message_evidence);
     }
 
     #[tokio::test]
@@ -461,5 +514,29 @@ mod tests {
 
         let invalid_limit = dispatch_rpc(&pool, "observation/query", json!({ "limit": 0 })).await;
         assert_invalid_params(&invalid_limit);
+    }
+
+    #[tokio::test]
+    async fn observation_rpc_sanitizes_malformed_stored_observation() {
+        let pool = memory_pool().await;
+        sqlx::query(
+            "INSERT INTO observations \
+             (id, schema_key, schema_version, occurred_at, values_json, created_by, \
+              created_at, updated_at) \
+             VALUES (?1, 'bodyweight', 1, '2026-06-01T07:30:00', '{not-json', \
+                     'user', 1, 1)",
+        )
+        .bind(Uuid::now_v7().to_string())
+        .execute(&pool)
+        .await
+        .expect("insert malformed stored observation");
+
+        let response = dispatch_rpc(
+            &pool,
+            "observation/query",
+            json!({ "schema_keys": ["bodyweight"] }),
+        )
+        .await;
+        assert_internal_error(&response);
     }
 }
