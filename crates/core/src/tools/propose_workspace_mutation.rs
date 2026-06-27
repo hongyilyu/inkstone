@@ -15,8 +15,8 @@ const LABEL: &str = "Propose Workspace mutation";
 /// agent-proposable mutation kinds (ADR-0036, ADR-0042), each variant binding its
 /// `mutation_kind` discriminant to the payload schema its
 /// [`crate::mutation::MutationKind::payload_spec`] emits — the SAME single source
-/// the validators derive from. The 4 user-only kinds (the bookmarks +
-/// `mark_project_reviewed`) are validated but deliberately absent from this
+/// the validators derive from. The user-only kind families (bookmarks, habits,
+/// and `mark_project_reviewed`) are validated but deliberately absent from this
 /// surface. Inlined Draft-07 (no `$ref`/`definitions`): ADR-0018 wants inlined
 /// schemas because Anthropic rejects `$ref`.
 pub fn descriptor() -> CoreToolDescriptor {

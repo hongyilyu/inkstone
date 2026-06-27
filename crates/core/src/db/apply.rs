@@ -54,18 +54,20 @@ pub(crate) struct EntityMutationSpec<'a> {
 
 /// The entity `data` to store for a `kind`, given its effective payload. The
 /// per-kind extraction/normalization seam: every full-replace update kind
-/// (`update_journal_entry`/`update_person`/`update_project`/`update_bookmark`)
-/// strips `entity_id` (it targets the row but is not entity data);
+/// (`update_journal_entry`/`update_person`/`update_project`/`update_bookmark`/
+/// `update_habit`) strips `entity_id` (it targets the row but is not entity
+/// data);
 /// `create_project` injects `status:"active"` when absent so the stored data
 /// always carries an explicit status (validate tolerates a missing status), and
 /// for a resulting active Project with no review fields supplied seeds the
 /// default weekly review ritual (`review_every` + `next_review_at`) from the
 /// review anchor (ADR-0031); `create_todo` unwraps the `{todo, person_refs?}`
 /// envelope to store `payload.todo` (the TodoData) and likewise injects
-/// `status:"active"` when absent; every other kind stores its payload as-is. The
-/// `now_ms`/`offset_minutes` inputs anchor that review-date default. The in-tx
-/// kinds (`update_todo`/`mark_project_reviewed`/reference weave) never reach this
-/// seam — their data is computed inside the tx — so they fall to the as-is arm.
+/// `status:"active"` when absent; `create_bookmark`/`create_habit` drop null
+/// optionals; every other kind stores its payload as-is. The `now_ms`/
+/// `offset_minutes` inputs anchor that review-date default. The in-tx kinds
+/// (`update_todo`/`mark_project_reviewed`/reference weave) never reach this seam
+/// — their data is computed inside the tx — so they fall to the as-is arm.
 fn entity_data_payload(
     kind: MutationKind,
     payload: &serde_json::Value,
@@ -74,7 +76,11 @@ fn entity_data_payload(
 ) -> serde_json::Value {
     use MutationKind as M;
     match kind {
-        M::UpdateJournalEntry | M::UpdatePerson | M::UpdateProject | M::UpdateBookmark => {
+        M::UpdateJournalEntry
+        | M::UpdatePerson
+        | M::UpdateProject
+        | M::UpdateBookmark
+        | M::UpdateHabit => {
             let Some(obj) = payload.as_object() else {
                 return payload.clone();
             };
@@ -148,10 +154,9 @@ fn entity_data_payload(
                 .or_insert_with(|| serde_json::json!("active"));
             serde_json::Value::Object(data)
         }
-        M::CreateBookmark => {
-            // A `null` optional field (url/note/tags) carries no value to store
-            // (ADR-0033/0036): drop the key rather than persist a JSON null, so the
-            // stored Bookmark data never holds null. No envelope, no defaults.
+        M::CreateBookmark | M::CreateHabit => {
+            // A `null` optional field carries no value to store (ADR-0033): drop
+            // the key rather than persist a JSON null. No envelope, no defaults.
             let Some(obj) = payload.as_object() else {
                 return payload.clone();
             };
@@ -176,6 +181,7 @@ fn entity_data_payload(
         | M::DeleteTodo
         | M::UpdateTodo
         | M::DeleteBookmark
+        | M::DeleteHabit
         | M::ApplyIntentGraph => payload.clone(),
     }
 }
@@ -726,16 +732,19 @@ pub(crate) async fn apply_entity_mutation(
         | MutationKind::DeletePerson
         | MutationKind::DeleteProject
         | MutationKind::DeleteTodo
-        | MutationKind::DeleteBookmark => None,
+        | MutationKind::DeleteBookmark
+        | MutationKind::DeleteHabit => None,
         MutationKind::CreateJournalEntry
         | MutationKind::CreatePerson
         | MutationKind::CreateProject
         | MutationKind::CreateTodo
         | MutationKind::CreateBookmark
+        | MutationKind::CreateHabit
         | MutationKind::UpdateJournalEntry
         | MutationKind::UpdatePerson
         | MutationKind::UpdateProject
-        | MutationKind::UpdateBookmark => Some(
+        | MutationKind::UpdateBookmark
+        | MutationKind::UpdateHabit => Some(
             entity_data_payload(kind, effective_payload, now_ms, review_anchor_offset).to_string(),
         ),
         // Rejected at the guard above (the graph is not a single-entity mutation).
@@ -874,14 +883,15 @@ pub(crate) async fn apply_entity_mutation(
                 return Err(ApplyError::TargetMissing);
             }
         }
-        // Delete kinds (journal_entry, person, todo, bookmark): remove the entity
+        // Delete kinds (journal_entry, person, todo, bookmark, habit): remove the entity
         // of this `entity_type`. Its revisions/sources and a Person's or Todo's
         // `todo_person_refs` rows cascade away via FK ON DELETE CASCADE — no
         // explicit ref-delete SQL here.
         MutationKind::DeleteJournalEntry
         | MutationKind::DeletePerson
         | MutationKind::DeleteTodo
-        | MutationKind::DeleteBookmark => {
+        | MutationKind::DeleteBookmark
+        | MutationKind::DeleteHabit => {
             if matches!(
                 kind,
                 MutationKind::DeletePerson | MutationKind::DeleteTodo
@@ -932,7 +942,7 @@ pub(crate) async fn apply_entity_mutation(
             )
             .await?;
         }
-        // Update kinds (journal_entry, person, project, bookmark): replace the
+        // Update kinds (journal_entry, person, project, bookmark, habit): replace the
         // target entity's data of this `entity_type` + append the next revision
         // snapshot. The journal-entry body-ref check above is gated to journal
         // kinds; person/project/bookmark carry no body refs.
@@ -943,6 +953,7 @@ pub(crate) async fn apply_entity_mutation(
         | MutationKind::UpdatePerson
         | MutationKind::UpdateProject
         | MutationKind::UpdateBookmark
+        | MutationKind::UpdateHabit
         | MutationKind::ReferenceExistingEntityFromJournalEntry => {
             let data_str = data_str
                 .as_deref()
@@ -971,14 +982,15 @@ pub(crate) async fn apply_entity_mutation(
             )
             .await?;
         }
-        // Create kinds (journal_entry, person, project, todo, bookmark): insert
+        // Create kinds (journal_entry, person, project, todo, bookmark, habit): insert
         // the entity of this `entity_type` + its seq-1 revision. The query is
         // already generic on `entity_type`.
         MutationKind::CreateJournalEntry
         | MutationKind::CreatePerson
         | MutationKind::CreateProject
         | MutationKind::CreateTodo
-        | MutationKind::CreateBookmark => {
+        | MutationKind::CreateBookmark
+        | MutationKind::CreateHabit => {
             let data_str = data_str
                 .as_deref()
                 .expect("non-delete mutations always carry entity data");

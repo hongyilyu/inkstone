@@ -11,12 +11,12 @@
 //! module; this module is pure and DB-free.
 //!
 //! Two enums, one wide and one narrow:
-//! - [`MutationKind`] — all 18 Core-known kinds. The currency of `validate`,
+//! - [`MutationKind`] — all 21 Core-known kinds. The currency of `validate`,
 //!   `mutate`, `apply`, and the target-reference checks.
 //! - [`ProposableMutation`] — the 14 the agent may propose (ADR-0018, ADR-0042). Carries
 //!   the agent-path-only facets (`render_accept`, `supports_edit`,
 //!   `carries_review_context`) so they are total over exactly the kinds that can
-//!   reach the accept path — no `unreachable!` for the 4 user-only kinds.
+//!   reach the accept path — no `unreachable!` for the 7 user-only kinds.
 
 use serde_json::Value;
 
@@ -38,6 +38,75 @@ pub const TODO_SCHEMA_VERSION: i64 = 1;
 /// The schema version stamped onto a freshly-created Bookmark + its first
 /// revision (ADR-0036).
 pub const BOOKMARK_SCHEMA_VERSION: i64 = 1;
+
+/// The schema version stamped onto a freshly-created Habit + its first revision.
+pub const HABIT_SCHEMA_VERSION: i64 = 1;
+
+/// Search/reference projection for an Entity Type. Kept small on purpose: the
+/// stored data field that names the row, plus an optional aliases field for
+/// Person search.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct EntityProjectionSpec {
+    pub(crate) label_field: &'static str,
+    pub(crate) aliases_field: Option<&'static str>,
+}
+
+/// Which read surfaces may project an Entity Type to a compact title.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EntityProjectionPolicy {
+    None,
+    Search(EntityProjectionSpec),
+    ReferenceAndSearch(EntityProjectionSpec),
+}
+
+impl EntityProjectionPolicy {
+    fn reference_spec(self) -> Option<EntityProjectionSpec> {
+        match self {
+            EntityProjectionPolicy::ReferenceAndSearch(spec) => Some(spec),
+            EntityProjectionPolicy::None | EntityProjectionPolicy::Search(_) => None,
+        }
+    }
+
+    fn search_spec(self) -> Option<EntityProjectionSpec> {
+        match self {
+            EntityProjectionPolicy::Search(spec)
+            | EntityProjectionPolicy::ReferenceAndSearch(spec) => Some(spec),
+            EntityProjectionPolicy::None => None,
+        }
+    }
+}
+
+/// Closed policy row for an Entity Type. This is the trait-like dispatch point
+/// Phase 2 needs: static, compile-checked, and metadata-only.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct EntityTypeSpec {
+    pub(crate) entity_type: EntityType,
+    pub(crate) stored_type: &'static str,
+    pub(crate) schema_version: i64,
+    pub(crate) projection: EntityProjectionPolicy,
+}
+
+impl EntityTypeSpec {
+    pub(crate) fn reference_title_from_data(self, data: &Value) -> Option<String> {
+        title_from_data(data, self.projection.reference_spec()?)
+    }
+
+    pub(crate) fn is_referenceable(self) -> bool {
+        self.projection.reference_spec().is_some()
+    }
+
+    pub(crate) fn search_projection(self) -> Option<EntityProjectionSpec> {
+        self.projection.search_spec()
+    }
+}
+
+fn title_from_data(data: &Value, projection: EntityProjectionSpec) -> Option<String> {
+    data.get(projection.label_field)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
 
 /// The write-class of a `mutation_kind`. Every mutation is a write — reads
 /// (`entity/list`, `search_entities`, `proposal/get`) carry no `mutation_kind`
@@ -98,31 +167,82 @@ pub(crate) enum EntityType {
     Project,
     Todo,
     Bookmark,
+    Habit,
 }
 
 impl EntityType {
+    pub(crate) const ALL: [EntityType; 6] = [
+        EntityType::JournalEntry,
+        EntityType::Person,
+        EntityType::Project,
+        EntityType::Todo,
+        EntityType::Bookmark,
+        EntityType::Habit,
+    ];
+
+    pub(crate) fn spec(self) -> EntityTypeSpec {
+        match self {
+            EntityType::JournalEntry => EntityTypeSpec {
+                entity_type: self,
+                stored_type: "journal_entry",
+                schema_version: JOURNAL_ENTRY_SCHEMA_VERSION,
+                projection: EntityProjectionPolicy::None,
+            },
+            EntityType::Person => EntityTypeSpec {
+                entity_type: self,
+                stored_type: "person",
+                schema_version: PERSON_SCHEMA_VERSION,
+                projection: EntityProjectionPolicy::ReferenceAndSearch(EntityProjectionSpec {
+                    label_field: "name",
+                    aliases_field: Some("aliases"),
+                }),
+            },
+            EntityType::Project => EntityTypeSpec {
+                entity_type: self,
+                stored_type: "project",
+                schema_version: PROJECT_SCHEMA_VERSION,
+                projection: EntityProjectionPolicy::ReferenceAndSearch(EntityProjectionSpec {
+                    label_field: "name",
+                    aliases_field: None,
+                }),
+            },
+            EntityType::Todo => EntityTypeSpec {
+                entity_type: self,
+                stored_type: "todo",
+                schema_version: TODO_SCHEMA_VERSION,
+                projection: EntityProjectionPolicy::ReferenceAndSearch(EntityProjectionSpec {
+                    label_field: "title",
+                    aliases_field: None,
+                }),
+            },
+            EntityType::Bookmark => EntityTypeSpec {
+                entity_type: self,
+                stored_type: "bookmark",
+                schema_version: BOOKMARK_SCHEMA_VERSION,
+                projection: EntityProjectionPolicy::None,
+            },
+            EntityType::Habit => EntityTypeSpec {
+                entity_type: self,
+                stored_type: "habit",
+                schema_version: HABIT_SCHEMA_VERSION,
+                projection: EntityProjectionPolicy::Search(EntityProjectionSpec {
+                    label_field: "name",
+                    aliases_field: None,
+                }),
+            },
+        }
+    }
+
     /// The stored `entities.type` value. Bound into SQL and compared against
     /// rows read back by [`crate::db::entity_type_by_id`].
     pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            EntityType::JournalEntry => "journal_entry",
-            EntityType::Person => "person",
-            EntityType::Project => "project",
-            EntityType::Todo => "todo",
-            EntityType::Bookmark => "bookmark",
-        }
+        self.spec().stored_type
     }
 
     /// The schema version to stamp onto a freshly-created Entity of this type +
     /// its first revision.
     pub(crate) fn schema_version(self) -> i64 {
-        match self {
-            EntityType::JournalEntry => JOURNAL_ENTRY_SCHEMA_VERSION,
-            EntityType::Person => PERSON_SCHEMA_VERSION,
-            EntityType::Project => PROJECT_SCHEMA_VERSION,
-            EntityType::Todo => TODO_SCHEMA_VERSION,
-            EntityType::Bookmark => BOOKMARK_SCHEMA_VERSION,
-        }
+        self.spec().schema_version
     }
 
     /// Parse a stored `entities.type` value. `None` for an unknown string — the
@@ -135,19 +255,26 @@ impl EntityType {
             "project" => Some(EntityType::Project),
             "todo" => Some(EntityType::Todo),
             "bookmark" => Some(EntityType::Bookmark),
+            "habit" => Some(EntityType::Habit),
             _ => None,
         }
     }
 
     /// Whether a Journal Entry body may reference this Entity Type (ADR-0030):
-    /// People, Projects, and Todos are referenceable; Journal Entries and
-    /// Bookmarks are not. A new Entity Type must declare its referenceability
-    /// here (the match is total).
+    /// People, Projects, and Todos are referenceable; Journal Entries,
+    /// Bookmarks, and Habits are not. A new Entity Type must declare its
+    /// referenceability in its spec row.
     pub(crate) fn is_referenceable(self) -> bool {
-        match self {
-            EntityType::Person | EntityType::Project | EntityType::Todo => true,
-            EntityType::JournalEntry | EntityType::Bookmark => false,
-        }
+        self.spec().is_referenceable()
+    }
+
+    pub(crate) fn searchable_specs() -> impl Iterator<Item = (EntityTypeSpec, EntityProjectionSpec)>
+    {
+        Self::ALL.into_iter().filter_map(|entity_type| {
+            let spec = entity_type.spec();
+            spec.search_projection()
+                .map(|projection| (spec, projection))
+        })
     }
 }
 
@@ -190,6 +317,19 @@ impl EntityType {
             Field::optional("url", FieldSpec::string()).clearable(),
             Field::optional("note", FieldSpec::string()).clearable(),
             Field::optional("tags", FieldSpec::non_empty_string_array()).clearable(),
+        ]
+    }
+
+    /// The Habit data-field core: a required non-empty `name`, required cadence,
+    /// optional clearable `target`, optional status, and optional clearable note.
+    /// Habit is identity; individual check-ins remain Observations.
+    fn habit_core() -> Vec<Field> {
+        vec![
+            Field::required("name", FieldSpec::non_empty_string()),
+            Field::required("cadence", FieldSpec::Object(habit_cadence_spec())),
+            Field::optional("target", FieldSpec::non_empty_string()).clearable(),
+            Field::optional("status", habit_status_enum()),
+            Field::optional("note", FieldSpec::string()).clearable(),
         ]
     }
 
@@ -282,6 +422,33 @@ fn todo_status_enum() -> FieldSpec {
         domain: &["active", "completed", "dropped"],
         err: "status must be one of active, completed, dropped",
     }
+}
+
+/// The Habit `status` enum. `archived` is a user-managed terminal-ish state for a
+/// definition; check-in rows are separate Observations.
+fn habit_status_enum() -> FieldSpec {
+    FieldSpec::EnumStr {
+        domain: &["active", "paused", "archived"],
+        err: "status must be one of active, paused, archived",
+    }
+}
+
+/// The Habit cadence sub-object: a positive interval and coarse calendar unit.
+fn habit_cadence_spec() -> PayloadSpec {
+    PayloadSpec::nested(
+        "habit cadence",
+        ObjErr::Object,
+        vec![
+            Field::required("interval", FieldSpec::PositiveInt),
+            Field::required(
+                "unit",
+                FieldSpec::EnumStr {
+                    domain: &["day", "week", "month", "year"],
+                    err: "cadence unit must be one of day, week, month, year",
+                },
+            ),
+        ],
+    )
 }
 
 /// The `review_every` cadence sub-object (ADR-0031): a positive `interval` and a
@@ -417,6 +584,9 @@ impl MutationKind {
             // ── Bookmark (user-CRUD only) ──
             M::CreateBookmark => PayloadSpec::payload("bookmark", EntityType::bookmark_core()),
             M::UpdateBookmark => update_payload("bookmark", EntityType::bookmark_core()),
+            // ── Habit (user-CRUD only) ──
+            M::CreateHabit => PayloadSpec::payload("habit", EntityType::habit_core()),
+            M::UpdateHabit => update_payload("habit", EntityType::habit_core()),
             // ── Todo ──
             M::CreateTodo => PayloadSpec::payload(
                 "create_todo",
@@ -473,6 +643,7 @@ impl MutationKind {
             M::DeleteProject => entity_id_only("delete_project"),
             M::DeleteTodo => entity_id_only("delete_todo"),
             M::DeleteBookmark => entity_id_only("delete_bookmark"),
+            M::DeleteHabit => entity_id_only("delete_habit"),
             M::MarkProjectReviewed => entity_id_only("mark_project_reviewed"),
             // ── intent graph (ADR-0042) ──
             M::ApplyIntentGraph => intent_graph_payload(),
@@ -493,6 +664,9 @@ impl MutationKind {
             }
             M::CreateBookmark | M::UpdateBookmark => {
                 PayloadSpec::payload("bookmark", EntityType::bookmark_core())
+            }
+            M::CreateHabit | M::UpdateHabit => {
+                PayloadSpec::payload("habit", EntityType::habit_core())
             }
             other => other.payload_spec(),
         }
@@ -654,12 +828,27 @@ fn intent_graph_links() -> FieldSpec {
     let mut journal_ref = vec![graph_discriminant("kind", &["journal_ref"])];
     journal_ref.extend(from_to());
     journal_ref.push(Field::optional("match_text", FieldSpec::non_empty_string()));
-    journal_ref.push(Field::optional("append_text", FieldSpec::non_empty_string()));
+    journal_ref.push(Field::optional(
+        "append_text",
+        FieldSpec::non_empty_string(),
+    ));
     FieldSpec::OneOfArray {
         variants: vec![
-            PayloadSpec::nested("intent graph todo_project link", ObjErr::JsonObject, todo_project),
-            PayloadSpec::nested("intent graph todo_person link", ObjErr::JsonObject, todo_person),
-            PayloadSpec::nested("intent graph journal_ref link", ObjErr::JsonObject, journal_ref),
+            PayloadSpec::nested(
+                "intent graph todo_project link",
+                ObjErr::JsonObject,
+                todo_project,
+            ),
+            PayloadSpec::nested(
+                "intent graph todo_person link",
+                ObjErr::JsonObject,
+                todo_person,
+            ),
+            PayloadSpec::nested(
+                "intent graph journal_ref link",
+                ObjErr::JsonObject,
+                journal_ref,
+            ),
         ],
         min_items: None,
     }
@@ -757,7 +946,7 @@ pub(crate) struct Descriptor {
 
 /// Every Core-known Workspace mutation kind (ADR-0016, ADR-0025, ADR-0036, ADR-0042). The
 /// closed taxonomy: 14 are agent-proposable (see [`ProposableMutation`]); the
-/// other 4 (`mark_project_reviewed` + the three bookmark kinds) are user-CRUD-only.
+/// other 7 (`mark_project_reviewed` + bookmark/habit CRUD) are user-CRUD-only.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum MutationKind {
     CreateJournalEntry,
@@ -777,6 +966,9 @@ pub(crate) enum MutationKind {
     CreateBookmark,
     UpdateBookmark,
     DeleteBookmark,
+    CreateHabit,
+    UpdateHabit,
+    DeleteHabit,
     /// One intent graph (ADR-0042): candidate entities + intended links, resolved
     /// and applied by Core in one atomic transaction. Agent-proposable; the
     /// resolve/apply path lands in a later slice (slice 1 is the schema only).
@@ -809,6 +1001,9 @@ impl MutationKind {
             "create_bookmark" => MutationKind::CreateBookmark,
             "update_bookmark" => MutationKind::UpdateBookmark,
             "delete_bookmark" => MutationKind::DeleteBookmark,
+            "create_habit" => MutationKind::CreateHabit,
+            "update_habit" => MutationKind::UpdateHabit,
+            "delete_habit" => MutationKind::DeleteHabit,
             "apply_intent_graph" => MutationKind::ApplyIntentGraph,
             _ => return None,
         })
@@ -837,6 +1032,9 @@ impl MutationKind {
             MutationKind::CreateBookmark => "create_bookmark",
             MutationKind::UpdateBookmark => "update_bookmark",
             MutationKind::DeleteBookmark => "delete_bookmark",
+            MutationKind::CreateHabit => "create_habit",
+            MutationKind::UpdateHabit => "update_habit",
+            MutationKind::DeleteHabit => "delete_habit",
             MutationKind::ApplyIntentGraph => "apply_intent_graph",
         }
     }
@@ -941,6 +1139,21 @@ impl MutationKind {
                 entity_type: E::Bookmark,
                 target_key: Some(K::EntityId),
             },
+            M::CreateHabit => Descriptor {
+                write_op: W::Create,
+                entity_type: E::Habit,
+                target_key: None,
+            },
+            M::UpdateHabit => Descriptor {
+                write_op: W::Update,
+                entity_type: E::Habit,
+                target_key: Some(K::EntityId),
+            },
+            M::DeleteHabit => Descriptor {
+                write_op: W::Delete,
+                entity_type: E::Habit,
+                target_key: Some(K::EntityId),
+            },
             // A graph spans many entities, so it has NO single target id — like a
             // create, `target_key` is None. `entity_type` is the JE anchor; the
             // graph actually mints many types, so this field is unused until the
@@ -958,8 +1171,9 @@ impl MutationKind {
 
 /// The agent-proposable subset (ADR-0018): the 14 kinds the Worker may emit via
 /// `propose_workspace_mutation`. Carries the agent-path-only facets so each is
-/// total over exactly the kinds that can reach the accept path — the 4 user-only
-/// kinds (`mark_project_reviewed`, the bookmarks) are simply not in the type.
+/// total over exactly the kinds that can reach the accept path — the user-only
+/// kind families (`mark_project_reviewed`, bookmarks, habits) are simply not in
+/// the type.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum ProposableMutation {
     CreateJournalEntry,
@@ -1117,7 +1331,10 @@ impl TryFrom<MutationKind> for ProposableMutation {
             user_only @ (MutationKind::MarkProjectReviewed
             | MutationKind::CreateBookmark
             | MutationKind::UpdateBookmark
-            | MutationKind::DeleteBookmark) => return Err(NotProposable(user_only)),
+            | MutationKind::DeleteBookmark
+            | MutationKind::CreateHabit
+            | MutationKind::UpdateHabit
+            | MutationKind::DeleteHabit) => return Err(NotProposable(user_only)),
         })
     }
 }
@@ -1157,6 +1374,9 @@ mod tests {
             MutationKind::CreateBookmark,
             MutationKind::UpdateBookmark,
             MutationKind::DeleteBookmark,
+            MutationKind::CreateHabit,
+            MutationKind::UpdateHabit,
+            MutationKind::DeleteHabit,
             MutationKind::ApplyIntentGraph,
         ] {
             assert_eq!(MutationKind::from_wire(kind.as_wire()), Some(kind));
@@ -1195,7 +1415,7 @@ mod tests {
 
     #[test]
     fn proposable_all_widens_and_excludes_user_only() {
-        // ALL widens cleanly; the 4 user-only kinds are not proposable.
+        // ALL widens cleanly; the user-only kinds are not proposable.
         assert_eq!(ProposableMutation::ALL.len(), 14);
         for p in ProposableMutation::ALL {
             assert_eq!(ProposableMutation::try_from(p.kind()).unwrap(), p);
@@ -1205,6 +1425,9 @@ mod tests {
             MutationKind::CreateBookmark,
             MutationKind::UpdateBookmark,
             MutationKind::DeleteBookmark,
+            MutationKind::CreateHabit,
+            MutationKind::UpdateHabit,
+            MutationKind::DeleteHabit,
         ] {
             assert!(ProposableMutation::try_from(user_only).is_err());
         }
@@ -1236,6 +1459,8 @@ mod tests {
             MutationKind::DeleteTodo,
             MutationKind::UpdateBookmark,
             MutationKind::DeleteBookmark,
+            MutationKind::UpdateHabit,
+            MutationKind::DeleteHabit,
         ] {
             assert_eq!(
                 entity_id_kind.describe().target_key,
@@ -1248,13 +1473,7 @@ mod tests {
 
     #[test]
     fn entity_type_round_trips_and_classifies_referenceable() {
-        for et in [
-            EntityType::JournalEntry,
-            EntityType::Person,
-            EntityType::Project,
-            EntityType::Todo,
-            EntityType::Bookmark,
-        ] {
+        for et in EntityType::ALL {
             assert_eq!(EntityType::from_str(et.as_str()), Some(et));
         }
         assert_eq!(EntityType::from_str("nonsense"), None);
@@ -1263,6 +1482,62 @@ mod tests {
         assert!(EntityType::Todo.is_referenceable());
         assert!(!EntityType::JournalEntry.is_referenceable());
         assert!(!EntityType::Bookmark.is_referenceable());
+        assert!(!EntityType::Habit.is_referenceable());
+    }
+
+    #[test]
+    fn entity_type_specs_round_trip_stored_types() {
+        let mut stored_types = std::collections::HashSet::new();
+
+        for et in EntityType::ALL {
+            let spec = et.spec();
+            assert_eq!(spec.entity_type, et);
+            assert_eq!(EntityType::from_str(spec.stored_type), Some(et));
+            assert!(
+                stored_types.insert(spec.stored_type),
+                "stored Entity Type string is unique: {}",
+                spec.stored_type
+            );
+        }
+    }
+
+    #[test]
+    fn entity_type_specs_declare_current_policy() {
+        let searchable = EntityType::searchable_specs()
+            .map(|(spec, _projection)| spec.entity_type)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            searchable,
+            vec![
+                EntityType::Person,
+                EntityType::Project,
+                EntityType::Todo,
+                EntityType::Habit
+            ],
+            "search_entities exposes searchable Entity Type specs"
+        );
+
+        assert_eq!(
+            EntityType::Person.spec().schema_version,
+            PERSON_SCHEMA_VERSION
+        );
+        assert_eq!(
+            EntityType::Project.spec().schema_version,
+            PROJECT_SCHEMA_VERSION
+        );
+        assert_eq!(EntityType::Todo.spec().schema_version, TODO_SCHEMA_VERSION);
+        assert_eq!(
+            EntityType::Bookmark.spec().schema_version,
+            BOOKMARK_SCHEMA_VERSION
+        );
+        assert_eq!(
+            EntityType::Habit.spec().schema_version,
+            HABIT_SCHEMA_VERSION
+        );
+        assert_eq!(
+            EntityType::JournalEntry.spec().schema_version,
+            JOURNAL_ENTRY_SCHEMA_VERSION
+        );
     }
 
     #[test]

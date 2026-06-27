@@ -848,4 +848,146 @@ mod tests {
                 .expect("count person rows");
         assert_eq!(row_count, 1, "the wrong-type target survives untouched");
     }
+
+    #[tokio::test]
+    async fn habit_crud_via_entity_path() {
+        let pool = memory_pool().await;
+
+        let entity_id = apply(
+            &pool,
+            "create_habit",
+            &serde_json::json!({
+                "name": "Morning walk",
+                "cadence": { "interval": 1, "unit": "day" },
+                "target": "20 minutes"
+            }),
+        )
+        .await
+        .expect("user create_habit succeeds")
+        .entity_id
+        .expect("create yields an entity id");
+
+        let (entity_type, created_by, schema_version, data): (String, String, i64, String) =
+            sqlx::query_as(
+                "SELECT type, created_by, schema_version, data FROM entities WHERE id = ?1",
+            )
+            .bind(&entity_id)
+            .fetch_one(&pool)
+            .await
+            .expect("entity row");
+        assert_eq!(entity_type, "habit");
+        assert_eq!(created_by, "user");
+        assert_eq!(schema_version, 1);
+        let data: serde_json::Value = serde_json::from_str(&data).expect("data is JSON");
+        assert_eq!(
+            data.get("name").and_then(serde_json::Value::as_str),
+            Some("Morning walk")
+        );
+        assert_eq!(
+            data.get("cadence").and_then(|cadence| cadence.get("unit")),
+            Some(&serde_json::json!("day"))
+        );
+
+        let rows = crate::db::list_by_type(&pool, "habit")
+            .await
+            .expect("list habits");
+        assert_eq!(rows.len(), 1, "exactly one habit lists");
+        assert_eq!(rows[0].id, entity_id);
+        assert_eq!(rows[0].r#type, "habit");
+
+        apply(
+            &pool,
+            "update_habit",
+            &serde_json::json!({
+                "entity_id": entity_id,
+                "name": "Morning walk",
+                "cadence": { "interval": 1, "unit": "day" },
+                "status": "paused",
+                "note": "rain week"
+            }),
+        )
+        .await
+        .expect("user update_habit succeeds");
+
+        let stored: String = sqlx::query_scalar("SELECT data FROM entities WHERE id = ?1")
+            .bind(&entity_id)
+            .fetch_one(&pool)
+            .await
+            .expect("stored habit data");
+        let stored: serde_json::Value = serde_json::from_str(&stored).expect("data is JSON");
+        assert_eq!(
+            stored.get("status").and_then(serde_json::Value::as_str),
+            Some("paused"),
+            "status replaced: {stored}"
+        );
+        assert!(
+            stored.get("target").is_none(),
+            "full-document replace drops the omitted target: {stored}"
+        );
+
+        let outcome = apply(
+            &pool,
+            "delete_habit",
+            &serde_json::json!({ "entity_id": entity_id }),
+        )
+        .await
+        .expect("user delete_habit succeeds");
+        assert!(outcome.entity_id.is_none(), "a delete leaves no entity id");
+
+        let row_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM entities WHERE id = ?1")
+            .bind(&entity_id)
+            .fetch_one(&pool)
+            .await
+            .expect("count entity rows");
+        assert_eq!(row_count, 0, "the habit row is gone");
+    }
+
+    #[tokio::test]
+    async fn habit_mutations_against_wrong_type_are_invalid() {
+        let pool = memory_pool().await;
+        let person_id = apply(&pool, "create_person", &serde_json::json!({ "name": "Al" }))
+            .await
+            .expect("create person")
+            .entity_id
+            .expect("entity id");
+
+        let update = apply(
+            &pool,
+            "update_habit",
+            &serde_json::json!({
+                "entity_id": person_id,
+                "name": "Hijacked",
+                "cadence": { "interval": 1, "unit": "day" }
+            }),
+        )
+        .await;
+        assert!(
+            matches!(update, Err(MutateError::Invalid(_))),
+            "update_habit against a Person is Invalid: {update:?}"
+        );
+
+        let delete = apply(
+            &pool,
+            "delete_habit",
+            &serde_json::json!({ "entity_id": person_id }),
+        )
+        .await;
+        assert!(
+            matches!(delete, Err(MutateError::Invalid(_))),
+            "delete_habit against a Person is Invalid: {delete:?}"
+        );
+
+        let stored: String =
+            sqlx::query_scalar("SELECT data FROM entities WHERE id = ?1 AND type = 'person'")
+                .bind(&person_id)
+                .fetch_one(&pool)
+                .await
+                .expect("person row survives");
+        let stored: serde_json::Value = serde_json::from_str(&stored).expect("data is JSON");
+        assert_eq!(
+            stored.get("name").and_then(serde_json::Value::as_str),
+            Some("Al"),
+            "the wrong-type target survives untouched: {stored}"
+        );
+    }
 }

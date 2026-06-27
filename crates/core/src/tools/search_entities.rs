@@ -1,62 +1,52 @@
-//! The `search_entities` tool. Looks up accepted People, Projects, and Todos by
-//! type and a case-insensitive substring query, returning compact rows the model
-//! can use to reference or link them. Search is over accepted entities only
-//! (via `crate::db::list_by_type`); the tool exposes no arbitrary SQL or
-//! table-level CRUD.
+//! The `search_entities` tool. Looks up accepted People, Projects, Todos, and
+//! Habits by type and a case-insensitive substring query, returning compact
+//! lookup rows. Search is over accepted entities only (via
+//! `crate::db::list_by_type`); the tool exposes no arbitrary SQL or table-level
+//! CRUD.
 
-use schemars::JsonSchema;
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{Value, json};
 use sqlx::SqlitePool;
 
 use super::ToolError;
+use crate::mutation::{EntityProjectionSpec, EntityType, EntityTypeSpec};
 use crate::protocol::{AgentToolResult, CoreToolDescriptor, ToolTextContent};
 
 pub const NAME: &str = "search_entities";
-const DESCRIPTION: &str = "Search accepted People, Projects, and Todos by type and query; returns compact rows for referencing or linking.";
+const DESCRIPTION: &str = "Search accepted People, Projects, Todos, and Habits by type and query; returns compact lookup rows.";
 const LABEL: &str = "Search entities";
 
 /// Default and hard-cap on how many compact rows to return.
 const DEFAULT_LIMIT: usize = 20;
 const MAX_LIMIT: usize = 50;
 
-/// The entity types `search_entities` can look up. A closed snake_case enum so
-/// the schema rejects `journal_entry` and arbitrary types.
-#[derive(Debug, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum EntityKind {
-    Person,
-    Project,
-    Todo,
-}
-
 /// `search_entities`'s arguments. Core re-validates the model's args against
 /// this struct on receipt (ADR-0018).
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Deserialize)]
 pub struct Input {
     #[serde(rename = "type")]
-    pub r#type: EntityKind,
+    pub r#type: String,
     pub query: String,
     pub limit: Option<u32>,
 }
 
-impl EntityKind {
-    /// The stored `entities.type` string for this kind.
-    fn as_type_str(&self) -> &'static str {
-        match self {
-            EntityKind::Person => "person",
-            EntityKind::Project => "project",
-            EntityKind::Todo => "todo",
-        }
-    }
+fn searchable_spec(type_str: &str) -> Result<(EntityTypeSpec, EntityProjectionSpec), ToolError> {
+    EntityType::from_str(type_str)
+        .map(EntityType::spec)
+        .and_then(|spec| {
+            spec.search_projection()
+                .map(|projection| (spec, projection))
+        })
+        .ok_or_else(|| ToolError {
+            code: "invalid_params".to_string(),
+            message: format!("entity type {type_str:?} is not searchable"),
+        })
+}
 
-    /// The `data` key holding the row's human label.
-    fn label_key(&self) -> &'static str {
-        match self {
-            EntityKind::Person | EntityKind::Project => "name",
-            EntityKind::Todo => "title",
-        }
-    }
+fn searchable_type_values() -> Vec<&'static str> {
+    EntityType::searchable_specs()
+        .map(|(spec, _projection)| spec.stored_type)
+        .collect()
 }
 
 /// The display argument for a `search_entities` tool-activity row (ADR-0043):
@@ -64,6 +54,7 @@ impl EntityKind {
 /// empty query matches all, so it has no meaningful label).
 pub fn display_arg(params: &Value) -> Option<String> {
     let input: Input = serde_json::from_value(params.clone()).ok()?;
+    searchable_spec(&input.r#type).ok()?;
     let query = input.query.trim();
     if query.is_empty() {
         None
@@ -77,14 +68,28 @@ pub fn descriptor() -> CoreToolDescriptor {
         name: NAME.to_string(),
         description: DESCRIPTION.to_string(),
         label: LABEL.to_string(),
-        json_schema: serde_json::to_value(schemars::schema_for!(Input))
-            .expect("search_entities Input schema serializes"),
+        json_schema: json!({
+            "type": "object",
+            "required": ["type", "query"],
+            "properties": {
+                "type": {
+                    "type": "string",
+                    "enum": searchable_type_values(),
+                },
+                "query": { "type": "string" },
+                "limit": {
+                    "type": "integer",
+                    "format": "uint32",
+                    "minimum": 0,
+                },
+            },
+        }),
     }
 }
 
 /// Search accepted entities of the requested `type` whose label — or, for a
 /// person, any alias — contains `query` (case-insensitive); an empty `query`
-/// matches all. Returns up to `limit` compact rows `{ id, type, label,
+/// matches all. Returns up to `limit` compact lookup rows `{ id, type, label,
 /// aliases? }` as a `{ "results": [...] }` text payload. Search is over
 /// accepted entities only (`crate::db::list_by_type`).
 pub async fn execute(pool: &SqlitePool, params: Value) -> Result<AgentToolResult, ToolError> {
@@ -93,16 +98,16 @@ pub async fn execute(pool: &SqlitePool, params: Value) -> Result<AgentToolResult
         message: e.to_string(),
     })?;
 
-    let type_str = input.r#type.as_type_str();
-    let label_key = input.r#type.label_key();
-    let is_person = matches!(input.r#type, EntityKind::Person);
+    let (spec, projection) = searchable_spec(&input.r#type)?;
+    let label_key = projection.label_field;
+    let aliases_field = projection.aliases_field;
     let needle = input.query.to_lowercase();
     let limit = input
         .limit
         .map(|n| (n as usize).min(MAX_LIMIT))
         .unwrap_or(DEFAULT_LIMIT);
 
-    let rows = crate::db::list_by_type(pool, type_str)
+    let rows = crate::db::list_by_type(pool, spec.stored_type)
         .await
         .map_err(|e| ToolError {
             code: "internal".to_string(),
@@ -113,20 +118,16 @@ pub async fn execute(pool: &SqlitePool, params: Value) -> Result<AgentToolResult
         .into_iter()
         .filter_map(|row| {
             let label = row.data.get(label_key).and_then(Value::as_str);
-            let aliases: Vec<String> = if is_person {
-                row.data
-                    .get("aliases")
-                    .and_then(Value::as_array)
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(Value::as_str)
-                            .map(str::to_string)
-                            .collect()
-                    })
-                    .unwrap_or_default()
-            } else {
-                Vec::new()
-            };
+            let aliases: Vec<String> = aliases_field
+                .and_then(|field| row.data.get(field))
+                .and_then(Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default();
 
             let matches = needle.is_empty()
                 || label.is_some_and(|l| l.to_lowercase().contains(&needle))
@@ -144,7 +145,7 @@ pub async fn execute(pool: &SqlitePool, params: Value) -> Result<AgentToolResult
                     .map(|l| Value::String(l.to_string()))
                     .unwrap_or(Value::Null),
             );
-            if is_person && !aliases.is_empty() {
+            if aliases_field.is_some() && !aliases.is_empty() {
                 compact.insert(
                     "aliases".to_string(),
                     Value::Array(aliases.into_iter().map(Value::String).collect()),
@@ -325,6 +326,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn habit_matches_name_and_omits_aliases() {
+        let pool = memory_pool().await;
+        seed_entity(
+            &pool,
+            "00000000-0000-4000-8000-000000000012",
+            "habit",
+            r#"{"name":"Morning walk","cadence":{"interval":1,"unit":"day"}}"#,
+        )
+        .await;
+
+        let out = execute(&pool, json!({ "type": "habit", "query": "walk" }))
+            .await
+            .expect("search ok");
+        let rows = results(&out);
+        assert_eq!(rows.len(), 1, "one habit matches 'walk', got {rows:?}");
+        assert_eq!(rows[0]["type"], "habit");
+        assert_eq!(rows[0]["label"], "Morning walk");
+        assert!(
+            rows[0].get("aliases").is_none(),
+            "habits omit aliases, got {rows:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn empty_query_returns_all_of_type_and_limit_caps() {
         let pool = memory_pool().await;
         for i in 0..5 {
@@ -414,6 +439,14 @@ mod tests {
         // A malformed payload (missing required fields) yields None, not a panic.
         assert_eq!(display_arg(&json!({})), None);
         assert_eq!(display_arg(&json!({ "query": "x" })), None);
+        assert_eq!(
+            display_arg(&json!({ "type": "journal_entry", "query": "x" })),
+            None
+        );
+        assert_eq!(
+            display_arg(&json!({ "type": "bookmark", "query": "x" })),
+            None
+        );
     }
 
     #[test]
@@ -427,12 +460,12 @@ mod tests {
             "schema describes the type property, got {}",
             d.json_schema
         );
-        // The `type` field resolves (via $ref) to the closed EntityKind enum.
-        let enum_values = &d.json_schema["definitions"]["EntityKind"]["enum"];
+        // The `type` field enum is generated from EntityTypeSpec searchable rows.
+        let enum_values = &d.json_schema["properties"]["type"]["enum"];
         assert_eq!(
             enum_values,
-            &json!(["person", "project", "todo"]),
-            "type is a closed person/project/todo enum, got {}",
+            &json!(["person", "project", "todo", "habit"]),
+            "type is a closed searchable Entity Type enum, got {}",
             d.json_schema
         );
     }

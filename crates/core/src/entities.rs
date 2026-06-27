@@ -31,6 +31,7 @@ pub(crate) fn validate(kind: MutationKind, payload: &Value) -> Result<(), String
         | MutationKind::DeleteProject
         | MutationKind::DeleteTodo
         | MutationKind::DeleteBookmark
+        | MutationKind::DeleteHabit
         // A user-path-only review touch (ADR-0034): `{entity_id}` only — Core reads
         // the Project and recomputes the review fields, so the client sends no data.
         // Deliberately absent from the agent `propose_workspace_mutation` schema; it
@@ -50,6 +51,8 @@ pub(crate) fn validate(kind: MutationKind, payload: &Value) -> Result<(), String
         MutationKind::UpdateTodo => validate_update_todo(payload),
         MutationKind::CreateBookmark => validate_bookmark(payload),
         MutationKind::UpdateBookmark => validate_update_bookmark(payload),
+        MutationKind::CreateHabit => validate_habit(payload),
+        MutationKind::UpdateHabit => validate_update_habit(payload),
         // The intent graph (ADR-0042) validates its STRUCTURE via the single-source
         // spec (optional journal_entry, >= 1 typed entity nodes, the three link
         // kinds). The cross-node graph invariants (handle references, duplicate
@@ -63,7 +66,7 @@ pub(crate) fn validate(kind: MutationKind, payload: &Value) -> Result<(), String
 /// Render the human-readable Decision text the model reads on resume as the
 /// awaited tool's result (ADR-0025). An inherent method on [`ProposableMutation`]
 /// (declared in [`crate::mutation`]) so it is total over exactly the 14 kinds
-/// that can reach the agent accept path — the 4 user-only kinds are not in the
+/// that can reach the agent accept path — the user-only kinds are not in the
 /// type, so there is no `unreachable!` to forget. Defined here, alongside the
 /// private body-text helpers it uses.
 pub(crate) fn render_accept(
@@ -528,6 +531,19 @@ fn validate_bookmark(payload: &Value) -> Result<(), String> {
 /// spec walk is the whole validator.
 fn validate_update_bookmark(payload: &Value) -> Result<(), String> {
     MutationKind::UpdateBookmark.payload_spec().check(payload)
+}
+
+/// Validate a `HabitData` object: required `name`, required cadence
+/// `{interval, unit}`, optional clearable `target`/`note`, and optional status.
+/// Check-ins are Observations, so no time-series data belongs here.
+fn validate_habit(payload: &Value) -> Result<(), String> {
+    MutationKind::CreateHabit.payload_data_spec().check(payload)
+}
+
+/// Validate an `update_habit` full-document replace payload: `entity_id` plus a
+/// complete HabitData object.
+fn validate_update_habit(payload: &Value) -> Result<(), String> {
+    MutationKind::UpdateHabit.payload_spec().check(payload)
 }
 
 #[cfg(test)]
@@ -1054,7 +1070,9 @@ pub(crate) fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mutation::{BOOKMARK_SCHEMA_VERSION, JOURNAL_ENTRY_SCHEMA_VERSION};
+    use crate::mutation::{
+        BOOKMARK_SCHEMA_VERSION, HABIT_SCHEMA_VERSION, JOURNAL_ENTRY_SCHEMA_VERSION,
+    };
     use serde_json::json;
 
     /// Test shim: validate by wire string, mirroring the pre-refactor
@@ -2458,6 +2476,131 @@ mod tests {
         assert_eq!(schema_version("update_bookmark"), BOOKMARK_SCHEMA_VERSION);
         assert_eq!(schema_version("delete_bookmark"), BOOKMARK_SCHEMA_VERSION);
         assert_eq!(schema_version("create_bookmark"), 1);
+    }
+
+    // ─── Habit (Phase 2b) ─────────────────────────────────────────────────
+
+    #[test]
+    fn accepts_minimal_habit() {
+        assert!(validate_habit(&json!({
+            "name": "Morning walk",
+            "cadence": { "interval": 1, "unit": "day" }
+        }))
+        .is_ok());
+    }
+
+    #[test]
+    fn accepts_habit_with_target_status_and_note() {
+        assert!(validate_habit(&json!({
+            "name": "Strength training",
+            "cadence": { "interval": 3, "unit": "week" },
+            "target": "45 minutes",
+            "status": "paused",
+            "note": "restart after travel"
+        }))
+        .is_ok());
+    }
+
+    #[test]
+    fn rejects_invalid_habit_name_cadence_status_and_target() {
+        let reason = validate_habit(&json!({ "name": "Morning walk" }))
+            .expect_err("cadence is required");
+        assert!(reason.contains("cadence"), "reason names cadence: {reason}");
+
+        let reason = validate_habit(&json!({
+            "name": "Morning walk",
+            "cadence": { "interval": 0, "unit": "day" }
+        }))
+        .expect_err("interval must be positive");
+        assert!(
+            reason.contains("interval"),
+            "reason names interval: {reason}"
+        );
+
+        let reason = validate_habit(&json!({
+            "name": "Morning walk",
+            "cadence": { "interval": 1, "unit": "hour" }
+        }))
+        .expect_err("unit domain is closed");
+        assert!(reason.contains("unit"), "reason names unit: {reason}");
+
+        let reason = validate_habit(&json!({
+            "name": "Morning walk",
+            "cadence": { "interval": 1, "unit": "day" },
+            "status": "done"
+        }))
+        .expect_err("status domain is closed");
+        assert!(reason.contains("status"), "reason names status: {reason}");
+
+        let reason = validate_habit(&json!({
+            "name": "Morning walk",
+            "cadence": { "interval": 1, "unit": "day" },
+            "target": " "
+        }))
+        .expect_err("target must be non-empty when present");
+        assert!(reason.contains("target"), "reason names target: {reason}");
+    }
+
+    #[test]
+    fn accepts_null_clear_on_habit_optional_fields() {
+        assert!(validate_habit(&json!({
+            "name": "Morning walk",
+            "cadence": { "interval": 1, "unit": "day" },
+            "target": null,
+            "note": null
+        }))
+        .is_ok());
+    }
+
+    #[test]
+    fn update_habit_and_delete_habit_validate_target_id() {
+        assert!(validate(
+            "update_habit",
+            &json!({
+                "entity_id": Uuid::now_v7().to_string(),
+                "name": "Morning walk",
+                "cadence": { "interval": 1, "unit": "day" },
+                "status": "archived"
+            })
+        )
+        .is_ok());
+
+        let reason = validate(
+            "update_habit",
+            &json!({
+                "entity_id": "nope",
+                "name": "Morning walk",
+                "cadence": { "interval": 1, "unit": "day" }
+            }),
+        )
+        .expect_err("entity_id must be a UUID");
+        assert!(
+            reason.contains("UUID"),
+            "reason names malformed entity_id: {reason}"
+        );
+
+        assert!(validate(
+            "delete_habit",
+            &json!({ "entity_id": Uuid::now_v7().to_string() })
+        )
+        .is_ok());
+        let reason = validate(
+            "delete_habit",
+            &json!({ "entity_id": Uuid::now_v7().to_string(), "name": "x" }),
+        )
+        .expect_err("an extra field on a delete payload is unsupported");
+        assert!(
+            reason.contains("delete_habit") && reason.contains("name"),
+            "reason names the unsupported field: {reason}"
+        );
+    }
+
+    #[test]
+    fn schema_version_habit_is_one() {
+        assert_eq!(schema_version("create_habit"), HABIT_SCHEMA_VERSION);
+        assert_eq!(schema_version("update_habit"), HABIT_SCHEMA_VERSION);
+        assert_eq!(schema_version("delete_habit"), HABIT_SCHEMA_VERSION);
+        assert_eq!(schema_version("create_habit"), 1);
     }
 
     // ─── recurrence rule (ADR-0037) ────────────────────────────────────────

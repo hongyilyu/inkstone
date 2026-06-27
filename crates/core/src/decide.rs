@@ -300,9 +300,9 @@ async fn apply_or_reject(
 
     // Accept or edit: this is the agent ACCEPT path, so the kind must be
     // agent-proposable. A stored kind that is not (mark_project_reviewed /
-    // bookmark — the propose schema cannot emit them) is a graceful `Invalid`,
-    // replacing the former render_accept panic. Done AFTER the reject branch so a
-    // corrupt proposal can still be rejected.
+    // bookmark / habit — the propose schema cannot emit them) is a graceful
+    // `Invalid`, replacing the former render_accept panic. Done AFTER the reject
+    // branch so a corrupt proposal can still be rejected.
     let proposable = ProposableMutation::try_from(kind)
         .map_err(|e| DecideError::Invalid(format!("{} cannot be proposed", e.0.as_wire())))?;
 
@@ -556,9 +556,10 @@ fn preserve_update_target_entity_id(
 ) -> Result<serde_json::Value, DecideError> {
     // Only the editable update kinds carry a target id to preserve. This gate is
     // the editable-UPDATE set (not merely `target_key.is_some()`, which would also
-    // catch deletes, the reference weave, mark_project_reviewed, and bookmarks —
-    // none of which take an edit). Reference/deletes were already rejected by the
-    // edit-guard upstream; this stays explicit so the set cannot silently widen.
+    // catch deletes, the reference weave, mark_project_reviewed, bookmarks, and
+    // habits — none of which take an edit). Reference/deletes were already
+    // rejected by the edit-guard upstream; this stays explicit so the set cannot
+    // silently widen.
     if !matches!(
         kind,
         MutationKind::UpdateJournalEntry
