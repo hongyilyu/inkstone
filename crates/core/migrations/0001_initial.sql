@@ -188,6 +188,8 @@ CREATE TABLE observations (
   created_via_proposal_id  TEXT REFERENCES proposals(id),
   created_at               INTEGER NOT NULL,
   updated_at               INTEGER NOT NULL,
+  -- Stricter than entities: direct user observations must not carry a
+  -- proposal id, while proposal-born observations must carry one.
   CHECK (
     (created_by = 'user' AND created_via_proposal_id IS NULL) OR
     (created_by = 'proposal' AND created_via_proposal_id IS NOT NULL)
@@ -201,6 +203,8 @@ CREATE TABLE observation_sources (
   observation_id     TEXT NOT NULL REFERENCES observations(id) ON DELETE CASCADE,
   source_entity_id   TEXT REFERENCES entities(id) ON DELETE CASCADE,
   source_message_id  TEXT REFERENCES messages(id) ON DELETE CASCADE,
+  -- No updated_from while observations are append-mostly and corrections are
+  -- delete-and-re-record.
   relation           TEXT NOT NULL CHECK (relation IN ('created_from','evidenced_by')),
   created_at         INTEGER NOT NULL,
   CHECK (
