@@ -1,5 +1,3 @@
-#![allow(dead_code)] // Slice 1 lands the Core helper before Slice 3 wires RPC.
-
 use serde_json::Value;
 use sqlx::SqlitePool;
 use uuid::Uuid;
@@ -194,11 +192,18 @@ fn validate_query(filter: &ObservationQuery) -> Result<(), String> {
             return Err(format!("unknown observation schema {schema_key:?}"));
         }
     }
+    let mut parsed_from = None;
     if let Some(from) = &filter.from {
-        parse_local_datetime(from, "from")?;
+        parsed_from = Some(parse_local_datetime(from, "from")?);
     }
+    let mut parsed_to = None;
     if let Some(to) = &filter.to {
-        parse_local_datetime(to, "to")?;
+        parsed_to = Some(parse_local_datetime(to, "to")?);
+    }
+    if let (Some(from), Some(to)) = (parsed_from, parsed_to)
+        && to < from
+    {
+        return Err("to must be greater than or equal to from".to_string());
     }
     if let Some(limit) = filter.limit
         && limit < 1
