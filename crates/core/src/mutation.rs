@@ -58,7 +58,6 @@ pub(crate) struct EntityTypeSpec {
     pub(crate) stored_type: &'static str,
     pub(crate) schema_version: i64,
     pub(crate) referenceable: bool,
-    pub(crate) listable: bool,
     pub(crate) projection: Option<EntityProjectionSpec>,
     pub(crate) searchable: bool,
 }
@@ -81,78 +80,6 @@ impl EntityTypeSpec {
         }
     }
 }
-
-const ENTITY_TYPE_SPECS: [EntityTypeSpec; 6] = [
-    EntityTypeSpec {
-        entity_type: EntityType::JournalEntry,
-        stored_type: "journal_entry",
-        schema_version: JOURNAL_ENTRY_SCHEMA_VERSION,
-        referenceable: false,
-        listable: true,
-        projection: None,
-        searchable: false,
-    },
-    EntityTypeSpec {
-        entity_type: EntityType::Person,
-        stored_type: "person",
-        schema_version: PERSON_SCHEMA_VERSION,
-        referenceable: true,
-        listable: true,
-        projection: Some(EntityProjectionSpec {
-            label_field: "name",
-            aliases_field: Some("aliases"),
-        }),
-        searchable: true,
-    },
-    EntityTypeSpec {
-        entity_type: EntityType::Project,
-        stored_type: "project",
-        schema_version: PROJECT_SCHEMA_VERSION,
-        referenceable: true,
-        listable: true,
-        projection: Some(EntityProjectionSpec {
-            label_field: "name",
-            aliases_field: None,
-        }),
-        searchable: true,
-    },
-    EntityTypeSpec {
-        entity_type: EntityType::Todo,
-        stored_type: "todo",
-        schema_version: TODO_SCHEMA_VERSION,
-        referenceable: true,
-        listable: true,
-        projection: Some(EntityProjectionSpec {
-            label_field: "title",
-            aliases_field: None,
-        }),
-        searchable: true,
-    },
-    EntityTypeSpec {
-        entity_type: EntityType::Bookmark,
-        stored_type: "bookmark",
-        schema_version: BOOKMARK_SCHEMA_VERSION,
-        referenceable: false,
-        listable: true,
-        projection: Some(EntityProjectionSpec {
-            label_field: "title",
-            aliases_field: None,
-        }),
-        searchable: false,
-    },
-    EntityTypeSpec {
-        entity_type: EntityType::Habit,
-        stored_type: "habit",
-        schema_version: HABIT_SCHEMA_VERSION,
-        referenceable: false,
-        listable: true,
-        projection: Some(EntityProjectionSpec {
-            label_field: "name",
-            aliases_field: None,
-        }),
-        searchable: true,
-    },
-];
 
 /// The write-class of a `mutation_kind`. Every mutation is a write — reads
 /// (`entity/list`, `search_entities`, `proposal/get`) carry no `mutation_kind`
@@ -227,11 +154,71 @@ impl EntityType {
     ];
 
     pub(crate) fn spec(self) -> EntityTypeSpec {
-        ENTITY_TYPE_SPECS
-            .iter()
-            .copied()
-            .find(|spec| spec.entity_type == self)
-            .expect("every EntityType has a spec")
+        match self {
+            EntityType::JournalEntry => EntityTypeSpec {
+                entity_type: self,
+                stored_type: "journal_entry",
+                schema_version: JOURNAL_ENTRY_SCHEMA_VERSION,
+                referenceable: false,
+                projection: None,
+                searchable: false,
+            },
+            EntityType::Person => EntityTypeSpec {
+                entity_type: self,
+                stored_type: "person",
+                schema_version: PERSON_SCHEMA_VERSION,
+                referenceable: true,
+                projection: Some(EntityProjectionSpec {
+                    label_field: "name",
+                    aliases_field: Some("aliases"),
+                }),
+                searchable: true,
+            },
+            EntityType::Project => EntityTypeSpec {
+                entity_type: self,
+                stored_type: "project",
+                schema_version: PROJECT_SCHEMA_VERSION,
+                referenceable: true,
+                projection: Some(EntityProjectionSpec {
+                    label_field: "name",
+                    aliases_field: None,
+                }),
+                searchable: true,
+            },
+            EntityType::Todo => EntityTypeSpec {
+                entity_type: self,
+                stored_type: "todo",
+                schema_version: TODO_SCHEMA_VERSION,
+                referenceable: true,
+                projection: Some(EntityProjectionSpec {
+                    label_field: "title",
+                    aliases_field: None,
+                }),
+                searchable: true,
+            },
+            EntityType::Bookmark => EntityTypeSpec {
+                entity_type: self,
+                stored_type: "bookmark",
+                schema_version: BOOKMARK_SCHEMA_VERSION,
+                referenceable: false,
+                projection: Some(EntityProjectionSpec {
+                    label_field: "title",
+                    aliases_field: None,
+                }),
+                searchable: false,
+            },
+            EntityType::Habit => EntityTypeSpec {
+                entity_type: self,
+                stored_type: "habit",
+                schema_version: HABIT_SCHEMA_VERSION,
+                referenceable: false,
+                projection: Some(EntityProjectionSpec {
+                    label_field: "name",
+                    aliases_field: None,
+                }),
+                searchable: true,
+            },
+        }
     }
 
     /// The stored `entities.type` value. Bound into SQL and compared against
@@ -250,9 +237,15 @@ impl EntityType {
     /// caller decides whether that is a data fault (the stored column has no
     /// CHECK constraint) or merely a type that fails an equality check.
     pub(crate) fn from_str(s: &str) -> Option<Self> {
-        Self::ALL
-            .into_iter()
-            .find(|entity_type| entity_type.spec().stored_type == s)
+        match s {
+            "journal_entry" => Some(EntityType::JournalEntry),
+            "person" => Some(EntityType::Person),
+            "project" => Some(EntityType::Project),
+            "todo" => Some(EntityType::Todo),
+            "bookmark" => Some(EntityType::Bookmark),
+            "habit" => Some(EntityType::Habit),
+            _ => None,
+        }
     }
 
     /// Whether a Journal Entry body may reference this Entity Type (ADR-0030):
@@ -264,9 +257,9 @@ impl EntityType {
     }
 
     pub(crate) fn searchable_specs() -> impl Iterator<Item = EntityTypeSpec> {
-        ENTITY_TYPE_SPECS
-            .iter()
-            .copied()
+        Self::ALL
+            .into_iter()
+            .map(EntityType::spec)
             .filter(|spec| spec.searchable)
     }
 }
@@ -1483,34 +1476,23 @@ mod tests {
     }
 
     #[test]
-    fn every_entity_type_has_one_spec_row() {
-        assert_eq!(ENTITY_TYPE_SPECS.len(), EntityType::ALL.len());
+    fn entity_type_specs_round_trip_stored_types() {
+        let mut stored_types = std::collections::HashSet::new();
 
         for et in EntityType::ALL {
-            let matching = ENTITY_TYPE_SPECS
-                .iter()
-                .filter(|spec| spec.entity_type == et)
-                .count();
-            assert_eq!(matching, 1, "{et:?} has exactly one spec row");
+            let spec = et.spec();
+            assert_eq!(spec.entity_type, et);
+            assert_eq!(EntityType::from_str(spec.stored_type), Some(et));
+            assert!(
+                stored_types.insert(spec.stored_type),
+                "stored Entity Type string is unique: {}",
+                spec.stored_type
+            );
         }
-
-        let stored_types = ENTITY_TYPE_SPECS
-            .iter()
-            .map(|spec| spec.stored_type)
-            .collect::<std::collections::HashSet<_>>();
-        assert_eq!(
-            stored_types.len(),
-            ENTITY_TYPE_SPECS.len(),
-            "stored Entity Type strings are unique"
-        );
     }
 
     #[test]
     fn entity_type_specs_declare_current_policy() {
-        for et in EntityType::ALL {
-            assert!(et.spec().listable, "{et:?} remains listable");
-        }
-
         let searchable = EntityType::searchable_specs()
             .map(|spec| spec.entity_type)
             .collect::<Vec<_>>();
