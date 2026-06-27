@@ -73,7 +73,7 @@ pub(super) async fn handle_decide(
     .await
     {
         Ok(DecideOutcome::Accepted { run_id, entity_id }) => {
-            send_decide_result(out_tx, id, "accepted", Some(entity_id));
+            send_decide_result(out_tx, id, "accepted", entity_id);
             send_proposal_changed(out_tx, run_id, &params.proposal_id.to_string(), "accepted");
         }
         Ok(DecideOutcome::Rejected { run_id }) => {
@@ -145,8 +145,7 @@ async fn review_context_for_proposal(
     // review context. Resolve the stored kind to the typed predicate; a kind that
     // is unknown or not agent-proposable simply has no review context (Ok(None)),
     // matching the prior non-journal-kind early return.
-    let Some(proposable) = crate::mutation::MutationKind::from_wire(&proposal.mutation_kind)
-        .and_then(|kind| crate::mutation::ProposableMutation::try_from(kind).ok())
+    let Some(proposable) = crate::mutation::ProposableMutation::from_wire(&proposal.mutation_kind)
     else {
         return Ok(None);
     };
@@ -157,7 +156,10 @@ async fn review_context_for_proposal(
     // The Entity under review is the kind's target — `source_entity_id` for the
     // reference weave, `entity_id` for every other update/delete (from the
     // descriptor).
-    let descriptor = proposable.kind().describe();
+    let Some(kind) = proposable.entity_kind() else {
+        return Ok(None);
+    };
+    let descriptor = kind.describe();
     let entity_id_field = descriptor
         .target_key
         .map(|k| k.as_str())

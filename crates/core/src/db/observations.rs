@@ -2,9 +2,11 @@
 //! one-statement query convention; this module owns the observation storage
 //! shapes and transaction boundary.
 
-use sqlx::SqlitePool;
+use sqlx::{Sqlite, SqlitePool, Transaction};
 use uuid::Uuid;
 
+use super::ApplyError;
+use super::lifecycle::ProposalStatus;
 use super::queries;
 use crate::mutation::EntityType;
 
@@ -107,9 +109,19 @@ pub(crate) async fn insert_observations(
     now_ms: i64,
 ) -> Result<(), ObservationInsertError> {
     let mut tx = pool.begin().await?;
+    insert_observations_in_tx(&mut tx, rows, now_ms).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+pub(super) async fn insert_observations_in_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    rows: Vec<ObservationInsert>,
+    now_ms: i64,
+) -> Result<(), ObservationInsertError> {
     for row in rows {
         queries::insert_observation(
-            &mut *tx,
+            &mut **tx,
             &row.id,
             &row.schema_key,
             row.schema_version,
@@ -124,7 +136,7 @@ pub(crate) async fn insert_observations(
         .await?;
         for relation in row.relations {
             if !queries::entity_is_type(
-                &mut *tx,
+                &mut **tx,
                 &relation.entity_id,
                 relation.target_entity_type.as_str(),
             )
@@ -141,7 +153,7 @@ pub(crate) async fn insert_observations(
             match &source {
                 ObservationSourceInsert::JournalEntry { id } => {
                     if !queries::entity_is_type(
-                        &mut *tx,
+                        &mut **tx,
                         id,
                         crate::mutation::EntityType::JournalEntry.as_str(),
                     )
@@ -153,7 +165,7 @@ pub(crate) async fn insert_observations(
                     }
                 }
                 ObservationSourceInsert::Message { id } => {
-                    if !queries::message_exists(&mut *tx, id).await? {
+                    if !queries::message_exists(&mut **tx, id).await? {
                         return Err(ObservationInsertError::InvalidSource(
                             "observation source_message_id must name an existing message"
                                 .to_string(),
@@ -162,7 +174,7 @@ pub(crate) async fn insert_observations(
                 }
             }
             queries::insert_observation_source(
-                &mut *tx,
+                &mut **tx,
                 &Uuid::now_v7().to_string(),
                 &row.id,
                 source.source_entity_id(),
@@ -173,8 +185,62 @@ pub(crate) async fn insert_observations(
             .await?;
         }
     }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn apply_record_observations_proposal(
+    pool: &SqlitePool,
+    run_id: Uuid,
+    proposal_id: &str,
+    tool_call_id: &str,
+    rows: Vec<ObservationInsert>,
+    edited_payload: Option<&serde_json::Value>,
+    decision_idempotency_key: Option<&str>,
+    decision_result_payload: impl FnOnce(usize) -> String,
+    now_ms: i64,
+) -> Result<(), ApplyError> {
+    let edited_str = edited_payload.map(|v| v.to_string());
+    let observation_count = rows.len();
+    let mut tx = pool.begin().await?;
+
+    let accepted = ProposalStatus::accept(
+        &mut *tx,
+        run_id,
+        proposal_id,
+        edited_str.as_deref(),
+        decision_idempotency_key,
+        now_ms,
+    )
+    .await?;
+    if !accepted.won() {
+        return Err(ApplyError::NotPending);
+    }
+
+    insert_observations_in_tx(&mut tx, rows, now_ms)
+        .await
+        .map_err(observation_insert_to_apply)?;
+
+    let decision_result_payload = decision_result_payload(observation_count);
+    queries::resolve_tool_call(
+        &mut *tx,
+        tool_call_id,
+        "completed",
+        &decision_result_payload,
+        now_ms,
+    )
+    .await?;
+
     tx.commit().await?;
     Ok(())
+}
+
+fn observation_insert_to_apply(err: ObservationInsertError) -> ApplyError {
+    match err {
+        ObservationInsertError::InvalidSource(reason)
+        | ObservationInsertError::InvalidRelation(reason) => ApplyError::InvalidMutation(reason),
+        ObservationInsertError::Sqlx(err) => ApplyError::Sql(err),
+    }
 }
 
 /// Read stored Observations by schema/time/source filters. Raw JSON is returned

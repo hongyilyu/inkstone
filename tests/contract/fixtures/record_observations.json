@@ -1,0 +1,53 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "evidence": {
+      "additionalProperties": false,
+      "properties": {
+        "journal_entry_id": {
+          "type": "string"
+        },
+        "message_id": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "observations": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "ended_at": {
+            "description": "Local wall-clock time in YYYY-MM-DDTHH:MM:SS format.",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}$",
+            "type": "string"
+          },
+          "note": {
+            "type": "string"
+          },
+          "occurred_at": {
+            "description": "Local wall-clock time in YYYY-MM-DDTHH:MM:SS format.",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}$",
+            "type": "string"
+          },
+          "schema_key": {
+            "type": "string"
+          },
+          "values": {}
+        },
+        "required": [
+          "schema_key",
+          "occurred_at",
+          "values"
+        ],
+        "type": "object"
+      },
+      "minItems": 1,
+      "type": "array"
+    }
+  },
+  "required": [
+    "observations"
+  ],
+  "type": "object"
+}

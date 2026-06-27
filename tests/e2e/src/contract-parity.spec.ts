@@ -112,7 +112,7 @@ test("the live proposal payload Core emits decodes against its @inkstone/protoco
 	// `schemas[kind]` is the heterogeneous registry's union type; widen to a
 	// single no-requirements existential (`Schema<unknown, unknown>`, Context =
 	// never) so `decodeUnknownEither` takes one schema rather than the conflicting
-	// union of all 13.
+	// union of all proposable kinds.
 	const schema = schemas[mutation_kind as WireKind] as Schema.Schema<
 		unknown,
 		unknown

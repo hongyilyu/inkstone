@@ -3,25 +3,25 @@
 A CI gate that proves the **Rust** and **TypeScript** definitions of the wire
 protocol agree. It has two legs:
 
-1. **Payload parity** (schema-vs-schema) — the wire `payload` for the 14
+1. **Payload parity** (schema-vs-schema) — the wire `payload` for the 15
    agent-proposable Workspace mutations, per kind.
 2. **Non-payload parity** (instance-based) — the ~35 plain serde wire messages
    (params, results, notifications, the Worker manifest, the run-event /
    tool-result frames) hand-mirrored in `crates/core/src/protocol.rs` and
    `packages/protocol/src/index.ts`. See "Non-payload structs" below.
 
-## Payload parity (the 14 proposable kinds)
+## Payload parity (the 15 proposable kinds)
 
 - **Rust** (`crates/core`) is the schema-of-record. An inline test
   (`regenerate_schema_fixtures` in `src/tools/propose_workspace_mutation.rs`)
-  dumps each kind's `MutationKind::payload_spec().json_schema()` — the same
+  dumps each kind's `ProposableMutation::payload_spec().json_schema()` — the same
   expression that drives the agent tool descriptor — to `fixtures/<wire_kind>.json`.
 - **TypeScript** hand-authors one Effect Schema per kind in
   `packages/protocol/src/payloads.ts` (the `schemas` registry, re-exported from
   the package barrel and consumed by the Web codec at runtime). `parity.test.ts`
   runs each through `JSONSchema.make`, runs both it and the Rust fixture through
   `normalize.ts`, and asserts deep-equality. `completeness.test.ts` locks the
-  registry to the 14 committed fixtures.
+  registry to the 15 committed fixtures.
 
 This implements ADR-0009's already-decided "manually mirrored types + contract
 tests" discipline (this contract-test package lives at `tests/contract`), using
@@ -102,11 +102,11 @@ optional on the TS side and absent on the Rust side — and the JSON-RPC envelop
 ## Layout
 
 ```text
-fixtures/<wire_kind>.json          the 14 Rust-emitted payload schemas (schema-of-record)
+fixtures/<wire_kind>.json          the 15 Rust-emitted payload schemas (schema-of-record)
 fixtures/structs/emitted/*.json    Core-emitted non-payload wire values (serialize side)
 fixtures/structs/authored/*.json   hand-authored param wire JSON (deserialize side)
 src/parity.test.ts                 per-kind payload deep-equality (schema-vs-schema)
-src/completeness.test.ts           locks the 14-payload registry/fixtures/canonical sets
+src/completeness.test.ts           locks the 15-payload registry/fixtures/canonical sets
 src/normalize.ts                   the dialect-reconciling normalizer (payload leg only)
 src/structs.test.ts                per-message non-payload decode + re-encode (instance-based)
 src/structs.registry.ts            fixture → Effect Schema registry + canonical message list

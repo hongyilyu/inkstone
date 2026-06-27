@@ -80,6 +80,50 @@ pub(crate) async fn record_observations(
     input: RecordObservationsInput,
 ) -> Result<Vec<Observation>, ObservationError> {
     let now_ms = db::now_ms();
+    let (inserts, observations) = prepare_observations(input, "user", None, now_ms)?;
+    db::insert_observations(pool, inserts, now_ms)
+        .await
+        .map_err(observation_insert_error)?;
+    Ok(observations)
+}
+
+pub(crate) fn record_observations_input_from_payload(
+    payload: &Value,
+) -> Result<RecordObservationsInput, String> {
+    crate::mutation::ProposableMutation::RecordObservations
+        .payload_spec()
+        .check(payload)?;
+    let params: crate::protocol::ObservationRecordParams = serde_json::from_value(payload.clone())
+        .map_err(|e| format!("record_observations payload is invalid: {e}"))?;
+    let source = source_from_evidence(params.evidence)?;
+    Ok(RecordObservationsInput {
+        observations: params
+            .observations
+            .into_iter()
+            .map(|draft| ObservationRecordInput {
+                schema_key: draft.schema_key,
+                occurred_at: draft.occurred_at,
+                ended_at: draft.ended_at,
+                values: draft.values,
+                note: draft.note,
+                source: source.clone(),
+            })
+            .collect(),
+    })
+}
+
+pub(crate) fn prepare_observations(
+    input: RecordObservationsInput,
+    created_by: &str,
+    proposal_id: Option<&str>,
+    now_ms: i64,
+) -> Result<(Vec<db::ObservationInsert>, Vec<Observation>), ObservationError> {
+    if input.observations.is_empty() {
+        return Err(ObservationError::Invalid(
+            "observations must have at least 1 item(s)".to_string(),
+        ));
+    }
+
     let mut inserts = Vec::with_capacity(input.observations.len());
     let mut observations = Vec::with_capacity(input.observations.len());
 
@@ -105,8 +149,8 @@ pub(crate) async fn record_observations(
             ended_at: record.ended_at.clone(),
             values_json,
             note: record.note.clone(),
-            created_by: "user".to_string(),
-            created_via_proposal_id: None,
+            created_by: created_by.to_string(),
+            created_via_proposal_id: proposal_id.map(str::to_string),
             relations,
             source: source.as_ref().map(|source| match source {
                 ObservationSource::JournalEntry { id } => {
@@ -131,16 +175,15 @@ pub(crate) async fn record_observations(
         });
     }
 
-    db::insert_observations(pool, inserts, now_ms)
-        .await
-        .map_err(|e| match e {
-            db::ObservationInsertError::InvalidSource(reason) => ObservationError::Invalid(reason),
-            db::ObservationInsertError::InvalidRelation(reason) => {
-                ObservationError::Invalid(reason)
-            }
-            db::ObservationInsertError::Sqlx(err) => ObservationError::Internal(err.into()),
-        })?;
-    Ok(observations)
+    Ok((inserts, observations))
+}
+
+pub(crate) fn observation_insert_error(e: db::ObservationInsertError) -> ObservationError {
+    match e {
+        db::ObservationInsertError::InvalidSource(reason) => ObservationError::Invalid(reason),
+        db::ObservationInsertError::InvalidRelation(reason) => ObservationError::Invalid(reason),
+        db::ObservationInsertError::Sqlx(err) => ObservationError::Internal(err.into()),
+    }
 }
 
 pub(crate) async fn query_observations(
@@ -303,6 +346,22 @@ fn validated_source(source: &ObservationSourceInput) -> Result<ObservationSource
             parse_uuid(id, "source_message_id")?;
             Ok(ObservationSource::Message { id: id.clone() })
         }
+    }
+}
+
+fn source_from_evidence(
+    evidence: Option<crate::protocol::ObservationEvidence>,
+) -> Result<Option<ObservationSourceInput>, String> {
+    let Some(evidence) = evidence else {
+        return Ok(None);
+    };
+    match (evidence.journal_entry_id, evidence.message_id) {
+        (Some(id), None) => Ok(Some(ObservationSourceInput::JournalEntry { id })),
+        (None, Some(id)) => Ok(Some(ObservationSourceInput::Message { id })),
+        (None, None) => Ok(None),
+        (Some(_), Some(_)) => Err(
+            "observation evidence must name only one of journal_entry_id or message_id".to_string(),
+        ),
     }
 }
 
@@ -580,6 +639,19 @@ mod observations_tests {
         let pool = memory_pool().await;
         seed_message(&pool, "018f0000-0000-7000-8000-000000000001").await;
         seed_entity(&pool, "018f0000-0000-7000-8000-000000000002").await;
+
+        let reason = record_observations(
+            &pool,
+            RecordObservationsInput {
+                observations: Vec::new(),
+            },
+        )
+        .await
+        .expect_err("empty observation batches are rejected");
+        assert_eq!(
+            invalid_reason(reason),
+            "observations must have at least 1 item(s)"
+        );
 
         let mut direct = bodyweight_at("2026-06-01T07:30:00", json!(72.4));
         direct.note = Some("morning".to_string());

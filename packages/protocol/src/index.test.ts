@@ -488,6 +488,12 @@ describe("ObservationRecordParams", () => {
 	it("rejects a missing observations array", () => {
 		expect(() => S.decodeUnknownSync(ObservationRecordParams)({})).toThrow();
 	});
+
+	it("rejects an empty observations array", () => {
+		expect(() =>
+			S.decodeUnknownSync(ObservationRecordParams)({ observations: [] }),
+		).toThrow();
+	});
 });
 
 describe("ObservationRecordResult", () => {

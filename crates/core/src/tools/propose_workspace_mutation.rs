@@ -11,25 +11,23 @@ pub const NAME: &str = "propose_workspace_mutation";
 const DESCRIPTION: &str = "Propose a Workspace mutation for user review: capture a journal-worthy lived event or reflection as a Journal Entry, or extract People/Projects/Todos from an already-accepted Journal Entry. Do not create a Journal Entry for a bare reminder, task, or future obligation the user only wants remembered.";
 const LABEL: &str = "Propose Workspace mutation";
 
-/// The agent tool descriptor (ADR-0018): a top-level `oneOf` over the 14
-/// agent-proposable mutation kinds (ADR-0036, ADR-0042), each variant binding its
-/// `mutation_kind` discriminant to the payload schema its
-/// [`crate::mutation::MutationKind::payload_spec`] emits — the SAME single source
-/// the validators derive from. The user-only kind families (bookmarks, habits,
-/// and `mark_project_reviewed`) are validated but deliberately absent from this
-/// surface. Inlined Draft-07 (no `$ref`/`definitions`): ADR-0018 wants inlined
-/// schemas because Anthropic rejects `$ref`.
+/// The agent tool descriptor (ADR-0018): a top-level `oneOf` over the closed
+/// agent-proposable mutation kinds, each variant binding its `mutation_kind`
+/// discriminant to the payload schema its [`ProposableMutation`] emits. The
+/// user-only kind families (bookmarks, habits, and `mark_project_reviewed`) are
+/// validated but deliberately absent from this surface. Inlined Draft-07 (no
+/// `$ref`/`definitions`): ADR-0018 wants inlined schemas because Anthropic
+/// rejects `$ref`.
 pub fn descriptor() -> CoreToolDescriptor {
     let variants = ProposableMutation::ALL
         .iter()
         .map(|proposable| {
-            let kind = proposable.kind();
             serde_json::json!({
                 "type": "object",
                 "additionalProperties": false,
                 "properties": {
-                    "mutation_kind": { "type": "string", "enum": [kind.as_wire()] },
-                    "payload": kind.payload_spec().json_schema(),
+                    "mutation_kind": { "type": "string", "enum": [proposable.as_wire()] },
+                    "payload": proposable.payload_spec().json_schema(),
                     // The model-attached, nullable explanation stored on the
                     // proposal row (read from the row, not the payload).
                     "rationale": { "type": ["string", "null"], "default": null },
@@ -74,7 +72,7 @@ mod tests {
     /// expression [`descriptor`] binds — NOT the `{mutation_kind, payload,
     /// rationale}` envelope.
     ///
-    /// It writes ALL 14 fixtures — the TS parity test (`tests/contract`)
+    /// It writes ALL fixtures — the TS parity test (`tests/contract`)
     /// asserts every one against its committed fixture. The output is
     /// deterministic (`serde_json` sorts object keys; pretty-print + trailing
     /// newline), so CI re-runs it and `git diff --exit-code` is the staleness
@@ -87,11 +85,10 @@ mod tests {
         std::fs::create_dir_all(&fixtures_dir).expect("create fixtures dir");
 
         for proposable in ProposableMutation::ALL {
-            let kind = proposable.kind();
-            let schema = kind.payload_spec().json_schema();
+            let schema = proposable.payload_spec().json_schema();
             let mut json = serde_json::to_string_pretty(&schema).expect("schema serializes");
             json.push('\n');
-            let path = fixtures_dir.join(format!("{}.json", kind.as_wire()));
+            let path = fixtures_dir.join(format!("{}.json", proposable.as_wire()));
             std::fs::write(&path, json).unwrap_or_else(|e| panic!("write {path:?}: {e}"));
         }
     }
@@ -173,6 +170,10 @@ mod tests {
                 "apply_intent_graph",
                 include_str!("../../../../tests/contract/fixtures/apply_intent_graph.json"),
             ),
+            (
+                "record_observations",
+                include_str!("../../../../tests/contract/fixtures/record_observations.json"),
+            ),
         ];
         // The embedded table must cover exactly the proposable kinds — neither
         // side can gain or drop a kind the other lacks.
@@ -183,9 +184,8 @@ mod tests {
         );
 
         for proposable in ProposableMutation::ALL {
-            let kind = proposable.kind();
-            let wire = kind.as_wire();
-            let fresh = kind.payload_spec().json_schema();
+            let wire = proposable.as_wire();
+            let fresh = proposable.payload_spec().json_schema();
             let raw = committed
                 .iter()
                 .find_map(|(k, raw)| (*k == wire).then_some(*raw))
@@ -581,15 +581,16 @@ mod tests {
         }
     }
 
-    /// The two surfaces that must list the same 14 agent-proposable kinds — the
+    /// The two surfaces that must list the same agent-proposable kinds — the
     /// wire schema generated from `Input`, and `ProposableMutation` (the taxonomy
     /// that carries render_accept/supports_edit/…) — cannot silently drift. Every
     /// `ProposableMutation::ALL` variant binds a top-level schema variant AND
-    /// round-trips through `from_wire` + `try_into`; and the schema has EXACTLY 14
-    /// top-level variants, so neither side can gain a kind the other lacks.
+    /// round-trips through `ProposableMutation::from_wire`; and the schema has
+    /// EXACTLY one top-level variant per proposable kind, so neither side can
+    /// gain a kind the other lacks.
     #[test]
     fn input_schema_and_proposable_mutation_agree() {
-        use crate::mutation::{MutationKind, ProposableMutation};
+        use crate::mutation::ProposableMutation;
 
         let d = descriptor();
         let variants = d.json_schema["oneOf"]
@@ -605,16 +606,15 @@ mod tests {
         );
 
         for proposable in ProposableMutation::ALL {
-            let wire = proposable.kind().as_wire();
+            let wire = proposable.as_wire();
             assert!(
                 top_level_variant(&d.json_schema, wire).is_some(),
                 "Input schema is missing proposable kind {wire}: {}",
                 d.json_schema
             );
             // The wire string round-trips back to the SAME proposable kind.
-            let parsed = MutationKind::from_wire(wire).expect("proposable kind parses");
             assert_eq!(
-                ProposableMutation::try_from(parsed).ok(),
+                ProposableMutation::from_wire(wire),
                 Some(proposable),
                 "{wire} must round-trip to its ProposableMutation"
             );
@@ -1020,14 +1020,15 @@ mod tests {
     /// The per-FIELD half of the drift guard #152's `input_schema_and_proposable_
     /// mutation_agree` (the per-KIND set) does not cover (card 2): each kind's
     /// emitted payload property set + `required` array trace to its
-    /// [`crate::mutation::MutationKind::payload_spec`], and — critically — the
+    /// [`crate::mutation::ProposableMutation::payload_spec`], and — critically — the
     /// schema/validator DIVERGENCES that no other test pins are nailed here, so
     /// single-sourcing cannot silently change the wire contract:
     /// - `entity_id`/`todo_id` advertise BARE (no `pattern`) though the validator
     ///   UUID-checks them; the reference/source ids advertise the full UUID pattern.
     /// - `aliases`/`tags`/`remove_person_ids` advertise PLAIN string items (no
     ///   `minLength`) though the validator requires each non-empty.
-    /// - only the Journal-Entry `body` array carries `minItems`; `person_refs`,
+    /// - only intentional non-empty arrays carry `minItems` (`body`, graph
+    ///   `entities`, `record_observations.observations`); `person_refs`,
     ///   `aliases`, `tags` do not.
     #[test]
     fn schema_fields_and_divergences_trace_to_the_spec() {
@@ -1146,6 +1147,11 @@ mod tests {
                 "apply_intent_graph",
                 &["entities", "journal_entry", "links"],
                 &["entities", "links"],
+            ),
+            (
+                "record_observations",
+                &["evidence", "observations"],
+                &["observations"],
             ),
         ];
         // Every proposable kind is covered exactly once by the literal table.

@@ -92,6 +92,9 @@ pub(crate) enum BodyPolicy {
 /// here; it is a [`Field`]-level facet, orthogonal to value shape.
 #[derive(Clone, Debug)]
 pub(crate) enum FieldSpec {
+    /// Any JSON value. Used only where another Core-owned schema validates the
+    /// contents later; the advertised JSON Schema is intentionally unconstrained.
+    Any,
     /// A string. `non_empty` ⇒ a present value must be non-blank
     /// (`""`/whitespace → "{field} must not be empty"; schema carries
     /// `minLength:1`).
@@ -126,11 +129,12 @@ pub(crate) enum FieldSpec {
     /// advertises a bare `{type:string}` element even when the element spec would
     /// constrain it (the historical divergence: `aliases`/`tags`/`remove_person_ids`
     /// validate non-empty but advertise plain); validation still runs the element
-    /// spec. (Cardinality `minItems` is carried by [`FieldSpec::Body`], the only
-    /// array that needs it; the homogeneous arrays here are all unbounded.)
+    /// spec. `min_items` emits and enforces `minItems` for homogeneous arrays that
+    /// need non-empty batches.
     Array {
         items: Box<FieldSpec>,
         plain_items: bool,
+        min_items: Option<u64>,
     },
     /// A nested object validated by its own [`PayloadSpec`].
     Object(PayloadSpec),
@@ -178,6 +182,7 @@ impl FieldSpec {
         FieldSpec::Array {
             items: Box::new(FieldSpec::non_empty_string()),
             plain_items: true,
+            min_items: None,
         }
     }
 }
@@ -356,6 +361,7 @@ fn field_schema(field: &Field) -> Value {
 /// The schema fragment for a [`FieldSpec`], independent of field-level metadata.
 fn spec_schema(spec: &FieldSpec) -> Value {
     match spec {
+        FieldSpec::Any => serde_json::json!({}),
         FieldSpec::Str { non_empty: true } => {
             serde_json::json!({ "type": "string", "minLength": 1 })
         }
@@ -395,13 +401,23 @@ fn spec_schema(spec: &FieldSpec) -> Value {
             "type": "string",
             "enum": domain,
         }),
-        FieldSpec::Array { items, plain_items } => {
+        FieldSpec::Array {
+            items,
+            plain_items,
+            min_items,
+        } => {
             let item_schema = if *plain_items {
                 serde_json::json!({ "type": "string" })
             } else {
                 spec_schema(items)
             };
-            serde_json::json!({ "type": "array", "items": item_schema })
+            let mut array = Map::new();
+            array.insert("type".to_string(), Value::String("array".to_string()));
+            array.insert("items".to_string(), item_schema);
+            if let Some(min) = min_items {
+                array.insert("minItems".to_string(), Value::Number((*min).into()));
+            }
+            Value::Object(array)
         }
         FieldSpec::Object(spec) | FieldSpec::HookValidated(spec) => spec.json_schema(),
         FieldSpec::Body(policy) => body_schema(*policy),
@@ -473,6 +489,7 @@ fn check_field(field: &Field, value: &Value) -> Result<(), String> {
     }
     let name = field.name;
     match &field.spec {
+        FieldSpec::Any => Ok(()),
         FieldSpec::Str { non_empty } => match value {
             Value::String(s) if !*non_empty || !s.trim().is_empty() => Ok(()),
             Value::String(_) => Err(format!("{name} must not be empty")),
@@ -531,10 +548,17 @@ fn check_field(field: &Field, value: &Value) -> Result<(), String> {
             // hand-written validators.
             _ => Err(format!("{name} must be a string")),
         },
-        FieldSpec::Array { items, .. } => {
+        FieldSpec::Array {
+            items, min_items, ..
+        } => {
             let array = value
                 .as_array()
                 .ok_or_else(|| format!("{name} must be an array"))?;
+            if let Some(min) = min_items
+                && (array.len() as u64) < *min
+            {
+                return Err(format!("{name} must have at least {min} item(s)"));
+            }
             let element = Field {
                 name,
                 presence: Presence::Required,

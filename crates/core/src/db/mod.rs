@@ -47,8 +47,8 @@ pub use lifecycle::TerminalReason;
 pub use message_fts::search_messages;
 pub(crate) use observations::{
     ObservationFilter, ObservationInsert, ObservationInsertError, ObservationRelationInsert,
-    ObservationRow, ObservationSourceFilter, ObservationSourceInsert, insert_observations,
-    query_observations,
+    ObservationRow, ObservationSourceFilter, ObservationSourceInsert,
+    apply_record_observations_proposal, insert_observations, query_observations,
 };
 
 /// Current wall-clock time as ms since UNIX_EPOCH (the `*_at` columns).

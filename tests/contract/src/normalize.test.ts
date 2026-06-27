@@ -71,6 +71,14 @@ describe("normalize: journal body union (rules 8a/8b)", () => {
 	});
 });
 
+describe("normalize: unconstrained schema annotations (rule 3b)", () => {
+	it("Effect S.Unknown annotation id compares as Rust's bare any schema", () => {
+		const effectUnknown = { $id: "/schemas/unknown", title: "unknown" };
+		const rustAny = {};
+		expect(normalize(effectUnknown)).toStrictEqual(normalize(rustAny));
+	});
+});
+
 describe("normalize: $ref inlining + $defs drop (rule 2)", () => {
 	// This rule is a safety net: today's schemas use `S.Number` (not `S.Int`) to
 	// dodge `JSONSchema.make`'s `#/$defs/Int` hoist, so no live parity assertion

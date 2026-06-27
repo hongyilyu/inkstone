@@ -11,9 +11,10 @@
 //   OMITTED when empty; object keys BTreeMap-sorted.
 // - Effect (`JSONSchema.make`, effect 3.21.2): emits `$schema`; `required:[]`
 //   present even when empty; injects combinator `title` (and `description`,
-//   which the schema builders in `schemas.ts` suppress); `required` ordered
-//   before `properties`; emits unions as `anyOf` (Rust emits `oneOf`) and
-//   COLLAPSES a 1-element union to its bare member (Rust keeps `oneOf:[X]`).
+//   which the schema builders in `schemas.ts` suppress); built-in `S.Unknown`
+//   emits an annotation-only `$id`; `required` ordered before `properties`; emits
+//   unions as `anyOf` (Rust emits `oneOf`) and COLLAPSES a 1-element union to its
+//   bare member (Rust keeps `oneOf:[X]`).
 
 type Json = unknown;
 
@@ -125,6 +126,14 @@ const walk1 = (node: Record<string, Json>): Record<string, Json> => {
 	// suppresses the injected `description` so only the real LocalDateTime one
 	// survives; nothing to strip here.)
 	delete out.title;
+
+	// Rule 3b — strip Effect's annotation-only ids for unconstrained schemas.
+	// Rust emits `FieldSpec::Any` as bare `{}`; Effect emits `S.Unknown` as
+	// `{ "$id": "/schemas/unknown", "title": "unknown" }`. The title is gone by
+	// rule 3; the id carries no validation semantics.
+	if (out.$id === "/schemas/unknown" || out.$id === "/schemas/any") {
+		delete out.$id;
+	}
 
 	// Rule 2 (cont.) — drop the top-level `$defs` block once its members have
 	// been inlined.

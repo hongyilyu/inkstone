@@ -4,19 +4,20 @@
 //! into the closed [`MutationKind`] enum; everything downstream branches on the
 //! typed value so a missed case is a compile error, not a runtime panic. The
 //! per-kind *classification + policy* — operation class, Entity Type, target-id
-//! key, source relation, agent-proposability — lives here as one
-//! [`MutationKind::describe`] table plus a handful of total predicates. The
-//! per-kind *apply behaviour* that
-//! needs committed DB state stays behind the transaction seam in the `db::apply`
-//! module; this module is pure and DB-free.
+//! key, source relation, and proposal-surface membership — lives here as one
+//! [`MutationKind::describe`] table plus the narrower [`ProposableMutation`]
+//! policy table. The per-kind *apply behaviour* that needs committed DB state
+//! stays behind the transaction seam in the `db::apply` module; this module is
+//! pure and DB-free.
 //!
 //! Two enums, one wide and one narrow:
-//! - [`MutationKind`] — all 21 Core-known kinds. The currency of `validate`,
-//!   `mutate`, `apply`, and the target-reference checks.
-//! - [`ProposableMutation`] — the 14 the agent may propose (ADR-0018, ADR-0042). Carries
+//! - [`MutationKind`] — the 21 Entity-like Core-known kinds. The currency of
+//!   `validate`, `mutate`, `apply`, and the target-reference checks.
+//! - [`ProposableMutation`] — the closed set the agent may propose (ADR-0018,
+//!   ADR-0042, ADR-0053). Carries
 //!   the agent-path-only facets (`render_accept`, `supports_edit`,
 //!   `carries_review_context`) so they are total over exactly the kinds that can
-//!   reach the accept path — no `unreachable!` for the 7 user-only kinds.
+//!   reach the accept path, including non-Entity `record_observations`.
 
 use serde_json::Value;
 
@@ -547,6 +548,42 @@ fn patterned_uuid(name: &'static str) -> Field {
     Field::required(name, FieldSpec::Uuid { schema_regex: true })
 }
 
+fn record_observations_payload() -> PayloadSpec {
+    let observation = PayloadSpec::nested(
+        "observation",
+        ObjErr::JsonObject,
+        vec![
+            Field::required("schema_key", FieldSpec::string()),
+            Field::datetime("occurred_at").require(),
+            Field::datetime("ended_at"),
+            Field::required("values", FieldSpec::Any),
+            Field::optional("note", FieldSpec::string()),
+        ],
+    );
+    let evidence = PayloadSpec::nested(
+        "observation evidence",
+        ObjErr::Object,
+        vec![
+            Field::optional("journal_entry_id", FieldSpec::string()),
+            Field::optional("message_id", FieldSpec::string()),
+        ],
+    );
+    PayloadSpec::payload(
+        "record_observations",
+        vec![
+            Field::required(
+                "observations",
+                FieldSpec::Array {
+                    items: Box::new(FieldSpec::Object(observation)),
+                    plain_items: false,
+                    min_items: Some(1),
+                },
+            ),
+            Field::optional("evidence", FieldSpec::Object(evidence)),
+        ],
+    )
+}
+
 /// The `entity_id` target key shared by the full-document update kinds: a UUID the
 /// validator parses but the schema advertises bare (the historical divergence —
 /// no test pins a pattern on `entity_id`).
@@ -600,6 +637,7 @@ impl MutationKind {
                         FieldSpec::Array {
                             items: Box::new(FieldSpec::Object(person_ref_spec())),
                             plain_items: false,
+                            min_items: None,
                         },
                     ),
                     source_journal_entry_id_field(),
@@ -692,6 +730,7 @@ fn person_ref_array(name: &'static str) -> Field {
         FieldSpec::Array {
             items: Box::new(FieldSpec::Object(person_ref_spec())),
             plain_items: false,
+            min_items: None,
         },
     )
 }
@@ -944,9 +983,9 @@ pub(crate) struct Descriptor {
     pub(crate) target_key: Option<TargetKey>,
 }
 
-/// Every Core-known Workspace mutation kind (ADR-0016, ADR-0025, ADR-0036, ADR-0042). The
-/// closed taxonomy: 14 are agent-proposable (see [`ProposableMutation`]); the
-/// other 7 (`mark_project_reviewed` + bookmark/habit CRUD) are user-CRUD-only.
+/// Every Entity-like Workspace mutation kind (ADR-0016, ADR-0025, ADR-0036,
+/// ADR-0042). Observation capture is intentionally not here because it has no
+/// Entity descriptor; it lives in [`ProposableMutation`] only.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum MutationKind {
     CreateJournalEntry,
@@ -1169,7 +1208,7 @@ impl MutationKind {
     }
 }
 
-/// The agent-proposable subset (ADR-0018): the 14 kinds the Worker may emit via
+/// The agent-proposable subset (ADR-0018, ADR-0053): the 15 kinds the Worker may emit via
 /// `propose_workspace_mutation`. Carries the agent-path-only facets so each is
 /// total over exactly the kinds that can reach the accept path — the user-only
 /// kind families (`mark_project_reviewed`, bookmarks, habits) are simply not in
@@ -1190,13 +1229,14 @@ pub(crate) enum ProposableMutation {
     UpdateTodo,
     DeleteTodo,
     ApplyIntentGraph,
+    RecordObservations,
 }
 
 impl ProposableMutation {
     /// Every agent-proposable kind, in wire order. The single source the
     /// `propose_workspace_mutation` tool descriptor iterates to emit its `oneOf`
     /// schema, and the closed set the drift-guard test pins.
-    pub(crate) const ALL: [ProposableMutation; 14] = [
+    pub(crate) const ALL: [ProposableMutation; 15] = [
         ProposableMutation::CreateJournalEntry,
         ProposableMutation::UpdateJournalEntry,
         ProposableMutation::DeleteJournalEntry,
@@ -1211,12 +1251,41 @@ impl ProposableMutation {
         ProposableMutation::UpdateTodo,
         ProposableMutation::DeleteTodo,
         ProposableMutation::ApplyIntentGraph,
+        ProposableMutation::RecordObservations,
     ];
 
-    /// Widen to the full [`MutationKind`] — infallible, so the shared
-    /// [`Descriptor`] and `as_wire` are one hop away.
-    pub(crate) fn kind(self) -> MutationKind {
+    pub(crate) fn from_wire(s: &str) -> Option<Self> {
+        if s == "record_observations" {
+            return Some(ProposableMutation::RecordObservations);
+        }
+        MutationKind::from_wire(s).and_then(|kind| ProposableMutation::try_from(kind).ok())
+    }
+
+    pub(crate) fn as_wire(self) -> &'static str {
         match self {
+            ProposableMutation::RecordObservations => "record_observations",
+            other => other
+                .entity_kind()
+                .expect("entity-backed proposable kind")
+                .as_wire(),
+        }
+    }
+
+    pub(crate) fn payload_spec(self) -> PayloadSpec {
+        match self {
+            ProposableMutation::RecordObservations => record_observations_payload(),
+            other => other
+                .entity_kind()
+                .expect("entity-backed proposable kind")
+                .payload_spec(),
+        }
+    }
+
+    /// Widen to an Entity-like [`MutationKind`]. `record_observations` is
+    /// intentionally absent: it is a proposable Workspace mutation, not an Entity
+    /// mutation and has no [`Descriptor`].
+    pub(crate) fn entity_kind(self) -> Option<MutationKind> {
+        Some(match self {
             ProposableMutation::CreateJournalEntry => MutationKind::CreateJournalEntry,
             ProposableMutation::UpdateJournalEntry => MutationKind::UpdateJournalEntry,
             ProposableMutation::DeleteJournalEntry => MutationKind::DeleteJournalEntry,
@@ -1233,13 +1302,14 @@ impl ProposableMutation {
             ProposableMutation::UpdateTodo => MutationKind::UpdateTodo,
             ProposableMutation::DeleteTodo => MutationKind::DeleteTodo,
             ProposableMutation::ApplyIntentGraph => MutationKind::ApplyIntentGraph,
-        }
+            ProposableMutation::RecordObservations => return None,
+        })
     }
 
     /// Whether an accepted Proposal of this kind supports an `edit` Decision
     /// (ADR-0025). Deletes carry no editable data, and the reference weave's
     /// shape is fixed (its single entity_ref placeholder), so neither is
-    /// editable; every create/update otherwise is. Total over the 14 (both arms
+    /// editable; every create/update otherwise is. Total over the 15 (both arms
     /// listed) so a new proposable kind must declare its editability.
     pub(crate) fn supports_edit(self) -> bool {
         use ProposableMutation as P;
@@ -1260,7 +1330,8 @@ impl ProposableMutation {
             | P::CreateProject
             | P::UpdateProject
             | P::CreateTodo
-            | P::UpdateTodo => true,
+            | P::UpdateTodo
+            | P::RecordObservations => true,
         }
     }
 
@@ -1273,7 +1344,7 @@ impl ProposableMutation {
     /// (ADR-0016, ADR-0033). `update_todo` is a partial MERGE (ADR-0033) — omitted
     /// fields are NOT dropped — so a "what a REPLACE removes" diff does not apply,
     /// and it carries no review context. A fresh create has nothing to show; a GTD
-    /// delete needs no current-vs-proposed diff. Total over the 14.
+    /// delete needs no current-vs-proposed diff. Total over the 15.
     pub(crate) fn carries_review_context(self) -> bool {
         use ProposableMutation as P;
         match self {
@@ -1290,6 +1361,7 @@ impl ProposableMutation {
             | P::CreateTodo
             | P::UpdateTodo
             | P::DeleteTodo
+            | P::RecordObservations
             // The graph mints its own newborn Journal Entry (ADR-0042 create mode)
             // OR re-anchors an existing one (ADR-0042 anchor-reuse amendment), but
             // either way the card displays create nodes + links, never a
@@ -1305,7 +1377,7 @@ impl ProposableMutation {
 /// path — a should-be-impossible state (the propose schema cannot emit it). The
 /// agent path maps this to a graceful `Invalid`, replacing the former panic.
 #[derive(Debug)]
-pub(crate) struct NotProposable(pub(crate) MutationKind);
+pub(crate) struct NotProposable;
 
 impl TryFrom<MutationKind> for ProposableMutation {
     type Error = NotProposable;
@@ -1328,13 +1400,13 @@ impl TryFrom<MutationKind> for ProposableMutation {
             MutationKind::UpdateTodo => ProposableMutation::UpdateTodo,
             MutationKind::DeleteTodo => ProposableMutation::DeleteTodo,
             MutationKind::ApplyIntentGraph => ProposableMutation::ApplyIntentGraph,
-            user_only @ (MutationKind::MarkProjectReviewed
+            MutationKind::MarkProjectReviewed
             | MutationKind::CreateBookmark
             | MutationKind::UpdateBookmark
             | MutationKind::DeleteBookmark
             | MutationKind::CreateHabit
             | MutationKind::UpdateHabit
-            | MutationKind::DeleteHabit) => return Err(NotProposable(user_only)),
+            | MutationKind::DeleteHabit => return Err(NotProposable),
         })
     }
 }
@@ -1416,9 +1488,14 @@ mod tests {
     #[test]
     fn proposable_all_widens_and_excludes_user_only() {
         // ALL widens cleanly; the user-only kinds are not proposable.
-        assert_eq!(ProposableMutation::ALL.len(), 14);
+        assert_eq!(ProposableMutation::ALL.len(), 15);
         for p in ProposableMutation::ALL {
-            assert_eq!(ProposableMutation::try_from(p.kind()).unwrap(), p);
+            if let Some(kind) = p.entity_kind() {
+                assert_eq!(ProposableMutation::try_from(kind).unwrap(), p);
+            } else {
+                assert_eq!(p, ProposableMutation::RecordObservations);
+                assert_eq!(ProposableMutation::from_wire(p.as_wire()), Some(p));
+            }
         }
         for user_only in [
             MutationKind::MarkProjectReviewed,
@@ -1558,7 +1635,7 @@ mod tests {
             assert!(
                 carries.carries_review_context(),
                 "{} carries review context",
-                carries.kind().as_wire()
+                carries.as_wire()
             );
         }
         // Creates have no current Entity; `update_todo` is a partial MERGE (ADR-0033)
@@ -1578,7 +1655,7 @@ mod tests {
             assert!(
                 !omits.carries_review_context(),
                 "{} omits review context",
-                omits.kind().as_wire()
+                omits.as_wire()
             );
         }
     }

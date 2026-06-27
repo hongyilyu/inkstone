@@ -1,7 +1,7 @@
-//! Workspace mutation schemas (ADR-0016, ADR-0025). A Proposal's payload is
-//! validated by its [`MutationKind`] before it is durably applied. Supported
-//! mutations create/update/delete a `journal_entry` Entity (plus provenance)
-//! and add inline references from Journal Entries to existing Entities.
+//! Entity-backed Workspace mutation schemas (ADR-0016, ADR-0025). Entity
+//! mutation payloads are validated by their [`MutationKind`] before they are
+//! durably applied. Non-Entity proposal kinds, such as `record_observations`,
+//! validate in their owning modules.
 //!
 //! The closed Entity-Type taxonomy ([`MutationKind`]/[`ProposableMutation`] and
 //! the descriptor) lives in [`crate::mutation`]; this module is the per-kind
@@ -65,10 +65,10 @@ pub(crate) fn validate(kind: MutationKind, payload: &Value) -> Result<(), String
 
 /// Render the human-readable Decision text the model reads on resume as the
 /// awaited tool's result (ADR-0025). An inherent method on [`ProposableMutation`]
-/// (declared in [`crate::mutation`]) so it is total over exactly the 14 kinds
-/// that can reach the agent accept path — the user-only kinds are not in the
-/// type, so there is no `unreachable!` to forget. Defined here, alongside the
-/// private body-text helpers it uses.
+/// (declared in [`crate::mutation`]) so it is total over the kinds that can reach
+/// the agent accept path — the user-only kinds are not in the type, so there is
+/// no `unreachable!` to forget. Defined here, alongside the private body-text
+/// helpers it uses.
 pub(crate) fn render_accept(
     kind: ProposableMutation,
     payload: &Value,
@@ -223,6 +223,13 @@ pub(crate) fn render_accept(
             format!(
                 "Accepted. Applied intent graph{je_note} (anchor entity_id={anchor}, up to {proposed_count} entities; some may have been declined)."
             )
+        }
+        P::RecordObservations => {
+            let count = payload
+                .get("observations")
+                .and_then(Value::as_array)
+                .map_or(0, Vec::len);
+            format!("Accepted. Recorded {count} observations.")
         }
     }
 }

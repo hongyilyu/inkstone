@@ -1,7 +1,7 @@
 // The completeness lock. The per-kind parity test (`parity.test.ts`) catches a
 // CHANGED field; this catches a MISSING (or stray) KIND — the failure mode that
 // per-kind assertions are blind to. It pins three sets equal, all to the
-// canonical 14 wire kinds:
+// canonical 15 wire kinds:
 //   1. the Effect Schema registry keys (`Object.keys(schemas)`),
 //   2. the committed Rust fixture filenames (`fixtures/*.json`, the
 //      schema-of-record Core emits), and
@@ -18,7 +18,7 @@ import { fileURLToPath } from "node:url";
 import { schemas } from "@inkstone/protocol";
 import { describe, expect, it } from "vitest";
 
-/** The 14 agent-proposable wire kinds, verbatim from `ProposableMutation::ALL`
+/** The 15 agent-proposable wire kinds, verbatim from `ProposableMutation::ALL`
  * (`crates/core/src/.../mutation.rs`, via `as_wire`). The single source the two
  * derived sets (registry keys, fixture filenames) are locked against. */
 const WIRE_KINDS = [
@@ -36,6 +36,7 @@ const WIRE_KINDS = [
 	"update_todo",
 	"delete_todo",
 	"apply_intent_graph",
+	"record_observations",
 ] as const;
 
 /** Canonical comparison form: a deduped, sorted array of kind names. */
@@ -48,17 +49,17 @@ const fixtureKinds = (): string[] => {
 		.map((name) => name.replace(/\.json$/, ""));
 };
 
-describe("completeness lock — all 14 proposable kinds covered", () => {
-	it("the canonical list holds exactly 14 unique kinds", () => {
-		expect(WIRE_KINDS).toHaveLength(14);
-		expect(new Set(WIRE_KINDS).size).toBe(14);
+describe("completeness lock — all 15 proposable kinds covered", () => {
+	it("the canonical list holds exactly 15 unique kinds", () => {
+		expect(WIRE_KINDS).toHaveLength(15);
+		expect(new Set(WIRE_KINDS).size).toBe(15);
 	});
 
-	it("registry keys == the 14 wire kinds (no kind unmapped, none extra)", () => {
+	it("registry keys == the 15 wire kinds (no kind unmapped, none extra)", () => {
 		expect(asSet(Object.keys(schemas))).toStrictEqual(asSet(WIRE_KINDS));
 	});
 
-	it("committed fixture filenames == the 14 wire kinds (no stray/missing fixture)", () => {
+	it("committed fixture filenames == the 15 wire kinds (no stray/missing fixture)", () => {
 		expect(asSet(fixtureKinds())).toStrictEqual(asSet(WIRE_KINDS));
 	});
 });

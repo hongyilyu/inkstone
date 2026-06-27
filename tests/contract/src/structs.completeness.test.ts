@@ -9,7 +9,7 @@
 // Plus an explicit per-union variant count: a tagged union must contribute
 // exactly one fixture per wire variant, so a silently-dropped variant reds.
 //
-// Unlike `completeness.test.ts` (the 14-payload lock), this set grows per slice;
+// Unlike `completeness.test.ts` (the proposable-payload lock), this set grows per slice;
 // the assertions are derived, so adding a fixture without declaring its message
 // (or vice versa) fails here.
 
