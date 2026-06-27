@@ -977,12 +977,17 @@ mod tests {
             "delete_habit against a Person is Invalid: {delete:?}"
         );
 
-        let row_count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM entities WHERE id = ?1 AND type = 'person'")
+        let stored: String =
+            sqlx::query_scalar("SELECT data FROM entities WHERE id = ?1 AND type = 'person'")
                 .bind(&person_id)
                 .fetch_one(&pool)
                 .await
-                .expect("count person rows");
-        assert_eq!(row_count, 1, "the wrong-type target survives untouched");
+                .expect("person row survives");
+        let stored: serde_json::Value = serde_json::from_str(&stored).expect("data is JSON");
+        assert_eq!(
+            stored.get("name").and_then(serde_json::Value::as_str),
+            Some("Al"),
+            "the wrong-type target survives untouched: {stored}"
+        );
     }
 }
