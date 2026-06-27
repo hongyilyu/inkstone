@@ -494,6 +494,54 @@ describe("ObservationRecordParams", () => {
 			S.decodeUnknownSync(ObservationRecordParams)({ observations: [] }),
 		).toThrow();
 	});
+
+	it("rejects invalid evidence and exact-shape drift", () => {
+		const decodeStrict = S.decodeUnknownSync(ObservationRecordParams, {
+			onExcessProperty: "error",
+		});
+		const draft = {
+			schema_key: "bodyweight",
+			occurred_at: "2026-06-01T07:30:00",
+			values: { kg: 72.4 },
+		};
+		expect(() =>
+			decodeStrict({
+				observations: [draft],
+				evidence: {},
+			}),
+		).toThrow();
+		expect(() =>
+			decodeStrict({
+				observations: [draft],
+				evidence: null,
+			}),
+		).toThrow();
+		expect(() =>
+			decodeStrict({
+				observations: [draft],
+				evidence: {
+					journal_entry_id: "0190d3c1-0000-7000-8000-000000000001",
+					message_id: "0190d3c1-0000-7000-8000-000000000002",
+				},
+			}),
+		).toThrow();
+		expect(() =>
+			decodeStrict({
+				observations: [{ ...draft, occurred_at: "2026-06-01" }],
+			}),
+		).toThrow();
+		expect(() =>
+			decodeStrict({
+				observations: [{ ...draft, unit: "kg" }],
+			}),
+		).toThrow();
+		expect(() =>
+			decodeStrict({
+				observations: [draft],
+				unexpected_field: true,
+			}),
+		).toThrow();
+	});
 });
 
 describe("ObservationRecordResult", () => {

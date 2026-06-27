@@ -409,15 +409,38 @@ export const applyIntentGraph = S.Struct({
 
 // ── record_observations payload (ADR-0053) ──
 
-const observationRecordDraft = S.Struct({
-	schema_key: S.String,
+const bodyweightValues = S.Struct({
+	kg: S.Number.pipe(S.greaterThanOrEqualTo(0, { description: undefined })),
+});
+
+const habitCheckinValues = S.Struct({
+	habit_id: patternedUuid,
+	state: S.Literal("done", "skipped", "missed"),
+	quantity: S.optional(S.Number),
+});
+
+const bodyweightObservationRecordDraft = S.Struct({
+	schema_key: S.Literal("bodyweight"),
 	occurred_at: localDateTime,
 	ended_at: S.optional(localDateTime),
-	values: S.Unknown,
+	values: bodyweightValues,
 	note: S.optional(S.String),
 });
 
-const observationEvidence = S.Union(
+const habitCheckinObservationRecordDraft = S.Struct({
+	schema_key: S.Literal("habit.checkin"),
+	occurred_at: localDateTime,
+	ended_at: S.optional(localDateTime),
+	values: habitCheckinValues,
+	note: S.optional(S.String),
+});
+
+export const observationRecordDraft = S.Union(
+	bodyweightObservationRecordDraft,
+	habitCheckinObservationRecordDraft,
+);
+
+export const observationEvidence = S.Union(
 	S.Struct({
 		journal_entry_id: patternedUuid,
 		message_id: S.optional(S.Never),

@@ -91,6 +91,7 @@ import {
 	observationBatchSummary,
 	renderObservationBody,
 } from "./ProposalCardObservations.js";
+import { arrayField, objectField, textField } from "./proposalPayload.js";
 import { Badge, type BadgeProps } from "./ui/badge.js";
 import { Button } from "./ui/button.js";
 import { Card } from "./ui/card.js";
@@ -396,43 +397,6 @@ type JournalEntryPayload = {
 type UpdateJournalEntryPayload = JournalEntryPayload & {
 	entity_id: string;
 };
-
-// The wire payload is `unknown` — Core forwards the raw, unvalidated model
-// arguments (the GTD validators live in crates/core/src/entities.rs and run on
-// accept, not before the card renders). A malformed payload (missing fields,
-// null, wrong types) must degrade, so the renderers read every field through
-// the defensive helpers below rather than asserting a typed shape.
-
-function textField(payload: unknown, key: string): string {
-	if (payload && typeof payload === "object" && key in payload) {
-		const value = (payload as Record<string, unknown>)[key];
-		return typeof value === "string" ? value : "";
-	}
-	return "";
-}
-
-/** Read `key` as an object, degrading a missing/null/non-object value to null. */
-function objectField(
-	payload: unknown,
-	key: string,
-): Record<string, unknown> | null {
-	if (payload && typeof payload === "object" && key in payload) {
-		const value = (payload as Record<string, unknown>)[key];
-		if (value && typeof value === "object" && !Array.isArray(value)) {
-			return value as Record<string, unknown>;
-		}
-	}
-	return null;
-}
-
-/** Read `key` as an array, degrading a missing/null/non-array value to []. */
-function arrayField(payload: unknown, key: string): unknown[] {
-	if (payload && typeof payload === "object" && key in payload) {
-		const value = (payload as Record<string, unknown>)[key];
-		if (Array.isArray(value)) return value;
-	}
-	return [];
-}
 
 function journalBody(payload: unknown): string {
 	if (!payload || typeof payload !== "object") return "";

@@ -86,7 +86,9 @@ const REGISTRY: &[ToolEntry] = &[
         name: read_current_thread_journal_entries::NAME,
         descriptor: read_current_thread_journal_entries::descriptor,
         dispatch: Dispatch::PoolRun(|pool, run_id, params| {
-            Box::pin(read_current_thread_journal_entries::execute(pool, run_id, params))
+            Box::pin(read_current_thread_journal_entries::execute(
+                pool, run_id, params,
+            ))
         }),
         display_arg: no_arg,
     },
@@ -197,6 +199,18 @@ pub fn is_proposal(name: &str) -> bool {
         .is_some_and(|e| matches!(e.dispatch, Dispatch::Proposal))
 }
 
+/// Validate a Proposal tool request before the worker loop parks the Run. The
+/// descriptor guides the model, but this is the Core-owned runtime gate for the
+/// proposal envelope plus non-editable payload families.
+pub fn validate_proposal_request(name: &str, params: &Value) -> Result<(), String> {
+    match name {
+        propose_workspace_mutation::NAME => {
+            propose_workspace_mutation::validate_request(params).map(|_| ())
+        }
+        _ => Err(format!("no proposal validator registered for {name:?}")),
+    }
+}
+
 /// Dispatch a `tool_request` to the named tool's `execute`, handing it the exact
 /// Run context its [`Dispatch`] variant needs. The caller has enforced the
 /// allowlist; an unregistered name is a defensive `unknown_tool`.
@@ -250,7 +264,10 @@ mod tests {
     fn display_arg_dispatches_to_tool_and_none_for_unregistered() {
         // A registered tool with an extractor returns its display arg.
         assert_eq!(
-            display_arg("search_entities", &serde_json::json!({ "type": "person", "query": "x" })),
+            display_arg(
+                "search_entities",
+                &serde_json::json!({ "type": "person", "query": "x" })
+            ),
             Some("x".to_string())
         );
         // A registered tool with no extractor (read_thread → no_arg) returns None.
@@ -344,10 +361,12 @@ mod tests {
         // from AMBIENT_TOOLS, so this pins their agreement for EVERY ambient tool —
         // a future tool added to the set (or, were they to diverge, dropped from
         // one side) is caught here, not at runtime.
-        let advertised: Vec<String> =
-            run_descriptors(&[]).into_iter().map(|d| d.name).collect();
+        let advertised: Vec<String> = run_descriptors(&[]).into_iter().map(|d| d.name).collect();
         for name in AMBIENT_TOOLS {
-            assert!(is_ambient(name), "{name} is in AMBIENT_TOOLS but is_ambient() denies it");
+            assert!(
+                is_ambient(name),
+                "{name} is in AMBIENT_TOOLS but is_ambient() denies it"
+            );
             assert!(
                 is_allowed(&[], name),
                 "{name} is ambient but is_allowed rejects it with an empty allowlist"

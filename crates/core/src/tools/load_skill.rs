@@ -282,7 +282,11 @@ mod tests {
         // No frontmatter, empty file, missing description, frontmatter name that
         // disagrees with the dir, and metadata carrying the block delimiter — each
         // is a distinct discovery-drop reason, and each must be unloadable.
-        seed_skill(tmp.path(), "plain", "# Just a body\n\nNo frontmatter here.\n");
+        seed_skill(
+            tmp.path(),
+            "plain",
+            "# Just a body\n\nNo frontmatter here.\n",
+        );
         seed_skill(tmp.path(), "empty", "");
         seed_skill(tmp.path(), "no-desc", "---\nname: no-desc\n---\n\n# x\n");
         seed_skill(
@@ -326,7 +330,11 @@ mod tests {
         let base = tempfile::tempdir().expect("tempdir");
         let skills = base.path().join("skills");
         std::fs::create_dir_all(&skills).expect("create skills dir");
-        seed_skill(base.path(), "outside", "# Secret\n\nshould be unreachable.\n");
+        seed_skill(
+            base.path(),
+            "outside",
+            "# Secret\n\nshould be unreachable.\n",
+        );
         let escape = base.path().join("outside");
         unsafe {
             std::env::set_var("INKSTONE_SKILLS_DIR", &skills);

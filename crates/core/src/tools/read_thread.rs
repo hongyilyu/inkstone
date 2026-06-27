@@ -10,8 +10,7 @@ use super::ToolError;
 use crate::protocol::{AgentToolResult, CoreToolDescriptor, ToolTextContent};
 
 pub const NAME: &str = "read_thread";
-const DESCRIPTION: &str =
-    "Read the messages of another thread by its id. Returns the thread's title and its messages in order.";
+const DESCRIPTION: &str = "Read the messages of another thread by its id. Returns the thread's title and its messages in order.";
 const LABEL: &str = "Read thread";
 
 /// `read_thread`'s arguments. Core re-validates the model's args against this

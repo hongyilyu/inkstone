@@ -112,6 +112,46 @@ describe("record_observations payload (ADR-0053)", () => {
 			}),
 		).toThrow();
 	});
+
+	it("rejects unknown observation schemas and schema-specific bad values", () => {
+		const schema = schemas.record_observations as S.Schema<unknown, unknown>;
+		expect(() =>
+			S.decodeUnknownSync(schema)({
+				observations: [
+					{
+						schema_key: "nutrition.intake",
+						occurred_at: "2026-06-02T07:30:00",
+						values: { kcal: 450 },
+					},
+				],
+			}),
+		).toThrow();
+		expect(() =>
+			S.decodeUnknownSync(schema)({
+				observations: [
+					{
+						schema_key: "bodyweight",
+						occurred_at: "2026-06-02T07:30:00",
+						values: { lbs: 160 },
+					},
+				],
+			}),
+		).toThrow();
+		expect(() =>
+			S.decodeUnknownSync(schema)({
+				observations: [
+					{
+						schema_key: "habit.checkin",
+						occurred_at: "2026-06-02T07:30:00",
+						values: {
+							habit_id: "not-a-uuid",
+							state: "done",
+						},
+					},
+				],
+			}),
+		).toThrow();
+	});
 });
 
 describe("apply_intent_graph payload (ADR-0042)", () => {

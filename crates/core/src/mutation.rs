@@ -549,17 +549,6 @@ fn patterned_uuid(name: &'static str) -> Field {
 }
 
 fn record_observations_payload() -> PayloadSpec {
-    let observation = PayloadSpec::nested(
-        "observation",
-        ObjErr::JsonObject,
-        vec![
-            Field::required("schema_key", FieldSpec::string()),
-            Field::datetime("occurred_at").require(),
-            Field::datetime("ended_at"),
-            Field::required("values", FieldSpec::Any),
-            Field::optional("note", FieldSpec::string()),
-        ],
-    );
     let journal_evidence = PayloadSpec::nested(
         "observation evidence",
         ObjErr::Object,
@@ -581,9 +570,8 @@ fn record_observations_payload() -> PayloadSpec {
         vec![
             Field::required(
                 "observations",
-                FieldSpec::Array {
-                    items: Box::new(FieldSpec::Object(observation)),
-                    plain_items: false,
+                FieldSpec::OneOfArray {
+                    variants: crate::observations::record_observation_payload_variants(),
                     min_items: Some(1),
                 },
             ),

@@ -1,5 +1,11 @@
 import { Schema as S } from "effect";
 
+import {
+	observationEvidence,
+	observationRecordDraft,
+	recordObservations,
+} from "./payloads.js";
+
 export * from "./payloads.js";
 
 export const PostMessageParams = S.Struct({
@@ -158,29 +164,15 @@ export type RecurrencePreviewResult = S.Schema.Type<
 	typeof RecurrencePreviewResult
 >;
 
-export const ObservationRecordDraft = S.Struct({
-	schema_key: S.String,
-	occurred_at: S.String,
-	ended_at: S.optional(S.String),
-	values: S.Unknown,
-	note: S.optional(S.String),
-});
+export const ObservationRecordDraft = observationRecordDraft;
 export type ObservationRecordDraft = S.Schema.Type<
 	typeof ObservationRecordDraft
 >;
 
-export const ObservationEvidence = S.Struct({
-	journal_entry_id: S.optional(S.String),
-	message_id: S.optional(S.String),
-});
+export const ObservationEvidence = observationEvidence;
 export type ObservationEvidence = S.Schema.Type<typeof ObservationEvidence>;
 
-export const ObservationRecordParams = S.Struct({
-	observations: S.Array(ObservationRecordDraft).pipe(
-		S.minItems(1, { description: undefined }),
-	),
-	evidence: S.optional(ObservationEvidence),
-});
+export const ObservationRecordParams = recordObservations;
 export type ObservationRecordParams = S.Schema.Type<
 	typeof ObservationRecordParams
 >;

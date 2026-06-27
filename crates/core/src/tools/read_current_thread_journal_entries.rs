@@ -124,11 +124,13 @@ mod tests {
     /// deferred check fires at commit, like the e2e seed helpers).
     async fn seed_run(pool: &SqlitePool, thread_id: &str, run_id: &str, user_msg_id: &str) {
         let mut tx = pool.begin().await.expect("begin");
-        sqlx::query("INSERT INTO threads (id, title, created_at, last_activity_at) VALUES (?, 'T', 1, 1)")
-            .bind(thread_id)
-            .execute(&mut *tx)
-            .await
-            .expect("seed thread");
+        sqlx::query(
+            "INSERT INTO threads (id, title, created_at, last_activity_at) VALUES (?, 'T', 1, 1)",
+        )
+        .bind(thread_id)
+        .execute(&mut *tx)
+        .await
+        .expect("seed thread");
         sqlx::query(
             "INSERT INTO runs \
              (id, thread_id, workflow_name, workflow_version, provider, model, thinking_level, \
@@ -176,7 +178,10 @@ mod tests {
 
     fn entries(out: &AgentToolResult) -> Vec<Value> {
         let payload: Value = serde_json::from_str(&out.content[0].text).expect("payload is JSON");
-        payload["entries"].as_array().expect("entries array").clone()
+        payload["entries"]
+            .as_array()
+            .expect("entries array")
+            .clone()
     }
 
     /// A re-scan needs to SEE what is already chipped: the read result must surface

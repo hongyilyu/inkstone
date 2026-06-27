@@ -80,6 +80,11 @@ async fn create_and_park(core: &CoreHandle) -> String {
         .unwrap_or_else(|| panic!("result.run_id is a string - body: {resp}"))
         .to_string();
 
+    await_parked(core, &run_id).await;
+    run_id
+}
+
+async fn await_parked(core: &CoreHandle, run_id: &str) {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         if Instant::now() > deadline {
@@ -97,7 +102,6 @@ async fn create_and_park(core: &CoreHandle) -> String {
         }
         tokio::time::sleep(Duration::from_millis(150)).await;
     }
-    run_id
 }
 
 async fn pending_proposal(core: &CoreHandle, run_id: &str) -> (String, serde_json::Value) {
@@ -336,6 +340,209 @@ fn same_key_replay_does_not_record_observations_twice() {
             observation_count, 1,
             "same-key replay must not duplicate observations"
         );
+    });
+}
+
+#[test]
+fn reject_writes_no_observations_and_resumes() {
+    let workspace = Workspace::new();
+    let params_dir = tempfile::Builder::new()
+        .prefix("inkstone-record-observations-reject-")
+        .tempdir()
+        .expect("create params tempdir");
+    let params_path = params_dir.path().join("propose-params.json");
+
+    let core = workspace
+        .core()
+        .worker_fixture("propose-worker.ts")
+        .env("INKSTONE_PROPOSE_PARAMS_FILE", &params_path)
+        .spawn();
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime builds");
+
+    let proposal_id = rt.block_on(async {
+        write_proposal_params(
+            &params_path,
+            serde_json::json!({
+                "observations": [
+                    {
+                        "schema_key": "bodyweight",
+                        "occurred_at": "2026-06-02T07:30:00",
+                        "values": { "kg": 72.4 }
+                    }
+                ]
+            }),
+        );
+
+        let run_id = create_and_park(&core).await;
+        let (proposal_id, _) = pending_proposal(&core, &run_id).await;
+
+        let resp = rpc(
+            &core,
+            4,
+            "proposal/decide",
+            serde_json::json!({
+                "proposal_id": proposal_id,
+                "decision": "reject",
+                "decision_idempotency_key": "reject-record-observation"
+            }),
+        )
+        .await;
+        assert_eq!(resp["result"]["status"].as_str(), Some("rejected"));
+        assert!(
+            resp["result"].get("entity_id").is_none(),
+            "record_observations reject returns no entity_id - body: {resp}"
+        );
+        await_completed(&core, &run_id).await;
+        proposal_id
+    });
+
+    rt.block_on(async {
+        let url = format!("sqlite://{}?mode=ro", workspace.db_path().display());
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&url)
+            .await
+            .expect("connect to migrated DB");
+
+        let row = sqlx::query(
+            "SELECT p.status AS proposal_status, tc.status AS tool_status \
+             FROM proposals p \
+             JOIN tool_calls tc ON tc.id = p.tool_call_id \
+             WHERE p.id = ?1",
+        )
+        .bind(&proposal_id)
+        .fetch_one(&pool)
+        .await
+        .expect("proposal exists");
+        let proposal_status: String = row.get("proposal_status");
+        let tool_status: String = row.get("tool_status");
+        assert_eq!(proposal_status, "rejected");
+        assert_eq!(tool_status, "completed");
+
+        let observation_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM observations WHERE created_via_proposal_id = ?1",
+        )
+        .bind(&proposal_id)
+        .fetch_one(&pool)
+        .await
+        .expect("count observations");
+        assert_eq!(observation_count, 0, "reject writes no observations");
+    });
+}
+
+#[test]
+fn accept_records_message_evidence_source() {
+    let workspace = Workspace::new();
+    let params_dir = tempfile::Builder::new()
+        .prefix("inkstone-record-observations-message-source-")
+        .tempdir()
+        .expect("create params tempdir");
+    let params_path = params_dir.path().join("propose-params.json");
+
+    let core = workspace
+        .core()
+        .worker_fixture("propose-worker.ts")
+        .env("INKSTONE_PROPOSE_PARAMS_FILE", &params_path)
+        .env("INKSTONE_PROPOSE_DELAY_MS", "2000")
+        .spawn();
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime builds");
+
+    let (proposal_id, message_id) = rt.block_on(async {
+        let resp = rpc(
+            &core,
+            1,
+            "thread/create",
+            serde_json::json!({ "prompt": "I weighed in after breakfast." }),
+        )
+        .await;
+        let run_id = resp["result"]["run_id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("result.run_id is a string - body: {resp}"))
+            .to_string();
+
+        let url = format!("sqlite://{}?mode=ro", workspace.db_path().display());
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&url)
+            .await
+            .expect("connect to migrated DB");
+        let message_id: String =
+            sqlx::query_scalar("SELECT user_message_id FROM runs WHERE id = ?1")
+                .bind(&run_id)
+                .fetch_one(&pool)
+                .await
+                .expect("select run user_message_id");
+        drop(pool);
+
+        write_proposal_params(
+            &params_path,
+            serde_json::json!({
+                "observations": [
+                    {
+                        "schema_key": "bodyweight",
+                        "occurred_at": "2026-06-02T07:30:00",
+                        "values": { "kg": 72.4 }
+                    }
+                ],
+                "evidence": { "message_id": message_id }
+            }),
+        );
+
+        await_parked(&core, &run_id).await;
+        let (proposal_id, _) = pending_proposal(&core, &run_id).await;
+
+        let resp = rpc(
+            &core,
+            4,
+            "proposal/decide",
+            serde_json::json!({
+                "proposal_id": proposal_id,
+                "decision": "accept",
+                "decision_idempotency_key": "message-source-record"
+            }),
+        )
+        .await;
+        assert_eq!(resp["result"]["status"].as_str(), Some("accepted"));
+        await_completed(&core, &run_id).await;
+        (proposal_id, message_id)
+    });
+
+    rt.block_on(async {
+        let url = format!("sqlite://{}?mode=ro", workspace.db_path().display());
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&url)
+            .await
+            .expect("connect to migrated DB");
+
+        let observation_id: String =
+            sqlx::query_scalar("SELECT id FROM observations WHERE created_via_proposal_id = ?1")
+                .bind(&proposal_id)
+                .fetch_one(&pool)
+                .await
+                .expect("accepted observation exists");
+
+        let source_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM observation_sources \
+             WHERE observation_id = ?1 \
+               AND source_entity_id IS NULL \
+               AND source_message_id = ?2 \
+               AND relation = 'evidenced_by'",
+        )
+        .bind(&observation_id)
+        .bind(&message_id)
+        .fetch_one(&pool)
+        .await
+        .expect("count message evidence source");
+        assert_eq!(source_count, 1, "message evidence source is stored");
     });
 }
 

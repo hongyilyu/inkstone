@@ -96,9 +96,6 @@ pub(crate) enum FieldSpec {
     /// counterpart key explicitly forbidden in mirrors whose runtime decoder
     /// strips unknown fields even when JSON Schema says `additionalProperties:false`.
     Never,
-    /// Any JSON value. Used only where another Core-owned schema validates the
-    /// contents later; the advertised JSON Schema is intentionally unconstrained.
-    Any,
     /// A string. `non_empty` ⇒ a present value must be non-blank
     /// (`""`/whitespace → "{field} must not be empty"; schema carries
     /// `minLength:1`).
@@ -371,7 +368,6 @@ fn field_schema(field: &Field) -> Value {
 fn spec_schema(spec: &FieldSpec) -> Value {
     match spec {
         FieldSpec::Never => serde_json::json!({ "not": {} }),
-        FieldSpec::Any => serde_json::json!({}),
         FieldSpec::Str { non_empty: true } => {
             serde_json::json!({ "type": "string", "minLength": 1 })
         }
@@ -501,7 +497,6 @@ fn check_field(field: &Field, value: &Value) -> Result<(), String> {
     let name = field.name;
     match &field.spec {
         FieldSpec::Never => Err(format!("{name} is not supported")),
-        FieldSpec::Any => Ok(()),
         FieldSpec::Str { non_empty } => match value {
             Value::String(s) if !*non_empty || !s.trim().is_empty() => Ok(()),
             Value::String(_) => Err(format!("{name} must not be empty")),

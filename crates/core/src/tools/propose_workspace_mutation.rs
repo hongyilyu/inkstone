@@ -56,6 +56,42 @@ pub fn descriptor() -> CoreToolDescriptor {
     }
 }
 
+pub(crate) fn validate_request(params: &Value) -> Result<ProposableMutation, String> {
+    let obj = params
+        .as_object()
+        .ok_or_else(|| "propose_workspace_mutation params must be a JSON object".to_string())?;
+    for key in obj.keys() {
+        if !matches!(key.as_str(), "mutation_kind" | "payload" | "rationale") {
+            return Err(format!(
+                "unsupported propose_workspace_mutation field {key:?}"
+            ));
+        }
+    }
+    let mutation_kind = obj
+        .get("mutation_kind")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "mutation_kind is required".to_string())?;
+    let proposable = ProposableMutation::from_wire(mutation_kind)
+        .ok_or_else(|| format!("unknown mutation_kind {mutation_kind:?}"))?;
+    let payload = obj
+        .get("payload")
+        .ok_or_else(|| "payload is required".to_string())?;
+    // Editable Entity proposals may park with invalid draft fields; the review UI
+    // disables Accept and requires an edit. Observation proposals do not yet have
+    // that per-schema repair surface, so reject malformed observation records
+    // before they become pending rows.
+    if matches!(proposable, ProposableMutation::RecordObservations) {
+        proposable.payload_spec().check(payload)?;
+    }
+    if let Some(rationale) = obj.get("rationale")
+        && !rationale.is_string()
+        && !rationale.is_null()
+    {
+        return Err("rationale must be a string or null".to_string());
+    }
+    Ok(proposable)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -626,9 +662,7 @@ mod tests {
     /// entity/link/body unions) must be inlined.
     fn has_ref(value: &Value) -> bool {
         match value {
-            Value::Object(obj) => {
-                obj.contains_key("$ref") || obj.values().any(has_ref)
-            }
+            Value::Object(obj) => obj.contains_key("$ref") || obj.values().any(has_ref),
             Value::Array(items) => items.iter().any(has_ref),
             _ => false,
         }
@@ -644,7 +678,10 @@ mod tests {
         // The graph payload requires `entities` (>= 1) and `links`; `journal_entry`
         // is optional (absent for direct multi-entity capture).
         let required = payload["required"].as_array().unwrap_or_else(|| {
-            panic!("apply_intent_graph payload declares required fields: {}", d.json_schema)
+            panic!(
+                "apply_intent_graph payload declares required fields: {}",
+                d.json_schema
+            )
         });
         assert!(
             required.iter().any(|f| f.as_str() == Some("entities"))
@@ -667,9 +704,19 @@ mod tests {
         let entity_variants = entities["items"]["oneOf"].as_array().unwrap_or_else(|| {
             panic!("entities items must be a oneOf union of typed nodes: {entities}")
         });
-        assert_eq!(entity_variants.len(), 3, "person/project/todo entity nodes: {entities}");
+        assert_eq!(
+            entity_variants.len(),
+            3,
+            "person/project/todo entity nodes: {entities}"
+        );
         let schema_text = d.json_schema.to_string();
-        for needle in ["handle", "existing_id", "todo_project", "todo_person", "journal_ref"] {
+        for needle in [
+            "handle",
+            "existing_id",
+            "todo_project",
+            "todo_person",
+            "journal_ref",
+        ] {
             assert!(
                 schema_text.contains(needle),
                 "apply_intent_graph schema advertises {needle}: {}",
@@ -681,7 +728,11 @@ mod tests {
         let link_variants = payload["properties"]["links"]["items"]["oneOf"]
             .as_array()
             .unwrap_or_else(|| panic!("links items must be a oneOf of link kinds: {payload}"));
-        assert_eq!(link_variants.len(), 3, "todo_project/todo_person/journal_ref: {payload}");
+        assert_eq!(
+            link_variants.len(),
+            3,
+            "todo_project/todo_person/journal_ref: {payload}"
+        );
     }
 
     /// The advertised graph schema must carry NO `$ref` anywhere (Anthropic
@@ -783,6 +834,73 @@ mod tests {
             }))
             .is_err(),
             "an entity node of an unknown type matches no variant and is rejected"
+        );
+    }
+
+    #[test]
+    fn record_observations_payload_rejects_unknown_schema_and_bad_values() {
+        let spec = ProposableMutation::RecordObservations.payload_spec();
+
+        spec.check(&serde_json::json!({
+            "observations": [
+                {
+                    "schema_key": "bodyweight",
+                    "occurred_at": "2026-06-02T07:30:00",
+                    "values": { "kg": 72.4 }
+                },
+                {
+                    "schema_key": "habit.checkin",
+                    "occurred_at": "2026-06-03T07:30:00",
+                    "values": {
+                        "habit_id": "0190d3c1-0000-7000-8000-000000000004",
+                        "state": "done"
+                    }
+                }
+            ]
+        }))
+        .expect("known observation schemas with schema-specific values are accepted");
+
+        assert!(
+            spec.check(&serde_json::json!({
+                "observations": [
+                    {
+                        "schema_key": "nutrition.intake",
+                        "occurred_at": "2026-06-02T07:30:00",
+                        "values": { "kcal": 450 }
+                    }
+                ]
+            }))
+            .is_err(),
+            "unknown observation schema keys must not pass the proposal gate"
+        );
+        assert!(
+            spec.check(&serde_json::json!({
+                "observations": [
+                    {
+                        "schema_key": "bodyweight",
+                        "occurred_at": "2026-06-02T07:30:00",
+                        "values": { "lbs": 160 }
+                    }
+                ]
+            }))
+            .is_err(),
+            "bodyweight values must use the registered kg shape"
+        );
+        assert!(
+            spec.check(&serde_json::json!({
+                "observations": [
+                    {
+                        "schema_key": "habit.checkin",
+                        "occurred_at": "2026-06-02T07:30:00",
+                        "values": {
+                            "habit_id": "not-a-uuid",
+                            "state": "done"
+                        }
+                    }
+                ]
+            }))
+            .is_err(),
+            "habit.checkin relation values must validate before parking"
         );
     }
 

@@ -1,27 +1,8 @@
 import { Check } from "lucide-react";
 import { type ReactNode, useId, useMemo, useState } from "react";
 import { EditorField, EditorTextarea } from "./library/EntityEditor.js";
+import { arrayField, objectField, textField } from "./proposalPayload.js";
 import { Button } from "./ui/button.js";
-
-function arrayField(payload: unknown, key: string): unknown[] {
-	if (!payload || typeof payload !== "object") return [];
-	const value = (payload as Record<string, unknown>)[key];
-	return Array.isArray(value) ? value : [];
-}
-
-function objectField(payload: unknown, key: string): Record<string, unknown> {
-	if (!payload || typeof payload !== "object") return {};
-	const value = (payload as Record<string, unknown>)[key];
-	return value && typeof value === "object" && !Array.isArray(value)
-		? (value as Record<string, unknown>)
-		: {};
-}
-
-function textField(payload: unknown, key: string): string {
-	if (!payload || typeof payload !== "object") return "";
-	const value = (payload as Record<string, unknown>)[key];
-	return typeof value === "string" ? value : "";
-}
 
 function unknownField(payload: unknown, key: string): unknown {
 	if (payload && typeof payload === "object" && key in payload) {

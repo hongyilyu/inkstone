@@ -119,7 +119,10 @@ test.describe("faux proposal parity", () => {
 			unknown,
 			unknown
 		>;
-		const decoded = Schema.decodeUnknownEither(schema)(payload);
+		const decodeStrict = Schema.decodeUnknownEither(schema, {
+			onExcessProperty: "error",
+		});
+		const decoded = decodeStrict(payload);
 		if (Either.isLeft(decoded)) {
 			throw new Error(
 				`live ${mutation_kind} payload did NOT match its @inkstone/protocol schema:\n` +
@@ -134,8 +137,17 @@ test.describe("faux proposal parity", () => {
 		const corrupted = { ...(payload as Record<string, unknown>) };
 		delete corrupted.body;
 		expect(
-			Either.isLeft(Schema.decodeUnknownEither(schema)(corrupted)),
+			Either.isLeft(decodeStrict(corrupted)),
 			"removing the required `body` field must fail the decode",
+		).toBe(true);
+		expect(
+			Either.isLeft(
+				decodeStrict({
+					...(payload as Record<string, unknown>),
+					unexpected_field: true,
+				}),
+			),
+			"adding an unknown top-level field must fail the strict decode",
 		).toBe(true);
 	});
 });
@@ -171,7 +183,10 @@ test.describe("record_observations proposal parity", () => {
 			unknown,
 			unknown
 		>;
-		const decoded = Schema.decodeUnknownEither(schema)(payload);
+		const decodeStrict = Schema.decodeUnknownEither(schema, {
+			onExcessProperty: "error",
+		});
+		const decoded = decodeStrict(payload);
 		if (Either.isLeft(decoded)) {
 			throw new Error(
 				`live ${mutation_kind} payload did NOT match its @inkstone/protocol schema:\n` +
@@ -184,8 +199,17 @@ test.describe("record_observations proposal parity", () => {
 		const corrupted = { ...(payload as Record<string, unknown>) };
 		delete corrupted.observations;
 		expect(
-			Either.isLeft(Schema.decodeUnknownEither(schema)(corrupted)),
+			Either.isLeft(decodeStrict(corrupted)),
 			"removing the required `observations` field must fail the decode",
+		).toBe(true);
+		expect(
+			Either.isLeft(
+				decodeStrict({
+					...(payload as Record<string, unknown>),
+					unexpected_field: true,
+				}),
+			),
+			"adding an unknown top-level field must fail the strict decode",
 		).toBe(true);
 	});
 });
