@@ -9,6 +9,10 @@ import {
 	MessageHit,
 	MessageSearchParams,
 	MessageSearchResult,
+	ObservationQueryParams,
+	ObservationQueryResult,
+	ObservationRecordParams,
+	ObservationRecordResult,
 	PostMessageParams,
 	PostMessageResult,
 	ProposalChangedNotification,
@@ -438,6 +442,157 @@ describe("MessageSearchResult", () => {
 		expect(S.decodeUnknownSync(MessageSearchResult)({ hits: [] })).toEqual({
 			hits: [],
 		});
+	});
+});
+
+describe("ObservationRecordParams", () => {
+	const wire = {
+		observations: [
+			{
+				schema_key: "bodyweight",
+				occurred_at: "2026-06-01T07:30:00",
+				ended_at: "2026-06-01T07:35:00",
+				values: { kg: 72.4 },
+				note: "after morning run",
+			},
+			{
+				schema_key: "bodyweight",
+				occurred_at: "2026-06-02T07:30:00",
+				values: { kg: 72.1 },
+			},
+		],
+		evidence: {
+			journal_entry_id: "0190d3c1-0000-7000-8000-000000000001",
+			message_id: "0190d3c1-0000-7000-8000-000000000003",
+		},
+	};
+
+	it("decodes a batch with evidence and encodes back unchanged", () => {
+		const decoded = S.decodeUnknownSync(ObservationRecordParams)(wire);
+		expect(decoded).toEqual(wire);
+		expect(S.encodeSync(ObservationRecordParams)(decoded)).toEqual(wire);
+	});
+
+	it("decodes the bare optional shape", () => {
+		const bare = {
+			observations: [
+				{
+					schema_key: "bodyweight",
+					occurred_at: "2026-06-01T07:30:00",
+					values: { kg: 72.4 },
+				},
+			],
+		};
+		expect(S.decodeUnknownSync(ObservationRecordParams)(bare)).toEqual(bare);
+	});
+
+	it("rejects a missing observations array", () => {
+		expect(() => S.decodeUnknownSync(ObservationRecordParams)({})).toThrow();
+	});
+});
+
+describe("ObservationRecordResult", () => {
+	it("decodes ids and encodes back unchanged", () => {
+		const wire = {
+			observation_ids: [
+				"0190d3c1-0000-7000-8000-000000000001",
+				"0190d3c1-0000-7000-8000-000000000002",
+			],
+		};
+		const decoded = S.decodeUnknownSync(ObservationRecordResult)(wire);
+		expect(decoded).toEqual(wire);
+		expect(S.encodeSync(ObservationRecordResult)(decoded)).toEqual(wire);
+	});
+});
+
+describe("ObservationQueryParams", () => {
+	it("decodes every optional filter and encodes back unchanged", () => {
+		const wire = {
+			schema_keys: ["bodyweight"],
+			from: "2026-06-01T00:00:00",
+			to: "2026-06-30T23:59:59",
+			source_entity_id: "0190d3c1-0000-7000-8000-000000000002",
+			source_message_id: "0190d3c1-0000-7000-8000-000000000003",
+			limit: 50,
+		};
+		const decoded = S.decodeUnknownSync(ObservationQueryParams)(wire);
+		expect(decoded).toEqual(wire);
+		expect(S.encodeSync(ObservationQueryParams)(decoded)).toEqual(wire);
+	});
+
+	it("decodes an empty query", () => {
+		expect(S.decodeUnknownSync(ObservationQueryParams)({})).toEqual({});
+	});
+});
+
+describe("ObservationQueryResult", () => {
+	const baseRow = {
+		id: "0190d3c1-0000-7000-8000-000000000001",
+		schema_key: "bodyweight",
+		schema_version: 1,
+		occurred_at: "2026-06-01T07:30:00",
+		ended_at: "2026-06-01T07:35:00",
+		values: { kg: 72.4 },
+		note: "after morning run",
+		created_at: 1_700_000_000_000,
+		updated_at: 1_700_000_000_001,
+	};
+
+	const entitySourcedRow = {
+		...baseRow,
+		source: {
+			source_entity_id: "0190d3c1-0000-7000-8000-000000000002",
+			relation: "created_from",
+		},
+	};
+
+	const messageSourcedRow = {
+		...baseRow,
+		source: {
+			source_message_id: "0190d3c1-0000-7000-8000-000000000003",
+			relation: "evidenced_by",
+		},
+	};
+
+	it("decodes an entity-sourced observation row and encodes back unchanged", () => {
+		const wire = { observations: [entitySourcedRow] };
+		const decoded = S.decodeUnknownSync(ObservationQueryResult)(wire);
+		expect(decoded).toEqual(wire);
+		expect(S.encodeSync(ObservationQueryResult)(decoded)).toEqual(wire);
+	});
+
+	it("decodes a message-sourced observation row and encodes back unchanged", () => {
+		const wire = { observations: [messageSourcedRow] };
+		const decoded = S.decodeUnknownSync(ObservationQueryResult)(wire);
+		expect(decoded).toEqual(wire);
+		expect(S.encodeSync(ObservationQueryResult)(decoded)).toEqual(wire);
+	});
+
+	it("requires explicit nulls for nullable row fields", () => {
+		const wire = {
+			observations: [
+				{
+					...entitySourcedRow,
+					ended_at: null,
+					note: null,
+					source: null,
+				},
+			],
+		};
+		expect(S.decodeUnknownSync(ObservationQueryResult)(wire)).toEqual(wire);
+	});
+
+	it("rejects an unknown source relation", () => {
+		expect(() =>
+			S.decodeUnknownSync(ObservationQueryResult)({
+				observations: [
+					{
+						...entitySourcedRow,
+						source: { ...entitySourcedRow.source, relation: "quoted_in" },
+					},
+				],
+			}),
+		).toThrow();
 	});
 });
 
