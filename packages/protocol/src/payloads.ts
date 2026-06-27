@@ -417,10 +417,16 @@ const observationRecordDraft = S.Struct({
 	note: S.optional(S.String),
 });
 
-const observationEvidence = S.Struct({
-	journal_entry_id: S.optional(S.String),
-	message_id: S.optional(S.String),
-});
+const observationEvidence = S.Union(
+	S.Struct({
+		journal_entry_id: patternedUuid,
+		message_id: S.optional(S.Never),
+	}),
+	S.Struct({
+		message_id: patternedUuid,
+		journal_entry_id: S.optional(S.Never),
+	}),
+);
 
 export const recordObservations = S.Struct({
 	observations: S.Array(observationRecordDraft).pipe(

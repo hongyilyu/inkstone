@@ -560,12 +560,20 @@ fn record_observations_payload() -> PayloadSpec {
             Field::optional("note", FieldSpec::string()),
         ],
     );
-    let evidence = PayloadSpec::nested(
+    let journal_evidence = PayloadSpec::nested(
         "observation evidence",
         ObjErr::Object,
         vec![
-            Field::optional("journal_entry_id", FieldSpec::string()),
-            Field::optional("message_id", FieldSpec::string()),
+            patterned_uuid("journal_entry_id"),
+            Field::optional("message_id", FieldSpec::Never),
+        ],
+    );
+    let message_evidence = PayloadSpec::nested(
+        "observation evidence",
+        ObjErr::Object,
+        vec![
+            patterned_uuid("message_id"),
+            Field::optional("journal_entry_id", FieldSpec::Never),
         ],
     );
     PayloadSpec::payload(
@@ -579,7 +587,12 @@ fn record_observations_payload() -> PayloadSpec {
                     min_items: Some(1),
                 },
             ),
-            Field::optional("evidence", FieldSpec::Object(evidence)),
+            Field::optional(
+                "evidence",
+                FieldSpec::OneOfObject {
+                    variants: vec![journal_evidence, message_evidence],
+                },
+            ),
         ],
     )
 }

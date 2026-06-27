@@ -258,6 +258,88 @@ fn accept_records_two_observations_with_proposal_provenance_and_source() {
 }
 
 #[test]
+fn same_key_replay_does_not_record_observations_twice() {
+    let workspace = Workspace::new();
+    let params_dir = tempfile::Builder::new()
+        .prefix("inkstone-record-observations-replay-")
+        .tempdir()
+        .expect("create params tempdir");
+    let params_path = params_dir.path().join("propose-params.json");
+
+    let core = workspace
+        .core()
+        .worker_fixture("propose-worker.ts")
+        .env("INKSTONE_PROPOSE_PARAMS_FILE", &params_path)
+        .spawn();
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime builds");
+
+    let proposal_id = rt.block_on(async {
+        write_proposal_params(
+            &params_path,
+            serde_json::json!({
+                "observations": [
+                    {
+                        "schema_key": "bodyweight",
+                        "occurred_at": "2026-06-02T07:30:00",
+                        "values": { "kg": 72.4 }
+                    }
+                ]
+            }),
+        );
+
+        let run_id = create_and_park(&core).await;
+        let (proposal_id, _) = pending_proposal(&core, &run_id).await;
+
+        for request_id in [4_u64, 5] {
+            let resp = rpc(
+                &core,
+                request_id,
+                "proposal/decide",
+                serde_json::json!({
+                    "proposal_id": proposal_id,
+                    "decision": "accept",
+                    "decision_idempotency_key": "record-observation-once"
+                }),
+            )
+            .await;
+            assert_eq!(resp["result"]["status"].as_str(), Some("accepted"));
+            assert!(
+                resp["result"].get("entity_id").is_none(),
+                "record_observations replay returns no entity_id - body: {resp}"
+            );
+        }
+
+        await_completed(&core, &run_id).await;
+        proposal_id
+    });
+
+    rt.block_on(async {
+        let url = format!("sqlite://{}?mode=ro", workspace.db_path().display());
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&url)
+            .await
+            .expect("connect to migrated DB");
+
+        let observation_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM observations WHERE created_via_proposal_id = ?1",
+        )
+        .bind(&proposal_id)
+        .fetch_one(&pool)
+        .await
+        .expect("count observations");
+        assert_eq!(
+            observation_count, 1,
+            "same-key replay must not duplicate observations"
+        );
+    });
+}
+
+#[test]
 fn invalid_edited_payload_leaves_pending_and_writes_no_observations() {
     let workspace = Workspace::new();
     let params_dir = tempfile::Builder::new()
@@ -341,12 +423,23 @@ fn invalid_edited_payload_leaves_pending_and_writes_no_observations() {
             .await
             .expect("connect to migrated DB");
 
-        let status: String = sqlx::query_scalar("SELECT status FROM proposals WHERE id = ?1")
-            .bind(&proposal_id)
-            .fetch_one(&pool)
-            .await
-            .expect("proposal exists");
-        assert_eq!(status, "pending", "invalid edit leaves Proposal pending");
+        let row = sqlx::query(
+            "SELECT p.status AS proposal_status, tc.status AS tool_status \
+             FROM proposals p \
+             JOIN tool_calls tc ON tc.id = p.tool_call_id \
+             WHERE p.id = ?1",
+        )
+        .bind(&proposal_id)
+        .fetch_one(&pool)
+        .await
+        .expect("proposal exists");
+        let proposal_status: String = row.get("proposal_status");
+        let tool_status: String = row.get("tool_status");
+        assert_eq!(
+            proposal_status, "pending",
+            "invalid edit leaves Proposal pending"
+        );
+        assert_eq!(tool_status, "pending", "invalid edit leaves tool pending");
 
         let observation_count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM observations WHERE created_via_proposal_id = ?1",
@@ -379,7 +472,7 @@ fn whole_payload_edit_records_the_edited_observation_payload() {
         .build()
         .expect("tokio runtime builds");
 
-    let proposal_id = rt.block_on(async {
+    let (proposal_id, source_journal_entry_id) = rt.block_on(async {
         let source_journal_entry_id = create_source_journal_entry(&core).await;
         write_proposal_params(
             &params_path,
@@ -428,7 +521,7 @@ fn whole_payload_edit_records_the_edited_observation_payload() {
             "record_observations edit returns no entity_id - body: {resp}"
         );
         await_completed(&core, &run_id).await;
-        proposal_id
+        (proposal_id, source_journal_entry_id)
     });
 
     rt.block_on(async {
@@ -463,11 +556,53 @@ fn whole_payload_edit_records_the_edited_observation_payload() {
                 .fetch_one(&pool)
                 .await
                 .expect("select edited_payload");
-        assert!(
+        let edited_payload: serde_json::Value = serde_json::from_str(
             edited_payload
                 .as_deref()
-                .is_some_and(|payload| payload.contains("corrected scale reading")),
+                .expect("edited payload is recorded"),
+        )
+        .expect("edited_payload is JSON");
+        assert_eq!(
+            edited_payload,
+            serde_json::json!({
+                "observations": [
+                    {
+                        "schema_key": "bodyweight",
+                        "occurred_at": "2026-06-04T07:30:00",
+                        "values": { "kg": 72.2 },
+                        "note": "corrected scale reading"
+                    }
+                ],
+                "evidence": { "journal_entry_id": source_journal_entry_id }
+            }),
             "Proposal records the whole edited payload"
+        );
+
+        let result_payload: Option<String> = sqlx::query_scalar(
+            "SELECT tc.result_payload \
+             FROM proposals p \
+             JOIN tool_calls tc ON tc.id = p.tool_call_id \
+             WHERE p.id = ?1",
+        )
+        .bind(&proposal_id)
+        .fetch_one(&pool)
+        .await
+        .expect("select result payload");
+        let result_payload: serde_json::Value = serde_json::from_str(
+            result_payload
+                .as_deref()
+                .expect("accepted tool call has result payload"),
+        )
+        .expect("result_payload is JSON");
+        let content = result_payload["content"]
+            .as_str()
+            .expect("result content is a string");
+        assert!(
+            content.contains("2026-06-04T07:30:00")
+                && content.contains("72.2")
+                && content.contains("corrected scale reading")
+                && !content.contains("73.0"),
+            "resume result content names the applied edit, not the stale proposal: {content}"
         );
     });
 }

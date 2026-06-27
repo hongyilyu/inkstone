@@ -127,11 +127,16 @@ const walk1 = (node: Record<string, Json>): Record<string, Json> => {
 	// survives; nothing to strip here.)
 	delete out.title;
 
-	// Rule 3b — strip Effect's annotation-only ids for unconstrained schemas.
+	// Rule 3b — strip Effect's annotation-only ids for leaf schemas.
 	// Rust emits `FieldSpec::Any` as bare `{}`; Effect emits `S.Unknown` as
-	// `{ "$id": "/schemas/unknown", "title": "unknown" }`. The title is gone by
-	// rule 3; the id carries no validation semantics.
-	if (out.$id === "/schemas/unknown" || out.$id === "/schemas/any") {
+	// `{ "$id": "/schemas/unknown", "title": "unknown" }`. `S.Never` likewise
+	// stamps `/schemas/never` beside its real `{not:{}}` predicate. The title is
+	// gone by rule 3; these ids carry no validation semantics.
+	if (
+		out.$id === "/schemas/unknown" ||
+		out.$id === "/schemas/any" ||
+		out.$id === "/schemas/never"
+	) {
 		delete out.$id;
 	}
 

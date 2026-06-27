@@ -95,6 +95,12 @@ pub(crate) fn record_observations_input_from_payload(
         .check(payload)?;
     let params: crate::protocol::ObservationRecordParams = serde_json::from_value(payload.clone())
         .map_err(|e| format!("record_observations payload is invalid: {e}"))?;
+    record_observations_input_from_params(params)
+}
+
+pub(crate) fn record_observations_input_from_params(
+    params: crate::protocol::ObservationRecordParams,
+) -> Result<RecordObservationsInput, String> {
     let source = source_from_evidence(params.evidence)?;
     Ok(RecordObservationsInput {
         observations: params

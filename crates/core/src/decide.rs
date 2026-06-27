@@ -487,10 +487,14 @@ async fn apply_record_observations(
         inserts,
         edited_payload,
         idempotency_key,
-        |count| {
+        |_| {
             serde_json::json!({
                 "decision": "accept",
-                "content": format!("Accepted. Recorded {count} observations."),
+                "content": entities::render_accept(
+                    ProposableMutation::RecordObservations,
+                    applied_payload,
+                    None,
+                ),
             })
             .to_string()
         },

@@ -84,6 +84,34 @@ describe("record_observations payload (ADR-0053)", () => {
 			)(payload),
 		).toEqual(payload);
 	});
+
+	it("rejects malformed or two-source evidence", () => {
+		const base = {
+			observations: [
+				{
+					schema_key: "bodyweight",
+					occurred_at: "2026-06-02T07:30:00",
+					values: { kg: 72.4 },
+				},
+			],
+		};
+		const schema = schemas.record_observations as S.Schema<unknown, unknown>;
+		expect(() =>
+			S.decodeUnknownSync(schema)({
+				...base,
+				evidence: { journal_entry_id: "not-a-uuid" },
+			}),
+		).toThrow();
+		expect(() =>
+			S.decodeUnknownSync(schema)({
+				...base,
+				evidence: {
+					journal_entry_id: "0190d3c1-0000-7000-8000-000000000001",
+					message_id: "0190d3c1-0000-7000-8000-000000000002",
+				},
+			}),
+		).toThrow();
+	});
 });
 
 describe("apply_intent_graph payload (ADR-0042)", () => {

@@ -2,16 +2,44 @@
   "additionalProperties": false,
   "properties": {
     "evidence": {
-      "additionalProperties": false,
-      "properties": {
-        "journal_entry_id": {
-          "type": "string"
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "journal_entry_id": {
+              "maxLength": 36,
+              "minLength": 36,
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+              "type": "string"
+            },
+            "message_id": {
+              "not": {}
+            }
+          },
+          "required": [
+            "journal_entry_id"
+          ],
+          "type": "object"
         },
-        "message_id": {
-          "type": "string"
+        {
+          "additionalProperties": false,
+          "properties": {
+            "journal_entry_id": {
+              "not": {}
+            },
+            "message_id": {
+              "maxLength": 36,
+              "minLength": 36,
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "message_id"
+          ],
+          "type": "object"
         }
-      },
-      "type": "object"
+      ]
     },
     "observations": {
       "items": {

@@ -13,9 +13,11 @@
 // The negative control (corrupt the live payload → decode must fail) proves the
 // assertion bites rather than passing vacuously.
 
+import path from "node:path";
 import { schemas, type WireKind } from "@inkstone/protocol";
 import { Either, Schema } from "effect";
 import { expect, test } from "./fixtures.js";
+import { seedParkedProposal } from "./seed-proposal.js";
 import { FAUX_WORKER_CMD } from "./spawnCore.js";
 
 // The faux interpreter Worker emits a deterministic `create_journal_entry`
@@ -134,5 +136,71 @@ test("the live proposal payload Core emits decodes against its @inkstone/protoco
 	expect(
 		Either.isLeft(Schema.decodeUnknownEither(schema)(corrupted)),
 		"removing the required `body` field must fail the decode",
+	).toBe(true);
+});
+
+test("a live record_observations proposal payload decodes against its @inkstone/protocol schema", async ({
+	chat,
+	core,
+	workspace,
+}) => {
+	seedParkedProposal(path.join(workspace.path, "db.sqlite"), {
+		mutationKind: "record_observations",
+		title: "Bodyweight samples",
+		rationale: "capture tracker facts",
+		payload: {
+			observations: [
+				{
+					schema_key: "bodyweight",
+					occurred_at: "2026-06-02T07:30:00",
+					values: { kg: 72.4 },
+					note: "after breakfast",
+				},
+				{
+					schema_key: "habit.checkin",
+					occurred_at: "2026-06-03T07:30:00",
+					values: {
+						habit_id: "0190d3c1-0000-7000-8000-000000000004",
+						state: "done",
+					},
+				},
+			],
+			evidence: {
+				journal_entry_id: "0190d3c1-0000-7000-8000-000000000001",
+			},
+		},
+	});
+
+	await chat.goto();
+	await chat.openThread("Bodyweight samples");
+	const card = chat.proposalCard();
+	await expect(card).toBeVisible({ timeout: 15_000 });
+	const runId = await card.getAttribute("data-proposal");
+	expect(runId, "the ProposalCard carries its run_id").toBeTruthy();
+
+	const { mutation_kind, payload } = await proposalGet(
+		core.url,
+		runId as string,
+	);
+	expect(mutation_kind).toBe("record_observations");
+	const schema = schemas[mutation_kind as WireKind] as Schema.Schema<
+		unknown,
+		unknown
+	>;
+	const decoded = Schema.decodeUnknownEither(schema)(payload);
+	if (Either.isLeft(decoded)) {
+		throw new Error(
+			`live ${mutation_kind} payload did NOT match its @inkstone/protocol schema:\n` +
+				`${JSON.stringify(payload, null, 2)}\n` +
+				`decode error: ${String(decoded.left)}`,
+		);
+	}
+	expect(Either.isRight(decoded)).toBe(true);
+
+	const corrupted = { ...(payload as Record<string, unknown>) };
+	delete corrupted.observations;
+	expect(
+		Either.isLeft(Schema.decodeUnknownEither(schema)(corrupted)),
+		"removing the required `observations` field must fail the decode",
 	).toBe(true);
 });
