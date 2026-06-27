@@ -39,6 +39,106 @@ pub const TODO_SCHEMA_VERSION: i64 = 1;
 /// revision (ADR-0036).
 pub const BOOKMARK_SCHEMA_VERSION: i64 = 1;
 
+/// Search/title projection for an Entity Type. Kept small on purpose: the stored
+/// data field that names the row, plus an optional aliases field for Person.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct EntityProjectionSpec {
+    pub(crate) label_field: &'static str,
+    pub(crate) aliases_field: Option<&'static str>,
+}
+
+/// Closed policy row for an Entity Type. This is the trait-like dispatch point
+/// Phase 2 needs: static, compile-checked, and metadata-only.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct EntityTypeSpec {
+    pub(crate) entity_type: EntityType,
+    pub(crate) stored_type: &'static str,
+    pub(crate) schema_version: i64,
+    pub(crate) referenceable: bool,
+    pub(crate) listable: bool,
+    pub(crate) projection: Option<EntityProjectionSpec>,
+    pub(crate) searchable: bool,
+}
+
+impl EntityTypeSpec {
+    pub(crate) fn title_from_data(self, data: &Value) -> Option<String> {
+        let field = self.projection?.label_field;
+        data.get(field)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    }
+
+    pub(crate) fn reference_title_from_data(self, data: &Value) -> Option<String> {
+        if self.referenceable {
+            self.title_from_data(data)
+        } else {
+            None
+        }
+    }
+}
+
+const ENTITY_TYPE_SPECS: [EntityTypeSpec; 5] = [
+    EntityTypeSpec {
+        entity_type: EntityType::JournalEntry,
+        stored_type: "journal_entry",
+        schema_version: JOURNAL_ENTRY_SCHEMA_VERSION,
+        referenceable: false,
+        listable: true,
+        projection: None,
+        searchable: false,
+    },
+    EntityTypeSpec {
+        entity_type: EntityType::Person,
+        stored_type: "person",
+        schema_version: PERSON_SCHEMA_VERSION,
+        referenceable: true,
+        listable: true,
+        projection: Some(EntityProjectionSpec {
+            label_field: "name",
+            aliases_field: Some("aliases"),
+        }),
+        searchable: true,
+    },
+    EntityTypeSpec {
+        entity_type: EntityType::Project,
+        stored_type: "project",
+        schema_version: PROJECT_SCHEMA_VERSION,
+        referenceable: true,
+        listable: true,
+        projection: Some(EntityProjectionSpec {
+            label_field: "name",
+            aliases_field: None,
+        }),
+        searchable: true,
+    },
+    EntityTypeSpec {
+        entity_type: EntityType::Todo,
+        stored_type: "todo",
+        schema_version: TODO_SCHEMA_VERSION,
+        referenceable: true,
+        listable: true,
+        projection: Some(EntityProjectionSpec {
+            label_field: "title",
+            aliases_field: None,
+        }),
+        searchable: true,
+    },
+    EntityTypeSpec {
+        entity_type: EntityType::Bookmark,
+        stored_type: "bookmark",
+        schema_version: BOOKMARK_SCHEMA_VERSION,
+        referenceable: false,
+        listable: true,
+        projection: Some(EntityProjectionSpec {
+            label_field: "title",
+            aliases_field: None,
+        }),
+        searchable: false,
+    },
+];
+
 /// The write-class of a `mutation_kind`. Every mutation is a write — reads
 /// (`entity/list`, `search_entities`, `proposal/get`) carry no `mutation_kind`
 /// and are a separate surface — so there is deliberately no `Read` variant.
@@ -101,42 +201,42 @@ pub(crate) enum EntityType {
 }
 
 impl EntityType {
+    pub(crate) const ALL: [EntityType; 5] = [
+        EntityType::JournalEntry,
+        EntityType::Person,
+        EntityType::Project,
+        EntityType::Todo,
+        EntityType::Bookmark,
+    ];
+
+    pub(crate) fn spec(self) -> EntityTypeSpec {
+        ENTITY_TYPE_SPECS
+            .iter()
+            .copied()
+            .find(|spec| spec.entity_type == self)
+            .expect("every EntityType has a spec")
+    }
+
     /// The stored `entities.type` value. Bound into SQL and compared against
     /// rows read back by [`crate::db::entity_type_by_id`].
     pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            EntityType::JournalEntry => "journal_entry",
-            EntityType::Person => "person",
-            EntityType::Project => "project",
-            EntityType::Todo => "todo",
-            EntityType::Bookmark => "bookmark",
-        }
+        self.spec().stored_type
     }
 
     /// The schema version to stamp onto a freshly-created Entity of this type +
     /// its first revision.
     pub(crate) fn schema_version(self) -> i64 {
-        match self {
-            EntityType::JournalEntry => JOURNAL_ENTRY_SCHEMA_VERSION,
-            EntityType::Person => PERSON_SCHEMA_VERSION,
-            EntityType::Project => PROJECT_SCHEMA_VERSION,
-            EntityType::Todo => TODO_SCHEMA_VERSION,
-            EntityType::Bookmark => BOOKMARK_SCHEMA_VERSION,
-        }
+        self.spec().schema_version
     }
 
     /// Parse a stored `entities.type` value. `None` for an unknown string — the
     /// caller decides whether that is a data fault (the stored column has no
     /// CHECK constraint) or merely a type that fails an equality check.
     pub(crate) fn from_str(s: &str) -> Option<Self> {
-        match s {
-            "journal_entry" => Some(EntityType::JournalEntry),
-            "person" => Some(EntityType::Person),
-            "project" => Some(EntityType::Project),
-            "todo" => Some(EntityType::Todo),
-            "bookmark" => Some(EntityType::Bookmark),
-            _ => None,
-        }
+        ENTITY_TYPE_SPECS
+            .iter()
+            .find(|spec| spec.stored_type == s)
+            .map(|spec| spec.entity_type)
     }
 
     /// Whether a Journal Entry body may reference this Entity Type (ADR-0030):
@@ -144,10 +244,14 @@ impl EntityType {
     /// Bookmarks are not. A new Entity Type must declare its referenceability
     /// here (the match is total).
     pub(crate) fn is_referenceable(self) -> bool {
-        match self {
-            EntityType::Person | EntityType::Project | EntityType::Todo => true,
-            EntityType::JournalEntry | EntityType::Bookmark => false,
-        }
+        self.spec().referenceable
+    }
+
+    pub(crate) fn searchable_specs() -> impl Iterator<Item = EntityTypeSpec> {
+        ENTITY_TYPE_SPECS
+            .iter()
+            .copied()
+            .filter(|spec| spec.searchable)
     }
 }
 
@@ -265,7 +369,11 @@ pub(crate) enum Mode {
 /// partial path (`null` clears), concrete-or-absent on the create path.
 fn clearable_datetime_when(name: &'static str, partial: bool) -> Field {
     let field = Field::datetime(name);
-    if partial { field.clearable() } else { field }
+    if partial {
+        field.clearable()
+    } else {
+        field
+    }
 }
 
 /// The Project `status` enum (`validate_project_data`).
@@ -654,12 +762,27 @@ fn intent_graph_links() -> FieldSpec {
     let mut journal_ref = vec![graph_discriminant("kind", &["journal_ref"])];
     journal_ref.extend(from_to());
     journal_ref.push(Field::optional("match_text", FieldSpec::non_empty_string()));
-    journal_ref.push(Field::optional("append_text", FieldSpec::non_empty_string()));
+    journal_ref.push(Field::optional(
+        "append_text",
+        FieldSpec::non_empty_string(),
+    ));
     FieldSpec::OneOfArray {
         variants: vec![
-            PayloadSpec::nested("intent graph todo_project link", ObjErr::JsonObject, todo_project),
-            PayloadSpec::nested("intent graph todo_person link", ObjErr::JsonObject, todo_person),
-            PayloadSpec::nested("intent graph journal_ref link", ObjErr::JsonObject, journal_ref),
+            PayloadSpec::nested(
+                "intent graph todo_project link",
+                ObjErr::JsonObject,
+                todo_project,
+            ),
+            PayloadSpec::nested(
+                "intent graph todo_person link",
+                ObjErr::JsonObject,
+                todo_person,
+            ),
+            PayloadSpec::nested(
+                "intent graph journal_ref link",
+                ObjErr::JsonObject,
+                journal_ref,
+            ),
         ],
         min_items: None,
     }
@@ -1248,13 +1371,7 @@ mod tests {
 
     #[test]
     fn entity_type_round_trips_and_classifies_referenceable() {
-        for et in [
-            EntityType::JournalEntry,
-            EntityType::Person,
-            EntityType::Project,
-            EntityType::Todo,
-            EntityType::Bookmark,
-        ] {
+        for et in EntityType::ALL {
             assert_eq!(EntityType::from_str(et.as_str()), Some(et));
         }
         assert_eq!(EntityType::from_str("nonsense"), None);
@@ -1263,6 +1380,63 @@ mod tests {
         assert!(EntityType::Todo.is_referenceable());
         assert!(!EntityType::JournalEntry.is_referenceable());
         assert!(!EntityType::Bookmark.is_referenceable());
+    }
+
+    #[test]
+    fn every_entity_type_has_one_spec_row() {
+        assert_eq!(ENTITY_TYPE_SPECS.len(), EntityType::ALL.len());
+
+        for et in EntityType::ALL {
+            let matching = ENTITY_TYPE_SPECS
+                .iter()
+                .filter(|spec| spec.entity_type == et)
+                .count();
+            assert_eq!(matching, 1, "{et:?} has exactly one spec row");
+        }
+
+        let stored_types = ENTITY_TYPE_SPECS
+            .iter()
+            .map(|spec| spec.stored_type)
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(
+            stored_types.len(),
+            ENTITY_TYPE_SPECS.len(),
+            "stored Entity Type strings are unique"
+        );
+    }
+
+    #[test]
+    fn entity_type_specs_declare_current_policy() {
+        for et in EntityType::ALL {
+            assert!(et.spec().listable, "{et:?} remains listable");
+        }
+
+        let searchable = EntityType::searchable_specs()
+            .map(|spec| spec.entity_type)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            searchable,
+            vec![EntityType::Person, EntityType::Project, EntityType::Todo],
+            "search_entities remains person/project/todo in Phase 2"
+        );
+
+        assert_eq!(
+            EntityType::Person.spec().schema_version,
+            PERSON_SCHEMA_VERSION
+        );
+        assert_eq!(
+            EntityType::Project.spec().schema_version,
+            PROJECT_SCHEMA_VERSION
+        );
+        assert_eq!(EntityType::Todo.spec().schema_version, TODO_SCHEMA_VERSION);
+        assert_eq!(
+            EntityType::Bookmark.spec().schema_version,
+            BOOKMARK_SCHEMA_VERSION
+        );
+        assert_eq!(
+            EntityType::JournalEntry.spec().schema_version,
+            JOURNAL_ENTRY_SCHEMA_VERSION
+        );
     }
 
     #[test]
