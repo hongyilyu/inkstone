@@ -5,6 +5,8 @@
 use sqlx::{Executor, QueryBuilder, Sqlite};
 use uuid::Uuid;
 
+use super::{ObservationFilter, ObservationRow};
+
 // ─── threads ──────────────────────────────────────────────────────────
 
 pub(super) async fn thread_exists<'e, E>(executor: E, thread_id: Uuid) -> sqlx::Result<bool>
@@ -914,6 +916,188 @@ where
     .execute(executor)
     .await
     .map(|_| ())
+}
+
+#[allow(clippy::too_many_arguments)]
+#[allow(dead_code)]
+pub(super) async fn insert_observation<'e, E>(
+    executor: E,
+    id: &str,
+    schema_key: &str,
+    schema_version: i64,
+    occurred_at: &str,
+    ended_at: Option<&str>,
+    values_json: &str,
+    note: Option<&str>,
+    created_by: &str,
+    created_via_proposal_id: Option<&str>,
+    now_ms: i64,
+) -> sqlx::Result<()>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query(
+        "INSERT INTO observations \
+         (id, schema_key, schema_version, occurred_at, ended_at, values_json, note, \
+          created_by, created_via_proposal_id, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(id)
+    .bind(schema_key)
+    .bind(schema_version)
+    .bind(occurred_at)
+    .bind(ended_at)
+    .bind(values_json)
+    .bind(note)
+    .bind(created_by)
+    .bind(created_via_proposal_id)
+    .bind(now_ms)
+    .bind(now_ms)
+    .execute(executor)
+    .await
+    .map(|_| ())
+}
+
+#[allow(clippy::too_many_arguments)]
+#[allow(dead_code)]
+pub(super) async fn insert_observation_source<'e, E>(
+    executor: E,
+    id: &str,
+    observation_id: &str,
+    source_entity_id: Option<&str>,
+    source_message_id: Option<&str>,
+    relation: &str,
+    now_ms: i64,
+) -> sqlx::Result<()>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query(
+        "INSERT INTO observation_sources \
+         (id, observation_id, source_entity_id, source_message_id, relation, created_at) \
+         VALUES (?, ?, ?, ?, ?, ?)",
+    )
+    .bind(id)
+    .bind(observation_id)
+    .bind(source_entity_id)
+    .bind(source_message_id)
+    .bind(relation)
+    .bind(now_ms)
+    .execute(executor)
+    .await
+    .map(|_| ())
+}
+
+#[allow(dead_code)]
+pub(super) async fn query_observations<'e, E>(
+    executor: E,
+    filter: &ObservationFilter,
+) -> sqlx::Result<Vec<ObservationRow>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT o.id, o.schema_key, o.schema_version, o.occurred_at, o.ended_at, \
+                o.values_json, o.note, o.created_at, o.updated_at, \
+                s.relation, s.source_entity_id, s.source_message_id \
+         FROM observations o \
+         LEFT JOIN observation_sources s ON s.observation_id = o.id \
+         WHERE 1 = 1",
+    );
+
+    if !filter.schema_keys.is_empty() {
+        query.push(" AND o.schema_key IN (");
+        let mut separated = query.separated(", ");
+        for key in &filter.schema_keys {
+            separated.push_bind(key);
+        }
+        separated.push_unseparated(")");
+    }
+    if let Some(from) = &filter.from {
+        query.push(" AND o.occurred_at >= ");
+        query.push_bind(from);
+    }
+    if let Some(to) = &filter.to {
+        query.push(" AND o.occurred_at <= ");
+        query.push_bind(to);
+    }
+    if let Some(source_entity_id) = &filter.source_entity_id {
+        query.push(
+            " AND EXISTS ( \
+                SELECT 1 FROM observation_sources filter_source \
+                WHERE filter_source.observation_id = o.id \
+                  AND filter_source.source_entity_id = ",
+        );
+        query.push_bind(source_entity_id);
+        query.push(")");
+    }
+    if let Some(source_message_id) = &filter.source_message_id {
+        query.push(
+            " AND EXISTS ( \
+                SELECT 1 FROM observation_sources filter_source \
+                WHERE filter_source.observation_id = o.id \
+                  AND filter_source.source_message_id = ",
+        );
+        query.push_bind(source_message_id);
+        query.push(")");
+    }
+
+    query.push(" ORDER BY o.occurred_at DESC, o.created_at DESC, o.id DESC");
+    if let Some(limit) = filter.limit {
+        query.push(" LIMIT ");
+        query.push_bind(limit);
+    }
+
+    query
+        .build_query_as::<(
+            String,
+            String,
+            i64,
+            String,
+            Option<String>,
+            String,
+            Option<String>,
+            i64,
+            i64,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        )>()
+        .fetch_all(executor)
+        .await
+        .map(|rows| {
+            rows.into_iter()
+                .map(
+                    |(
+                        id,
+                        schema_key,
+                        schema_version,
+                        occurred_at,
+                        ended_at,
+                        values_json,
+                        note,
+                        created_at,
+                        updated_at,
+                        source_relation,
+                        source_entity_id,
+                        source_message_id,
+                    )| ObservationRow {
+                        id,
+                        schema_key,
+                        schema_version,
+                        occurred_at,
+                        ended_at,
+                        values_json,
+                        note,
+                        created_at,
+                        updated_at,
+                        source_relation,
+                        source_entity_id,
+                        source_message_id,
+                    },
+                )
+                .collect()
+        })
 }
 
 pub(super) async fn journal_entry_target_is_valid<'e, E>(
