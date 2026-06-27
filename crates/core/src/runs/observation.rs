@@ -72,6 +72,7 @@ pub(super) async fn handle_query(
                         params.source_entity_id,
                         params.source_message_id,
                     )?,
+                    related_entity_id: params.related_entity_id,
                     limit: params.limit,
                 },
             )
@@ -287,6 +288,20 @@ mod tests {
         .expect("insert person");
     }
 
+    async fn seed_habit(pool: &SqlitePool, habit_id: Uuid) {
+        sqlx::query(
+            "INSERT INTO entities \
+             (id, type, schema_version, data, created_by, created_at, updated_at) \
+             VALUES (?, 'habit', 1, \
+                     '{\"name\":\"Morning walk\",\"cadence\":{\"interval\":1,\"unit\":\"day\"}}', \
+                     'user', 1, 1)",
+        )
+        .bind(habit_id.to_string())
+        .execute(pool)
+        .await
+        .expect("insert habit");
+    }
+
     #[tokio::test]
     async fn observation_rpc_records_and_queries_bodyweight() {
         let pool = memory_pool().await;
@@ -464,6 +479,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn observation_rpc_records_and_queries_habit_checkin_by_related_entity() {
+        let pool = memory_pool().await;
+        let habit_id = Uuid::now_v7();
+        let other_habit_id = Uuid::now_v7();
+        seed_habit(&pool, habit_id).await;
+        seed_habit(&pool, other_habit_id).await;
+
+        let recorded = dispatch_rpc(
+            &pool,
+            "observation/record",
+            json!({
+                "observations": [
+                    {
+                        "schema_key": "habit.checkin",
+                        "occurred_at": "2026-06-01T07:30:00",
+                        "values": {
+                            "habit_id": habit_id.to_string(),
+                            "state": "done",
+                            "quantity": 1
+                        }
+                    },
+                    {
+                        "schema_key": "habit.checkin",
+                        "occurred_at": "2026-06-01T08:30:00",
+                        "values": {
+                            "habit_id": other_habit_id.to_string(),
+                            "state": "done"
+                        }
+                    }
+                ]
+            }),
+        )
+        .await;
+        assert!(recorded.get("error").is_none(), "{recorded:?}");
+        let observation_id = recorded["result"]["observation_ids"][0].clone();
+
+        let queried = dispatch_rpc(
+            &pool,
+            "observation/query",
+            json!({
+                "schema_keys": ["habit.checkin"],
+                "related_entity_id": habit_id.to_string()
+            }),
+        )
+        .await;
+        assert!(queried.get("error").is_none(), "{queried:?}");
+        let observations = queried["result"]["observations"]
+            .as_array()
+            .expect("habit check-in observations");
+        assert_eq!(observations.len(), 1);
+        assert_eq!(observations[0]["id"], observation_id);
+        assert_eq!(observations[0]["schema_key"], json!("habit.checkin"));
+        assert_eq!(
+            observations[0]["values"]["habit_id"],
+            json!(habit_id.to_string())
+        );
+        assert_eq!(observations[0]["values"]["state"], json!("done"));
+    }
+
+    #[tokio::test]
     async fn observation_rpc_rejects_bad_record_params_as_invalid_params() {
         let pool = memory_pool().await;
 
@@ -544,6 +619,42 @@ mod tests {
         )
         .await;
         assert_invalid_params(&missing_message_evidence);
+
+        let missing_habit = dispatch_rpc(
+            &pool,
+            "observation/record",
+            json!({
+                "observations": [{
+                    "schema_key": "habit.checkin",
+                    "occurred_at": "2026-06-01T07:30:00",
+                    "values": {
+                        "habit_id": Uuid::now_v7().to_string(),
+                        "state": "done"
+                    }
+                }]
+            }),
+        )
+        .await;
+        assert_invalid_params(&missing_habit);
+
+        let non_habit_id = Uuid::now_v7();
+        seed_person(&pool, non_habit_id).await;
+        let non_habit_target = dispatch_rpc(
+            &pool,
+            "observation/record",
+            json!({
+                "observations": [{
+                    "schema_key": "habit.checkin",
+                    "occurred_at": "2026-06-01T07:30:00",
+                    "values": {
+                        "habit_id": non_habit_id.to_string(),
+                        "state": "done"
+                    }
+                }]
+            }),
+        )
+        .await;
+        assert_invalid_params(&non_habit_target);
     }
 
     #[tokio::test]
@@ -575,6 +686,14 @@ mod tests {
 
         let invalid_limit = dispatch_rpc(&pool, "observation/query", json!({ "limit": 0 })).await;
         assert_invalid_params(&invalid_limit);
+
+        let invalid_related = dispatch_rpc(
+            &pool,
+            "observation/query",
+            json!({ "related_entity_id": "not-a-uuid" }),
+        )
+        .await;
+        assert_invalid_params(&invalid_related);
     }
 
     #[tokio::test]

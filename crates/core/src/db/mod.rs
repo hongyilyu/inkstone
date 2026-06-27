@@ -46,8 +46,9 @@ pub use lifecycle::TerminalReason;
 // at query time — no standing projection to maintain or rebuild.
 pub use message_fts::search_messages;
 pub(crate) use observations::{
-    ObservationFilter, ObservationInsert, ObservationInsertError, ObservationRow,
-    ObservationSourceFilter, ObservationSourceInsert, insert_observations, query_observations,
+    ObservationFilter, ObservationInsert, ObservationInsertError, ObservationRelationInsert,
+    ObservationRow, ObservationSourceFilter, ObservationSourceInsert, insert_observations,
+    query_observations,
 };
 
 /// Current wall-clock time as ms since UNIX_EPOCH (the `*_at` columns).

@@ -115,6 +115,9 @@ pub async fn apply(
 #[cfg(test)]
 mod tests {
     use super::{MutateError, apply};
+    use crate::observations::{
+        ObservationRecordInput, RecordObservationsInput, record_observations,
+    };
     use sqlx::SqlitePool;
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
@@ -940,6 +943,61 @@ mod tests {
             .await
             .expect("count entity rows");
         assert_eq!(row_count, 0, "the habit row is gone");
+    }
+
+    #[tokio::test]
+    async fn delete_habit_is_blocked_when_checkins_reference_it() {
+        let pool = memory_pool().await;
+        let entity_id = apply(
+            &pool,
+            "create_habit",
+            &serde_json::json!({
+                "name": "Morning walk",
+                "cadence": { "interval": 1, "unit": "day" }
+            }),
+        )
+        .await
+        .expect("user create_habit succeeds")
+        .entity_id
+        .expect("create yields an entity id");
+
+        record_observations(
+            &pool,
+            RecordObservationsInput {
+                observations: vec![ObservationRecordInput {
+                    schema_key: "habit.checkin".to_string(),
+                    occurred_at: "2026-06-01T07:30:00".to_string(),
+                    ended_at: None,
+                    values: serde_json::json!({
+                        "habit_id": entity_id.clone(),
+                        "state": "done"
+                    }),
+                    note: None,
+                    source: None,
+                }],
+            },
+        )
+        .await
+        .expect("record habit check-in");
+
+        let result = apply(
+            &pool,
+            "delete_habit",
+            &serde_json::json!({ "entity_id": entity_id.clone() }),
+        )
+        .await;
+        let Err(MutateError::Invalid(reason)) = result else {
+            panic!("delete_habit with check-ins is Invalid: {result:?}");
+        };
+        assert!(reason.contains("habit.checkin"), "{reason}");
+
+        let row_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM entities WHERE id = ?1 AND type = 'habit'")
+                .bind(&entity_id)
+                .fetch_one(&pool)
+                .await
+                .expect("count habit rows");
+        assert_eq!(row_count, 1, "the referenced Habit row survives");
     }
 
     #[tokio::test]

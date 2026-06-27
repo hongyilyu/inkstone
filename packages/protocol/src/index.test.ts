@@ -511,6 +511,7 @@ describe("ObservationQueryParams", () => {
 			from: "2026-06-01T00:00:00",
 			to: "2026-06-30T23:59:59",
 			source_entity_id: "0190d3c1-0000-7000-8000-000000000002",
+			related_entity_id: "0190d3c1-0000-7000-8000-000000000004",
 			limit: 50,
 		};
 		const decoded = S.decodeUnknownSync(ObservationQueryParams)(wire);

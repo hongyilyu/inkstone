@@ -462,9 +462,10 @@ pub struct ObservationRecordResult {
     pub observation_ids: Vec<String>,
 }
 
-/// `observation/query` params (ADR-0053): optional schema, time, source, and
-/// limit filters. `related_entity_id` is intentionally absent in the first
-/// relation-free proving slice.
+/// `observation/query` params (ADR-0053): optional schema, time, evidence
+/// source, related Entity, and limit filters. `related_entity_id` filters
+/// schema-specific Observation relation fields such as `habit.checkin.habit_id`;
+/// it is distinct from `source_entity_id`, which filters provenance evidence.
 #[derive(Debug, Default, Deserialize)]
 pub struct ObservationQueryParams {
     #[serde(default)]
@@ -477,6 +478,8 @@ pub struct ObservationQueryParams {
     pub source_entity_id: Option<String>,
     #[serde(default)]
     pub source_message_id: Option<String>,
+    #[serde(default)]
+    pub related_entity_id: Option<String>,
     #[serde(default)]
     pub limit: Option<i64>,
 }
@@ -1575,6 +1578,7 @@ mod mirror_tests {
         assert!(p.to.is_none());
         assert!(p.source_entity_id.is_none());
         assert!(p.source_message_id.is_none());
+        assert!(p.related_entity_id.is_none());
         assert!(p.limit.is_none());
     }
 

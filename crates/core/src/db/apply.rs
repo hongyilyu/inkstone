@@ -892,6 +892,14 @@ pub(crate) async fn apply_entity_mutation(
         | MutationKind::DeleteTodo
         | MutationKind::DeleteBookmark
         | MutationKind::DeleteHabit => {
+            if kind == MutationKind::DeleteHabit
+                && queries::habit_checkin_observations_exist(&mut **tx, &entity_id).await?
+            {
+                return Err(ApplyError::InvalidMutation(
+                    "delete_habit is blocked while habit.checkin observations reference the Habit"
+                        .to_string(),
+                ));
+            }
             if matches!(
                 kind,
                 MutationKind::DeletePerson | MutationKind::DeleteTodo
