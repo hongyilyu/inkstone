@@ -1,4 +1,7 @@
-import { ObservationRecordParams } from "@inkstone/protocol";
+import {
+	ObservationRecordParams,
+	type ObservationRecordParams as ObservationRecordPayload,
+} from "@inkstone/protocol";
 import { Either, Schema as S } from "effect";
 import { Check } from "lucide-react";
 import { type ReactNode, useId, useMemo, useState } from "react";
@@ -132,7 +135,7 @@ function prettyJson(value: unknown): string {
 function parseJsonObject(
 	text: string,
 ):
-	| { value: Record<string, unknown>; error: null }
+	| { value: ObservationRecordPayload; error: null }
 	| { value: null; error: string } {
 	let parsed: unknown;
 	try {
@@ -150,7 +153,7 @@ function parseJsonObject(
 			error: "payload must match the record_observations schema",
 		};
 	}
-	return { value: parsed as Record<string, unknown>, error: null };
+	return { value: decoded.right, error: null };
 }
 
 export function ObservationEditForm({
@@ -161,7 +164,7 @@ export function ObservationEditForm({
 }: {
 	payload: unknown;
 	submitting: boolean;
-	onSave: (editedPayload: Record<string, unknown>) => void;
+	onSave: (editedPayload: ObservationRecordPayload) => void;
 	onCancel: () => void;
 }): ReactNode {
 	const payloadInputId = useId();

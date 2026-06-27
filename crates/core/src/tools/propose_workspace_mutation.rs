@@ -76,11 +76,7 @@ pub(crate) fn validate_request(params: &Value) -> Result<ProposableMutation, Str
     let payload = obj
         .get("payload")
         .ok_or_else(|| "payload is required".to_string())?;
-    // Editable Entity proposals may park with invalid draft fields; the review UI
-    // disables Accept and requires an edit. Observation proposals do not yet have
-    // that per-schema repair surface, so reject malformed observation records
-    // before they become pending rows.
-    if matches!(proposable, ProposableMutation::RecordObservations) {
+    if proposable.validates_before_park() {
         proposable.payload_spec().check(payload)?;
     }
     if let Some(rationale) = obj.get("rationale")

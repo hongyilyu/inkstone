@@ -1282,6 +1282,29 @@ impl ProposableMutation {
         }
     }
 
+    /// Whether this proposal must validate its payload before parking. Editable
+    /// Entity proposals may park with invalid draft fields so the review UI can
+    /// repair them; Observation proposals need a valid batch shape up front.
+    pub(crate) fn validates_before_park(self) -> bool {
+        match self {
+            ProposableMutation::RecordObservations => true,
+            ProposableMutation::CreateJournalEntry
+            | ProposableMutation::UpdateJournalEntry
+            | ProposableMutation::DeleteJournalEntry
+            | ProposableMutation::ReferenceExistingEntityFromJournalEntry
+            | ProposableMutation::CreatePerson
+            | ProposableMutation::UpdatePerson
+            | ProposableMutation::DeletePerson
+            | ProposableMutation::CreateProject
+            | ProposableMutation::UpdateProject
+            | ProposableMutation::DeleteProject
+            | ProposableMutation::CreateTodo
+            | ProposableMutation::UpdateTodo
+            | ProposableMutation::DeleteTodo
+            | ProposableMutation::ApplyIntentGraph => false,
+        }
+    }
+
     /// Widen to an Entity-like [`MutationKind`]. `record_observations` is
     /// intentionally absent: it is a proposable Workspace mutation, not an Entity
     /// mutation and has no [`Descriptor`].

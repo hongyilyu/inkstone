@@ -68,7 +68,6 @@ import {
 	type CreateTodoDraft,
 	type GtdEditVariant,
 	gtdEditVariant,
-	isGtdEditKind,
 	overlayCreatePerson,
 	overlayCreateProject,
 	overlayCreateTodo,
@@ -124,6 +123,8 @@ interface ProposalBodyArgs {
 	reviewContext: ProposalReviewContext | undefined;
 }
 
+type ProposalEditPolicy = "journal" | "gtd" | "observation";
+
 // Per-kind presentation for a Proposal — the review card's analogue of KIND_META
 // (lib/libraryItems): one entry concentrates the copy, labels, glyph,
 // edit-ability, and detail-body render that distinguish one proposal kind from
@@ -161,6 +162,8 @@ interface ProposalView {
 	 * already-read `bodyHasEntityRef` rather than the raw payload.
 	 */
 	canEdit: (bodyHasEntityRef: boolean) => boolean;
+	/** Which editor owns this kind when `canEdit` allows the Edit affordance. */
+	editPolicy?: ProposalEditPolicy;
 	/**
 	 * The card's detail body, read from the (unvalidated) payload — and, for
 	 * update/delete journal diffs, `reviewContext.current_journal_entry` — through
@@ -183,6 +186,7 @@ export const PROPOSAL_VIEWS: Record<ProposalKind, ProposalView> = {
 		rejectLabel: "Dismiss",
 		rejectBusyLabel: "Dismissing...",
 		canEdit: (bodyHasEntityRef) => !bodyHasEntityRef,
+		editPolicy: "journal",
 		renderBody: (args) => renderJournalBody(args, "create"),
 	},
 	update_journal_entry: {
@@ -197,6 +201,7 @@ export const PROPOSAL_VIEWS: Record<ProposalKind, ProposalView> = {
 		rejectLabel: "Keep current entry",
 		rejectBusyLabel: "Keeping current entry...",
 		canEdit: (bodyHasEntityRef) => !bodyHasEntityRef,
+		editPolicy: "journal",
 		renderBody: (args) => renderJournalBody(args, "update"),
 	},
 	delete_journal_entry: {
@@ -240,6 +245,7 @@ export const PROPOSAL_VIEWS: Record<ProposalKind, ProposalView> = {
 		rejectLabel: "Dismiss",
 		rejectBusyLabel: "Dismissing...",
 		canEdit: () => true,
+		editPolicy: "gtd",
 		renderBody: renderPersonBody,
 	},
 	create_project: {
@@ -254,6 +260,7 @@ export const PROPOSAL_VIEWS: Record<ProposalKind, ProposalView> = {
 		rejectLabel: "Dismiss",
 		rejectBusyLabel: "Dismissing...",
 		canEdit: () => true,
+		editPolicy: "gtd",
 		renderBody: renderProjectBody,
 	},
 	create_todo: {
@@ -269,6 +276,7 @@ export const PROPOSAL_VIEWS: Record<ProposalKind, ProposalView> = {
 		rejectLabel: "Dismiss",
 		rejectBusyLabel: "Dismissing...",
 		canEdit: () => true,
+		editPolicy: "gtd",
 		renderBody: renderCreateTodoBody,
 	},
 	update_todo: {
@@ -283,6 +291,7 @@ export const PROPOSAL_VIEWS: Record<ProposalKind, ProposalView> = {
 		rejectLabel: "Keep current Todo",
 		rejectBusyLabel: "Keeping current Todo...",
 		canEdit: () => true,
+		editPolicy: "gtd",
 		renderBody: renderUpdateTodoBody,
 	},
 	update_person: {
@@ -297,6 +306,7 @@ export const PROPOSAL_VIEWS: Record<ProposalKind, ProposalView> = {
 		rejectLabel: "Keep current Person",
 		rejectBusyLabel: "Keeping current Person...",
 		canEdit: () => true,
+		editPolicy: "gtd",
 		// Full-document REPLACE: the proposed payload is the whole new Person body
 		// (the entity_id rides untouched, not surfaced), so its read-only detail
 		// mirrors create_person's.
@@ -314,6 +324,7 @@ export const PROPOSAL_VIEWS: Record<ProposalKind, ProposalView> = {
 		rejectLabel: "Keep current Project",
 		rejectBusyLabel: "Keeping current Project...",
 		canEdit: () => true,
+		editPolicy: "gtd",
 		// Full-document REPLACE: read-only detail mirrors create_project's.
 		renderBody: renderProjectBody,
 	},
@@ -347,6 +358,7 @@ export const PROPOSAL_VIEWS: Record<ProposalKind, ProposalView> = {
 		rejectLabel: "Dismiss",
 		rejectBusyLabel: "Dismissing...",
 		canEdit: () => true,
+		editPolicy: "observation",
 		renderBody: renderObservationBody,
 	},
 };
@@ -574,15 +586,9 @@ function SingleEntityProposalCard({
 	// The detail-body routing these once also drove now lives in `view.renderBody`.
 	const isCreateProposal = mutation_kind === "create_journal_entry";
 	const isUpdateProposal = mutation_kind === "update_journal_entry";
-	// A GTD kind surfaces the deep GtdEditForm at the fork; everything else (journal
-	// create/update) uses the inline journal form. `isGtdEditKind` (the slice-1
-	// resolver) is the SINGLE editor-selector — the per-kind seed/gate/overlay/render
-	// switch lives INSIDE GtdEditForm, not here.
-	const isGtdEdit = isGtdEditKind(mutation_kind);
-	const isObservationEdit = mutation_kind === "record_observations";
 	// The single resolved presentation entry: header glyph, accept-button glyph,
 	// summary, review/accepted/rejected copy, accept/reject labels (+ busy variants),
-	// and edit-ability all read from here instead of a per-kind ternary.
+	// edit policy, and edit-ability all read from here instead of per-kind ternaries.
 	const view = proposalView(mutation_kind);
 	const HeaderGlyph = view.glyph;
 	const AcceptGlyph = view.acceptGlyph;
@@ -640,10 +646,9 @@ function SingleEntityProposalCard({
 			: null;
 	const openEdit = () => {
 		if (!canEdit) return;
-		// A GTD or Observation kind opens its own form, which seeds itself from
-		// `payload` on its fresh mount. The journal arm re-seeds the journal form's
-		// fields here.
-		if (!isGtdEdit && !isObservationEdit) {
+		// Non-journal editors seed themselves from `payload` on fresh mount. The
+		// journal arm re-seeds its local fields here.
+		if (view.editPolicy === "journal") {
 			setEditOccurredAt(occurredAt);
 			setEditEndedAt(endedAt);
 			setEditBody(bodyText);
@@ -723,7 +728,7 @@ function SingleEntityProposalCard({
 			</header>
 
 			{editing ? (
-				isGtdEdit ? (
+				view.editPolicy === "gtd" ? (
 					<GtdEditForm
 						kind={mutation_kind}
 						payload={payload}
@@ -731,7 +736,7 @@ function SingleEntityProposalCard({
 						onSave={saveStructuredEdit}
 						onCancel={() => setEditing(false)}
 					/>
-				) : isObservationEdit ? (
+				) : view.editPolicy === "observation" ? (
 					<ObservationEditForm
 						payload={payload}
 						submitting={submitting}
@@ -983,10 +988,10 @@ function gtdOverlay(
  * exactly the fields the user can change (approval-gate legibility), gates Save on the
  * variant's required field, and on Save runs the variant's overlay against `payload`
  * and hands the finished wire payload back through `onSave`. The card learns only
- * `isGtdEditKind` (the editor-selector) + this component.
+ * this component plus the proposal-view edit policy.
  *
- * Precondition: `isGtdEditKind(kind)` (the fork only mounts this for a GTD kind); a
- * non-GTD kind would resolve to a null variant and the form renders nothing.
+ * Precondition: the proposal-view edit policy only mounts this for a GTD kind; a
+ * non-GTD kind still degrades to null rather than crashing.
  */
 function GtdEditForm({
 	kind,

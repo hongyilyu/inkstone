@@ -365,7 +365,6 @@ async fn apply_or_reject(
             pool,
             proposal,
             proposal_id,
-            proposable,
             decisions,
             idempotency_key,
         )
@@ -440,7 +439,7 @@ async fn apply_or_reject(
         |entity_id| {
             serde_json::json!({
                 "decision": "accept",
-                "content": entities::render_accept(proposable, applied_payload, Some(entity_id)),
+                "content": entities::render_accept(kind, applied_payload, Some(entity_id)),
             })
             .to_string()
         },
@@ -514,7 +513,6 @@ async fn apply_intent_graph(
     pool: &SqlitePool,
     proposal: &db::DecidableProposal,
     proposal_id: &str,
-    proposable: ProposableMutation,
     decisions: Option<&[NodeDecision]>,
     idempotency_key: Option<&str>,
 ) -> Result<DecideOutcome, DecideError> {
@@ -543,7 +541,7 @@ async fn apply_intent_graph(
         |entity_id| {
             serde_json::json!({
                 "decision": "accept",
-                "content": entities::render_accept(proposable, &proposal.payload, Some(entity_id)),
+                "content": entities::render_accept(kind, &proposal.payload, Some(entity_id)),
             })
             .to_string()
         },
