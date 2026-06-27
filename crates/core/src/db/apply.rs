@@ -892,13 +892,16 @@ pub(crate) async fn apply_entity_mutation(
         | MutationKind::DeleteTodo
         | MutationKind::DeleteBookmark
         | MutationKind::DeleteHabit => {
-            if kind == MutationKind::DeleteHabit
-                && queries::habit_checkin_observations_exist(&mut **tx, &entity_id).await?
-            {
-                return Err(ApplyError::InvalidMutation(
-                    "delete_habit is blocked while habit.checkin observations reference the Habit"
-                        .to_string(),
-                ));
+            if kind == MutationKind::DeleteHabit {
+                if !queries::entity_is_type(&mut **tx, &entity_id, entity_type.as_str()).await? {
+                    return Err(ApplyError::TargetMissing);
+                }
+                if queries::habit_checkin_observations_exist(&mut **tx, &entity_id).await? {
+                    return Err(ApplyError::InvalidMutation(
+                        "delete_habit is blocked while habit.checkin observations reference the Habit"
+                            .to_string(),
+                    ));
+                }
             }
             if matches!(
                 kind,
@@ -1231,6 +1234,48 @@ mod tests {
         assert!(
             matches!(result, Err(ApplyError::TargetMissing)),
             "a vanished update_todo target is TargetMissing, not InvalidMutation: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_habit_vanished_target_with_stale_checkin_is_target_missing() {
+        let pool = memory_pool().await;
+        let missing_habit_id = Uuid::now_v7().to_string();
+        sqlx::query(
+            "INSERT INTO observations \
+             (id, schema_key, schema_version, occurred_at, values_json, created_by, \
+              created_at, updated_at) \
+             VALUES (?1, 'habit.checkin', 1, '2026-06-01T07:30:00', ?2, 'user', 1, 1)",
+        )
+        .bind(Uuid::now_v7().to_string())
+        .bind(serde_json::json!({
+            "habit_id": missing_habit_id,
+            "state": "done"
+        })
+        .to_string())
+        .execute(&pool)
+        .await
+        .expect("insert stale check-in");
+
+        let mut tx = pool.begin().await.expect("begin");
+        let result = apply_entity_mutation(
+            &mut tx,
+            EntityMutationSpec {
+                kind: MutationKind::DeleteHabit,
+                target_entity_id: Some(&missing_habit_id),
+                payload: &serde_json::json!({ "entity_id": missing_habit_id }),
+                edited_payload: None,
+                created_by: "user",
+                proposal_id: None,
+                source: None,
+                now_ms: 1,
+            },
+        )
+        .await;
+
+        assert!(
+            matches!(result, Err(ApplyError::TargetMissing)),
+            "a vanished Habit target stays TargetMissing even if stale check-ins reference it: {result:?}"
         );
     }
 

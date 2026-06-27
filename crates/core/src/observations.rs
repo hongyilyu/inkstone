@@ -85,16 +85,16 @@ pub(crate) async fn record_observations(
 
     for record in input.observations {
         let schema = validate_record(&record).map_err(ObservationError::Invalid)?;
+        let (values, relations) = relation_checks(schema.relation_fields, &record.values)
+            .map_err(ObservationError::Invalid)?;
         let id = Uuid::now_v7().to_string();
-        let values_json = serde_json::to_string(&record.values)
+        let values_json = serde_json::to_string(&values)
             .map_err(|e| ObservationError::Internal(anyhow::Error::new(e)))?;
         let source = record
             .source
             .as_ref()
             .map(validated_source)
             .transpose()
-            .map_err(ObservationError::Invalid)?;
-        let relations = relation_checks(schema.relation_fields, &record.values)
             .map_err(ObservationError::Invalid)?;
 
         inserts.push(db::ObservationInsert {
@@ -123,7 +123,7 @@ pub(crate) async fn record_observations(
             schema_version: schema.version,
             occurred_at: record.occurred_at,
             ended_at: record.ended_at,
-            values: record.values,
+            values,
             note: record.note,
             source,
             created_at: now_ms,
@@ -148,6 +148,12 @@ pub(crate) async fn query_observations(
     filter: ObservationQuery,
 ) -> Result<Vec<Observation>, ObservationError> {
     validate_query(&filter).map_err(ObservationError::Invalid)?;
+    let related_entity_id = filter
+        .related_entity_id
+        .as_deref()
+        .map(|id| normalize_uuid(id, "related_entity_id"))
+        .transpose()
+        .map_err(ObservationError::Invalid)?;
     let source = filter.source.map(|source| match source {
         ObservationSourceInput::JournalEntry { id } => {
             db::ObservationSourceFilter::JournalEntry { id }
@@ -161,7 +167,7 @@ pub(crate) async fn query_observations(
             from: filter.from,
             to: filter.to,
             source,
-            related_entity_id: filter.related_entity_id,
+            related_entity_id,
             limit: filter.limit,
         },
     )
@@ -303,25 +309,37 @@ fn validated_source(source: &ObservationSourceInput) -> Result<ObservationSource
 fn relation_checks(
     fields: &'static [ObservationRelationField],
     values: &Value,
-) -> Result<Vec<db::ObservationRelationInsert>, String> {
+) -> Result<(Value, Vec<db::ObservationRelationInsert>), String> {
+    let mut normalized_values = values.clone();
     let mut relations = Vec::with_capacity(fields.len());
     for field in fields {
         let Some(entity_id) = values.get(field.name).and_then(Value::as_str) else {
             return Err(format!("{} must be a UUID", field.name));
         };
-        parse_uuid(entity_id, field.name)?;
+        let canonical_entity_id = normalize_uuid(entity_id, field.name)?;
+        if let Some(object) = normalized_values.as_object_mut() {
+            object.insert(
+                field.name.to_string(),
+                Value::String(canonical_entity_id.clone()),
+            );
+        }
         relations.push(db::ObservationRelationInsert {
             field_name: field.name,
-            entity_id: entity_id.to_string(),
+            entity_id: canonical_entity_id,
             target_entity_type: field.target_entity_type,
         });
     }
-    Ok(relations)
+    Ok((normalized_values, relations))
 }
 
 fn parse_uuid(value: &str, field: &str) -> Result<(), String> {
-    Uuid::parse_str(value).map_err(|_| format!("{field} must be a UUID"))?;
-    Ok(())
+    normalize_uuid(value, field).map(|_| ())
+}
+
+fn normalize_uuid(value: &str, field: &str) -> Result<String, String> {
+    Uuid::parse_str(value)
+        .map(|uuid| uuid.to_string())
+        .map_err(|_| format!("{field} must be a UUID"))
 }
 
 fn observation_from_row(row: db::ObservationRow) -> Result<Observation, ObservationError> {
@@ -818,7 +836,8 @@ mod observations_tests {
     #[tokio::test]
     async fn observations_record_habit_checkin_validates_relation_and_query_filter() {
         let pool = memory_pool().await;
-        let habit_id = "018f0000-0000-7000-8000-000000000101";
+        let habit_id = "018f0000-0000-7000-8000-abcdefabcdef";
+        let habit_id_input = habit_id.to_ascii_uppercase();
         let other_habit_id = "018f0000-0000-7000-8000-000000000103";
         let person_id = "018f0000-0000-7000-8000-000000000102";
         seed_habit(&pool, habit_id).await;
@@ -829,7 +848,7 @@ mod observations_tests {
             &pool,
             RecordObservationsInput {
                 observations: vec![
-                    habit_checkin_at("2026-06-01T07:30:00", habit_id, "done"),
+                    habit_checkin_at("2026-06-01T07:30:00", &habit_id_input, "done"),
                     habit_checkin_at("2026-06-01T08:30:00", other_habit_id, "done"),
                 ],
             },
@@ -845,7 +864,7 @@ mod observations_tests {
         let by_habit = query_observations(
             &pool,
             ObservationQuery {
-                related_entity_id: Some(habit_id.to_string()),
+                related_entity_id: Some(habit_id_input),
                 ..ObservationQuery::default()
             },
         )
