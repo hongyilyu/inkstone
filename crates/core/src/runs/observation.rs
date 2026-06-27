@@ -7,7 +7,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use super::handler::{self, HandlerError};
 use crate::observations::{
     self, ObservationQuery, ObservationRecordInput, ObservationSource, ObservationSourceInput,
-    ObservationSourceRelation, RecordObservationsInput,
+    RecordObservationsInput,
 };
 use crate::protocol::{
     ObservationEvidence, ObservationQueryParams, ObservationQueryResult, ObservationRecordDraft,
@@ -107,16 +107,8 @@ fn source_from_evidence(
     };
 
     match (evidence.journal_entry_id, evidence.message_id) {
-        (Some(source_entity_id), None) => Ok(Some(ObservationSourceInput {
-            relation: ObservationSourceRelation::CreatedFrom,
-            source_entity_id: Some(source_entity_id),
-            source_message_id: None,
-        })),
-        (None, Some(source_message_id)) => Ok(Some(ObservationSourceInput {
-            relation: ObservationSourceRelation::EvidencedBy,
-            source_entity_id: None,
-            source_message_id: Some(source_message_id),
-        })),
+        (Some(id), None) => Ok(Some(ObservationSourceInput::JournalEntry { id })),
+        (None, Some(id)) => Ok(Some(ObservationSourceInput::Message { id })),
         (None, None) => Ok(None),
         (Some(_), Some(_)) => Err(HandlerError::InvalidParams(
             "observation evidence accepts at most one of journal_entry_id or message_id"
@@ -142,9 +134,9 @@ fn observation_to_wire(row: observations::Observation) -> ObservationRow {
 
 fn source_to_wire(source: ObservationSource) -> ObservationSourceView {
     ObservationSourceView {
-        source_entity_id: source.source_entity_id,
-        source_message_id: source.source_message_id,
-        relation: source.relation.as_str().to_string(),
+        source_entity_id: source.source_entity_id().map(str::to_string),
+        source_message_id: source.source_message_id().map(str::to_string),
+        relation: source.relation().as_str().to_string(),
     }
 }
 

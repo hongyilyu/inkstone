@@ -6,6 +6,7 @@ mod apply;
 mod intent_graph;
 mod lifecycle;
 mod message_fts;
+mod observations;
 mod queries;
 mod run_log;
 
@@ -43,6 +44,10 @@ pub use lifecycle::TerminalReason;
 // without naming the db type. The search assembles text live from `message_parts`
 // at query time — no standing projection to maintain or rebuild.
 pub use message_fts::search_messages;
+pub(crate) use observations::{
+    ObservationFilter, ObservationInsert, ObservationInsertError, ObservationRow,
+    ObservationSourceInsert, insert_observations, query_observations,
+};
 
 /// Current wall-clock time as ms since UNIX_EPOCH (the `*_at` columns).
 pub(crate) fn now_ms() -> i64 {
@@ -1917,131 +1922,6 @@ pub async fn recover_interrupted_runs(pool: &SqlitePool, now_ms: i64) -> sqlx::R
     queries::append_recovered_error_events(&mut *tx, error_message, now_ms).await?;
     tx.commit().await?;
     Ok(swept)
-}
-
-#[allow(dead_code)]
-pub(crate) struct ObservationInsert {
-    pub id: String,
-    pub schema_key: String,
-    pub schema_version: i64,
-    pub occurred_at: String,
-    pub ended_at: Option<String>,
-    pub values_json: String,
-    pub note: Option<String>,
-    pub created_by: String,
-    pub created_via_proposal_id: Option<String>,
-    pub source: Option<ObservationSourceInsert>,
-}
-
-#[allow(dead_code)]
-pub(crate) struct ObservationSourceInsert {
-    pub relation: String,
-    pub source_entity_id: Option<String>,
-    pub source_message_id: Option<String>,
-}
-
-#[allow(dead_code)]
-pub(crate) struct ObservationFilter {
-    pub schema_keys: Vec<String>,
-    pub from: Option<String>,
-    pub to: Option<String>,
-    pub source_entity_id: Option<String>,
-    pub source_message_id: Option<String>,
-    pub limit: Option<i64>,
-}
-
-#[allow(dead_code)]
-pub(crate) struct ObservationRow {
-    pub id: String,
-    pub schema_key: String,
-    pub schema_version: i64,
-    pub occurred_at: String,
-    pub ended_at: Option<String>,
-    pub values_json: String,
-    pub note: Option<String>,
-    pub created_at: i64,
-    pub updated_at: i64,
-    pub source_relation: Option<String>,
-    pub source_entity_id: Option<String>,
-    pub source_message_id: Option<String>,
-}
-
-#[derive(Debug)]
-#[allow(dead_code)]
-pub(crate) enum ObservationInsertError {
-    InvalidSource(String),
-    Sqlx(sqlx::Error),
-}
-
-impl From<sqlx::Error> for ObservationInsertError {
-    fn from(value: sqlx::Error) -> Self {
-        ObservationInsertError::Sqlx(value)
-    }
-}
-
-/// Insert a batch of validated Observations atomically. Validation and JSON
-/// serialization live in `crate::observations`; this helper is storage-only.
-#[allow(dead_code)]
-pub(crate) async fn insert_observations(
-    pool: &SqlitePool,
-    rows: Vec<ObservationInsert>,
-    now_ms: i64,
-) -> Result<(), ObservationInsertError> {
-    let mut tx = pool.begin().await?;
-    for row in rows {
-        queries::insert_observation(
-            &mut *tx,
-            &row.id,
-            &row.schema_key,
-            row.schema_version,
-            &row.occurred_at,
-            row.ended_at.as_deref(),
-            &row.values_json,
-            row.note.as_deref(),
-            &row.created_by,
-            row.created_via_proposal_id.as_deref(),
-            now_ms,
-        )
-        .await?;
-        if let Some(source) = row.source {
-            if let Some(source_entity_id) = &source.source_entity_id
-                && !queries::entity_is_type(&mut *tx, source_entity_id, "journal_entry").await?
-            {
-                return Err(ObservationInsertError::InvalidSource(
-                    "observation source_entity_id must name a journal_entry".to_string(),
-                ));
-            }
-            if let Some(source_message_id) = &source.source_message_id
-                && !queries::message_exists(&mut *tx, source_message_id).await?
-            {
-                return Err(ObservationInsertError::InvalidSource(
-                    "observation source_message_id must name an existing message".to_string(),
-                ));
-            }
-            queries::insert_observation_source(
-                &mut *tx,
-                &Uuid::now_v7().to_string(),
-                &row.id,
-                source.source_entity_id.as_deref(),
-                source.source_message_id.as_deref(),
-                &source.relation,
-                now_ms,
-            )
-            .await?;
-        }
-    }
-    tx.commit().await?;
-    Ok(())
-}
-
-/// Read stored Observations by schema/time/source filters. Raw JSON is returned
-/// here and parsed by `crate::observations`, matching the Entity read layering.
-#[allow(dead_code)]
-pub(crate) async fn query_observations(
-    pool: &SqlitePool,
-    filter: ObservationFilter,
-) -> sqlx::Result<Vec<ObservationRow>> {
-    queries::query_observations(pool, &filter).await
 }
 
 /// Read a user setting value by key (ADR-0024), or `None` if unset. Backs

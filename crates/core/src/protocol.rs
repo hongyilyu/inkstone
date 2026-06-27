@@ -425,7 +425,6 @@ pub struct RecurrencePreviewResult {
 /// One draft observation in `observation/record` params (ADR-0053). `values` is
 /// schema-specific opaque JSON; Core validates it against the observation schema
 /// registry before storage.
-#[allow(dead_code)] // Slice 3 wires this protocol shape into RPC handlers.
 #[derive(Debug, Deserialize)]
 pub struct ObservationRecordDraft {
     pub schema_key: String,
@@ -440,7 +439,6 @@ pub struct ObservationRecordDraft {
 /// Optional evidence attached to a direct `observation/record` batch. Both
 /// fields are strings at the wire layer; Core validates identifiers when the RPC
 /// handler maps this shape into the observation module.
-#[allow(dead_code)] // Slice 3 wires this protocol shape into RPC handlers.
 #[derive(Debug, Deserialize)]
 pub struct ObservationEvidence {
     #[serde(default)]
@@ -451,7 +449,6 @@ pub struct ObservationEvidence {
 
 /// `observation/record` params (ADR-0053): direct user-authored observation
 /// drafts plus optional shared evidence for the batch.
-#[allow(dead_code)] // Slice 3 wires this protocol shape into RPC handlers.
 #[derive(Debug, Deserialize)]
 pub struct ObservationRecordParams {
     pub observations: Vec<ObservationRecordDraft>,
@@ -460,7 +457,6 @@ pub struct ObservationRecordParams {
 }
 
 /// `observation/record` result: ids of the created observations, in input order.
-#[allow(dead_code)] // Slice 3 wires this protocol shape into RPC handlers.
 #[derive(Debug, Serialize)]
 pub struct ObservationRecordResult {
     pub observation_ids: Vec<String>,
@@ -469,7 +465,6 @@ pub struct ObservationRecordResult {
 /// `observation/query` params (ADR-0053): optional schema, time, source, and
 /// limit filters. `related_entity_id` is intentionally absent in the first
 /// relation-free proving slice.
-#[allow(dead_code)] // Slice 3 wires this protocol shape into RPC handlers.
 #[derive(Debug, Default, Deserialize)]
 pub struct ObservationQueryParams {
     #[serde(default)]
@@ -487,7 +482,6 @@ pub struct ObservationQueryParams {
 }
 
 /// One observation source surfaced in `observation/query` results.
-#[allow(dead_code)] // Slice 3 wires this protocol shape into RPC handlers.
 #[derive(Debug, Serialize)]
 pub struct ObservationSourceView {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -500,7 +494,6 @@ pub struct ObservationSourceView {
 /// One row in an `observation/query` result. Nullable fields serialize as
 /// explicit `null` so the Client can distinguish "known absent" from omitted
 /// request fields.
-#[allow(dead_code)] // Slice 3 wires this protocol shape into RPC handlers.
 #[derive(Debug, Serialize)]
 pub struct ObservationRow {
     pub id: String,
@@ -517,7 +510,6 @@ pub struct ObservationRow {
 
 /// `observation/query` result: matched observations, newest-first by Core query
 /// behavior once the handler is wired.
-#[allow(dead_code)] // Slice 3 wires this protocol shape into RPC handlers.
 #[derive(Debug, Serialize)]
 pub struct ObservationQueryResult {
     pub observations: Vec<ObservationRow>,

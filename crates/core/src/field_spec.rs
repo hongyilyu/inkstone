@@ -103,7 +103,6 @@ pub(crate) enum FieldSpec {
     PositiveInt,
     /// A numeric scalar. `integer` switches both the emitted schema type and the
     /// validation rule; `min`/`max`, when present, apply after the type check.
-    #[allow(dead_code)] // Observation helpers are wired to RPC in a later slice.
     Number {
         min: Option<f64>,
         max: Option<f64>,

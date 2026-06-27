@@ -25,10 +25,9 @@ pub(crate) struct ObservationRecordInput {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct ObservationSourceInput {
-    pub(crate) relation: ObservationSourceRelation,
-    pub(crate) source_entity_id: Option<String>,
-    pub(crate) source_message_id: Option<String>,
+pub(crate) enum ObservationSourceInput {
+    JournalEntry { id: String },
+    Message { id: String },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -62,10 +61,9 @@ pub(crate) struct Observation {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ObservationSource {
-    pub(crate) relation: ObservationSourceRelation,
-    pub(crate) source_entity_id: Option<String>,
-    pub(crate) source_message_id: Option<String>,
+pub(crate) enum ObservationSource {
+    JournalEntry { id: String },
+    Message { id: String },
 }
 
 #[derive(Debug)]
@@ -104,10 +102,13 @@ pub(crate) async fn record_observations(
             note: record.note.clone(),
             created_by: "user".to_string(),
             created_via_proposal_id: None,
-            source: source.as_ref().map(|source| db::ObservationSourceInsert {
-                relation: source.relation.as_str().to_string(),
-                source_entity_id: source.source_entity_id.clone(),
-                source_message_id: source.source_message_id.clone(),
+            source: source.as_ref().map(|source| match source {
+                ObservationSource::JournalEntry { id } => {
+                    db::ObservationSourceInsert::JournalEntry { id: id.clone() }
+                }
+                ObservationSource::Message { id } => {
+                    db::ObservationSourceInsert::Message { id: id.clone() }
+                }
             }),
         });
         observations.push(Observation {
@@ -231,30 +232,15 @@ fn validate_query(filter: &ObservationQuery) -> Result<(), String> {
 }
 
 fn validated_source(source: &ObservationSourceInput) -> Result<ObservationSource, String> {
-    match (
-        source.source_entity_id.as_deref(),
-        source.source_message_id.as_deref(),
-    ) {
-        (Some(source_entity_id), None) => {
-            parse_uuid(source_entity_id, "source_entity_id")?;
-            Ok(ObservationSource {
-                relation: source.relation,
-                source_entity_id: Some(source_entity_id.to_string()),
-                source_message_id: None,
-            })
+    match source {
+        ObservationSourceInput::JournalEntry { id } => {
+            parse_uuid(id, "source_entity_id")?;
+            Ok(ObservationSource::JournalEntry { id: id.clone() })
         }
-        (None, Some(source_message_id)) => {
-            parse_uuid(source_message_id, "source_message_id")?;
-            Ok(ObservationSource {
-                relation: source.relation,
-                source_entity_id: None,
-                source_message_id: Some(source_message_id.to_string()),
-            })
+        ObservationSourceInput::Message { id } => {
+            parse_uuid(id, "source_message_id")?;
+            Ok(ObservationSource::Message { id: id.clone() })
         }
-        _ => Err(
-            "observation source must include exactly one of source_entity_id or source_message_id"
-                .to_string(),
-        ),
     }
 }
 
@@ -275,16 +261,42 @@ fn observation_from_row(row: db::ObservationRow) -> Result<Observation, Observat
         row.source_entity_id,
         row.source_message_id,
     ) {
-        (Some(relation), source_entity_id, source_message_id) => Some(ObservationSource {
-            relation: relation_from_str(&relation).map_err(|reason| {
+        (Some(relation), Some(source_entity_id), None) => {
+            match relation_from_str(&relation).map_err(|reason| {
                 ObservationError::Internal(anyhow::anyhow!(
                     "observation {} source relation is malformed: {reason}",
                     row.id
                 ))
-            })?,
-            source_entity_id,
-            source_message_id,
-        }),
+            })? {
+                ObservationSourceRelation::CreatedFrom => Some(ObservationSource::JournalEntry {
+                    id: source_entity_id,
+                }),
+                ObservationSourceRelation::EvidencedBy => {
+                    return Err(ObservationError::Internal(anyhow::anyhow!(
+                        "observation {} source row has entity evidence with evidenced_by relation",
+                        row.id
+                    )));
+                }
+            }
+        }
+        (Some(relation), None, Some(source_message_id)) => {
+            match relation_from_str(&relation).map_err(|reason| {
+                ObservationError::Internal(anyhow::anyhow!(
+                    "observation {} source relation is malformed: {reason}",
+                    row.id
+                ))
+            })? {
+                ObservationSourceRelation::EvidencedBy => Some(ObservationSource::Message {
+                    id: source_message_id,
+                }),
+                ObservationSourceRelation::CreatedFrom => {
+                    return Err(ObservationError::Internal(anyhow::anyhow!(
+                        "observation {} source row has message evidence with created_from relation",
+                        row.id
+                    )));
+                }
+            }
+        }
         (None, None, None) => None,
         _ => {
             return Err(ObservationError::Internal(anyhow::anyhow!(
@@ -320,6 +332,29 @@ impl ObservationSourceRelation {
         match self {
             ObservationSourceRelation::CreatedFrom => "created_from",
             ObservationSourceRelation::EvidencedBy => "evidenced_by",
+        }
+    }
+}
+
+impl ObservationSource {
+    pub(crate) fn relation(&self) -> ObservationSourceRelation {
+        match self {
+            ObservationSource::JournalEntry { .. } => ObservationSourceRelation::CreatedFrom,
+            ObservationSource::Message { .. } => ObservationSourceRelation::EvidencedBy,
+        }
+    }
+
+    pub(crate) fn source_entity_id(&self) -> Option<&str> {
+        match self {
+            ObservationSource::JournalEntry { id } => Some(id),
+            ObservationSource::Message { .. } => None,
+        }
+    }
+
+    pub(crate) fn source_message_id(&self) -> Option<&str> {
+        match self {
+            ObservationSource::JournalEntry { .. } => None,
+            ObservationSource::Message { id } => Some(id),
         }
     }
 }
@@ -485,16 +520,12 @@ mod observations_tests {
         assert_eq!(by_time[0].updated_at, by_time[0].created_at);
 
         let mut from_message = bodyweight_at("2026-06-02T07:30:00", json!(72.1));
-        from_message.source = Some(ObservationSourceInput {
-            relation: ObservationSourceRelation::EvidencedBy,
-            source_entity_id: None,
-            source_message_id: Some("018f0000-0000-7000-8000-000000000001".to_string()),
+        from_message.source = Some(ObservationSourceInput::Message {
+            id: "018f0000-0000-7000-8000-000000000001".to_string(),
         });
         let mut from_entity = bodyweight_at("2026-06-03T07:30:00", json!(71.9));
-        from_entity.source = Some(ObservationSourceInput {
-            relation: ObservationSourceRelation::CreatedFrom,
-            source_entity_id: Some("018f0000-0000-7000-8000-000000000002".to_string()),
-            source_message_id: None,
+        from_entity.source = Some(ObservationSourceInput::JournalEntry {
+            id: "018f0000-0000-7000-8000-000000000002".to_string(),
         });
         let sourced = record_observations(
             &pool,

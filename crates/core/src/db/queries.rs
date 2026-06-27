@@ -5,7 +5,7 @@
 use sqlx::{Executor, QueryBuilder, Sqlite};
 use uuid::Uuid;
 
-use super::{ObservationFilter, ObservationRow};
+use super::observations::{ObservationFilter, ObservationRow};
 
 // ─── threads ──────────────────────────────────────────────────────────
 
@@ -919,7 +919,6 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-#[allow(dead_code)]
 pub(super) async fn insert_observation<'e, E>(
     executor: E,
     id: &str,
@@ -959,7 +958,6 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-#[allow(dead_code)]
 pub(super) async fn insert_observation_source<'e, E>(
     executor: E,
     id: &str,
@@ -988,7 +986,6 @@ where
     .map(|_| ())
 }
 
-#[allow(dead_code)]
 pub(super) async fn query_observations<'e, E>(
     executor: E,
     filter: &ObservationFilter,
