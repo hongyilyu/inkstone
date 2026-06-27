@@ -1538,6 +1538,42 @@ describe("ProposalCard", () => {
 				],
 			});
 		});
+
+		it("blocks a record_observations edit that fails the shared payload schema", () => {
+			const onDecide = vi.fn();
+			render(
+				<ProposalCard proposal={recordObservations} onDecide={onDecide} />,
+			);
+			fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+			fireEvent.change(screen.getByRole("textbox", { name: /payload/i }), {
+				target: { value: JSON.stringify({ observations: [] }) },
+			});
+
+			expect(screen.getByRole("alert")).toHaveTextContent(
+				"payload must match the record_observations schema",
+			);
+			expect(
+				screen.getByRole("button", { name: /save changes/i }),
+			).toBeDisabled();
+			expect(onDecide).not.toHaveBeenCalled();
+		});
+
+		it("renders Core's record_observations validation error", () => {
+			render(
+				<ProposalCard
+					proposal={{
+						...recordObservations,
+						status: "error",
+						error_message: "habit_id must reference an accepted Habit",
+					}}
+					onDecide={() => {}}
+				/>,
+			);
+
+			expect(screen.getByRole("alert")).toHaveTextContent(
+				"habit_id must reference an accepted Habit",
+			);
+		});
 	});
 
 	// Core forwards the RAW, unvalidated model arguments to the card: park_on_proposal

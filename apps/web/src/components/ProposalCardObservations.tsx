@@ -1,8 +1,14 @@
+import { ObservationRecordParams } from "@inkstone/protocol";
+import { Either, Schema as S } from "effect";
 import { Check } from "lucide-react";
 import { type ReactNode, useId, useMemo, useState } from "react";
 import { EditorField, EditorTextarea } from "./library/EntityEditor.js";
 import { arrayField, objectField, textField } from "./proposalPayload.js";
 import { Button } from "./ui/button.js";
+
+const decodeObservationRecordParams = S.decodeUnknownEither(
+	ObservationRecordParams,
+);
 
 function unknownField(payload: unknown, key: string): unknown {
 	if (payload && typeof payload === "object" && key in payload) {
@@ -136,6 +142,13 @@ function parseJsonObject(
 	}
 	if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
 		return { value: null, error: "payload must be a JSON object" };
+	}
+	const decoded = decodeObservationRecordParams(parsed);
+	if (Either.isLeft(decoded)) {
+		return {
+			value: null,
+			error: "payload must match the record_observations schema",
+		};
 	}
 	return { value: parsed as Record<string, unknown>, error: null };
 }

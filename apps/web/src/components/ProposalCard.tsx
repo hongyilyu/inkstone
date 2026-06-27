@@ -560,6 +560,7 @@ function SingleEntityProposalCard({
 	const endedAtInputId = `${editFormId}-proposal-edit-ended-at`;
 	const bodyInputId = `${editFormId}-proposal-edit-body`;
 	const { status, payload, rationale, mutation_kind } = proposal;
+	const proposalErrorMessage = proposal.error_message;
 	const occurredAt = textField(payload, "occurred_at");
 	const endedAt = textField(payload, "ended_at");
 	const bodyText = journalBody(payload);
@@ -815,7 +816,7 @@ function SingleEntityProposalCard({
 						<p role="alert" className="text-sm text-destructive">
 							{payloadIssue
 								? `Edit required fields: ${payloadIssue}.`
-								: "Couldn't apply. Try again."}
+								: proposalErrorMessage || "Couldn't apply. Try again."}
 						</p>
 					) : payloadIssue ? (
 						<p role="alert" className="text-sm text-destructive">

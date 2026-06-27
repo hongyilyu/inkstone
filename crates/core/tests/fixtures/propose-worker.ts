@@ -19,6 +19,21 @@
 import { readFileSync } from "node:fs";
 import { emit, stdinLines } from "./transport.js";
 
+const readProposeParams = (): unknown => {
+	const paramsFile = process.env.INKSTONE_PROPOSE_PARAMS_FILE;
+	if (paramsFile !== undefined && paramsFile.length > 0) {
+		return JSON.parse(readFileSync(paramsFile, "utf8"));
+	}
+	return {
+		mutation_kind: "create_journal_entry",
+		payload: {
+			occurred_at: "2026-06-10T10:30:00",
+			body: [{ type: "text", text: "Bought milk after daycare pickup." }],
+		},
+		rationale: "the user shared a journal-worthy moment",
+	};
+};
+
 const main = async (): Promise<void> => {
 	// Read stdin line-by-line: line 1 is the manifest. In the park path we never
 	// read further (no tool_result arrives — Core parks and tears us down).
@@ -65,19 +80,6 @@ const main = async (): Promise<void> => {
 		return;
 	}
 
-	const paramsFile = process.env.INKSTONE_PROPOSE_PARAMS_FILE;
-	const proposeParams =
-		paramsFile !== undefined && paramsFile.length > 0
-			? JSON.parse(readFileSync(paramsFile, "utf8"))
-			: {
-					mutation_kind: "create_journal_entry",
-					payload: {
-						occurred_at: "2026-06-10T10:30:00",
-						body: [{ type: "text", text: "Bought milk after daycare pickup." }],
-					},
-					rationale: "the user shared a journal-worthy moment",
-				};
-
 	// Multi-step fresh path (INKSTONE_MULTISTEP=1): prove Core reconstructs a
 	// provider-valid MULTI-step transcript on resume (ADR-0025). The worker
 	// FIRST emits an assistant text turn + a real `read_thread` tool_request,
@@ -100,6 +102,7 @@ const main = async (): Promise<void> => {
 		});
 		// Wait for Core's tool_result (read_thread resolved), then propose.
 		await lines.next();
+		const proposeParams = readProposeParams();
 		const toolCallId = `tc_${process.pid}`;
 		emit({
 			kind: "tool_request",
@@ -125,6 +128,7 @@ const main = async (): Promise<void> => {
 		await new Promise<void>((r) => setTimeout(r, delayMs));
 	}
 
+	const proposeParams = readProposeParams();
 	// Emit one propose_workspace_mutation tool_request. `run_id` is Core-ignored (Core uses
 	// the spawn's authoritative run id); send "" to keep the wire shape. The
 	// tool_call_id is per-process (one worker per Run) so it is unique across
