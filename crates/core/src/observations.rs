@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use crate::db;
 use crate::entities::parse_local_datetime;
-use crate::field_spec::{Field, FieldSpec, PayloadSpec};
+use crate::field_spec::{Field, FieldSpec, ObjErr, PayloadSpec};
 use crate::mutation::EntityType;
 
 const BODYWEIGHT_SCHEMA_KEY: &str = "bodyweight";
@@ -89,15 +89,56 @@ pub(crate) async fn record_observations(
     Ok(observations)
 }
 
+pub(crate) fn record_observations_payload_spec() -> PayloadSpec {
+    let journal_evidence = PayloadSpec::nested(
+        "observation evidence",
+        ObjErr::Object,
+        vec![
+            Field::required("journal_entry_id", FieldSpec::Uuid { schema_regex: true }),
+            Field::optional("message_id", FieldSpec::Never),
+        ],
+    );
+    let message_evidence = PayloadSpec::nested(
+        "observation evidence",
+        ObjErr::Object,
+        vec![
+            Field::required("message_id", FieldSpec::Uuid { schema_regex: true }),
+            Field::optional("journal_entry_id", FieldSpec::Never),
+        ],
+    );
+    PayloadSpec::payload(
+        "record_observations",
+        vec![
+            Field::required(
+                "observations",
+                FieldSpec::OneOfArray {
+                    variants: record_observation_payload_variants(),
+                    min_items: Some(1),
+                },
+            ),
+            Field::optional(
+                "evidence",
+                FieldSpec::OneOfObject {
+                    variants: vec![journal_evidence, message_evidence],
+                },
+            ),
+        ],
+    )
+}
+
+pub(crate) fn validate_record_observations_payload(payload: &Value) -> Result<(), String> {
+    record_observations_input_from_payload(payload).map(|_| ())
+}
+
 pub(crate) fn record_observations_input_from_payload(
     payload: &Value,
 ) -> Result<RecordObservationsInput, String> {
-    crate::mutation::ProposableMutation::RecordObservations
-        .payload_spec()
-        .check(payload)?;
+    record_observations_payload_spec().check(payload)?;
     let params: crate::protocol::ObservationRecordParams = serde_json::from_value(payload.clone())
         .map_err(|e| format!("record_observations payload is invalid: {e}"))?;
-    record_observations_input_from_params(params)
+    let input = record_observations_input_from_params(params)?;
+    validate_record_observations_input(&input)?;
+    Ok(input)
 }
 
 pub(crate) fn record_observations_input_from_params(
@@ -118,6 +159,19 @@ pub(crate) fn record_observations_input_from_params(
             })
             .collect(),
     })
+}
+
+fn validate_record_observations_input(input: &RecordObservationsInput) -> Result<(), String> {
+    if input.observations.is_empty() {
+        return Err("observations must have at least 1 item(s)".to_string());
+    }
+    for record in &input.observations {
+        validate_record(record)?;
+        if let Some(source) = &record.source {
+            validated_source(source)?;
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn prepare_observations(

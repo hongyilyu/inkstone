@@ -1588,6 +1588,36 @@ describe("ProposalCard", () => {
 			expect(onDecide).not.toHaveBeenCalled();
 		});
 
+		it("blocks a record_observations edit with reversed times", () => {
+			const onDecide = vi.fn();
+			render(
+				<ProposalCard proposal={recordObservations} onDecide={onDecide} />,
+			);
+			fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+			fireEvent.change(screen.getByRole("textbox", { name: /payload/i }), {
+				target: {
+					value: JSON.stringify({
+						observations: [
+							{
+								schema_key: "bodyweight",
+								occurred_at: "2026-06-04T08:30:00",
+								ended_at: "2026-06-04T07:30:00",
+								values: { kg: 72.2 },
+							},
+						],
+					}),
+				},
+			});
+
+			expect(screen.getByRole("alert")).toHaveTextContent(
+				"ended_at must be greater than or equal to occurred_at",
+			);
+			expect(
+				screen.getByRole("button", { name: /save changes/i }),
+			).toBeDisabled();
+			expect(onDecide).not.toHaveBeenCalled();
+		});
+
 		it("renders Core's record_observations validation error", () => {
 			render(
 				<ProposalCard

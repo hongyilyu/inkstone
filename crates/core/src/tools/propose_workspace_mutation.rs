@@ -76,9 +76,7 @@ pub(crate) fn validate_request(params: &Value) -> Result<ProposableMutation, Str
     let payload = obj
         .get("payload")
         .ok_or_else(|| "payload is required".to_string())?;
-    if proposable.validates_before_park() {
-        proposable.payload_spec().check(payload)?;
-    }
+    proposable.validate_before_park(payload)?;
     if let Some(rationale) = obj.get("rationale")
         && !rationale.is_string()
         && !rationale.is_null()
@@ -897,6 +895,23 @@ mod tests {
             }))
             .is_err(),
             "habit.checkin relation values must validate before parking"
+        );
+        assert!(
+            validate_request(&serde_json::json!({
+                "mutation_kind": "record_observations",
+                "payload": {
+                    "observations": [
+                        {
+                            "schema_key": "bodyweight",
+                            "occurred_at": "2026-06-02T08:30:00",
+                            "ended_at": "2026-06-02T07:30:00",
+                            "values": { "kg": 72.4 }
+                        }
+                    ]
+                }
+            }))
+            .is_err(),
+            "record_observations must reject reversed times before parking"
         );
     }
 

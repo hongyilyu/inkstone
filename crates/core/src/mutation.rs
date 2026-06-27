@@ -14,8 +14,7 @@
 //! - [`MutationKind`] — the 21 Entity-like Core-known kinds. The currency of
 //!   `validate`, `mutate`, `apply`, and the target-reference checks.
 //! - [`ProposableMutation`] — the closed set the agent may propose (ADR-0018,
-//!   ADR-0042, ADR-0053). Carries
-//!   the agent-path-only facets (`render_accept`, `supports_edit`,
+//!   ADR-0042, ADR-0053). Carries the agent-path-only facets (`supports_edit`,
 //!   `carries_review_context`) so they are total over exactly the kinds that can
 //!   reach the accept path, including non-Entity `record_observations`.
 
@@ -546,43 +545,6 @@ fn source_journal_entry_id_field() -> Field {
 /// A reference/source UUID field advertised WITH the canonical pattern + length.
 fn patterned_uuid(name: &'static str) -> Field {
     Field::required(name, FieldSpec::Uuid { schema_regex: true })
-}
-
-fn record_observations_payload() -> PayloadSpec {
-    let journal_evidence = PayloadSpec::nested(
-        "observation evidence",
-        ObjErr::Object,
-        vec![
-            patterned_uuid("journal_entry_id"),
-            Field::optional("message_id", FieldSpec::Never),
-        ],
-    );
-    let message_evidence = PayloadSpec::nested(
-        "observation evidence",
-        ObjErr::Object,
-        vec![
-            patterned_uuid("message_id"),
-            Field::optional("journal_entry_id", FieldSpec::Never),
-        ],
-    );
-    PayloadSpec::payload(
-        "record_observations",
-        vec![
-            Field::required(
-                "observations",
-                FieldSpec::OneOfArray {
-                    variants: crate::observations::record_observation_payload_variants(),
-                    min_items: Some(1),
-                },
-            ),
-            Field::optional(
-                "evidence",
-                FieldSpec::OneOfObject {
-                    variants: vec![journal_evidence, message_evidence],
-                },
-            ),
-        ],
-    )
 }
 
 /// The `entity_id` target key shared by the full-document update kinds: a UUID the
@@ -1210,7 +1172,7 @@ impl MutationKind {
 }
 
 /// The agent-proposable subset (ADR-0018, ADR-0053): the 15 kinds the Worker may emit via
-/// `propose_workspace_mutation`. Carries the agent-path-only facets so each is
+/// `propose_workspace_mutation`. Carries the agent-path-only policy facets so each is
 /// total over exactly the kinds that can reach the accept path — the user-only
 /// kind families (`mark_project_reviewed`, bookmarks, habits) are simply not in
 /// the type.
@@ -1265,29 +1227,6 @@ impl ProposableMutation {
     pub(crate) fn as_wire(self) -> &'static str {
         match self {
             ProposableMutation::RecordObservations => "record_observations",
-            other => other
-                .entity_kind()
-                .expect("entity-backed proposable kind")
-                .as_wire(),
-        }
-    }
-
-    pub(crate) fn payload_spec(self) -> PayloadSpec {
-        match self {
-            ProposableMutation::RecordObservations => record_observations_payload(),
-            other => other
-                .entity_kind()
-                .expect("entity-backed proposable kind")
-                .payload_spec(),
-        }
-    }
-
-    /// Whether this proposal must validate its payload before parking. Editable
-    /// Entity proposals may park with invalid draft fields so the review UI can
-    /// repair them; Observation proposals need a valid batch shape up front.
-    pub(crate) fn validates_before_park(self) -> bool {
-        match self {
-            ProposableMutation::RecordObservations => true,
             ProposableMutation::CreateJournalEntry
             | ProposableMutation::UpdateJournalEntry
             | ProposableMutation::DeleteJournalEntry
@@ -1301,7 +1240,61 @@ impl ProposableMutation {
             | ProposableMutation::CreateTodo
             | ProposableMutation::UpdateTodo
             | ProposableMutation::DeleteTodo
-            | ProposableMutation::ApplyIntentGraph => false,
+            | ProposableMutation::ApplyIntentGraph => self
+                .entity_kind()
+                .expect("entity-backed proposable kind")
+                .as_wire(),
+        }
+    }
+
+    pub(crate) fn payload_spec(self) -> PayloadSpec {
+        match self {
+            ProposableMutation::RecordObservations => {
+                crate::observations::record_observations_payload_spec()
+            }
+            ProposableMutation::CreateJournalEntry
+            | ProposableMutation::UpdateJournalEntry
+            | ProposableMutation::DeleteJournalEntry
+            | ProposableMutation::ReferenceExistingEntityFromJournalEntry
+            | ProposableMutation::CreatePerson
+            | ProposableMutation::UpdatePerson
+            | ProposableMutation::DeletePerson
+            | ProposableMutation::CreateProject
+            | ProposableMutation::UpdateProject
+            | ProposableMutation::DeleteProject
+            | ProposableMutation::CreateTodo
+            | ProposableMutation::UpdateTodo
+            | ProposableMutation::DeleteTodo
+            | ProposableMutation::ApplyIntentGraph => self
+                .entity_kind()
+                .expect("entity-backed proposable kind")
+                .payload_spec(),
+        }
+    }
+
+    /// Validate proposal kinds that must be fully checked before parking.
+    /// Editable Entity proposals may park with invalid draft fields so the
+    /// review UI can repair them; Observation proposals need a valid batch shape
+    /// and cross-field invariants up front.
+    pub(crate) fn validate_before_park(self, payload: &Value) -> Result<(), String> {
+        match self {
+            ProposableMutation::RecordObservations => {
+                crate::observations::validate_record_observations_payload(payload)
+            }
+            ProposableMutation::CreateJournalEntry
+            | ProposableMutation::UpdateJournalEntry
+            | ProposableMutation::DeleteJournalEntry
+            | ProposableMutation::ReferenceExistingEntityFromJournalEntry
+            | ProposableMutation::CreatePerson
+            | ProposableMutation::UpdatePerson
+            | ProposableMutation::DeletePerson
+            | ProposableMutation::CreateProject
+            | ProposableMutation::UpdateProject
+            | ProposableMutation::DeleteProject
+            | ProposableMutation::CreateTodo
+            | ProposableMutation::UpdateTodo
+            | ProposableMutation::DeleteTodo
+            | ProposableMutation::ApplyIntentGraph => Ok(()),
         }
     }
 

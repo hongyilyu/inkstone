@@ -154,6 +154,17 @@ function parseJsonObject(
 			error: "payload must match the record_observations schema",
 		};
 	}
+	for (const observation of decoded.right.observations) {
+		if (
+			observation.ended_at !== undefined &&
+			observation.ended_at < observation.occurred_at
+		) {
+			return {
+				value: null,
+				error: "ended_at must be greater than or equal to occurred_at",
+			};
+		}
+	}
 	return { value: decoded.right, error: null };
 }
 
