@@ -208,8 +208,8 @@ CREATE TABLE observation_sources (
   relation           TEXT NOT NULL CHECK (relation IN ('created_from','evidenced_by')),
   created_at         INTEGER NOT NULL,
   CHECK (
-    (source_entity_id IS NOT NULL AND source_message_id IS NULL) OR
-    (source_entity_id IS NULL AND source_message_id IS NOT NULL)
+    (source_entity_id IS NOT NULL AND source_message_id IS NULL AND relation = 'created_from') OR
+    (source_entity_id IS NULL AND source_message_id IS NOT NULL AND relation = 'evidenced_by')
   ),
   UNIQUE (observation_id)
 );

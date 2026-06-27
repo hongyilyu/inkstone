@@ -5,7 +5,7 @@
 use sqlx::{Executor, QueryBuilder, Sqlite};
 use uuid::Uuid;
 
-use super::observations::{ObservationFilter, ObservationRow};
+use super::observations::{ObservationFilter, ObservationRow, ObservationSourceFilter};
 
 // ─── threads ──────────────────────────────────────────────────────────
 
@@ -1018,25 +1018,29 @@ where
         query.push(" AND o.occurred_at <= ");
         query.push_bind(to);
     }
-    if let Some(source_entity_id) = &filter.source_entity_id {
-        query.push(
-            " AND EXISTS ( \
-                SELECT 1 FROM observation_sources filter_source \
-                WHERE filter_source.observation_id = o.id \
-                  AND filter_source.source_entity_id = ",
-        );
-        query.push_bind(source_entity_id);
-        query.push(")");
-    }
-    if let Some(source_message_id) = &filter.source_message_id {
-        query.push(
-            " AND EXISTS ( \
-                SELECT 1 FROM observation_sources filter_source \
-                WHERE filter_source.observation_id = o.id \
-                  AND filter_source.source_message_id = ",
-        );
-        query.push_bind(source_message_id);
-        query.push(")");
+    if let Some(source) = &filter.source {
+        match source {
+            ObservationSourceFilter::JournalEntry { id } => {
+                query.push(
+                    " AND EXISTS ( \
+                        SELECT 1 FROM observation_sources filter_source \
+                        WHERE filter_source.observation_id = o.id \
+                          AND filter_source.source_entity_id = ",
+                );
+                query.push_bind(id);
+                query.push(")");
+            }
+            ObservationSourceFilter::Message { id } => {
+                query.push(
+                    " AND EXISTS ( \
+                        SELECT 1 FROM observation_sources filter_source \
+                        WHERE filter_source.observation_id = o.id \
+                          AND filter_source.source_message_id = ",
+                );
+                query.push_bind(id);
+                query.push(")");
+            }
+        }
     }
 
     query.push(" ORDER BY o.occurred_at DESC, o.created_at DESC, o.id DESC");

@@ -41,8 +41,7 @@ pub(crate) struct ObservationQuery {
     pub(crate) schema_keys: Vec<String>,
     pub(crate) from: Option<String>,
     pub(crate) to: Option<String>,
-    pub(crate) source_entity_id: Option<String>,
-    pub(crate) source_message_id: Option<String>,
+    pub(crate) source: Option<ObservationSourceInput>,
     pub(crate) limit: Option<i64>,
 }
 
@@ -139,14 +138,19 @@ pub(crate) async fn query_observations(
     filter: ObservationQuery,
 ) -> Result<Vec<Observation>, ObservationError> {
     validate_query(&filter).map_err(ObservationError::Invalid)?;
+    let source = filter.source.map(|source| match source {
+        ObservationSourceInput::JournalEntry { id } => {
+            db::ObservationSourceFilter::JournalEntry { id }
+        }
+        ObservationSourceInput::Message { id } => db::ObservationSourceFilter::Message { id },
+    });
     let rows = db::query_observations(
         pool,
         db::ObservationFilter {
             schema_keys: filter.schema_keys,
             from: filter.from,
             to: filter.to,
-            source_entity_id: filter.source_entity_id,
-            source_message_id: filter.source_message_id,
+            source,
             limit: filter.limit,
         },
     )
@@ -222,11 +226,8 @@ fn validate_query(filter: &ObservationQuery) -> Result<(), String> {
     {
         return Err("limit must be positive".to_string());
     }
-    if let Some(source_entity_id) = &filter.source_entity_id {
-        parse_uuid(source_entity_id, "source_entity_id")?;
-    }
-    if let Some(source_message_id) = &filter.source_message_id {
-        parse_uuid(source_message_id, "source_message_id")?;
+    if let Some(source) = &filter.source {
+        validated_source(source)?;
     }
     Ok(())
 }
@@ -539,7 +540,9 @@ mod observations_tests {
         let by_message = query_observations(
             &pool,
             ObservationQuery {
-                source_message_id: Some("018f0000-0000-7000-8000-000000000001".to_string()),
+                source: Some(ObservationSourceInput::Message {
+                    id: "018f0000-0000-7000-8000-000000000001".to_string(),
+                }),
                 ..ObservationQuery::default()
             },
         )
@@ -551,7 +554,9 @@ mod observations_tests {
         let by_entity = query_observations(
             &pool,
             ObservationQuery {
-                source_entity_id: Some("018f0000-0000-7000-8000-000000000002".to_string()),
+                source: Some(ObservationSourceInput::JournalEntry {
+                    id: "018f0000-0000-7000-8000-000000000002".to_string(),
+                }),
                 ..ObservationQuery::default()
             },
         )
@@ -571,6 +576,30 @@ mod observations_tests {
         .await
         .expect_err("one observation accepts at most one source row");
         assert!(duplicate_source.to_string().contains("UNIQUE"));
+
+        let mismatched_source = sqlx::query(
+            "INSERT INTO observation_sources \
+             (id, observation_id, source_message_id, relation, created_at) \
+             VALUES ('mismatched-observation-source', ?1, \
+                     '018f0000-0000-7000-8000-000000000001', 'created_from', 1)",
+        )
+        .bind(&recorded[0].id)
+        .execute(&pool)
+        .await
+        .expect_err("message sources must use evidenced_by");
+        assert!(mismatched_source.to_string().contains("CHECK"));
+
+        let mismatched_entity_source = sqlx::query(
+            "INSERT INTO observation_sources \
+             (id, observation_id, source_entity_id, relation, created_at) \
+             VALUES ('mismatched-observation-entity-source', ?1, \
+                     '018f0000-0000-7000-8000-000000000002', 'evidenced_by', 1)",
+        )
+        .bind(&recorded[0].id)
+        .execute(&pool)
+        .await
+        .expect_err("entity sources must use created_from");
+        assert!(mismatched_entity_source.to_string().contains("CHECK"));
 
         let limited = query_observations(
             &pool,
@@ -640,5 +669,34 @@ mod observations_tests {
             reason,
             "ended_at must be greater than or equal to occurred_at"
         );
+    }
+
+    #[tokio::test]
+    async fn observations_record_batch_rolls_back_when_later_source_is_invalid() {
+        let pool = memory_pool().await;
+        let valid = bodyweight_at("2026-06-01T07:30:00", json!(72.4));
+        let mut invalid_source = bodyweight_at("2026-06-02T07:30:00", json!(72.1));
+        invalid_source.source = Some(ObservationSourceInput::Message {
+            id: "018f0000-0000-7000-8000-000000000099".to_string(),
+        });
+
+        let reason = record_observations(
+            &pool,
+            RecordObservationsInput {
+                observations: vec![valid, invalid_source],
+            },
+        )
+        .await
+        .expect_err("invalid second source rejects the batch");
+        let reason = invalid_reason(reason);
+        assert_eq!(
+            reason,
+            "observation source_message_id must name an existing message"
+        );
+
+        let rows = query_observations(&pool, ObservationQuery::default())
+            .await
+            .expect("query after rolled-back batch");
+        assert_eq!(rows.len(), 0);
     }
 }

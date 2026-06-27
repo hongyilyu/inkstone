@@ -197,7 +197,8 @@ export const fixtures: readonly FixtureEntry[] = [
 		dir: "authored",
 	},
 	// ObservationRecordParams: maximal batched draft + evidence, and bare
-	// omitted optionals. ObservationQueryParams: maximal filters + bare `{}`.
+	// omitted optionals. ObservationQueryParams: entity-source maximal, a
+	// message-source companion, and bare `{}`.
 	{
 		message: "ObservationRecordParams",
 		file: "observation_record_params.json",
@@ -213,6 +214,12 @@ export const fixtures: readonly FixtureEntry[] = [
 	{
 		message: "ObservationQueryParams",
 		file: "observation_query_params.json",
+		schema: ObservationQueryParams,
+		dir: "authored",
+	},
+	{
+		message: "ObservationQueryParams",
+		file: "observation_query_params.message_source.json",
 		schema: ObservationQueryParams,
 		dir: "authored",
 	},

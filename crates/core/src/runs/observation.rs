@@ -62,8 +62,10 @@ pub(super) async fn handle_query(
                     schema_keys: params.schema_keys.unwrap_or_default(),
                     from: params.from,
                     to: params.to,
-                    source_entity_id: params.source_entity_id,
-                    source_message_id: params.source_message_id,
+                    source: source_from_query_params(
+                        params.source_entity_id,
+                        params.source_message_id,
+                    )?,
                     limit: params.limit,
                 },
             )
@@ -96,6 +98,21 @@ fn record_input(
         values: draft.values,
         note: draft.note,
         source,
+    }
+}
+
+fn source_from_query_params(
+    source_entity_id: Option<String>,
+    source_message_id: Option<String>,
+) -> Result<Option<ObservationSourceInput>, HandlerError> {
+    match (source_entity_id, source_message_id) {
+        (Some(id), None) => Ok(Some(ObservationSourceInput::JournalEntry { id })),
+        (None, Some(id)) => Ok(Some(ObservationSourceInput::Message { id })),
+        (None, None) => Ok(None),
+        (Some(_), Some(_)) => Err(HandlerError::InvalidParams(
+            "observation query accepts at most one of source_entity_id or source_message_id"
+                .to_string(),
+        )),
     }
 }
 

@@ -2799,6 +2799,10 @@ mod parity_fixtures {
         parses!(ObservationQueryParams, "observation_query_params.json");
         parses!(
             ObservationQueryParams,
+            "observation_query_params.message_source.json"
+        );
+        parses!(
+            ObservationQueryParams,
             "observation_query_params.bare.json"
         );
         parses!(EntityListParams, "entity_list_params.json");

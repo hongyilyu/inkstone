@@ -52,9 +52,13 @@ pub(crate) struct ObservationFilter {
     pub schema_keys: Vec<String>,
     pub from: Option<String>,
     pub to: Option<String>,
-    pub source_entity_id: Option<String>,
-    pub source_message_id: Option<String>,
+    pub source: Option<ObservationSourceFilter>,
     pub limit: Option<i64>,
+}
+
+pub(crate) enum ObservationSourceFilter {
+    JournalEntry { id: String },
+    Message { id: String },
 }
 
 pub(crate) struct ObservationRow {
