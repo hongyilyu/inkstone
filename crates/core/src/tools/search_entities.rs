@@ -9,12 +9,11 @@ use serde_json::{Value, json};
 use sqlx::SqlitePool;
 
 use super::ToolError;
-use crate::mutation::{EntityType, EntityTypeSpec};
+use crate::mutation::{EntityProjectionSpec, EntityType, EntityTypeSpec};
 use crate::protocol::{AgentToolResult, CoreToolDescriptor, ToolTextContent};
 
 pub const NAME: &str = "search_entities";
-const DESCRIPTION: &str =
-    "Search accepted People, Projects, Todos, and Habits by type and query; returns compact lookup rows.";
+const DESCRIPTION: &str = "Search accepted People, Projects, Todos, and Habits by type and query; returns compact lookup rows.";
 const LABEL: &str = "Search entities";
 
 /// Default and hard-cap on how many compact rows to return.
@@ -31,10 +30,13 @@ pub struct Input {
     pub limit: Option<u32>,
 }
 
-fn searchable_spec(type_str: &str) -> Result<EntityTypeSpec, ToolError> {
+fn searchable_spec(type_str: &str) -> Result<(EntityTypeSpec, EntityProjectionSpec), ToolError> {
     EntityType::from_str(type_str)
         .map(EntityType::spec)
-        .filter(|spec| spec.searchable)
+        .and_then(|spec| {
+            spec.search_projection()
+                .map(|projection| (spec, projection))
+        })
         .ok_or_else(|| ToolError {
             code: "invalid_params".to_string(),
             message: format!("entity type {type_str:?} is not searchable"),
@@ -43,7 +45,7 @@ fn searchable_spec(type_str: &str) -> Result<EntityTypeSpec, ToolError> {
 
 fn searchable_type_values() -> Vec<&'static str> {
     EntityType::searchable_specs()
-        .map(|spec| spec.stored_type)
+        .map(|(spec, _projection)| spec.stored_type)
         .collect()
 }
 
@@ -52,6 +54,7 @@ fn searchable_type_values() -> Vec<&'static str> {
 /// empty query matches all, so it has no meaningful label).
 pub fn display_arg(params: &Value) -> Option<String> {
     let input: Input = serde_json::from_value(params.clone()).ok()?;
+    searchable_spec(&input.r#type).ok()?;
     let query = input.query.trim();
     if query.is_empty() {
         None
@@ -95,10 +98,7 @@ pub async fn execute(pool: &SqlitePool, params: Value) -> Result<AgentToolResult
         message: e.to_string(),
     })?;
 
-    let spec = searchable_spec(&input.r#type)?;
-    let projection = spec
-        .projection
-        .expect("searchable Entity Types declare a projection");
+    let (spec, projection) = searchable_spec(&input.r#type)?;
     let label_key = projection.label_field;
     let aliases_field = projection.aliases_field;
     let needle = input.query.to_lowercase();
@@ -439,6 +439,14 @@ mod tests {
         // A malformed payload (missing required fields) yields None, not a panic.
         assert_eq!(display_arg(&json!({})), None);
         assert_eq!(display_arg(&json!({ "query": "x" })), None);
+        assert_eq!(
+            display_arg(&json!({ "type": "journal_entry", "query": "x" })),
+            None
+        );
+        assert_eq!(
+            display_arg(&json!({ "type": "bookmark", "query": "x" })),
+            None
+        );
     }
 
     #[test]

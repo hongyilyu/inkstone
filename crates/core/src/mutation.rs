@@ -42,12 +42,38 @@ pub const BOOKMARK_SCHEMA_VERSION: i64 = 1;
 /// The schema version stamped onto a freshly-created Habit + its first revision.
 pub const HABIT_SCHEMA_VERSION: i64 = 1;
 
-/// Search/title projection for an Entity Type. Kept small on purpose: the stored
-/// data field that names the row, plus an optional aliases field for Person.
+/// Search/reference projection for an Entity Type. Kept small on purpose: the
+/// stored data field that names the row, plus an optional aliases field for
+/// Person search.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct EntityProjectionSpec {
     pub(crate) label_field: &'static str,
     pub(crate) aliases_field: Option<&'static str>,
+}
+
+/// Which read surfaces may project an Entity Type to a compact title.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EntityProjectionPolicy {
+    None,
+    Search(EntityProjectionSpec),
+    ReferenceAndSearch(EntityProjectionSpec),
+}
+
+impl EntityProjectionPolicy {
+    fn reference_spec(self) -> Option<EntityProjectionSpec> {
+        match self {
+            EntityProjectionPolicy::ReferenceAndSearch(spec) => Some(spec),
+            EntityProjectionPolicy::None | EntityProjectionPolicy::Search(_) => None,
+        }
+    }
+
+    fn search_spec(self) -> Option<EntityProjectionSpec> {
+        match self {
+            EntityProjectionPolicy::Search(spec)
+            | EntityProjectionPolicy::ReferenceAndSearch(spec) => Some(spec),
+            EntityProjectionPolicy::None => None,
+        }
+    }
 }
 
 /// Closed policy row for an Entity Type. This is the trait-like dispatch point
@@ -57,28 +83,29 @@ pub(crate) struct EntityTypeSpec {
     pub(crate) entity_type: EntityType,
     pub(crate) stored_type: &'static str,
     pub(crate) schema_version: i64,
-    pub(crate) referenceable: bool,
-    pub(crate) projection: Option<EntityProjectionSpec>,
-    pub(crate) searchable: bool,
+    pub(crate) projection: EntityProjectionPolicy,
 }
 
 impl EntityTypeSpec {
-    pub(crate) fn title_from_data(self, data: &Value) -> Option<String> {
-        let field = self.projection?.label_field;
-        data.get(field)
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string)
+    pub(crate) fn reference_title_from_data(self, data: &Value) -> Option<String> {
+        title_from_data(data, self.projection.reference_spec()?)
     }
 
-    pub(crate) fn reference_title_from_data(self, data: &Value) -> Option<String> {
-        if self.referenceable {
-            self.title_from_data(data)
-        } else {
-            None
-        }
+    pub(crate) fn is_referenceable(self) -> bool {
+        self.projection.reference_spec().is_some()
     }
+
+    pub(crate) fn search_projection(self) -> Option<EntityProjectionSpec> {
+        self.projection.search_spec()
+    }
+}
+
+fn title_from_data(data: &Value, projection: EntityProjectionSpec) -> Option<String> {
+    data.get(projection.label_field)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 /// The write-class of a `mutation_kind`. Every mutation is a write — reads
@@ -159,64 +186,49 @@ impl EntityType {
                 entity_type: self,
                 stored_type: "journal_entry",
                 schema_version: JOURNAL_ENTRY_SCHEMA_VERSION,
-                referenceable: false,
-                projection: None,
-                searchable: false,
+                projection: EntityProjectionPolicy::None,
             },
             EntityType::Person => EntityTypeSpec {
                 entity_type: self,
                 stored_type: "person",
                 schema_version: PERSON_SCHEMA_VERSION,
-                referenceable: true,
-                projection: Some(EntityProjectionSpec {
+                projection: EntityProjectionPolicy::ReferenceAndSearch(EntityProjectionSpec {
                     label_field: "name",
                     aliases_field: Some("aliases"),
                 }),
-                searchable: true,
             },
             EntityType::Project => EntityTypeSpec {
                 entity_type: self,
                 stored_type: "project",
                 schema_version: PROJECT_SCHEMA_VERSION,
-                referenceable: true,
-                projection: Some(EntityProjectionSpec {
+                projection: EntityProjectionPolicy::ReferenceAndSearch(EntityProjectionSpec {
                     label_field: "name",
                     aliases_field: None,
                 }),
-                searchable: true,
             },
             EntityType::Todo => EntityTypeSpec {
                 entity_type: self,
                 stored_type: "todo",
                 schema_version: TODO_SCHEMA_VERSION,
-                referenceable: true,
-                projection: Some(EntityProjectionSpec {
+                projection: EntityProjectionPolicy::ReferenceAndSearch(EntityProjectionSpec {
                     label_field: "title",
                     aliases_field: None,
                 }),
-                searchable: true,
             },
             EntityType::Bookmark => EntityTypeSpec {
                 entity_type: self,
                 stored_type: "bookmark",
                 schema_version: BOOKMARK_SCHEMA_VERSION,
-                referenceable: false,
-                projection: Some(EntityProjectionSpec {
-                    label_field: "title",
-                    aliases_field: None,
-                }),
-                searchable: false,
+                projection: EntityProjectionPolicy::None,
             },
             EntityType::Habit => EntityTypeSpec {
                 entity_type: self,
                 stored_type: "habit",
                 schema_version: HABIT_SCHEMA_VERSION,
-                referenceable: false,
-                projection: Some(EntityProjectionSpec {
+                projection: EntityProjectionPolicy::Search(EntityProjectionSpec {
                     label_field: "name",
                     aliases_field: None,
                 }),
-                searchable: true,
             },
         }
     }
@@ -253,14 +265,16 @@ impl EntityType {
     /// Bookmarks, and Habits are not. A new Entity Type must declare its
     /// referenceability in its spec row.
     pub(crate) fn is_referenceable(self) -> bool {
-        self.spec().referenceable
+        self.spec().is_referenceable()
     }
 
-    pub(crate) fn searchable_specs() -> impl Iterator<Item = EntityTypeSpec> {
-        Self::ALL
-            .into_iter()
-            .map(EntityType::spec)
-            .filter(|spec| spec.searchable)
+    pub(crate) fn searchable_specs() -> impl Iterator<Item = (EntityTypeSpec, EntityProjectionSpec)>
+    {
+        Self::ALL.into_iter().filter_map(|entity_type| {
+            let spec = entity_type.spec();
+            spec.search_projection()
+                .map(|projection| (spec, projection))
+        })
     }
 }
 
@@ -391,11 +405,7 @@ pub(crate) enum Mode {
 /// partial path (`null` clears), concrete-or-absent on the create path.
 fn clearable_datetime_when(name: &'static str, partial: bool) -> Field {
     let field = Field::datetime(name);
-    if partial {
-        field.clearable()
-    } else {
-        field
-    }
+    if partial { field.clearable() } else { field }
 }
 
 /// The Project `status` enum (`validate_project_data`).
@@ -1494,7 +1504,7 @@ mod tests {
     #[test]
     fn entity_type_specs_declare_current_policy() {
         let searchable = EntityType::searchable_specs()
-            .map(|spec| spec.entity_type)
+            .map(|(spec, _projection)| spec.entity_type)
             .collect::<Vec<_>>();
         assert_eq!(
             searchable,
