@@ -19,6 +19,7 @@ use sqlx::SqlitePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use uuid::Uuid;
 
+use crate::mutation::EntityType;
 use crate::workflow::Workflow;
 
 // The intent-graph resolve+apply path (ADR-0042), the sibling of `apply_proposal`
@@ -308,18 +309,7 @@ async fn resolved_entity_refs_for_sources(
 }
 
 fn entity_title(entity_type: &str, data: &serde_json::Value) -> Option<String> {
-    let field = match entity_type {
-        "person" | "project" => "name",
-        "todo" => "title",
-        // Bookmark is deliberately absent: it is not journal-referenceable in V1
-        // (ADR-0036), so it never reaches this reference-target title lookup.
-        _ => return None,
-    };
-    data.get(field)
-        .and_then(serde_json::Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
+    EntityType::from_str(entity_type)?.spec().reference_title_from_data(data)
 }
 
 /// The two reverse relation sets the detail Inspector reads for one Entity

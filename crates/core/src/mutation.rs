@@ -233,10 +233,9 @@ impl EntityType {
     /// caller decides whether that is a data fault (the stored column has no
     /// CHECK constraint) or merely a type that fails an equality check.
     pub(crate) fn from_str(s: &str) -> Option<Self> {
-        ENTITY_TYPE_SPECS
-            .iter()
-            .find(|spec| spec.stored_type == s)
-            .map(|spec| spec.entity_type)
+        Self::ALL
+            .into_iter()
+            .find(|entity_type| entity_type.spec().stored_type == s)
     }
 
     /// Whether a Journal Entry body may reference this Entity Type (ADR-0030):
