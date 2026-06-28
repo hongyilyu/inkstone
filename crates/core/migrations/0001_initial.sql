@@ -211,6 +211,9 @@ CREATE TABLE observation_revisions (
   created_at      INTEGER NOT NULL,
   PRIMARY KEY (observation_id, seq)
 );
+CREATE INDEX idx_observation_revisions_habit_checkin_habit_id
+  ON observation_revisions(json_extract(values_json, '$.habit_id'))
+  WHERE schema_key = 'habit.checkin';
 
 CREATE TABLE observation_sources (
   id                 TEXT PRIMARY KEY,

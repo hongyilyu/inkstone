@@ -215,7 +215,7 @@ pub(crate) fn observation_update_input_from_params(
 ) -> (String, ObservationUpdateInput) {
     let draft = params.observation;
     (
-        params.observation_id,
+        params.observation_id.to_string(),
         ObservationUpdateInput {
             schema_key: draft.schema_key,
             occurred_at: draft.occurred_at,

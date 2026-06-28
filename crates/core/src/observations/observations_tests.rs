@@ -225,6 +225,63 @@ async fn observations_update_appends_revision_and_query_returns_current_state() 
 }
 
 #[tokio::test]
+async fn observations_update_clears_optional_fields_when_omitted() {
+    let pool = memory_pool().await;
+    let mut original = bodyweight_at("2026-06-01T07:30:00", json!(72.4));
+    original.ended_at = Some("2026-06-01T07:35:00".to_string());
+    original.note = Some("original note".to_string());
+    let recorded = record_observations(
+        &pool,
+        RecordObservationsInput {
+            observations: vec![original],
+        },
+    )
+    .await
+    .expect("record bodyweight");
+
+    update_observation(
+        &pool,
+        &recorded[0].id,
+        update_from(bodyweight_at("2026-06-02T07:30:00", json!(71.8))),
+    )
+    .await
+    .expect("clear optional fields");
+
+    let revisions: Vec<(i64, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT seq, ended_at, note \
+             FROM observation_revisions \
+             WHERE observation_id = ?1 \
+             ORDER BY seq",
+    )
+    .bind(&recorded[0].id)
+    .fetch_all(&pool)
+    .await
+    .expect("observation revisions");
+    assert_eq!(revisions.len(), 2);
+    assert_eq!(revisions[0].0, 1);
+    assert_eq!(revisions[0].1.as_deref(), Some("2026-06-01T07:35:00"));
+    assert_eq!(revisions[0].2.as_deref(), Some("original note"));
+    assert_eq!(revisions[1].0, 2);
+    assert_eq!(revisions[1].1, None);
+    assert_eq!(revisions[1].2, None);
+
+    let rows = query_observations(
+        &pool,
+        ObservationQuery {
+            schema_keys: vec!["bodyweight".to_string()],
+            ..ObservationQuery::default()
+        },
+    )
+    .await
+    .expect("query current observations");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].id, recorded[0].id);
+    assert_eq!(rows[0].occurred_at, "2026-06-02T07:30:00");
+    assert_eq!(rows[0].ended_at, None);
+    assert_eq!(rows[0].note, None);
+}
+
+#[tokio::test]
 async fn observations_failed_update_writes_no_revision_and_leaves_current_state() {
     let pool = memory_pool().await;
     let recorded = record_observations(

@@ -237,22 +237,20 @@ fn accept_records_two_observations_with_proposal_provenance_and_source() {
             assert_eq!(via.as_deref(), Some(proposal_id.as_str()));
 
             let observation_id: String = row.get("id");
-            let revision = sqlx::query(
+            let revisions: Vec<(i64, Option<String>)> = sqlx::query_as(
                 "SELECT seq, proposal_id \
                  FROM observation_revisions \
-                 WHERE observation_id = ?1",
+                 WHERE observation_id = ?1 \
+                 ORDER BY seq",
             )
             .bind(&observation_id)
-            .fetch_one(&pool)
+            .fetch_all(&pool)
             .await
             .expect("initial observation revision");
-            let revision_seq: i64 = revision.get("seq");
-            let revision_proposal_id: Option<String> = revision.get("proposal_id");
-            assert_eq!(revision_seq, 1, "accepted observation gets seq-1 revision");
             assert_eq!(
-                revision_proposal_id.as_deref(),
-                Some(proposal_id.as_str()),
-                "accepted observation revision records proposal provenance"
+                revisions,
+                vec![(1, Some(proposal_id.clone()))],
+                "accepted observation gets exactly one seq-1 revision with proposal provenance"
             );
 
             let source_count: i64 = sqlx::query_scalar(

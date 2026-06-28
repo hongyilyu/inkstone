@@ -469,7 +469,7 @@ pub struct ObservationRecordResult {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ObservationUpdateParams {
-    pub observation_id: String,
+    pub observation_id: uuid::Uuid,
     pub observation: ObservationRecordDraft,
 }
 
@@ -1600,11 +1600,24 @@ mod mirror_tests {
             }
         });
         let p: ObservationUpdateParams = serde_json::from_value(wire).unwrap();
-        assert_eq!(p.observation_id, UUID_A);
+        assert_eq!(p.observation_id.to_string(), UUID_A);
         assert_eq!(p.observation.schema_key, "bodyweight");
         assert_eq!(p.observation.ended_at.as_deref(), Some("2026-06-03T07:35:00"));
         assert_eq!(p.observation.values["kg"], json!(71.8));
         assert_eq!(p.observation.note.as_deref(), Some("corrected"));
+    }
+
+    #[test]
+    fn observation_update_params_rejects_malformed_observation_id() {
+        let wire = json!({
+            "observation_id": "not-a-uuid",
+            "observation": {
+                "schema_key": "bodyweight",
+                "occurred_at": "2026-06-03T07:30:00",
+                "values": { "kg": 71.8 }
+            }
+        });
+        assert!(serde_json::from_value::<ObservationUpdateParams>(wire).is_err());
     }
 
     #[test]
