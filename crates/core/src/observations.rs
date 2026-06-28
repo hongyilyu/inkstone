@@ -13,6 +13,9 @@ const BODYWEIGHT_SCHEMA_KEY_DOMAIN: &[&str] = &[BODYWEIGHT_SCHEMA_KEY];
 const HABIT_CHECKIN_SCHEMA_KEY: &str = "habit.checkin";
 const HABIT_CHECKIN_SCHEMA_VERSION: i64 = 1;
 const HABIT_CHECKIN_SCHEMA_KEY_DOMAIN: &[&str] = &[HABIT_CHECKIN_SCHEMA_KEY];
+const NUTRITION_INTAKE_SCHEMA_KEY: &str = "nutrition.intake";
+const NUTRITION_INTAKE_SCHEMA_VERSION: i64 = 1;
+const NUTRITION_INTAKE_SCHEMA_KEY_DOMAIN: &[&str] = &[NUTRITION_INTAKE_SCHEMA_KEY];
 
 #[derive(Clone, Debug)]
 pub(crate) struct RecordObservationsInput {
@@ -500,6 +503,7 @@ fn schema_for(schema_key: &str) -> Option<ObservationSchema> {
     match schema_key {
         BODYWEIGHT_SCHEMA_KEY => Some(bodyweight_schema()),
         HABIT_CHECKIN_SCHEMA_KEY => Some(habit_checkin_schema()),
+        NUTRITION_INTAKE_SCHEMA_KEY => Some(nutrition_intake_schema()),
         _ => None,
     }
 }
@@ -559,11 +563,63 @@ fn habit_checkin_schema() -> ObservationSchema {
     }
 }
 
+fn nutrition_intake_schema() -> ObservationSchema {
+    ObservationSchema {
+        key: NUTRITION_INTAKE_SCHEMA_KEY,
+        key_domain: NUTRITION_INTAKE_SCHEMA_KEY_DOMAIN,
+        key_error: "schema_key must be nutrition.intake",
+        version: NUTRITION_INTAKE_SCHEMA_VERSION,
+        values: PayloadSpec::payload(
+            "nutrition.intake values",
+            vec![
+                Field::required(
+                    "kcal",
+                    FieldSpec::Number {
+                        min: Some(0.0),
+                        max: None,
+                        integer: false,
+                    },
+                ),
+                Field::optional(
+                    "protein_g",
+                    FieldSpec::Number {
+                        min: Some(0.0),
+                        max: None,
+                        integer: false,
+                    },
+                ),
+                Field::optional(
+                    "carbs_g",
+                    FieldSpec::Number {
+                        min: Some(0.0),
+                        max: None,
+                        integer: false,
+                    },
+                ),
+                Field::optional(
+                    "fat_g",
+                    FieldSpec::Number {
+                        min: Some(0.0),
+                        max: None,
+                        integer: false,
+                    },
+                ),
+                Field::optional("label", FieldSpec::string()),
+            ],
+        ),
+        relation_fields: &[],
+    }
+}
+
 pub(crate) fn record_observation_payload_variants() -> Vec<PayloadSpec> {
-    [bodyweight_schema(), habit_checkin_schema()]
-        .into_iter()
-        .map(record_observation_payload_variant)
-        .collect()
+    [
+        bodyweight_schema(),
+        habit_checkin_schema(),
+        nutrition_intake_schema(),
+    ]
+    .into_iter()
+    .map(record_observation_payload_variant)
+    .collect()
 }
 
 fn record_observation_payload_variant(schema: ObservationSchema) -> PayloadSpec {

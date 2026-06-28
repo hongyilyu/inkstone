@@ -910,7 +910,7 @@ mod tests {
             spec.check(&serde_json::json!({
                 "observations": [
                     {
-                        "schema_key": "nutrition.intake",
+                        "schema_key": "blood_pressure",
                         "occurred_at": "2026-06-02T07:30:00",
                         "values": { "kcal": 450 }
                     }

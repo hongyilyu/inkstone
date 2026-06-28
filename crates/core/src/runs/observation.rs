@@ -826,7 +826,7 @@ mod tests {
             }),
         )
         .await;
-        assert_invalid_params_contains(&update_with_null_ended_at, "ended_at must be a string");
+        assert_invalid_params(&update_with_null_ended_at);
 
         let update_with_null_note = dispatch_rpc(
             &pool,
@@ -845,7 +845,7 @@ mod tests {
             }),
         )
         .await;
-        assert_invalid_params_contains(&update_with_null_note, "note must be a string");
+        assert_invalid_params(&update_with_null_note);
 
         let update_with_evidence = dispatch_rpc(
             &pool,

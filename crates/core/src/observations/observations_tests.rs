@@ -29,6 +29,17 @@ fn bodyweight_at(occurred_at: &str, kg: Value) -> ObservationRecordInput {
     }
 }
 
+fn nutrition_intake_at(occurred_at: &str, values: Value) -> ObservationRecordInput {
+    ObservationRecordInput {
+        schema_key: "nutrition.intake".to_string(),
+        occurred_at: occurred_at.to_string(),
+        ended_at: None,
+        values,
+        note: None,
+        source: None,
+    }
+}
+
 fn habit_checkin_at(occurred_at: &str, habit_id: &str, state: &str) -> ObservationRecordInput {
     ObservationRecordInput {
         schema_key: "habit.checkin".to_string(),
@@ -937,4 +948,96 @@ async fn observations_record_batch_rolls_back_when_later_relation_is_invalid() {
         .await
         .expect("query after rolled-back relation batch");
     assert_eq!(rows.len(), 0);
+}
+
+#[tokio::test]
+async fn observations_record_nutrition_intake_validate_and_query() {
+    let pool = memory_pool().await;
+
+    let full = nutrition_intake_at(
+        "2026-06-04T12:30:00",
+        json!({
+            "kcal": 650.0,
+            "protein_g": 45.0,
+            "carbs_g": 70.0,
+            "fat_g": 18.0,
+            "label": "lunch"
+        }),
+    );
+    record_observations(
+        &pool,
+        RecordObservationsInput {
+            observations: vec![full],
+        },
+    )
+    .await
+    .expect("record full nutrition.intake");
+
+    let rows = query_observations(
+        &pool,
+        ObservationQuery {
+            schema_keys: vec!["nutrition.intake".to_string()],
+            ..ObservationQuery::default()
+        },
+    )
+    .await
+    .expect("query nutrition.intake");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].schema_key, "nutrition.intake");
+    assert_eq!(rows[0].schema_version, 1);
+    assert_eq!(rows[0].values["kcal"], json!(650.0));
+    assert_eq!(rows[0].values["protein_g"], json!(45.0));
+    assert_eq!(rows[0].values["carbs_g"], json!(70.0));
+    assert_eq!(rows[0].values["fat_g"], json!(18.0));
+    assert_eq!(rows[0].values["label"], json!("lunch"));
+
+    let required_only = nutrition_intake_at("2026-06-05T12:30:00", json!({ "kcal": 500.0 }));
+    record_observations(
+        &pool,
+        RecordObservationsInput {
+            observations: vec![required_only],
+        },
+    )
+    .await
+    .expect("record required-only nutrition.intake");
+
+    let after_required_only = query_observations(
+        &pool,
+        ObservationQuery {
+            schema_keys: vec!["nutrition.intake".to_string()],
+            from: Some("2026-06-05T00:00:00".to_string()),
+            to: Some("2026-06-05T23:59:59".to_string()),
+            ..ObservationQuery::default()
+        },
+    )
+    .await
+    .expect("query required-only nutrition.intake");
+    assert_eq!(after_required_only.len(), 1);
+    assert_eq!(after_required_only[0].values, json!({ "kcal": 500.0 }));
+
+    let reason = record_observations(
+        &pool,
+        RecordObservationsInput {
+            observations: vec![nutrition_intake_at(
+                "2026-06-06T12:30:00",
+                json!({ "kcal": "450" }),
+            )],
+        },
+    )
+    .await
+    .expect_err("non-numeric kcal is rejected");
+    assert_eq!(invalid_reason(reason), "kcal must be a number");
+
+    let reason = record_observations(
+        &pool,
+        RecordObservationsInput {
+            observations: vec![nutrition_intake_at(
+                "2026-06-06T12:30:00",
+                json!({ "kcal": -1.0 }),
+            )],
+        },
+    )
+    .await
+    .expect_err("negative kcal is rejected");
+    assert_eq!(invalid_reason(reason), "kcal must be at least 0");
 }

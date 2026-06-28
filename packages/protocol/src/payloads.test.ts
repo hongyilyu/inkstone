@@ -85,6 +85,29 @@ describe("record_observations payload (ADR-0053)", () => {
 		).toEqual(payload);
 	});
 
+	it("decodes a nutrition.intake observation", () => {
+		const payload = {
+			observations: [
+				{
+					schema_key: "nutrition.intake",
+					occurred_at: "2026-06-04T12:30:00",
+					values: {
+						kcal: 450,
+						protein_g: 30,
+						carbs_g: 50,
+						fat_g: 12,
+						label: "lunch",
+					},
+				},
+			],
+		};
+		expect(
+			S.decodeUnknownSync(
+				schemas.record_observations as S.Schema<unknown, unknown>,
+			)(payload),
+		).toEqual(payload);
+	});
+
 	it("rejects malformed or two-source evidence", () => {
 		const base = {
 			observations: [
@@ -119,7 +142,7 @@ describe("record_observations payload (ADR-0053)", () => {
 			S.decodeUnknownSync(schema)({
 				observations: [
 					{
-						schema_key: "nutrition.intake",
+						schema_key: "sleep.session",
 						occurred_at: "2026-06-02T07:30:00",
 						values: { kcal: 450 },
 					},
