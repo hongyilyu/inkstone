@@ -47,9 +47,9 @@ pub use lifecycle::TerminalReason;
 // without naming the db type. The search assembles text live from `message_parts`
 // at query time — no standing projection to maintain or rebuild.
 pub use message_fts::search_messages;
-// The media substrate (ADR-0055) has no production consumer in slice 1 — its
-// wire verb / Media entity caller lands later (#252) — so the re-exported surface
-// is reached only by `db::media`'s own tests for now.
+// The media substrate (ADR-0058) has no production consumer yet — its wire verb /
+// Media entity caller lands later (#252) — so the re-exported surface is reached
+// only by `db::media`'s own tests for now.
 #[allow(unused_imports)]
 pub(crate) use media::{
     MediaAttachmentTarget, MediaInput, MediaInsertError, MediaRow, delete_media, get_media,
@@ -82,7 +82,7 @@ pub(crate) fn resolve_db_path() -> Result<PathBuf> {
 /// Resolve the media root: `INKSTONE_MEDIA_DIR` env override wins (empty treated
 /// as unset, like `skills_dir`), else `<OS data dir>/inkstone/media/`. The same
 /// override-or-data-dir shape as `resolve_db_path`; binary media bytes live under
-/// this root with only the relative path stored in SQLite (ADR-0055).
+/// this root with only the relative path stored in SQLite (ADR-0058).
 pub(crate) fn media_root() -> Result<PathBuf> {
     if let Some(dir) = std::env::var_os("INKSTONE_MEDIA_DIR").filter(|d| !d.is_empty()) {
         return Ok(PathBuf::from(dir));

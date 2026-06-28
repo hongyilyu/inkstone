@@ -233,7 +233,7 @@ CREATE INDEX idx_observation_sources_observation ON observation_sources(observat
 CREATE INDEX idx_observation_sources_entity      ON observation_sources(source_entity_id);
 CREATE INDEX idx_observation_sources_message     ON observation_sources(source_message_id);
 
--- Media substrate (ADR-0055) -------------------------------------------
+-- Media substrate (ADR-0058) -------------------------------------------
 -- Metadata envelope for a binary whose bytes live on disk under the media
 -- root; SQLite stores only the relative `storage_path`, never the bytes.
 -- `digest` is the sha-256 hex of the content for integrity, NOT identity

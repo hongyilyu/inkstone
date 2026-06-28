@@ -1,4 +1,4 @@
-//! Media storage facade (ADR-0055). SQL stays in `queries`, matching the DB
+//! Media storage facade (ADR-0058). SQL stays in `queries`, matching the DB
 //! module's one-statement query convention; this module owns the media storage
 //! shapes, the bytes-on-disk write/unlink ordering, and the transaction boundary.
 //!
@@ -23,7 +23,7 @@ use super::queries;
 use crate::mutation::EntityType;
 
 /// Lower-case sha-256 hex of `bytes`. Hand-rolled to avoid a `hex` crate dep
-/// (ADR-0055 keeps `digest` as integrity metadata, not a content address).
+/// (ADR-0058 keeps `digest` as integrity metadata, not a content address).
 fn sha256_hex(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     let mut out = String::with_capacity(digest.len() * 2);
@@ -36,7 +36,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
 
 /// A fully-specified media create request. The caller supplies `mime`,
 /// dimensions, capture time, and provenance; Core computes only `byte_size` and
-/// `digest` from the bytes (ADR-0055 §Scope boundary — no mime sniffing, no
+/// `digest` from the bytes (ADR-0058 §Scope boundary — no mime sniffing, no
 /// dimension extraction). `attachments` may be empty (standalone media) or carry
 /// targets, each validated and linked in `insert_media`'s write transaction.
 pub(crate) struct MediaInput {
@@ -52,7 +52,7 @@ pub(crate) struct MediaInput {
 }
 
 /// One polymorphic attachment target — a media row links to exactly one of these
-/// (ADR-0055). `insert_media` validates each target's existence (and, for a typed
+/// (ADR-0058). `insert_media` validates each target's existence (and, for a typed
 /// Entity, its type) in the write transaction before inserting the link row.
 pub(crate) enum MediaAttachmentTarget {
     Entity {
@@ -119,7 +119,7 @@ pub(crate) async fn insert_media(
     let byte_size = bytes.len() as i64;
     let now = super::now_ms();
 
-    // File first, so a row never points at missing bytes (ADR-0055).
+    // File first, so a row never points at missing bytes (ADR-0058).
     let abs_path = super::resolve_media_path(&storage_path).map_err(to_sqlx_io)?;
     std::fs::create_dir_all(super::media_root().map_err(to_sqlx_io)?).map_err(to_sqlx_io)?;
     std::fs::write(&abs_path, bytes).map_err(to_sqlx_io)?;

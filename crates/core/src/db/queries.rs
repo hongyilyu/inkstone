@@ -957,7 +957,7 @@ where
     .map(|_| ())
 }
 
-// ─── media (ADR-0055) ─────────────────────────────────────────────────
+// ─── media (ADR-0058) ─────────────────────────────────────────────────
 
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn insert_media<'e, E>(
