@@ -52,8 +52,10 @@ test("chat and Library wear the same shared nav chrome", async ({
 		.getByRole("button", { name: /^library$/i })
 		.click();
 
-	// The Library nav renders the identical shell: brand wordmark + footer toggle.
-	const libNav = page.getByRole("navigation", { name: /library/i });
+	// The topic nav renders the identical shell: brand wordmark + footer toggle.
+	// (The nav landmark is labelled "Workspace" — ADR-0054 retires "Library" as a
+	// UI concept; topic navigation replaces the flat entity-type sidebar.)
+	const libNav = page.getByRole("navigation", { name: /workspace/i });
 	await expect(libNav).toBeVisible();
 	// `exact` targets the wordmark, not the connection indicator's sr-only
 	// "Connected to Inkstone" status text that also lives in this nav (ADR-0051).
