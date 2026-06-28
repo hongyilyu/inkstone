@@ -117,6 +117,9 @@ pub async fn dispatch(
         "observation/query" => {
             observation::handle_query(pool, req.id, req.params, out_tx).await;
         }
+        "observation/get_history" => {
+            observation::handle_get_history(pool, req.id, req.params, out_tx).await;
+        }
         "proposal/get" => {
             proposal::handle_get(pool, req.id, req.params, out_tx).await;
         }

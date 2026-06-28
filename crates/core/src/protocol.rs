@@ -535,6 +535,37 @@ pub struct ObservationQueryResult {
     pub observations: Vec<ObservationRow>,
 }
 
+/// `observation/get_history` params (ADR-0053): the Observation whose correction
+/// history to read. `observation_id` is UUID-checked by Core.
+#[derive(Debug, Deserialize)]
+pub struct ObservationGetHistoryParams {
+    pub observation_id: String,
+}
+
+/// One revision in an `observation/get_history` result (`observation_revisions`),
+/// `seq`-ordered ascending. Like `ObservationRow`, nullable fields serialize as
+/// explicit `null` so the Client can distinguish known-absent from omitted.
+/// `proposal_id` names the Proposal a correction came from, `null` for user edits.
+#[derive(Debug, Serialize)]
+pub struct ObservationRevisionView {
+    pub seq: i64,
+    pub schema_key: String,
+    pub schema_version: i64,
+    pub occurred_at: String,
+    pub ended_at: Option<String>,
+    pub values: serde_json::Value,
+    pub note: Option<String>,
+    pub proposal_id: Option<String>,
+    pub created_at: i64,
+}
+
+/// `observation/get_history` result: the full revision chain `ORDER BY seq ASC`.
+/// Empty for an unknown observation_id (no error).
+#[derive(Debug, Serialize)]
+pub struct ObservationGetHistoryResult {
+    pub revisions: Vec<ObservationRevisionView>,
+}
+
 /// `entity/list` params: the Entity `type` to list, one per call (e.g. `"todo"`,
 /// `"person"`). `r#type` serializes as the wire field `"type"`.
 #[derive(Debug, Deserialize)]
@@ -2276,6 +2307,39 @@ mod parity_fixtures {
                     }],
                 }
             ),
+            // observation/get_history: a maximal seq-1 revision (every Option
+            // populated, incl. proposal_id) plus a seq-2 user-correction revision
+            // whose ended_at/note/proposal_id are explicit nulls — the null-branch
+            // serialization is the risk this fixture pins.
+            fx!(
+                "observation_get_history_result.json",
+                ObservationGetHistoryResult {
+                    revisions: vec![
+                        ObservationRevisionView {
+                            seq: 1,
+                            schema_key: "bodyweight".to_string(),
+                            schema_version: 1,
+                            occurred_at: "2026-06-01T07:30:00".to_string(),
+                            ended_at: Some("2026-06-01T07:35:00".to_string()),
+                            values: serde_json::json!({ "kg": 72.4 }),
+                            note: Some("after morning run".to_string()),
+                            proposal_id: Some(UUID_B.to_string()),
+                            created_at: 1_700_000_000_000,
+                        },
+                        ObservationRevisionView {
+                            seq: 2,
+                            schema_key: "bodyweight".to_string(),
+                            schema_version: 1,
+                            occurred_at: "2026-06-02T07:35:00".to_string(),
+                            ended_at: None,
+                            values: serde_json::json!({ "kg": 71.8 }),
+                            note: None,
+                            proposal_id: None,
+                            created_at: 1_700_000_000_001,
+                        },
+                    ],
+                }
+            ),
             // ── entity/list (EntityRow maximal + bare, transitively) ──
             // Maximal row: refs + person_refs + source all present (covers
             // ResolvedEntityRef with its optionals, TodoPersonRefView, EntitySourceView
@@ -2763,6 +2827,7 @@ mod parity_fixtures {
             "observation_query_result.json",
             "observation_query_result.message_source.json",
             "observation_query_result.bare.json",
+            "observation_get_history_result.json",
             "entity_list_result.json",
             "entity_list_result.bare.json",
             "entity_list_result.je_source.json",
@@ -2877,6 +2942,10 @@ mod parity_fixtures {
         parses!(
             ObservationQueryParams,
             "observation_query_params.bare.json"
+        );
+        parses!(
+            ObservationGetHistoryParams,
+            "observation_get_history_params.json"
         );
         parses!(EntityListParams, "entity_list_params.json");
         parses!(EntityBacklinksParams, "entity_backlinks_params.json");

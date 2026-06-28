@@ -7,7 +7,8 @@ use tokio::sync::mpsc::UnboundedSender;
 use super::handler::{self, HandlerError};
 use crate::observations::{self, ObservationQuery, ObservationSource, ObservationSourceInput};
 use crate::protocol::{
-    ObservationQueryParams, ObservationQueryResult, ObservationRecordResult, ObservationRow,
+    ObservationGetHistoryParams, ObservationGetHistoryResult, ObservationQueryParams,
+    ObservationQueryResult, ObservationRecordResult, ObservationRevisionView, ObservationRow,
     ObservationSourceView, ObservationUpdateResult,
 };
 
@@ -78,6 +79,31 @@ pub(super) async fn handle_query(
     .await;
 }
 
+pub(super) async fn handle_get_history(
+    pool: &SqlitePool,
+    id: serde_json::Value,
+    params: serde_json::Value,
+    out_tx: &UnboundedSender<String>,
+) {
+    handler::handle(
+        id,
+        params,
+        out_tx,
+        |raw: serde_json::Value| async move {
+            let params: ObservationGetHistoryParams = serde_json::from_value(raw)
+                .map_err(|e| HandlerError::InvalidParams(format!("invalid params: {e}")))?;
+            let revisions = observations::observation_revisions(pool, &params.observation_id)
+                .await
+                .map_err(observation_error_to_handler)?;
+
+            Ok(ObservationGetHistoryResult {
+                revisions: revisions.into_iter().map(revision_to_wire).collect(),
+            })
+        },
+    )
+    .await;
+}
+
 pub(super) async fn handle_update(
     pool: &SqlitePool,
     id: serde_json::Value,
@@ -135,6 +161,20 @@ fn observation_to_wire(row: observations::Observation) -> ObservationRow {
         source: row.source.map(source_to_wire),
         created_at: row.created_at,
         updated_at: row.updated_at,
+    }
+}
+
+fn revision_to_wire(revision: observations::ObservationRevision) -> ObservationRevisionView {
+    ObservationRevisionView {
+        seq: revision.seq,
+        schema_key: revision.schema_key,
+        schema_version: revision.schema_version,
+        occurred_at: revision.occurred_at,
+        ended_at: revision.ended_at,
+        values: revision.values,
+        note: revision.note,
+        proposal_id: revision.proposal_id,
+        created_at: revision.created_at,
     }
 }
 
@@ -915,6 +955,229 @@ mod tests {
         assert_invalid_params(&invalid_related);
     }
 
+    async fn seed_proposal(pool: &SqlitePool, proposal_id: &str) {
+        let thread_id = Uuid::now_v7();
+        let run_id = Uuid::now_v7();
+        let user_message_id = Uuid::now_v7();
+        let tool_call_id = Uuid::now_v7();
+        let mut tx = pool.begin().await.expect("begin proposal seed");
+        sqlx::query(
+            "INSERT INTO threads (id, title, created_at, last_activity_at) \
+             VALUES (?, 'Proposal Thread', 1, 1)",
+        )
+        .bind(thread_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .expect("insert proposal thread");
+        sqlx::query(
+            "INSERT INTO runs \
+             (id, thread_id, workflow_name, workflow_version, provider, model, \
+              thinking_level, user_message_id, status, started_at) \
+             VALUES (?, ?, 'w', '1', 'p', 'm', 'off', ?, 'completed', 1)",
+        )
+        .bind(run_id.to_string())
+        .bind(thread_id.to_string())
+        .bind(user_message_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .expect("insert proposal run");
+        sqlx::query(
+            "INSERT INTO messages (id, thread_id, run_id, role, status, created_at, updated_at) \
+             VALUES (?, ?, ?, 'user', 'completed', 1, 1)",
+        )
+        .bind(user_message_id.to_string())
+        .bind(thread_id.to_string())
+        .bind(run_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .expect("insert proposal user message");
+        sqlx::query(
+            "INSERT INTO tool_calls (id, run_id, name, request_payload, status, requested_at) \
+             VALUES (?, ?, 'record_observations', '{}', 'pending', 1)",
+        )
+        .bind(tool_call_id.to_string())
+        .bind(run_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .expect("insert proposal tool call");
+        sqlx::query(
+            "INSERT INTO proposals (id, tool_call_id, mutation_kind, status) \
+             VALUES (?, ?, 'record_observations', 'pending')",
+        )
+        .bind(proposal_id)
+        .bind(tool_call_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .expect("insert proposal");
+        tx.commit().await.expect("commit proposal seed");
+    }
+
+    #[tokio::test]
+    async fn observation_get_history_returns_ordered_revision_chain() {
+        let pool = memory_pool().await;
+
+        let recorded = dispatch_rpc(
+            &pool,
+            "observation/record",
+            json!({
+                "observations": [{
+                    "schema_key": "bodyweight",
+                    "occurred_at": "2026-06-01T07:30:00",
+                    "values": { "kg": 72.4 }
+                }]
+            }),
+        )
+        .await;
+        assert!(recorded.get("error").is_none(), "{recorded:?}");
+        let observation_id = recorded["result"]["observation_ids"][0]
+            .as_str()
+            .expect("observation id")
+            .to_string();
+
+        let updated = dispatch_rpc(
+            &pool,
+            "observation/update",
+            json!({
+                "observation_id": observation_id,
+                "observation": {
+                    "schema_key": "bodyweight",
+                    "occurred_at": "2026-06-02T07:35:00",
+                    "ended_at": "2026-06-02T07:40:00",
+                    "values": { "kg": 71.8 },
+                    "note": "corrected"
+                }
+            }),
+        )
+        .await;
+        assert!(updated.get("error").is_none(), "{updated:?}");
+
+        let history = dispatch_rpc(
+            &pool,
+            "observation/get_history",
+            json!({ "observation_id": observation_id }),
+        )
+        .await;
+        assert!(history.get("error").is_none(), "{history:?}");
+        let revisions = history["result"]["revisions"]
+            .as_array()
+            .expect("revisions array");
+        assert_eq!(revisions.len(), 2);
+
+        let first = revisions[0].as_object().expect("revision object");
+        assert_eq!(first["seq"], json!(1));
+        assert_eq!(first["schema_key"], json!("bodyweight"));
+        assert_eq!(first["values"], json!({ "kg": 72.4 }));
+        // User-recorded original carries no proposal provenance, but the key is
+        // present as explicit null (not omitted).
+        assert!(first.contains_key("proposal_id"));
+        assert_eq!(first["proposal_id"], Value::Null);
+        // Nullable wire fields serialize as keys carrying null, not absent.
+        assert!(first.contains_key("ended_at"));
+        assert!(first.contains_key("note"));
+        assert!(first["created_at"].is_i64());
+
+        let second = revisions[1].as_object().expect("revision object");
+        assert_eq!(second["seq"], json!(2));
+        assert_eq!(second["values"], json!({ "kg": 71.8 }));
+        assert_eq!(second["ended_at"], json!("2026-06-02T07:40:00"));
+        assert_eq!(second["note"], json!("corrected"));
+        assert_eq!(second["proposal_id"], Value::Null);
+    }
+
+    #[tokio::test]
+    async fn observation_get_history_unknown_id_is_empty_and_bad_uuid_is_invalid_params() {
+        let pool = memory_pool().await;
+
+        let unknown = dispatch_rpc(
+            &pool,
+            "observation/get_history",
+            json!({ "observation_id": Uuid::now_v7().to_string() }),
+        )
+        .await;
+        assert!(unknown.get("error").is_none(), "{unknown:?}");
+        assert_eq!(
+            unknown["result"]["revisions"]
+                .as_array()
+                .expect("revisions array")
+                .len(),
+            0
+        );
+
+        let bad_uuid = dispatch_rpc(
+            &pool,
+            "observation/get_history",
+            json!({ "observation_id": "not-a-uuid" }),
+        )
+        .await;
+        assert_invalid_params(&bad_uuid);
+    }
+
+    #[tokio::test]
+    async fn observation_get_history_surfaces_proposal_provenance() {
+        let pool = memory_pool().await;
+        let proposal_id = Uuid::now_v7().to_string();
+        seed_proposal(&pool, &proposal_id).await;
+
+        let observation_id = Uuid::now_v7().to_string();
+        let mut tx = pool.begin().await.expect("begin observation seed");
+        sqlx::query(
+            "INSERT INTO observations \
+             (id, schema_key, schema_version, occurred_at, values_json, created_by, \
+              created_via_proposal_id, created_at, updated_at) \
+             VALUES (?, 'bodyweight', 1, '2026-06-01T07:30:00', '{\"kg\":72.4}', \
+                     'proposal', ?, 1, 1)",
+        )
+        .bind(&observation_id)
+        .bind(&proposal_id)
+        .execute(&mut *tx)
+        .await
+        .expect("insert proposal-born observation");
+        sqlx::query(
+            "INSERT INTO observation_revisions \
+             (observation_id, seq, schema_key, schema_version, occurred_at, ended_at, \
+              values_json, note, proposal_id, created_at) \
+             VALUES (?, 1, 'bodyweight', 1, '2026-06-01T07:30:00', NULL, '{\"kg\":72.4}', \
+                     NULL, ?, 1)",
+        )
+        .bind(&observation_id)
+        .bind(&proposal_id)
+        .execute(&mut *tx)
+        .await
+        .expect("insert seq-1 revision");
+        tx.commit().await.expect("commit observation seed");
+
+        let updated = dispatch_rpc(
+            &pool,
+            "observation/update",
+            json!({
+                "observation_id": observation_id,
+                "observation": {
+                    "schema_key": "bodyweight",
+                    "occurred_at": "2026-06-02T07:35:00",
+                    "values": { "kg": 71.8 }
+                }
+            }),
+        )
+        .await;
+        assert!(updated.get("error").is_none(), "{updated:?}");
+
+        let history = dispatch_rpc(
+            &pool,
+            "observation/get_history",
+            json!({ "observation_id": observation_id }),
+        )
+        .await;
+        assert!(history.get("error").is_none(), "{history:?}");
+        let revisions = history["result"]["revisions"]
+            .as_array()
+            .expect("revisions array");
+        assert_eq!(revisions.len(), 2);
+        assert_eq!(revisions[0]["seq"], json!(1));
+        assert_eq!(revisions[0]["proposal_id"], json!(proposal_id));
+        assert_eq!(revisions[1]["seq"], json!(2));
+        assert_eq!(revisions[1]["proposal_id"], Value::Null);
+    }
+
     #[tokio::test]
     async fn observation_rpc_sanitizes_malformed_stored_observation() {
         let pool = memory_pool().await;
@@ -934,6 +1197,44 @@ mod tests {
             &pool,
             "observation/query",
             json!({ "schema_keys": ["bodyweight"] }),
+        )
+        .await;
+        assert_internal_error(&response);
+    }
+
+    #[tokio::test]
+    async fn observation_get_history_sanitizes_malformed_revision_json() {
+        let pool = memory_pool().await;
+        let observation_id = Uuid::now_v7().to_string();
+        let mut tx = pool.begin().await.expect("begin observation seed");
+        sqlx::query(
+            "INSERT INTO observations \
+             (id, schema_key, schema_version, occurred_at, values_json, created_by, \
+              created_at, updated_at) \
+             VALUES (?, 'bodyweight', 1, '2026-06-01T07:30:00', '{\"kg\":72.4}', \
+                     'user', 1, 1)",
+        )
+        .bind(&observation_id)
+        .execute(&mut *tx)
+        .await
+        .expect("insert parent observation");
+        sqlx::query(
+            "INSERT INTO observation_revisions \
+             (observation_id, seq, schema_key, schema_version, occurred_at, ended_at, \
+              values_json, note, proposal_id, created_at) \
+             VALUES (?, 1, 'bodyweight', 1, '2026-06-01T07:30:00', NULL, '{not-json', \
+                     NULL, NULL, 1)",
+        )
+        .bind(&observation_id)
+        .execute(&mut *tx)
+        .await
+        .expect("insert malformed seq-1 revision");
+        tx.commit().await.expect("commit observation seed");
+
+        let response = dispatch_rpc(
+            &pool,
+            "observation/get_history",
+            json!({ "observation_id": observation_id }),
         )
         .await;
         assert_internal_error(&response);

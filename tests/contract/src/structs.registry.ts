@@ -30,6 +30,8 @@ import {
 	MessageSearchParams,
 	MessageSearchResult,
 	ModelCatalogResult,
+	ObservationGetHistoryParams,
+	ObservationGetHistoryResult,
 	ObservationQueryParams,
 	ObservationQueryResult,
 	ObservationRecordParams,
@@ -241,6 +243,12 @@ export const fixtures: readonly FixtureEntry[] = [
 		message: "ObservationQueryParams",
 		file: "observation_query_params.bare.json",
 		schema: ObservationQueryParams,
+		dir: "authored",
+	},
+	{
+		message: "ObservationGetHistoryParams",
+		file: "observation_get_history_params.json",
+		schema: ObservationGetHistoryParams,
 		dir: "authored",
 	},
 	{
@@ -463,6 +471,15 @@ export const fixtures: readonly FixtureEntry[] = [
 		message: "ObservationQueryResult",
 		file: "observation_query_result.bare.json",
 		schema: ObservationQueryResult,
+		dir: "emitted",
+	},
+	// ObservationGetHistoryResult: a seq-1 revision with every Option populated
+	// (incl. proposal_id) + a seq-2 revision exercising the null branches.
+	// ObservationRevisionView rides transitively (no standalone fixture).
+	{
+		message: "ObservationGetHistoryResult",
+		file: "observation_get_history_result.json",
+		schema: ObservationGetHistoryResult,
 		dir: "emitted",
 	},
 	// EntityListResult: maximal row (refs + person_refs + message-source) + bare
@@ -711,6 +728,7 @@ export const CANONICAL_MESSAGES: readonly string[] = [
 	"ObservationRecordParams",
 	"ObservationUpdateParams",
 	"ObservationQueryParams",
+	"ObservationGetHistoryParams",
 	"EntityListParams",
 	"EntityBacklinksParams",
 	"EntityMutateParams",
@@ -740,6 +758,7 @@ export const CANONICAL_MESSAGES: readonly string[] = [
 	"ObservationRecordResult",
 	"ObservationUpdateResult",
 	"ObservationQueryResult",
+	"ObservationGetHistoryResult",
 	"EntityListResult",
 	"EntityBacklinksResult",
 	"EntityMutateResult",

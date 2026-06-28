@@ -5,7 +5,9 @@
 use sqlx::{Executor, QueryBuilder, Sqlite};
 use uuid::Uuid;
 
-use super::observations::{ObservationFilter, ObservationRow, ObservationSourceFilter};
+use super::observations::{
+    ObservationFilter, ObservationRevisionRow, ObservationRow, ObservationSourceFilter,
+};
 
 // ─── threads ──────────────────────────────────────────────────────────
 
@@ -1361,6 +1363,65 @@ where
                 )
                 .collect()
         })
+}
+
+pub(super) async fn observation_revisions<'e, E>(
+    executor: E,
+    observation_id: &str,
+) -> sqlx::Result<Vec<ObservationRevisionRow>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_as::<
+        _,
+        (
+            i64,
+            String,
+            i64,
+            String,
+            Option<String>,
+            String,
+            Option<String>,
+            Option<String>,
+            i64,
+        ),
+    >(
+        "SELECT seq, schema_key, schema_version, occurred_at, ended_at, values_json, \
+                note, proposal_id, created_at \
+         FROM observation_revisions \
+         WHERE observation_id = ? \
+         ORDER BY seq ASC",
+    )
+    .bind(observation_id)
+    .fetch_all(executor)
+    .await
+    .map(|rows| {
+        rows.into_iter()
+            .map(
+                |(
+                    seq,
+                    schema_key,
+                    schema_version,
+                    occurred_at,
+                    ended_at,
+                    values_json,
+                    note,
+                    proposal_id,
+                    created_at,
+                )| ObservationRevisionRow {
+                    seq,
+                    schema_key,
+                    schema_version,
+                    occurred_at,
+                    ended_at,
+                    values_json,
+                    note,
+                    proposal_id,
+                    created_at,
+                },
+            )
+            .collect()
+    })
 }
 
 pub(super) async fn habit_checkin_observations_exist<'e, E>(
