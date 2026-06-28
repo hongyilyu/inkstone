@@ -809,24 +809,29 @@ mod tests {
             .as_str()
             .expect("observation id");
 
+        // Use `nutrition.intake` for the null-field rejection cases: it is the last
+        // `oneOf` variant, and `check_one_of` surfaces the last variant's error, so a
+        // payload that matches its `schema_key` yields that variant's precise field
+        // message rather than a sibling's `schema_key` mismatch. (Payload validation
+        // runs before the stored-schema check, so the stored `habit.checkin` schema
+        // is irrelevant here.)
         let update_with_null_ended_at = dispatch_rpc(
             &pool,
             "observation/update",
             json!({
                 "observation_id": observation_id,
                 "observation": {
-                    "schema_key": "habit.checkin",
+                    "schema_key": "nutrition.intake",
                     "occurred_at": "2026-06-01T07:30:00",
                     "ended_at": null,
                     "values": {
-                        "habit_id": valid_habit_id.to_string(),
-                        "state": "done"
+                        "kcal": 1
                     }
                 }
             }),
         )
         .await;
-        assert_invalid_params(&update_with_null_ended_at);
+        assert_invalid_params_contains(&update_with_null_ended_at, "ended_at must be a string");
 
         let update_with_null_note = dispatch_rpc(
             &pool,
@@ -834,18 +839,17 @@ mod tests {
             json!({
                 "observation_id": observation_id,
                 "observation": {
-                    "schema_key": "habit.checkin",
+                    "schema_key": "nutrition.intake",
                     "occurred_at": "2026-06-01T07:30:00",
                     "values": {
-                        "habit_id": valid_habit_id.to_string(),
-                        "state": "done"
+                        "kcal": 1
                     },
                     "note": null
                 }
             }),
         )
         .await;
-        assert_invalid_params(&update_with_null_note);
+        assert_invalid_params_contains(&update_with_null_note, "note must be a string");
 
         let update_with_evidence = dispatch_rpc(
             &pool,
