@@ -3,6 +3,7 @@ import { Schema as S } from "effect";
 import {
 	observationEvidence,
 	observationRecordDraft,
+	observationUpdateParams,
 	recordObservations,
 } from "./payloads.js";
 
@@ -182,6 +183,18 @@ export const ObservationRecordResult = S.Struct({
 });
 export type ObservationRecordResult = S.Schema.Type<
 	typeof ObservationRecordResult
+>;
+
+export const ObservationUpdateParams = observationUpdateParams;
+export type ObservationUpdateParams = S.Schema.Type<
+	typeof ObservationUpdateParams
+>;
+
+export const ObservationUpdateResult = S.Struct({
+	observation_id: S.String,
+});
+export type ObservationUpdateResult = S.Schema.Type<
+	typeof ObservationUpdateResult
 >;
 
 export const ObservationQueryParams = S.Struct({

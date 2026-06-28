@@ -358,6 +358,29 @@ fn same_key_replay_does_not_record_observations_twice() {
             observation_count, 1,
             "same-key replay must not duplicate observations"
         );
+
+        let observation_id: String = sqlx::query_scalar(
+            "SELECT id FROM observations WHERE created_via_proposal_id = ?1",
+        )
+        .bind(&proposal_id)
+        .fetch_one(&pool)
+        .await
+        .expect("select observation id");
+        let revisions: Vec<(i64, Option<String>)> = sqlx::query_as(
+            "SELECT seq, proposal_id \
+             FROM observation_revisions \
+             WHERE observation_id = ?1 \
+             ORDER BY seq",
+        )
+        .bind(&observation_id)
+        .fetch_all(&pool)
+        .await
+        .expect("select observation revisions");
+        assert_eq!(
+            revisions,
+            vec![(1, Some(proposal_id.clone()))],
+            "same-key replay must not duplicate observation revisions"
+        );
     });
 }
 

@@ -13,6 +13,8 @@ import {
 	ObservationQueryResult,
 	ObservationRecordParams,
 	ObservationRecordResult,
+	ObservationUpdateParams,
+	ObservationUpdateResult,
 	PostMessageParams,
 	PostMessageResult,
 	ProposalChangedNotification,
@@ -555,6 +557,53 @@ describe("ObservationRecordResult", () => {
 		const decoded = S.decodeUnknownSync(ObservationRecordResult)(wire);
 		expect(decoded).toEqual(wire);
 		expect(S.encodeSync(ObservationRecordResult)(decoded)).toEqual(wire);
+	});
+});
+
+describe("ObservationUpdateParams", () => {
+	it("decodes a source-free replacement observation", () => {
+		const wire = {
+			observation_id: "0190d3c1-0000-7000-8000-000000000001",
+			observation: {
+				schema_key: "bodyweight",
+				occurred_at: "2026-06-03T07:30:00",
+				ended_at: "2026-06-03T07:35:00",
+				values: { kg: 71.8 },
+				note: "corrected",
+			},
+		};
+		const decoded = S.decodeUnknownSync(ObservationUpdateParams)(wire);
+		expect(decoded).toEqual(wire);
+		expect(S.encodeSync(ObservationUpdateParams)(decoded)).toEqual(wire);
+	});
+
+	it("rejects evidence on the replacement observation", () => {
+		expect(() =>
+			S.decodeUnknownSync(ObservationUpdateParams, {
+				onExcessProperty: "error",
+			})({
+				observation_id: "0190d3c1-0000-7000-8000-000000000001",
+				observation: {
+					schema_key: "bodyweight",
+					occurred_at: "2026-06-03T07:30:00",
+					values: { kg: 71.8 },
+					evidence: {
+						message_id: "0190d3c1-0000-7000-8000-000000000002",
+					},
+				},
+			}),
+		).toThrow();
+	});
+});
+
+describe("ObservationUpdateResult", () => {
+	it("decodes the updated observation id", () => {
+		const wire = {
+			observation_id: "0190d3c1-0000-7000-8000-000000000001",
+		};
+		const decoded = S.decodeUnknownSync(ObservationUpdateResult)(wire);
+		expect(decoded).toEqual(wire);
+		expect(S.encodeSync(ObservationUpdateResult)(decoded)).toEqual(wire);
 	});
 });
 

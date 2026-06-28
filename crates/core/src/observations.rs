@@ -30,6 +30,15 @@ pub(crate) struct ObservationRecordInput {
 }
 
 #[derive(Clone, Debug)]
+pub(crate) struct ObservationUpdateInput {
+    pub(crate) schema_key: String,
+    pub(crate) occurred_at: String,
+    pub(crate) ended_at: Option<String>,
+    pub(crate) values: Value,
+    pub(crate) note: Option<String>,
+}
+
+#[derive(Clone, Debug)]
 pub(crate) enum ObservationSourceInput {
     JournalEntry { id: String },
     Message { id: String },
@@ -89,25 +98,20 @@ pub(crate) async fn record_observations(
     Ok(observations)
 }
 
-#[allow(dead_code)] // Phase 5 core API; Phase 6 decides the public edit surface.
 pub(crate) async fn update_observation(
     pool: &SqlitePool,
     observation_id: &str,
-    record: ObservationRecordInput,
-) -> Result<(), ObservationError> {
+    record: ObservationUpdateInput,
+) -> Result<String, ObservationError> {
     let observation_id =
         normalize_uuid(observation_id, "observation_id").map_err(ObservationError::Invalid)?;
-    if record.source.is_some() {
-        return Err(ObservationError::Invalid(
-            "observation source cannot be updated".to_string(),
-        ));
-    }
 
     let now_ms = db::now_ms();
-    let update = prepare_observation_update(observation_id, record, None)?;
+    let update = prepare_observation_update(observation_id.clone(), record)?;
     db::update_observation(pool, update, now_ms)
         .await
-        .map_err(observation_update_error)
+        .map_err(observation_update_error)?;
+    Ok(observation_id)
 }
 
 pub(crate) fn record_observations_payload_spec() -> PayloadSpec {
@@ -180,6 +184,22 @@ pub(crate) fn record_observations_input_from_params(
             })
             .collect(),
     })
+}
+
+pub(crate) fn observation_update_input_from_params(
+    params: crate::protocol::ObservationUpdateParams,
+) -> (String, ObservationUpdateInput) {
+    let draft = params.observation;
+    (
+        params.observation_id,
+        ObservationUpdateInput {
+            schema_key: draft.schema_key,
+            occurred_at: draft.occurred_at,
+            ended_at: draft.ended_at,
+            values: draft.values,
+            note: draft.note,
+        },
+    )
 }
 
 fn validate_record_observations_input(input: &RecordObservationsInput) -> Result<(), String> {
@@ -262,13 +282,11 @@ pub(crate) fn prepare_observations(
     Ok((inserts, observations))
 }
 
-#[allow(dead_code)]
 fn prepare_observation_update(
     id: String,
-    record: ObservationRecordInput,
-    proposal_id: Option<&str>,
+    record: ObservationUpdateInput,
 ) -> Result<db::ObservationUpdate, ObservationError> {
-    let schema = validate_record(&record).map_err(ObservationError::Invalid)?;
+    let schema = validate_update(&record).map_err(ObservationError::Invalid)?;
     let (values, relations) = relation_checks(schema.relation_fields, &record.values)
         .map_err(ObservationError::Invalid)?;
     let values_json = serde_json::to_string(&values)
@@ -282,7 +300,6 @@ fn prepare_observation_update(
         ended_at: record.ended_at,
         values_json,
         note: record.note,
-        proposal_id: proposal_id.map(str::to_string),
         relations,
     })
 }
@@ -327,7 +344,6 @@ pub(crate) fn observation_insert_error(e: db::ObservationInsertError) -> Observa
     }
 }
 
-#[allow(dead_code)]
 pub(crate) fn observation_update_error(e: db::ObservationUpdateError) -> ObservationError {
     match e {
         db::ObservationUpdateError::InvalidRelation(reason) => ObservationError::Invalid(reason),
@@ -483,17 +499,40 @@ fn record_observation_payload_variant(schema: ObservationSchema) -> PayloadSpec 
 }
 
 fn validate_record(record: &ObservationRecordInput) -> Result<ObservationSchema, String> {
-    let schema = schema_for(&record.schema_key)
-        .ok_or_else(|| format!("unknown observation schema {:?}", record.schema_key))?;
+    validate_observation_fields(
+        &record.schema_key,
+        &record.occurred_at,
+        record.ended_at.as_deref(),
+        &record.values,
+    )
+}
 
-    let occurred = parse_local_datetime(&record.occurred_at, "occurred_at")?;
-    if let Some(ended_at) = &record.ended_at {
+fn validate_update(record: &ObservationUpdateInput) -> Result<ObservationSchema, String> {
+    validate_observation_fields(
+        &record.schema_key,
+        &record.occurred_at,
+        record.ended_at.as_deref(),
+        &record.values,
+    )
+}
+
+fn validate_observation_fields(
+    schema_key: &str,
+    occurred_at: &str,
+    ended_at: Option<&str>,
+    values: &Value,
+) -> Result<ObservationSchema, String> {
+    let schema =
+        schema_for(schema_key).ok_or_else(|| format!("unknown observation schema {schema_key:?}"))?;
+
+    let occurred = parse_local_datetime(occurred_at, "occurred_at")?;
+    if let Some(ended_at) = ended_at {
         let ended = parse_local_datetime(ended_at, "ended_at")?;
         if ended < occurred {
             return Err("ended_at must be greater than or equal to occurred_at".to_string());
         }
     }
-    schema.values.check(&record.values)?;
+    schema.values.check(values)?;
     Ok(schema)
 }
 

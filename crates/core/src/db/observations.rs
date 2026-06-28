@@ -24,7 +24,6 @@ pub(crate) struct ObservationInsert {
     pub source: Option<ObservationSourceInsert>,
 }
 
-#[allow(dead_code)] // Phase 5 lands the core correction path before public UI/RPC callers.
 pub(crate) struct ObservationUpdate {
     pub id: String,
     pub schema_key: String,
@@ -33,7 +32,6 @@ pub(crate) struct ObservationUpdate {
     pub ended_at: Option<String>,
     pub values_json: String,
     pub note: Option<String>,
-    pub proposal_id: Option<String>,
     pub relations: Vec<ObservationRelationInsert>,
 }
 
@@ -107,7 +105,6 @@ pub(crate) enum ObservationInsertError {
     Sqlx(sqlx::Error),
 }
 
-#[allow(dead_code)]
 #[derive(Debug)]
 pub(crate) enum ObservationUpdateError {
     InvalidRelation(String),
@@ -161,10 +158,9 @@ pub(super) async fn insert_observations_in_tx(
             now_ms,
         )
         .await?;
-        queries::insert_observation_revision(
+        queries::insert_next_observation_revision(
             &mut **tx,
             &row.id,
-            1,
             &row.schema_key,
             row.schema_version,
             &row.occurred_at,
@@ -175,20 +171,8 @@ pub(super) async fn insert_observations_in_tx(
             now_ms,
         )
         .await?;
-        for relation in row.relations {
-            if !queries::entity_is_type(
-                &mut **tx,
-                &relation.entity_id,
-                relation.target_entity_type.as_str(),
-            )
-            .await?
-            {
-                return Err(ObservationInsertError::InvalidRelation(format!(
-                    "observation {} must name a {}",
-                    relation.field_name,
-                    relation.target_entity_type.as_str()
-                )));
-            }
+        if let Some(reason) = invalid_relation_reason(tx, &row.relations).await? {
+            return Err(ObservationInsertError::InvalidRelation(reason));
         }
         if let Some(source) = row.source {
             match &source {
@@ -229,7 +213,6 @@ pub(super) async fn insert_observations_in_tx(
     Ok(())
 }
 
-#[allow(dead_code)]
 pub(crate) async fn update_observation(
     pool: &SqlitePool,
     row: ObservationUpdate,
@@ -237,20 +220,8 @@ pub(crate) async fn update_observation(
 ) -> Result<(), ObservationUpdateError> {
     let mut tx = pool.begin().await?;
 
-    for relation in &row.relations {
-        if !queries::entity_is_type(
-            &mut *tx,
-            &relation.entity_id,
-            relation.target_entity_type.as_str(),
-        )
-        .await?
-        {
-            return Err(ObservationUpdateError::InvalidRelation(format!(
-                "observation {} must name a {}",
-                relation.field_name,
-                relation.target_entity_type.as_str()
-            )));
-        }
+    if let Some(reason) = invalid_relation_reason(&mut tx, &row.relations).await? {
+        return Err(ObservationUpdateError::InvalidRelation(reason));
     }
 
     let rows_affected = queries::update_observation(
@@ -278,13 +249,35 @@ pub(crate) async fn update_observation(
         row.ended_at.as_deref(),
         &row.values_json,
         row.note.as_deref(),
-        row.proposal_id.as_deref(),
+        None,
         now_ms,
     )
     .await?;
 
     tx.commit().await?;
     Ok(())
+}
+
+async fn invalid_relation_reason(
+    tx: &mut Transaction<'_, Sqlite>,
+    relations: &[ObservationRelationInsert],
+) -> sqlx::Result<Option<String>> {
+    for relation in relations {
+        if !queries::entity_is_type(
+            &mut **tx,
+            &relation.entity_id,
+            relation.target_entity_type.as_str(),
+        )
+        .await?
+        {
+            return Ok(Some(format!(
+                "observation {} must name a {}",
+                relation.field_name,
+                relation.target_entity_type.as_str()
+            )));
+        }
+    }
+    Ok(None)
 }
 
 #[allow(clippy::too_many_arguments)]

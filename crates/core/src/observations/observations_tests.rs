@@ -44,6 +44,16 @@ fn habit_checkin_at(occurred_at: &str, habit_id: &str, state: &str) -> Observati
     }
 }
 
+fn update_from(record: ObservationRecordInput) -> ObservationUpdateInput {
+    ObservationUpdateInput {
+        schema_key: record.schema_key,
+        occurred_at: record.occurred_at,
+        ended_at: record.ended_at,
+        values: record.values,
+        note: record.note,
+    }
+}
+
 fn invalid_reason(err: ObservationError) -> String {
     match err {
         ObservationError::Invalid(reason) => reason,
@@ -173,7 +183,7 @@ async fn observations_update_appends_revision_and_query_returns_current_state() 
     replacement.ended_at = Some("2026-06-02T07:40:00".to_string());
     replacement.note = Some("corrected".to_string());
 
-    update_observation(&pool, &recorded[0].id, replacement)
+    update_observation(&pool, &recorded[0].id, update_from(replacement))
         .await
         .expect("update observation");
 
@@ -229,7 +239,7 @@ async fn observations_failed_update_writes_no_revision_and_leaves_current_state(
     let reason = update_observation(
         &pool,
         &recorded[0].id,
-        bodyweight_at("2026-06-02T07:30:00", json!("71.8")),
+        update_from(bodyweight_at("2026-06-02T07:30:00", json!("71.8"))),
     )
     .await
     .expect_err("invalid replacement rejects");
@@ -243,6 +253,28 @@ async fn observations_failed_update_writes_no_revision_and_leaves_current_state(
     assert_eq!(rows[0].id, recorded[0].id);
     assert_eq!(rows[0].occurred_at, "2026-06-01T07:30:00");
     assert_eq!(rows[0].values, json!({ "kg": 72.4 }));
+}
+
+#[tokio::test]
+async fn observations_update_missing_observation_rejects_without_revision() {
+    let pool = memory_pool().await;
+    let missing_id = "018f0000-0000-7000-8000-000000000304";
+
+    let reason = update_observation(
+        &pool,
+        missing_id,
+        update_from(bodyweight_at("2026-06-02T07:30:00", json!(71.8))),
+    )
+    .await
+    .expect_err("missing observation rejects");
+
+    assert_eq!(invalid_reason(reason), "observation not found");
+    let observation_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM observations")
+        .fetch_one(&pool)
+        .await
+        .expect("count observations");
+    assert_eq!(observation_count, 0);
+    assert_eq!(revision_count(&pool, missing_id).await, 0);
 }
 
 #[tokio::test]
@@ -266,11 +298,11 @@ async fn observations_update_habit_checkin_validates_relation_target() {
     update_observation(
         &pool,
         &recorded[0].id,
-        habit_checkin_at(
+        update_from(habit_checkin_at(
             "2026-06-02T07:30:00",
             &other_habit_id.to_ascii_uppercase(),
             "skipped",
-        ),
+        )),
     )
     .await
     .expect("update to another habit");
@@ -278,7 +310,11 @@ async fn observations_update_habit_checkin_validates_relation_target() {
     let reason = update_observation(
         &pool,
         &recorded[0].id,
-        habit_checkin_at("2026-06-03T07:30:00", person_id, "missed"),
+        update_from(habit_checkin_at(
+            "2026-06-03T07:30:00",
+            person_id,
+            "missed",
+        )),
     )
     .await
     .expect_err("wrong relation target type rejects");
