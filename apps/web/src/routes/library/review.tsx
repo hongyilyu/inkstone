@@ -1,27 +1,8 @@
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { ProjectReviewView } from "@/components/library/ProjectReviewView";
+import { createFileRoute, redirect } from "@tanstack/react-router";
 
-interface ReviewSearch {
-	id?: string;
-}
-
-function ReviewRoute() {
-	const { id } = Route.useSearch();
-	const navigate = useNavigate();
-
-	return (
-		<ProjectReviewView
-			selectedId={id ?? null}
-			onSelect={(next) =>
-				navigate({ to: "/library/review", search: { id: next } })
-			}
-		/>
-	);
-}
-
+// Retired flat-era workflow route (ADR-0054): the Review view is now a GTD filter.
 export const Route = createFileRoute("/library/review")({
-	validateSearch: (search: Record<string, unknown>): ReviewSearch => ({
-		id: typeof search.id === "string" ? search.id : undefined,
-	}),
-	component: ReviewRoute,
+	beforeLoad: () => {
+		throw redirect({ to: "/library/gtd", search: { filt: "review" } });
+	},
 });
