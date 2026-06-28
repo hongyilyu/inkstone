@@ -371,6 +371,9 @@ pub(crate) fn observation_insert_error(e: db::ObservationInsertError) -> Observa
 pub(crate) fn observation_update_error(e: db::ObservationUpdateError) -> ObservationError {
     match e {
         db::ObservationUpdateError::InvalidRelation(reason) => ObservationError::Invalid(reason),
+        db::ObservationUpdateError::SchemaMismatch => {
+            ObservationError::Invalid("observation schema_key cannot change".to_string())
+        }
         db::ObservationUpdateError::NotFound => {
             ObservationError::Invalid("observation not found".to_string())
         }

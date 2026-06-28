@@ -1032,6 +1032,19 @@ where
     .map(|result| result.rows_affected())
 }
 
+pub(super) async fn observation_schema_key<'e, E>(
+    executor: E,
+    observation_id: &str,
+) -> sqlx::Result<Option<String>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_scalar("SELECT schema_key FROM observations WHERE id = ?1")
+        .bind(observation_id)
+        .fetch_optional(executor)
+        .await
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn insert_observation_source<'e, E>(
     executor: E,

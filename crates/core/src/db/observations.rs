@@ -108,6 +108,7 @@ pub(crate) enum ObservationInsertError {
 #[derive(Debug)]
 pub(crate) enum ObservationUpdateError {
     InvalidRelation(String),
+    SchemaMismatch,
     NotFound,
     Sqlx(sqlx::Error),
 }
@@ -219,6 +220,14 @@ pub(crate) async fn update_observation(
     now_ms: i64,
 ) -> Result<(), ObservationUpdateError> {
     let mut tx = pool.begin().await?;
+
+    let current_schema_key = queries::observation_schema_key(&mut *tx, &row.id).await?;
+    let Some(current_schema_key) = current_schema_key else {
+        return Err(ObservationUpdateError::NotFound);
+    };
+    if current_schema_key != row.schema_key {
+        return Err(ObservationUpdateError::SchemaMismatch);
+    }
 
     if let Some(reason) = invalid_relation_reason(&mut tx, &row.relations).await? {
         return Err(ObservationUpdateError::InvalidRelation(reason));
