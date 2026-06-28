@@ -5,6 +5,7 @@
 mod apply;
 mod intent_graph;
 mod lifecycle;
+mod media;
 mod message_fts;
 mod observations;
 mod queries;
@@ -46,6 +47,11 @@ pub use lifecycle::TerminalReason;
 // without naming the db type. The search assembles text live from `message_parts`
 // at query time — no standing projection to maintain or rebuild.
 pub use message_fts::search_messages;
+// The media substrate (ADR-0058) has no production consumer yet — its wire verb /
+// Media entity caller lands later (#252). The `db::media` facade surface
+// (`insert_media`/`get_media`/`delete_media` + `MediaInput`/`MediaRow`/…) is
+// reached only by the module's own tests for now, so it is NOT re-exported from
+// `db` until a real caller exists; `#252` adds the re-export with its consumer.
 pub(crate) use observations::{
     ObservationFilter, ObservationInsert, ObservationInsertError, ObservationRelationInsert,
     ObservationRow, ObservationSourceFilter, ObservationSourceInsert, ObservationUpdate,
@@ -68,6 +74,41 @@ pub(crate) fn resolve_db_path() -> Result<PathBuf> {
         return Ok(PathBuf::from(env));
     }
     Ok(os_data_dir()?.join("inkstone").join("db.sqlite"))
+}
+
+/// Resolve the media root: `INKSTONE_MEDIA_DIR` env override wins (empty treated
+/// as unset, like `skills_dir`), else `<OS data dir>/inkstone/media/`. The same
+/// override-or-data-dir shape as `resolve_db_path`; binary media bytes live under
+/// this root with only the relative path stored in SQLite (ADR-0058).
+pub(crate) fn media_root() -> Result<PathBuf> {
+    if let Some(dir) = std::env::var_os("INKSTONE_MEDIA_DIR").filter(|d| !d.is_empty()) {
+        return Ok(PathBuf::from(dir));
+    }
+    Ok(os_data_dir()?.join("inkstone").join("media"))
+}
+
+/// Resolve a stored relative `storage_path` to its absolute on-disk location
+/// under [`media_root`]. Both `insert_media`/`delete_media` and the tests turn the
+/// relative stored path into the real file path through here.
+///
+/// `insert_media` only ever stores a bare UUID, but this is the trust boundary
+/// where a stored string becomes a real filesystem path fed to `write`/
+/// `remove_file`. `PathBuf::join` silently discards the root for an absolute input
+/// and preserves `..`, so a malformed row could otherwise escape `media_root`.
+/// Reject any absolute path or traversal component rather than join it blindly.
+pub(crate) fn resolve_media_path(storage_path: &str) -> Result<PathBuf> {
+    use std::path::Component;
+    let path = std::path::Path::new(storage_path);
+    let escapes_root = path.components().any(|component| {
+        matches!(
+            component,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
+    });
+    if escapes_root {
+        anyhow::bail!("media storage_path must be a relative path under media_root");
+    }
+    Ok(media_root()?.join(path))
 }
 
 /// Per-OS application-data directory (hand-rolled to avoid a crate dep).

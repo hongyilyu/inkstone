@@ -233,6 +233,64 @@ CREATE INDEX idx_observation_sources_observation ON observation_sources(observat
 CREATE INDEX idx_observation_sources_entity      ON observation_sources(source_entity_id);
 CREATE INDEX idx_observation_sources_message     ON observation_sources(source_message_id);
 
+-- Media substrate (ADR-0058) -------------------------------------------
+-- Metadata envelope for a binary whose bytes live on disk under the media
+-- root; SQLite stores only the relative `storage_path`, never the bytes.
+-- `digest` is the sha-256 hex of the content for integrity, NOT identity
+-- (non-unique, no dedup). Provenance reuses the observations XOR. The
+-- `media_attachments` polymorphic-link table is defined immediately below.
+CREATE TABLE media (
+  id                       TEXT PRIMARY KEY,          -- random UUID
+  mime                     TEXT NOT NULL,
+  byte_size                INTEGER NOT NULL,
+  digest                   TEXT NOT NULL,             -- sha-256 hex, non-unique (integrity, not dedup)
+  storage_path             TEXT NOT NULL,             -- relative to the media root
+  width                    INTEGER,
+  height                   INTEGER,
+  duration_ms              INTEGER,
+  capture_time             INTEGER,                   -- ms-epoch, nullable
+  thumbnail_path           TEXT,                      -- nullable; nothing writes it this issue
+  created_by               TEXT NOT NULL CHECK (created_by IN ('user','proposal')),
+  created_via_proposal_id  TEXT REFERENCES proposals(id),
+  created_at               INTEGER NOT NULL,
+  updated_at               INTEGER NOT NULL,
+  -- Same stricter XOR as observations: direct user media must not carry a
+  -- proposal id, while proposal-born media must carry one.
+  CHECK (
+    (created_by = 'user' AND created_via_proposal_id IS NULL) OR
+    (created_by = 'proposal' AND created_via_proposal_id IS NOT NULL)
+  )
+);
+
+-- Polymorphic link from one `media` row to exactly one target — an Entity,
+-- Message, Observation, or Proposal — via one nullable FK per target kind plus a
+-- `target_kind` discriminator. The CHECK is the entity_sources XOR generalized
+-- to four targets and tied to the discriminator. Both FK directions cascade:
+-- dropping the media row drops its links (media_id ON DELETE CASCADE), and
+-- dropping a target drops the link to it (each target FK ON DELETE CASCADE).
+-- Deleting the last link does NOT delete the media row — no orphan GC.
+CREATE TABLE media_attachments (
+  id                     TEXT PRIMARY KEY,          -- random UUID
+  media_id               TEXT NOT NULL REFERENCES media(id) ON DELETE CASCADE,
+  target_kind            TEXT NOT NULL CHECK (target_kind IN ('entity','message','observation','proposal')),
+  target_entity_id       TEXT REFERENCES entities(id) ON DELETE CASCADE,
+  target_message_id      TEXT REFERENCES messages(id) ON DELETE CASCADE,
+  target_observation_id  TEXT REFERENCES observations(id) ON DELETE CASCADE,
+  target_proposal_id     TEXT REFERENCES proposals(id) ON DELETE CASCADE,
+  created_at             INTEGER NOT NULL,
+  CHECK (
+    (target_kind='entity'      AND target_entity_id      IS NOT NULL AND target_message_id IS NULL AND target_observation_id IS NULL AND target_proposal_id IS NULL) OR
+    (target_kind='message'     AND target_message_id     IS NOT NULL AND target_entity_id  IS NULL AND target_observation_id IS NULL AND target_proposal_id IS NULL) OR
+    (target_kind='observation' AND target_observation_id IS NOT NULL AND target_entity_id  IS NULL AND target_message_id     IS NULL AND target_proposal_id IS NULL) OR
+    (target_kind='proposal'    AND target_proposal_id    IS NOT NULL AND target_entity_id  IS NULL AND target_message_id     IS NULL AND target_observation_id IS NULL)
+  )
+);
+CREATE INDEX idx_media_attachments_media       ON media_attachments(media_id);
+CREATE INDEX idx_media_attachments_entity      ON media_attachments(target_entity_id)      WHERE target_entity_id      IS NOT NULL;
+CREATE INDEX idx_media_attachments_message     ON media_attachments(target_message_id)     WHERE target_message_id     IS NOT NULL;
+CREATE INDEX idx_media_attachments_observation ON media_attachments(target_observation_id) WHERE target_observation_id IS NOT NULL;
+CREATE INDEX idx_media_attachments_proposal    ON media_attachments(target_proposal_id)    WHERE target_proposal_id    IS NOT NULL;
+
 -- Todo Person References (ADR-0031) ------------------------------------
 -- A task-specific Person association on a Todo (not a generic relationship
 -- graph, not an Entity Reference). At most one row per (todo_id, person_id);

@@ -957,6 +957,175 @@ where
     .map(|_| ())
 }
 
+// ─── media (ADR-0058) ─────────────────────────────────────────────────
+
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn insert_media<'e, E>(
+    executor: E,
+    id: &str,
+    mime: &str,
+    byte_size: i64,
+    digest: &str,
+    storage_path: &str,
+    width: Option<i64>,
+    height: Option<i64>,
+    duration_ms: Option<i64>,
+    capture_time: Option<i64>,
+    thumbnail_path: Option<&str>,
+    created_by: &str,
+    created_via_proposal_id: Option<&str>,
+    now_ms: i64,
+) -> sqlx::Result<()>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query(
+        "INSERT INTO media \
+         (id, mime, byte_size, digest, storage_path, width, height, duration_ms, \
+          capture_time, thumbnail_path, created_by, created_via_proposal_id, \
+          created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(id)
+    .bind(mime)
+    .bind(byte_size)
+    .bind(digest)
+    .bind(storage_path)
+    .bind(width)
+    .bind(height)
+    .bind(duration_ms)
+    .bind(capture_time)
+    .bind(thumbnail_path)
+    .bind(created_by)
+    .bind(created_via_proposal_id)
+    .bind(now_ms)
+    .bind(now_ms)
+    .execute(executor)
+    .await
+    .map(|_| ())
+}
+
+/// The media metadata row backing `get_media`. Column order matches the
+/// `SELECT` in [`media_by_id`].
+pub(super) type MediaRowColumns = (
+    String,         // id
+    String,         // mime
+    i64,            // byte_size
+    String,         // digest
+    String,         // storage_path
+    Option<i64>,    // width
+    Option<i64>,    // height
+    Option<i64>,    // duration_ms
+    Option<i64>,    // capture_time
+    Option<String>, // thumbnail_path
+    String,         // created_by
+    Option<String>, // created_via_proposal_id
+    i64,            // created_at
+    i64,            // updated_at
+);
+
+pub(super) async fn media_by_id<'e, E>(
+    executor: E,
+    id: &str,
+) -> sqlx::Result<Option<MediaRowColumns>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_as(
+        "SELECT id, mime, byte_size, digest, storage_path, width, height, duration_ms, \
+         capture_time, thumbnail_path, created_by, created_via_proposal_id, created_at, updated_at \
+         FROM media WHERE id = ?1",
+    )
+    .bind(id)
+    .fetch_optional(executor)
+    .await
+}
+
+/// Delete a media row by id. The caller (`media::delete_media`) has already
+/// confirmed the row via `media_by_id`, so the affected count isn't needed here.
+pub(super) async fn delete_media<'e, E>(executor: E, id: &str) -> sqlx::Result<()>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query("DELETE FROM media WHERE id = ?1")
+        .bind(id)
+        .execute(executor)
+        .await
+        .map(|_| ())
+}
+
+/// Insert one `media_attachments` row. Exactly one of the four `target_*` ids is
+/// `Some`, matching `target_kind`; the table CHECK enforces that invariant.
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn insert_media_attachment<'e, E>(
+    executor: E,
+    id: &str,
+    media_id: &str,
+    target_kind: &str,
+    target_entity_id: Option<&str>,
+    target_message_id: Option<&str>,
+    target_observation_id: Option<&str>,
+    target_proposal_id: Option<&str>,
+    now_ms: i64,
+) -> sqlx::Result<()>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query(
+        "INSERT INTO media_attachments \
+         (id, media_id, target_kind, target_entity_id, target_message_id, \
+          target_observation_id, target_proposal_id, created_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(id)
+    .bind(media_id)
+    .bind(target_kind)
+    .bind(target_entity_id)
+    .bind(target_message_id)
+    .bind(target_observation_id)
+    .bind(target_proposal_id)
+    .bind(now_ms)
+    .execute(executor)
+    .await
+    .map(|_| ())
+}
+
+pub(super) async fn entity_exists<'e, E>(executor: E, entity_id: &str) -> sqlx::Result<bool>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    let row: Option<i64> = sqlx::query_scalar("SELECT 1 FROM entities WHERE id = ?1 LIMIT 1")
+        .bind(entity_id)
+        .fetch_optional(executor)
+        .await?;
+    Ok(row.is_some())
+}
+
+pub(super) async fn observation_exists<'e, E>(
+    executor: E,
+    observation_id: &str,
+) -> sqlx::Result<bool>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    let row: Option<i64> = sqlx::query_scalar("SELECT 1 FROM observations WHERE id = ?1 LIMIT 1")
+        .bind(observation_id)
+        .fetch_optional(executor)
+        .await?;
+    Ok(row.is_some())
+}
+
+pub(super) async fn proposal_exists<'e, E>(executor: E, proposal_id: &str) -> sqlx::Result<bool>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    let row: Option<i64> = sqlx::query_scalar("SELECT 1 FROM proposals WHERE id = ?1 LIMIT 1")
+        .bind(proposal_id)
+        .fetch_optional(executor)
+        .await?;
+    Ok(row.is_some())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn insert_next_observation_revision<'e, E>(
     executor: E,
