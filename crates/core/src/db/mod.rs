@@ -56,7 +56,8 @@ pub(crate) use observations::{
     ObservationFilter, ObservationInsert, ObservationInsertError, ObservationRelationInsert,
     ObservationRevisionRow, ObservationRow, ObservationSourceFilter, ObservationSourceInsert,
     ObservationUpdate, ObservationUpdateError, apply_record_observations_proposal,
-    insert_observations, observation_revisions, query_observations, update_observation,
+    insert_observations, observation_revisions, observation_schema_key, query_observations,
+    update_observation,
 };
 
 /// Current wall-clock time as ms since UNIX_EPOCH (the `*_at` columns).

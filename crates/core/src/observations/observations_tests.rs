@@ -57,7 +57,6 @@ fn habit_checkin_at(occurred_at: &str, habit_id: &str, state: &str) -> Observati
 
 fn update_from(record: ObservationRecordInput) -> ObservationUpdateInput {
     ObservationUpdateInput {
-        schema_key: record.schema_key,
         occurred_at: record.occurred_at,
         ended_at: record.ended_at,
         values: record.values,
@@ -426,44 +425,35 @@ async fn observations_update_habit_checkin_validates_relation_target() {
 }
 
 #[tokio::test]
-async fn observations_update_rejects_schema_key_changes() {
+async fn observations_update_validates_values_against_stored_schema() {
     let pool = memory_pool().await;
     let habit_id = "018f0000-0000-7000-8000-000000000301";
     seed_habit(&pool, habit_id).await;
     let recorded = record_observations(
         &pool,
         RecordObservationsInput {
-            observations: vec![bodyweight_at("2026-06-01T07:30:00", json!(72.4))],
+            observations: vec![habit_checkin_at("2026-06-01T07:30:00", habit_id, "done")],
         },
     )
     .await
-    .expect("record bodyweight");
+    .expect("record habit check-in");
 
+    // The wire no longer carries `schema_key`; `values` are validated against the
+    // schema of the STORED row (habit.checkin), so a bodyweight-shaped `values`
+    // blob fails the habit.checkin schema (its `kg` is an unsupported field)
+    // rather than being rejected as a schema change.
     let reason = update_observation(
         &pool,
         &recorded[0].id,
-        update_from(habit_checkin_at("2026-06-02T07:30:00", habit_id, "done")),
+        update_from(bodyweight_at("2026-06-02T07:30:00", json!(71.8))),
     )
     .await
-    .expect_err("schema key change is rejected");
+    .expect_err("bodyweight values rejected against stored habit.checkin schema");
     assert_eq!(
         invalid_reason(reason),
-        "observation schema_key cannot change"
+        "unsupported habit.checkin values field \"kg\""
     );
     assert_eq!(revision_count(&pool, &recorded[0].id).await, 1);
-
-    let rows = query_observations(
-        &pool,
-        ObservationQuery {
-            schema_keys: vec!["bodyweight".to_string()],
-            ..ObservationQuery::default()
-        },
-    )
-    .await
-    .expect("query after rejected schema change");
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].id, recorded[0].id);
-    assert_eq!(rows[0].values, json!({ "kg": 72.4 }));
 }
 
 async fn seed_message(pool: &SqlitePool, message_id: &str) {

@@ -139,6 +139,11 @@ pub(crate) enum FieldSpec {
     },
     /// A nested object validated by its own [`PayloadSpec`].
     Object(PayloadSpec),
+    /// An arbitrary JSON object whose keys are NOT validated here — only that the
+    /// value IS an object. Used where the keys are validated LATER against a
+    /// schema chosen at runtime (the `observation/update` envelope, whose `values`
+    /// are checked against the STORED row's schema, not the wire payload).
+    JsonObject,
     /// A nested object accepted by exactly one of a closed set of object shapes.
     /// Used where a small object is itself a tagged-ish choice, such as
     /// observation evidence naming either a Journal Entry source or a Message
@@ -426,6 +431,7 @@ fn spec_schema(spec: &FieldSpec) -> Value {
             Value::Object(array)
         }
         FieldSpec::Object(spec) | FieldSpec::HookValidated(spec) => spec.json_schema(),
+        FieldSpec::JsonObject => serde_json::json!({ "type": "object" }),
         FieldSpec::OneOfObject { variants } => {
             let one_of: Vec<Value> = variants.iter().map(PayloadSpec::json_schema).collect();
             serde_json::json!({ "oneOf": one_of })
@@ -579,6 +585,13 @@ fn check_field(field: &Field, value: &Value) -> Result<(), String> {
             Ok(())
         }
         FieldSpec::Object(spec) => spec.check(value),
+        FieldSpec::JsonObject => {
+            if value.is_object() {
+                Ok(())
+            } else {
+                Err(format!("{name} must be an object"))
+            }
+        }
         FieldSpec::OneOfObject { variants } => check_one_of(name, variants, value),
         FieldSpec::OneOfArray {
             variants,
@@ -693,11 +706,13 @@ mod observations_number_tests {
     #[test]
     fn optional_datetime_and_string_fields_reject_present_null() {
         // Pins the observation envelope's present-`null` rejection messages at the
-        // value-spec layer, independent of `oneOf` variant order. The RPC-level
-        // `observation/update` tests surface these same messages only because the
-        // matched variant is last in the union (`check_one_of` reports the last
-        // variant's error); this test keeps the guarantee bound to the field spec
-        // itself, so appending a new observation schema can't silently drop it.
+        // value-spec layer. The `observation/record` path validates each draft via a
+        // `oneOf` over the schema variants (`check_one_of` reports the last variant's
+        // error), so its RPC-level messages depend on variant order; `observation/update`
+        // now validates against a single non-discriminated envelope, so its messages
+        // surface directly. Binding the guarantee to the field spec here keeps it stable
+        // regardless of either path's variant ordering, so appending a new schema can't
+        // silently drop it.
         let spec = PayloadSpec::payload(
             "observation envelope",
             vec![Field::datetime("ended_at"), Field::optional("note", FieldSpec::string())],
@@ -712,5 +727,24 @@ mod observations_number_tests {
                 .expect_err("present-null note is rejected"),
             "note must be a string"
         );
+    }
+
+    #[test]
+    fn json_object_accepts_any_object_and_rejects_non_objects() {
+        // The opaque-`values` leaf used by the schema-agnostic observation/update
+        // envelope: it type-checks object-ness only; per-field validation runs later
+        // against the stored schema.
+        let spec = PayloadSpec::payload(
+            "update envelope",
+            vec![Field::required("values", FieldSpec::JsonObject)],
+        );
+        assert!(spec.check(&json!({ "values": {} })).is_ok());
+        assert!(spec.check(&json!({ "values": { "kg": 71.8 } })).is_ok());
+        for non_object in [json!({ "values": "x" }), json!({ "values": 1 }), json!({ "values": [] })] {
+            assert_eq!(
+                spec.check(&non_object).expect_err("non-object values is rejected"),
+                "values must be an object"
+            );
+        }
     }
 }

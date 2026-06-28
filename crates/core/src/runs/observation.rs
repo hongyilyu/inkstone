@@ -496,7 +496,6 @@ mod tests {
             json!({
                 "observation_id": observation_id.to_ascii_uppercase(),
                 "observation": {
-                    "schema_key": "bodyweight",
                     "occurred_at": "2026-06-02T07:35:00",
                     "ended_at": "2026-06-02T07:40:00",
                     "values": { "kg": 71.8 },
@@ -537,6 +536,83 @@ mod tests {
         assert_eq!(revisions[0].1, json!({ "kg": 72.4 }).to_string());
         assert_eq!(revisions[1].0, 2);
         assert_eq!(revisions[1].1, json!({ "kg": 71.8 }).to_string());
+    }
+
+    #[tokio::test]
+    async fn observation_rpc_updates_habit_checkin_and_preserves_provenance() {
+        let pool = memory_pool().await;
+        let habit_id = Uuid::now_v7();
+        let message_id = Uuid::now_v7();
+        seed_habit(&pool, habit_id).await;
+        seed_message(&pool, message_id).await;
+
+        let recorded = dispatch_rpc(
+            &pool,
+            "observation/record",
+            json!({
+                "evidence": { "message_id": message_id.to_string() },
+                "observations": [{
+                    "schema_key": "habit.checkin",
+                    "occurred_at": "2026-06-01T07:30:00",
+                    "values": { "habit_id": habit_id.to_string(), "state": "done" }
+                }]
+            }),
+        )
+        .await;
+        assert!(recorded.get("error").is_none(), "{recorded:?}");
+        let observation_id = recorded["result"]["observation_ids"][0]
+            .as_str()
+            .expect("observation id")
+            .to_string();
+
+        // The update carries no `schema_key`; the stored habit.checkin schema is
+        // derived from the row, so a habit.checkin-shaped `values` correction is
+        // accepted.
+        let updated = dispatch_rpc(
+            &pool,
+            "observation/update",
+            json!({
+                "observation_id": observation_id,
+                "observation": {
+                    "occurred_at": "2026-06-02T07:30:00",
+                    "values": { "habit_id": habit_id.to_string(), "state": "skipped" }
+                }
+            }),
+        )
+        .await;
+        assert!(updated.get("error").is_none(), "{updated:?}");
+        assert_eq!(updated["result"]["observation_id"], json!(observation_id));
+
+        let queried = dispatch_rpc(
+            &pool,
+            "observation/query",
+            json!({ "schema_keys": ["habit.checkin"] }),
+        )
+        .await;
+        let row = &queried["result"]["observations"][0];
+        assert_eq!(row["id"], json!(observation_id));
+        assert_eq!(row["occurred_at"], json!("2026-06-02T07:30:00"));
+        assert_eq!(row["values"]["state"], json!("skipped"));
+        // Provenance is immutable across an update.
+        assert_eq!(
+            row["source"]["source_message_id"],
+            json!(message_id.to_string())
+        );
+        assert_eq!(row["source"]["relation"], json!("evidenced_by"));
+
+        let revisions: Vec<(i64, String)> = sqlx::query_as(
+            "SELECT seq, schema_key \
+             FROM observation_revisions \
+             WHERE observation_id = ?1 \
+             ORDER BY seq",
+        )
+        .bind(&observation_id)
+        .fetch_all(&pool)
+        .await
+        .expect("observation revisions");
+        assert_eq!(revisions.len(), 2);
+        assert_eq!(revisions[1].0, 2);
+        assert_eq!(revisions[1].1, "habit.checkin");
     }
 
     #[tokio::test]
@@ -849,28 +925,22 @@ mod tests {
             .as_str()
             .expect("observation id");
 
-        // These two cases assert the *exact* null-field message through the full RPC
-        // path. That depends on variant order: `check_one_of` surfaces the last
-        // `oneOf` variant's error, so the payload uses `nutrition.intake` (currently
-        // last) to get its field message rather than a sibling's `schema_key`
-        // mismatch. (Payload validation runs before the stored-schema check, so the
-        // stored `habit.checkin` schema is irrelevant here.) The order-INDEPENDENT
-        // guarantee — that a present-null `ended_at`/`note` is rejected with
-        // "must be a string" — is pinned directly on the field spec in
-        // `field_spec::observations_number_tests::optional_datetime_and_string_fields_reject_present_null`;
-        // if a future schema is appended after `nutrition.intake`, update the
-        // `schema_key` here to whichever variant is last (that test stays green).
+        // The update envelope is a single non-discriminated object (#256): it
+        // carries no `schema_key`, and its `occurred_at`/`ended_at`/`note` fields
+        // surface their own type errors directly (no `oneOf` variant-order
+        // dependence). `values` are only type-checked as an object at the envelope;
+        // their keys are validated later against the stored schema.
         let update_with_null_ended_at = dispatch_rpc(
             &pool,
             "observation/update",
             json!({
                 "observation_id": observation_id,
                 "observation": {
-                    "schema_key": "nutrition.intake",
                     "occurred_at": "2026-06-01T07:30:00",
                     "ended_at": null,
                     "values": {
-                        "kcal": 1
+                        "habit_id": valid_habit_id.to_string(),
+                        "state": "done"
                     }
                 }
             }),
@@ -884,10 +954,10 @@ mod tests {
             json!({
                 "observation_id": observation_id,
                 "observation": {
-                    "schema_key": "nutrition.intake",
                     "occurred_at": "2026-06-01T07:30:00",
                     "values": {
-                        "kcal": 1
+                        "habit_id": valid_habit_id.to_string(),
+                        "state": "done"
                     },
                     "note": null
                 }
@@ -896,13 +966,33 @@ mod tests {
         .await;
         assert_invalid_params_contains(&update_with_null_note, "note must be a string");
 
-        let update_with_evidence = dispatch_rpc(
+        let update_with_stray_schema_key = dispatch_rpc(
             &pool,
             "observation/update",
             json!({
                 "observation_id": observation_id,
                 "observation": {
                     "schema_key": "habit.checkin",
+                    "occurred_at": "2026-06-01T07:30:00",
+                    "values": {
+                        "habit_id": valid_habit_id.to_string(),
+                        "state": "done"
+                    }
+                }
+            }),
+        )
+        .await;
+        assert_invalid_params_contains(
+            &update_with_stray_schema_key,
+            "unsupported observation field",
+        );
+
+        let update_with_evidence = dispatch_rpc(
+            &pool,
+            "observation/update",
+            json!({
+                "observation_id": observation_id,
+                "observation": {
                     "occurred_at": "2026-06-01T07:30:00",
                     "values": {
                         "habit_id": valid_habit_id.to_string(),
@@ -1040,7 +1130,6 @@ mod tests {
             json!({
                 "observation_id": observation_id,
                 "observation": {
-                    "schema_key": "bodyweight",
                     "occurred_at": "2026-06-02T07:35:00",
                     "ended_at": "2026-06-02T07:40:00",
                     "values": { "kg": 71.8 },
@@ -1152,7 +1241,6 @@ mod tests {
             json!({
                 "observation_id": observation_id,
                 "observation": {
-                    "schema_key": "bodyweight",
                     "occurred_at": "2026-06-02T07:35:00",
                     "values": { "kg": 71.8 }
                 }
