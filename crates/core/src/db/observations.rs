@@ -123,8 +123,6 @@ pub(crate) enum ObservationInsertError {
 #[derive(Debug)]
 pub(crate) enum ObservationUpdateError {
     InvalidRelation(String),
-    SchemaMismatch,
-    NotFound,
     Sqlx(sqlx::Error),
 }
 
@@ -236,14 +234,6 @@ pub(crate) async fn update_observation(
 ) -> Result<(), ObservationUpdateError> {
     let mut tx = pool.begin().await?;
 
-    let current_schema_key = queries::observation_schema_key(&mut *tx, &row.id).await?;
-    let Some(current_schema_key) = current_schema_key else {
-        return Err(ObservationUpdateError::NotFound);
-    };
-    if current_schema_key != row.schema_key {
-        return Err(ObservationUpdateError::SchemaMismatch);
-    }
-
     if let Some(reason) = invalid_relation_reason(&mut tx, &row.relations).await? {
         return Err(ObservationUpdateError::InvalidRelation(reason));
     }
@@ -276,6 +266,16 @@ pub(crate) async fn update_observation(
 
     tx.commit().await?;
     Ok(())
+}
+
+/// The stored `schema_key` of an Observation, or `None` if no such row exists.
+/// `observation/update` derives the schema from the stored row (#256), so the
+/// update path loads this before its write transaction.
+pub(crate) async fn observation_schema_key(
+    pool: &SqlitePool,
+    observation_id: &str,
+) -> sqlx::Result<Option<String>> {
+    queries::observation_schema_key(pool, observation_id).await
 }
 
 async fn invalid_relation_reason(

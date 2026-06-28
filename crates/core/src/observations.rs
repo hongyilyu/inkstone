@@ -34,7 +34,6 @@ pub(crate) struct ObservationRecordInput {
 
 #[derive(Clone, Debug)]
 pub(crate) struct ObservationUpdateInput {
-    pub(crate) schema_key: String,
     pub(crate) occurred_at: String,
     pub(crate) ended_at: Option<String>,
     pub(crate) values: Value,
@@ -124,8 +123,15 @@ pub(crate) async fn update_observation(
     let observation_id =
         normalize_uuid(observation_id, "observation_id").map_err(ObservationError::Invalid)?;
 
+    // The schema is single-sourced from the stored row (#256): load it before the
+    // write tx so `values` validate against the stored schema, not a wire payload.
+    let stored_schema_key = db::observation_schema_key(pool, &observation_id)
+        .await
+        .map_err(|e| ObservationError::Internal(e.into()))?
+        .ok_or_else(|| ObservationError::Invalid("observation not found".to_string()))?;
+
     let now_ms = db::now_ms();
-    let update = prepare_observation_update(observation_id.clone(), record)?;
+    let update = prepare_observation_update(observation_id.clone(), &stored_schema_key, record)?;
     db::update_observation(pool, update, now_ms)
         .await
         .map_err(observation_update_error)?;
@@ -191,9 +197,16 @@ pub(crate) fn observation_update_payload_spec() -> PayloadSpec {
             Field::required("observation_id", FieldSpec::Uuid { schema_regex: true }),
             Field::required(
                 "observation",
-                FieldSpec::OneOfObject {
-                    variants: record_observation_payload_variants(),
-                },
+                FieldSpec::Object(PayloadSpec::nested(
+                    "observation",
+                    ObjErr::JsonObject,
+                    vec![
+                        Field::datetime("occurred_at").require(),
+                        Field::datetime("ended_at"),
+                        Field::required("values", FieldSpec::JsonObject),
+                        Field::optional("note", FieldSpec::string()),
+                    ],
+                )),
             ),
         ],
     )
@@ -235,7 +248,6 @@ pub(crate) fn observation_update_input_from_params(
     (
         params.observation_id.to_string(),
         ObservationUpdateInput {
-            schema_key: draft.schema_key,
             occurred_at: draft.occurred_at,
             ended_at: draft.ended_at,
             values: draft.values,
@@ -343,10 +355,11 @@ pub(crate) fn prepare_observations(
 
 fn prepare_observation_update(
     id: String,
+    stored_schema_key: &str,
     record: ObservationUpdateInput,
 ) -> Result<db::ObservationUpdate, ObservationError> {
     let snapshot = prepare_observation_snapshot(
-        record.schema_key,
+        stored_schema_key.to_string(),
         record.occurred_at,
         record.ended_at,
         record.values,
@@ -450,12 +463,6 @@ pub(crate) fn observation_insert_error(e: db::ObservationInsertError) -> Observa
 pub(crate) fn observation_update_error(e: db::ObservationUpdateError) -> ObservationError {
     match e {
         db::ObservationUpdateError::InvalidRelation(reason) => ObservationError::Invalid(reason),
-        db::ObservationUpdateError::SchemaMismatch => {
-            ObservationError::Invalid("observation schema_key cannot change".to_string())
-        }
-        db::ObservationUpdateError::NotFound => {
-            ObservationError::Invalid("observation not found".to_string())
-        }
         db::ObservationUpdateError::Sqlx(err) => ObservationError::Internal(err.into()),
     }
 }

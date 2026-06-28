@@ -127,7 +127,6 @@ describe("ObservationUpdateParams", () => {
 		const wire = {
 			observation_id: "0190d3c1-0000-7000-8000-000000000001",
 			observation: {
-				schema_key: "bodyweight",
 				occurred_at: "2026-06-03T07:30:00",
 				ended_at: "2026-06-03T07:35:00",
 				values: { kg: 71.8 },
@@ -143,7 +142,6 @@ describe("ObservationUpdateParams", () => {
 		const bare = {
 			observation_id: "0190d3c1-0000-7000-8000-000000000001",
 			observation: {
-				schema_key: "bodyweight",
 				occurred_at: "2026-06-03T07:30:00",
 				values: { kg: 71.8 },
 			},
@@ -155,6 +153,20 @@ describe("ObservationUpdateParams", () => {
 		expect(() =>
 			S.decodeUnknownSync(ObservationUpdateParams)({
 				observation_id: "not-a-uuid",
+				observation: {
+					occurred_at: "2026-06-03T07:30:00",
+					values: { kg: 71.8 },
+				},
+			}),
+		).toThrow();
+	});
+
+	it("rejects a stray schema_key on the replacement observation", () => {
+		expect(() =>
+			S.decodeUnknownSync(ObservationUpdateParams, {
+				onExcessProperty: "error",
+			})({
+				observation_id: "0190d3c1-0000-7000-8000-000000000001",
 				observation: {
 					schema_key: "bodyweight",
 					occurred_at: "2026-06-03T07:30:00",
@@ -171,7 +183,6 @@ describe("ObservationUpdateParams", () => {
 			})({
 				observation_id: "0190d3c1-0000-7000-8000-000000000001",
 				observation: {
-					schema_key: "bodyweight",
 					occurred_at: "2026-06-03T07:30:00",
 					values: { kg: 71.8 },
 					evidence: {

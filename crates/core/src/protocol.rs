@@ -463,6 +463,22 @@ pub struct ObservationRecordResult {
     pub observation_ids: Vec<String>,
 }
 
+/// The mutable fact fields of an `observation/update` replacement (#256). Unlike
+/// [`ObservationRecordDraft`], this carries NO `schema_key`: the schema is
+/// single-sourced from the stored row, so a stray `schema_key` (or any other
+/// unknown field) is hard-rejected by `deny_unknown_fields`. `values` are
+/// validated against the stored row's schema by Core, not the wire payload.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ObservationUpdateDraft {
+    pub occurred_at: String,
+    #[serde(default)]
+    pub ended_at: Option<String>,
+    pub values: serde_json::Value,
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
 /// `observation/update` params: the target Observation id plus a source-free
 /// replacement draft. Provenance stays immutable; corrections only change the
 /// current fact fields and append `observation_revisions`.
@@ -470,7 +486,7 @@ pub struct ObservationRecordResult {
 #[serde(deny_unknown_fields)]
 pub struct ObservationUpdateParams {
     pub observation_id: uuid::Uuid,
-    pub observation: ObservationRecordDraft,
+    pub observation: ObservationUpdateDraft,
 }
 
 /// `observation/update` result: the canonical id of the updated Observation.
@@ -1623,7 +1639,6 @@ mod mirror_tests {
         let wire = json!({
             "observation_id": UUID_A,
             "observation": {
-                "schema_key": "bodyweight",
                 "occurred_at": "2026-06-03T07:30:00",
                 "ended_at": "2026-06-03T07:35:00",
                 "values": { "kg": 71.8 },
@@ -1632,7 +1647,6 @@ mod mirror_tests {
         });
         let p: ObservationUpdateParams = serde_json::from_value(wire).unwrap();
         assert_eq!(p.observation_id.to_string(), UUID_A);
-        assert_eq!(p.observation.schema_key, "bodyweight");
         assert_eq!(p.observation.ended_at.as_deref(), Some("2026-06-03T07:35:00"));
         assert_eq!(p.observation.values["kg"], json!(71.8));
         assert_eq!(p.observation.note.as_deref(), Some("corrected"));
@@ -1643,7 +1657,6 @@ mod mirror_tests {
         let wire = json!({
             "observation_id": "not-a-uuid",
             "observation": {
-                "schema_key": "bodyweight",
                 "occurred_at": "2026-06-03T07:30:00",
                 "values": { "kg": 71.8 }
             }

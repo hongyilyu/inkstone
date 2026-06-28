@@ -463,9 +463,22 @@ export const observationRecordDraft = S.Union(
 	nutritionIntakeObservationRecordDraft,
 );
 
+// The `observation/update` replacement draft (#256) carries only mutable fact
+// fields — no `schema_key`. Core derives the schema from the stored row and
+// validates `values` against it, so `values` is an arbitrary JSON object here
+// (mirroring Rust `FieldSpec::JsonObject`: require an object, don't constrain
+// keys). A stray `schema_key` is rejected as an excess property, matching the
+// Rust envelope's `deny_unknown_fields`.
+const observationUpdateDraft = S.Struct({
+	occurred_at: localDateTime,
+	ended_at: S.optional(localDateTime),
+	values: S.Record({ key: S.String, value: S.Unknown }),
+	note: S.optional(S.String),
+});
+
 export const observationUpdateParams = S.Struct({
 	observation_id: patternedUuid,
-	observation: observationRecordDraft,
+	observation: observationUpdateDraft,
 });
 
 export const observationEvidence = S.Union(

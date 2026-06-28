@@ -1,7 +1,6 @@
 {
   "observation_id": "0190d3c1-0000-7000-8000-000000000001",
   "observation": {
-    "schema_key": "bodyweight",
     "occurred_at": "2026-06-03T07:30:00",
     "values": {
       "kg": 71.8
