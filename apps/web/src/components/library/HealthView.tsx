@@ -59,8 +59,13 @@ export function HealthView({
 
 	// Chip set = All + one chip per KNOWN schema actually present in the data, so
 	// unknown-schema rows stay reachable under All without manufacturing a chip.
+	// The active `filter` is always kept (it's route-controlled — e.g. a bookmarked
+	// `?schema=bodyweight` is valid even with zero bodyweight rows), so the user can
+	// always see and clear the filter they're on.
 	const present = new Set(items.map((i) => i.schemaKey));
-	const schemaChips = KNOWN_SCHEMAS.filter((key) => present.has(key));
+	const schemaChips = KNOWN_SCHEMAS.filter(
+		(key) => present.has(key) || key === filter,
+	);
 
 	const visible =
 		filter === undefined ? items : items.filter((i) => i.schemaKey === filter);
@@ -116,11 +121,21 @@ export function HealthView({
 							description="Something went wrong reading your observations. Try reloading."
 						/>
 					) : days.length === 0 ? (
-						<EmptyState
-							icon={HeartPulse}
-							title="No observations yet"
-							description="Bodyweight, habits, and other observations show up here in time order as they're recorded."
-						/>
+						filter !== undefined && items.length > 0 ? (
+							// Some observations exist, just none under the active filter — say
+							// so, rather than the misleading "workspace is empty" copy.
+							<EmptyState
+								icon={HeartPulse}
+								title={`No ${SCHEMA_LABELS[filter].toLowerCase()} observations yet`}
+								description="Try a different filter, or clear it to see your other observations."
+							/>
+						) : (
+							<EmptyState
+								icon={HeartPulse}
+								title="No observations yet"
+								description="Bodyweight, habits, and other observations show up here in time order as they're recorded."
+							/>
+						)
 					) : (
 						<ol className="flex flex-col gap-6">
 							{days.map((day) => (

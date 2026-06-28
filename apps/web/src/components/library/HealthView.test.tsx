@@ -172,6 +172,17 @@ describe("HealthView", () => {
 		expect(screen.queryByText(/couldn't load health/i)).not.toBeInTheDocument();
 	});
 
+	it("keeps the active filter chip and shows filter-specific empty copy when the filter matches nothing", () => {
+		// Route-controlled filter on a schema with zero rows (e.g. a bookmarked
+		// `?schema=habit.checkin` while only bodyweight exists): the chip must stay
+		// visible to clear, and the empty copy must not claim the workspace is empty.
+		mockData([bodyweight]); // only a bodyweight row exists
+		render(<HealthView filter="habit.checkin" onFilterChange={() => {}} />);
+		expect(screen.getByRole("button", { name: /habits/i })).toBeInTheDocument();
+		expect(screen.getByText(/no habits observations yet/i)).toBeInTheDocument();
+		expect(screen.queryByText(/^no observations yet/i)).not.toBeInTheDocument();
+	});
+
 	it("renders the danger empty state on read error", () => {
 		useObservations.mockReturnValue({
 			data: undefined,
