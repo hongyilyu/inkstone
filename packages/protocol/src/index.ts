@@ -1,5 +1,11 @@
 import { Schema as S } from "effect";
 
+import {
+	observationEvidence,
+	observationRecordDraft,
+	recordObservations,
+} from "./payloads.js";
+
 export * from "./payloads.js";
 
 export const PostMessageParams = S.Struct({
@@ -158,27 +164,15 @@ export type RecurrencePreviewResult = S.Schema.Type<
 	typeof RecurrencePreviewResult
 >;
 
-export const ObservationRecordDraft = S.Struct({
-	schema_key: S.String,
-	occurred_at: S.String,
-	ended_at: S.optional(S.String),
-	values: S.Unknown,
-	note: S.optional(S.String),
-});
+export const ObservationRecordDraft = observationRecordDraft;
 export type ObservationRecordDraft = S.Schema.Type<
 	typeof ObservationRecordDraft
 >;
 
-export const ObservationEvidence = S.Struct({
-	journal_entry_id: S.optional(S.String),
-	message_id: S.optional(S.String),
-});
+export const ObservationEvidence = observationEvidence;
 export type ObservationEvidence = S.Schema.Type<typeof ObservationEvidence>;
 
-export const ObservationRecordParams = S.Struct({
-	observations: S.Array(ObservationRecordDraft),
-	evidence: S.optional(ObservationEvidence),
-});
+export const ObservationRecordParams = recordObservations;
 export type ObservationRecordParams = S.Schema.Type<
 	typeof ObservationRecordParams
 >;
@@ -422,7 +416,7 @@ export type ResolvedNode = S.Schema.Type<typeof ResolvedNode>;
 
 /** `proposal/get` result: the Run's pending Proposal. `resolved_plan` is present
  * (per-node create/reuse/ambiguous) only for an `apply_intent_graph` proposal
- * (ADR-0042); omitted for the 13 single-entity kinds. */
+ * (ADR-0042); omitted for non-graph proposal kinds. */
 export const ProposalGetResult = S.Struct({
 	proposal_id: S.String,
 	run_id: S.String,
@@ -436,7 +430,7 @@ export const ProposalGetResult = S.Struct({
 export type ProposalGetResult = S.Schema.Type<typeof ProposalGetResult>;
 
 /** The closed set of agent-proposable mutation kinds a Proposal can carry
- * (ADR-0018, ADR-0042 adds `apply_intent_graph`). Mirrors `ProposableMutation`
+ * (ADR-0018, ADR-0042, ADR-0053). Mirrors `ProposableMutation`
  * (`mutation.rs`) / the `schemas` registry; the Client switches its Proposal
  * rendering on this. */
 export const ProposalKind = S.Literal(
@@ -454,6 +448,7 @@ export const ProposalKind = S.Literal(
 	"update_todo",
 	"delete_todo",
 	"apply_intent_graph",
+	"record_observations",
 );
 export type ProposalKind = S.Schema.Type<typeof ProposalKind>;
 
@@ -469,11 +464,10 @@ export const NodeDecision = S.Struct({
 });
 export type NodeDecision = S.Schema.Type<typeof NodeDecision>;
 
-/** `proposal/decide` params: the user's Decision on a pending Proposal. The 13
- * single-entity kinds use the scalar `decision` (+ optional `edited_payload`);
- * `apply_intent_graph` (ADR-0042) instead carries a `decisions` vector of
- * per-node decisions keyed by handle. The vector is typed here in slice 1; Core
- * wires its apply in a later slice. */
+/** `proposal/decide` params: the user's Decision on a pending Proposal.
+ * Non-graph kinds use the scalar `decision` (+ optional `edited_payload`);
+ * `apply_intent_graph` (ADR-0042) can also carry a `decisions` vector of
+ * per-node decisions keyed by handle. */
 export const ProposalDecideParams = S.Struct({
 	proposal_id: S.String,
 	decision: S.Literal("accept", "reject", "edit"),

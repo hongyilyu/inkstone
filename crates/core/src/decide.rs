@@ -21,11 +21,39 @@ enum Decision {
     Edit,
 }
 
+#[derive(Clone, Copy)]
+enum StoredMutation {
+    Proposable(ProposableMutation),
+    NonProposable(MutationKind),
+}
+
+impl StoredMutation {
+    fn from_wire(value: &str) -> Option<Self> {
+        if let Some(proposable) = ProposableMutation::from_wire(value) {
+            return Some(StoredMutation::Proposable(proposable));
+        }
+        MutationKind::from_wire(value).map(StoredMutation::NonProposable)
+    }
+
+    fn proposable(self) -> Result<ProposableMutation, DecideError> {
+        match self {
+            StoredMutation::Proposable(proposable) => Ok(proposable),
+            StoredMutation::NonProposable(kind) => Err(DecideError::Invalid(format!(
+                "{} cannot be proposed",
+                kind.as_wire()
+            ))),
+        }
+    }
+}
+
 /// A successful decide: accepted (an Entity landed) or rejected. Both carry the
 /// `run_id` so the handler can push `proposal/changed` without re-reading it.
 #[derive(Debug)]
 pub enum DecideOutcome {
-    Accepted { run_id: Uuid, entity_id: String },
+    Accepted {
+        run_id: Uuid,
+        entity_id: Option<String>,
+    },
     Rejected { run_id: Uuid },
 }
 
@@ -101,7 +129,7 @@ where
     // Resolve the stored `mutation_kind` once (the single string→type point on the
     // agent path). An unknown stored kind is corrupt data Core itself wrote — a
     // LOUD `Internal`, not a client `Invalid` (the propose schema cannot emit one).
-    let kind = MutationKind::from_wire(&proposal.mutation_kind).ok_or_else(|| {
+    let kind = StoredMutation::from_wire(&proposal.mutation_kind).ok_or_else(|| {
         DecideError::Internal(anyhow::anyhow!(
             "stored proposal mutation_kind {:?} is not a known kind",
             proposal.mutation_kind
@@ -160,7 +188,7 @@ async fn compute_outcome(
     pool: &SqlitePool,
     proposal_id: &str,
     proposal: &db::DecidableProposal,
-    kind: MutationKind,
+    kind: StoredMutation,
     decision: &Decision,
     edited_payload: Option<&serde_json::Value>,
     decisions: Option<&[NodeDecision]>,
@@ -211,18 +239,30 @@ async fn prior_outcome(
     pool: &SqlitePool,
     proposal_id: &str,
     proposal: &db::DecidableProposal,
-    kind: MutationKind,
+    kind: StoredMutation,
 ) -> Result<DecideOutcome, DecideError> {
     match proposal.status.as_str() {
         "rejected" => Ok(DecideOutcome::Rejected {
             run_id: proposal.run_id,
         }),
         "accepted" => {
+            let proposable = kind.proposable()?;
+            if proposable == ProposableMutation::RecordObservations {
+                return Ok(DecideOutcome::Accepted {
+                    run_id: proposal.run_id,
+                    entity_id: None,
+                });
+            }
+            let entity_kind = proposable.entity_kind().ok_or_else(|| {
+                DecideError::Internal(anyhow::anyhow!(
+                    "accepted proposal {proposal_id} has no entity-backed kind"
+                ))
+            })?;
             let entity_id = db::entity_id_for_proposal(pool, proposal_id)
                 .await
                 .map_err(|e| DecideError::Internal(e.into()))?
                 .or_else(|| {
-                    mutation::target_entity_id(kind.describe(), &proposal.payload)
+                    mutation::target_entity_id(entity_kind.describe(), &proposal.payload)
                         .map(str::to_string)
                 })
                 .ok_or_else(|| {
@@ -232,7 +272,7 @@ async fn prior_outcome(
                 })?;
             Ok(DecideOutcome::Accepted {
                 run_id: proposal.run_id,
-                entity_id,
+                entity_id: Some(entity_id),
             })
         }
         other => Err(DecideError::Internal(anyhow::anyhow!(
@@ -252,7 +292,7 @@ async fn apply_or_reject(
     pool: &SqlitePool,
     proposal_id: &str,
     proposal: &db::DecidableProposal,
-    kind: MutationKind,
+    kind: StoredMutation,
     decision: &Decision,
     edited_payload: Option<&serde_json::Value>,
     decisions: Option<&[NodeDecision]>,
@@ -303,8 +343,7 @@ async fn apply_or_reject(
     // bookmark / habit — the propose schema cannot emit them) is a graceful
     // `Invalid`, replacing the former render_accept panic. Done AFTER the reject
     // branch so a corrupt proposal can still be rejected.
-    let proposable = ProposableMutation::try_from(kind)
-        .map_err(|e| DecideError::Invalid(format!("{} cannot be proposed", e.0.as_wire())))?;
+    let proposable = kind.proposable()?;
 
     // The intent graph (ADR-0042) is not a single-entity mutation, so it takes a
     // SIBLING apply path (`db::apply_intent_graph_proposal`) rather than
@@ -316,7 +355,7 @@ async fn apply_or_reject(
     // dropped. The structural validate gate (graph shape) still runs inside
     // `apply_intent_graph`; the run-independent target check is a no-op for the
     // graph in slice 2 (links land in slice 4).
-    if kind == MutationKind::ApplyIntentGraph {
+    if proposable == ProposableMutation::ApplyIntentGraph {
         if matches!(decision, Decision::Edit) {
             return Err(DecideError::Invalid(
                 "apply_intent_graph does not support edit".to_string(),
@@ -326,7 +365,6 @@ async fn apply_or_reject(
             pool,
             proposal,
             proposal_id,
-            proposable,
             decisions,
             idempotency_key,
         )
@@ -346,11 +384,14 @@ async fn apply_or_reject(
 
     let edited_payload = match decision {
         Decision::Edit => match edited_payload {
-            Some(payload) => Some(preserve_update_target_entity_id(
-                kind,
-                &proposal.payload,
-                payload,
-            )?),
+            Some(payload) => match proposable.entity_kind() {
+                Some(kind) => Some(preserve_update_target_entity_id(
+                    kind,
+                    &proposal.payload,
+                    payload,
+                )?),
+                None => Some(payload.clone()),
+            },
             None => {
                 return Err(DecideError::Invalid(
                     "edit requires edited_payload".to_string(),
@@ -361,6 +402,25 @@ async fn apply_or_reject(
     };
     let edited_payload = edited_payload.as_ref();
     let applied_payload = edited_payload.unwrap_or(&proposal.payload);
+
+    if proposable == ProposableMutation::RecordObservations {
+        return apply_record_observations(
+            pool,
+            proposal,
+            proposal_id,
+            applied_payload,
+            edited_payload,
+            idempotency_key,
+        )
+        .await;
+    }
+
+    let kind = proposable.entity_kind().ok_or_else(|| {
+        DecideError::Internal(anyhow::anyhow!(
+            "{} has no Entity mutation kind",
+            proposable.as_wire()
+        ))
+    })?;
 
     entities::validate(kind, applied_payload).map_err(DecideError::Invalid)?;
     validate_mutation_target(pool, proposal.run_id, kind, applied_payload).await?;
@@ -379,7 +439,7 @@ async fn apply_or_reject(
         |entity_id| {
             serde_json::json!({
                 "decision": "accept",
-                "content": entities::render_accept(proposable, applied_payload, Some(entity_id)),
+                "content": entities::render_accept(kind, applied_payload, Some(entity_id)),
             })
             .to_string()
         },
@@ -387,9 +447,59 @@ async fn apply_or_reject(
     )
     .await
     {
-        Ok(entity_id) => Ok(DecideOutcome::Accepted { run_id, entity_id }),
+        Ok(entity_id) => Ok(DecideOutcome::Accepted {
+            run_id,
+            entity_id: Some(entity_id),
+        }),
         Err(e) => Err(e.into()),
     }
+}
+
+async fn apply_record_observations(
+    pool: &SqlitePool,
+    proposal: &db::DecidableProposal,
+    proposal_id: &str,
+    applied_payload: &serde_json::Value,
+    edited_payload: Option<&serde_json::Value>,
+    idempotency_key: Option<&str>,
+) -> Result<DecideOutcome, DecideError> {
+    let run_id = proposal.run_id;
+    let input = crate::observations::record_observations_input_from_payload(applied_payload)
+        .map_err(DecideError::Invalid)?;
+    let now_ms = db::now_ms();
+    let (inserts, observations) = crate::observations::prepare_observations(
+        input,
+        "proposal",
+        Some(proposal_id),
+        now_ms,
+    )
+    .map_err(|err| match err {
+        crate::observations::ObservationError::Invalid(reason) => DecideError::Invalid(reason),
+        crate::observations::ObservationError::Internal(err) => DecideError::Internal(err),
+    })?;
+    let decision_result_payload = serde_json::json!({
+        "decision": "accept",
+        "content": crate::observations::render_accept(&observations),
+    })
+    .to_string();
+
+    db::apply_record_observations_proposal(
+        pool,
+        run_id,
+        proposal_id,
+        &proposal.tool_call_id,
+        inserts,
+        edited_payload,
+        idempotency_key,
+        &decision_result_payload,
+        now_ms,
+    )
+    .await?;
+
+    Ok(DecideOutcome::Accepted {
+        run_id,
+        entity_id: None,
+    })
 }
 
 /// The intent-graph accept path (ADR-0042): structurally validate the stored
@@ -403,7 +513,6 @@ async fn apply_intent_graph(
     pool: &SqlitePool,
     proposal: &db::DecidableProposal,
     proposal_id: &str,
-    proposable: ProposableMutation,
     decisions: Option<&[NodeDecision]>,
     idempotency_key: Option<&str>,
 ) -> Result<DecideOutcome, DecideError> {
@@ -432,7 +541,7 @@ async fn apply_intent_graph(
         |entity_id| {
             serde_json::json!({
                 "decision": "accept",
-                "content": entities::render_accept(proposable, &proposal.payload, Some(entity_id)),
+                "content": entities::render_accept(kind, &proposal.payload, Some(entity_id)),
             })
             .to_string()
         },
@@ -443,7 +552,10 @@ async fn apply_intent_graph(
         // The decision vector accepted at least one node — the anchor is the JE
         // (or the first created entity for a JE-less graph).
         Ok(db::IntentGraphOutcome::Applied(entity_id)) => {
-            Ok(DecideOutcome::Accepted { run_id, entity_id })
+            Ok(DecideOutcome::Accepted {
+                run_id,
+                entity_id: Some(entity_id),
+            })
         }
         // The decision vector rejected EVERY node (ADR-0042: a vector rejecting all
         // nodes is effectively a `reject`). The resolver flipped the Proposal
@@ -1033,7 +1145,10 @@ mod tests {
         .expect("accept succeeds");
 
         let entity_id = match outcome {
-            DecideOutcome::Accepted { entity_id, .. } => entity_id,
+            DecideOutcome::Accepted {
+                entity_id: Some(entity_id),
+                ..
+            } => entity_id,
             other => panic!("expected Accepted, got {other:?}"),
         };
         assert!(!entity_id.is_empty(), "accept yields an entity id");
@@ -1113,7 +1228,10 @@ mod tests {
         .expect("edit succeeds");
 
         let entity_id = match outcome {
-            DecideOutcome::Accepted { entity_id, .. } => entity_id,
+            DecideOutcome::Accepted {
+                entity_id: Some(entity_id),
+                ..
+            } => entity_id,
             other => panic!("expected Accepted, got {other:?}"),
         };
         assert_eq!(
@@ -1325,7 +1443,8 @@ mod tests {
         match outcome {
             DecideOutcome::Accepted { entity_id, .. } => {
                 assert_eq!(
-                    entity_id, prior_entity,
+                    entity_id,
+                    Some(prior_entity),
                     "recovery returns the prior entity id"
                 );
             }
@@ -1368,7 +1487,8 @@ mod tests {
         match outcome {
             DecideOutcome::Accepted { entity_id, .. } => {
                 assert_eq!(
-                    entity_id, prior_entity,
+                    entity_id,
+                    Some(prior_entity),
                     "keyed replay returns the prior entity id"
                 );
             }
@@ -1409,7 +1529,8 @@ mod tests {
         match outcome {
             DecideOutcome::Accepted { entity_id, .. } => {
                 assert_eq!(
-                    entity_id, prior_entity,
+                    entity_id,
+                    Some(prior_entity),
                     "recovery returns the prior entity id"
                 );
             }
@@ -1807,7 +1928,10 @@ mod tests {
         .expect("graph accept succeeds");
 
         let entity_id = match outcome {
-            DecideOutcome::Accepted { entity_id, .. } => entity_id,
+            DecideOutcome::Accepted {
+                entity_id: Some(entity_id),
+                ..
+            } => entity_id,
             other => panic!("expected Accepted, got {other:?}"),
         };
 
@@ -2429,7 +2553,10 @@ mod tests {
         .expect("woven graph accept succeeds");
 
         let anchor = match outcome {
-            DecideOutcome::Accepted { entity_id, .. } => entity_id,
+            DecideOutcome::Accepted {
+                entity_id: Some(entity_id),
+                ..
+            } => entity_id,
             other => panic!("expected Accepted, got {other:?}"),
         };
 
@@ -2623,7 +2750,10 @@ mod tests {
         .expect("linked graph accept succeeds");
 
         let anchor = match outcome {
-            DecideOutcome::Accepted { entity_id, .. } => entity_id,
+            DecideOutcome::Accepted {
+                entity_id: Some(entity_id),
+                ..
+            } => entity_id,
             other => panic!("expected Accepted, got {other:?}"),
         };
 

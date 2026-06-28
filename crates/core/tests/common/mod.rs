@@ -25,9 +25,8 @@ use tokio_tungstenite::tungstenite::Message;
 pub const DEFAULT_PORT: u16 = 8765;
 
 /// The websocket transport every test threads through [`next_text`].
-pub type Ws = tokio_tungstenite::WebSocketStream<
-    tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
->;
+pub type Ws =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 /// Budget for the boot announce-poll and [`next_text`]. Generous so slow boot
 /// paths never flake; only a hang guard, never asserted on.
@@ -57,7 +56,11 @@ pub fn tsx_bin() -> PathBuf {
 /// Absolute path to a fixture under `crates/core/tests/fixtures/`.
 pub fn fixture_path(file: &str) -> PathBuf {
     let fixture = repo_root().join("crates/core/tests/fixtures").join(file);
-    assert!(fixture.exists(), "fixture not found at {}", fixture.display());
+    assert!(
+        fixture.exists(),
+        "fixture not found at {}",
+        fixture.display()
+    );
     fixture
 }
 

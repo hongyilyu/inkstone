@@ -13,8 +13,8 @@ ADR anchor: `docs/adr/0053-observation-records.md`.
 | Phase 1 | Separate Observation substrate with relation-free `bodyweight` records. | Landed | Relation fields, Habit check-ins, proposals, UI, correction history. |
 | Phase 2 | Closed `EntityTypeSpec` policy table for canonical Entity Types. | Landed | New tracker schemas, Observation relation validation, UI grouping. |
 | Phase 2b | Habit earns Canonical Entity identity as a definition, not as check-ins. | Landed | Habit check-in stream, Habit proposal support, Habit UI. |
-| Phase 3 | First relation-bearing Observation schema using `habit.checkin` as the POC. | In progress | All remaining tracker schemas, generic proposal capture, correction history, UI/Health views. |
-| Phase 4 | One generic `record_observations` proposal kind for agent-reviewed capture. | Planned | Per-schema UI, edit/revision history, charts. |
+| Phase 3 | First relation-bearing Observation schema using `habit.checkin` as the POC. | Landed | All remaining tracker schemas, generic proposal capture, correction history, UI/Health views. |
+| Phase 4 | One generic `record_observations` proposal kind for agent-reviewed capture. | Landed | Per-schema UI, edit/revision history, charts. |
 | Phase 5 | Observation correction history when delete-and-re-record is insufficient. | Planned | Health UI, aggregate UX, sidebar/navigation policy. |
 | Phase 6 | Observation read views such as Health/Tracking without sidebar bloat. | Planned | Runtime plugins, generic relationship graph, every possible tracker schema. |
 

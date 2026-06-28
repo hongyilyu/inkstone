@@ -6,7 +6,7 @@
 // asserts deep-equality with the committed Rust fixture (`fixtures/<kind>.json`,
 // the schema-of-record).
 //
-// All 14 wire kinds are authored and registered in `schemas`. `create_todo` is
+// All 15 wire kinds are authored and registered in `schemas`. `create_todo` is
 // the deepest single-entity payload — nested objects 3 levels deep, arrays of
 // objects, enums, positive integers, datetime pattern+description, the
 // bare-vs-patterned UUID split — so its leaf builders (defined first, below) are
@@ -407,7 +407,58 @@ export const applyIntentGraph = S.Struct({
 	),
 });
 
-/** The kind → Effect Schema registry the parity test iterates. All 14 wire
+// ── record_observations payload (ADR-0053) ──
+
+const bodyweightValues = S.Struct({
+	kg: S.Number.pipe(S.greaterThanOrEqualTo(0, { description: undefined })),
+});
+
+const habitCheckinValues = S.Struct({
+	habit_id: patternedUuid,
+	state: S.Literal("done", "skipped", "missed"),
+	quantity: S.optional(S.Number),
+});
+
+const bodyweightObservationRecordDraft = S.Struct({
+	schema_key: S.Literal("bodyweight"),
+	occurred_at: localDateTime,
+	ended_at: S.optional(localDateTime),
+	values: bodyweightValues,
+	note: S.optional(S.String),
+});
+
+const habitCheckinObservationRecordDraft = S.Struct({
+	schema_key: S.Literal("habit.checkin"),
+	occurred_at: localDateTime,
+	ended_at: S.optional(localDateTime),
+	values: habitCheckinValues,
+	note: S.optional(S.String),
+});
+
+export const observationRecordDraft = S.Union(
+	bodyweightObservationRecordDraft,
+	habitCheckinObservationRecordDraft,
+);
+
+export const observationEvidence = S.Union(
+	S.Struct({
+		journal_entry_id: patternedUuid,
+		message_id: S.optional(S.Never),
+	}),
+	S.Struct({
+		message_id: patternedUuid,
+		journal_entry_id: S.optional(S.Never),
+	}),
+);
+
+export const recordObservations = S.Struct({
+	observations: S.Array(observationRecordDraft).pipe(
+		S.minItems(1, { description: undefined }),
+	),
+	evidence: S.optional(observationEvidence),
+});
+
+/** The kind → Effect Schema registry the parity test iterates. All 15 wire
  * kinds are registered here; the test asserts each against its committed
  * `fixtures/<kind>.json`, and `completeness.test.ts` locks this key set to the
  * fixtures dir and the canonical wire-kind list. */
@@ -427,6 +478,7 @@ export const schemas = {
 	reference_existing_entity_from_journal_entry:
 		referenceExistingEntityFromJournalEntry,
 	apply_intent_graph: applyIntentGraph,
+	record_observations: recordObservations,
 } as const satisfies Record<string, S.Schema.Any>;
 
 export type WireKind = keyof typeof schemas;
@@ -435,7 +487,7 @@ export type WireKind = keyof typeof schemas;
 //
 // Bookmark is user-CRUD-only (no agent proposal, no Rust `PayloadSpec`, no
 // parity fixture), so its three schemas are NOT registered in `schemas` (that
-// would break the 13-kind completeness lock and the parity iteration). They are
+// would break the proposable-kind completeness lock and the parity iteration). They are
 // authored here for the Web codec to import directly; the codec's own round-trip
 // test is their only guard. Modeled on Person: `title` required non-empty; the
 // rest optional bare strings; `tags` an array of BARE strings (the Person

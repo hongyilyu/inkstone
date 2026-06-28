@@ -180,7 +180,7 @@ pub struct ResolvedNodeCandidate {
 /// opaque and mutation-specific; `rationale` may be `null`; `review_context` is
 /// optional display-only context for review surfaces. `resolved_plan` is the
 /// per-node create/reuse/ambiguous plan for an `apply_intent_graph` proposal only
-/// (ADR-0042) — `None` (omitted) for all 13 single-entity kinds.
+/// (ADR-0042) — `None` (omitted) for non-graph proposal kinds.
 #[derive(Debug, Serialize)]
 pub struct ProposalGetResult {
     pub proposal_id: String,
@@ -217,7 +217,7 @@ pub struct NodeDecision {
 /// with the same key returns the prior result without re-applying (ADR-0014).
 ///
 /// `decisions` is the per-node vector for `apply_intent_graph` only (ADR-0042):
-/// the 13 single-entity kinds keep the scalar `decision`/`edited_payload`; the
+/// non-graph kinds keep the scalar `decision`/`edited_payload`; the
 /// graph reconciles its stored nodes against this vector (reject-cascade,
 /// entity_id override, edited_fields). Absent/empty = accept everything (a
 /// missing per-node entry defaults to accept).
@@ -1455,7 +1455,7 @@ mod mirror_tests {
 
     #[test]
     fn proposal_decide_params_omits_decisions_when_absent() {
-        // The 13 single-entity kinds send no `decisions` vector; absent decodes
+        // Non-graph proposal kinds send no `decisions` vector; absent decodes
         // to `None` (the graph cascade treats a missing vector as accept-all).
         let bare: ProposalDecideParams =
             serde_json::from_value(json!({ "proposal_id": UUID_B, "decision": "accept" })).unwrap();
@@ -1858,7 +1858,7 @@ mod mirror_tests {
 }
 
 /// Non-payload wire-message parity fixtures (the contract-test leg ADR-0009 was
-/// originally written about, finished as-built). The 14 agent-proposable
+/// originally written about, finished as-built). The agent-proposable
 /// *payloads* are gated by `propose_workspace_mutation.rs`'s schema-vs-schema
 /// fixtures; this module gates the ~31 plain serde wire structs INSTANCE-based:
 /// Core serializes one canonical instance per Serialize-capable message to a

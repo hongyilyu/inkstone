@@ -1,4 +1,4 @@
-// The schema parity gate (all 13 proposable wire kinds). For each covered wire
+// The schema parity gate (all proposable wire kinds). For each covered wire
 // kind, run its hand-authored Effect Schema through `JSONSchema.make`, normalize
 // it, and assert deep-equality with the normalized Rust fixture — proving the
 // Core (`PayloadSpec`) and Web (Effect Schema) definitions of the wire `payload`
@@ -8,7 +8,7 @@
 // `COVERED` is DERIVED from the schema registry, so a kind can never be
 // registered-but-unasserted (a silent parity skip): every kind in `schemas`
 // gets a parity row. `completeness.test.ts` in turn locks the registry to the
-// fixtures dir and the canonical 13-kind list.
+// fixtures dir and the canonical proposable-kind list.
 
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";

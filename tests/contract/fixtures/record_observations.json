@@ -1,0 +1,157 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "evidence": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "journal_entry_id": {
+              "maxLength": 36,
+              "minLength": 36,
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+              "type": "string"
+            },
+            "message_id": {
+              "not": {}
+            }
+          },
+          "required": [
+            "journal_entry_id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "journal_entry_id": {
+              "not": {}
+            },
+            "message_id": {
+              "maxLength": 36,
+              "minLength": 36,
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "message_id"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "observations": {
+      "items": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "ended_at": {
+                "description": "Local wall-clock time in YYYY-MM-DDTHH:MM:SS format.",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}$",
+                "type": "string"
+              },
+              "note": {
+                "type": "string"
+              },
+              "occurred_at": {
+                "description": "Local wall-clock time in YYYY-MM-DDTHH:MM:SS format.",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}$",
+                "type": "string"
+              },
+              "schema_key": {
+                "enum": [
+                  "bodyweight"
+                ],
+                "type": "string"
+              },
+              "values": {
+                "additionalProperties": false,
+                "properties": {
+                  "kg": {
+                    "minimum": 0.0,
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "kg"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "schema_key",
+              "occurred_at",
+              "values"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "ended_at": {
+                "description": "Local wall-clock time in YYYY-MM-DDTHH:MM:SS format.",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}$",
+                "type": "string"
+              },
+              "note": {
+                "type": "string"
+              },
+              "occurred_at": {
+                "description": "Local wall-clock time in YYYY-MM-DDTHH:MM:SS format.",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}$",
+                "type": "string"
+              },
+              "schema_key": {
+                "enum": [
+                  "habit.checkin"
+                ],
+                "type": "string"
+              },
+              "values": {
+                "additionalProperties": false,
+                "properties": {
+                  "habit_id": {
+                    "maxLength": 36,
+                    "minLength": 36,
+                    "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+                    "type": "string"
+                  },
+                  "quantity": {
+                    "type": "number"
+                  },
+                  "state": {
+                    "enum": [
+                      "done",
+                      "skipped",
+                      "missed"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "habit_id",
+                  "state"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "schema_key",
+              "occurred_at",
+              "values"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "minItems": 1,
+      "type": "array"
+    }
+  },
+  "required": [
+    "observations"
+  ],
+  "type": "object"
+}

@@ -5,6 +5,7 @@ import type {
 } from "@inkstone/protocol";
 import { useNavigate } from "@tanstack/react-router";
 import {
+	Activity,
 	ArrowUpRight,
 	CalendarDays,
 	Check,
@@ -67,7 +68,6 @@ import {
 	type CreateTodoDraft,
 	type GtdEditVariant,
 	gtdEditVariant,
-	isGtdEditKind,
 	overlayCreatePerson,
 	overlayCreateProject,
 	overlayCreateTodo,
@@ -85,6 +85,12 @@ import {
 	EditorSelect,
 	EditorTextarea,
 } from "./library/EntityEditor.js";
+import {
+	ObservationEditForm,
+	observationBatchSummary,
+	renderObservationBody,
+} from "./ProposalCardObservations.js";
+import { arrayField, objectField, textField } from "./proposalPayload.js";
 import { Badge, type BadgeProps } from "./ui/badge.js";
 import { Button } from "./ui/button.js";
 import { Card } from "./ui/card.js";
@@ -103,7 +109,8 @@ type ProposalKind =
 	| "update_todo"
 	| "update_person"
 	| "update_project"
-	| "apply_intent_graph";
+	| "apply_intent_graph"
+	| "record_observations";
 
 /**
  * Inputs a row's `renderBody` strategy reads to draw the card's detail body — the
@@ -115,6 +122,8 @@ interface ProposalBodyArgs {
 	payload: unknown;
 	reviewContext: ProposalReviewContext | undefined;
 }
+
+type ProposalEditPolicy = "journal" | "gtd" | "observation" | "readonly";
 
 // Per-kind presentation for a Proposal — the review card's analogue of KIND_META
 // (lib/libraryItems): one entry concentrates the copy, labels, glyph,
@@ -153,6 +162,8 @@ interface ProposalView {
 	 * already-read `bodyHasEntityRef` rather than the raw payload.
 	 */
 	canEdit: (bodyHasEntityRef: boolean) => boolean;
+	/** Which editor owns this kind when `canEdit` allows the Edit affordance. */
+	editPolicy: ProposalEditPolicy;
 	/**
 	 * The card's detail body, read from the (unvalidated) payload — and, for
 	 * update/delete journal diffs, `reviewContext.current_journal_entry` — through
@@ -175,6 +186,7 @@ export const PROPOSAL_VIEWS: Record<ProposalKind, ProposalView> = {
 		rejectLabel: "Dismiss",
 		rejectBusyLabel: "Dismissing...",
 		canEdit: (bodyHasEntityRef) => !bodyHasEntityRef,
+		editPolicy: "journal",
 		renderBody: (args) => renderJournalBody(args, "create"),
 	},
 	update_journal_entry: {
@@ -189,6 +201,7 @@ export const PROPOSAL_VIEWS: Record<ProposalKind, ProposalView> = {
 		rejectLabel: "Keep current entry",
 		rejectBusyLabel: "Keeping current entry...",
 		canEdit: (bodyHasEntityRef) => !bodyHasEntityRef,
+		editPolicy: "journal",
 		renderBody: (args) => renderJournalBody(args, "update"),
 	},
 	delete_journal_entry: {
@@ -203,6 +216,7 @@ export const PROPOSAL_VIEWS: Record<ProposalKind, ProposalView> = {
 		rejectLabel: "Keep Journal Entry",
 		rejectBusyLabel: "Keeping...",
 		canEdit: () => false,
+		editPolicy: "readonly",
 		renderBody: (args) => renderJournalBody(args, "delete"),
 	},
 	reference_existing_entity_from_journal_entry: {
@@ -218,6 +232,7 @@ export const PROPOSAL_VIEWS: Record<ProposalKind, ProposalView> = {
 		rejectLabel: "Keep current entry",
 		rejectBusyLabel: "Keeping current entry...",
 		canEdit: () => false,
+		editPolicy: "readonly",
 		renderBody: renderNoBody,
 	},
 	create_person: {
@@ -232,6 +247,7 @@ export const PROPOSAL_VIEWS: Record<ProposalKind, ProposalView> = {
 		rejectLabel: "Dismiss",
 		rejectBusyLabel: "Dismissing...",
 		canEdit: () => true,
+		editPolicy: "gtd",
 		renderBody: renderPersonBody,
 	},
 	create_project: {
@@ -246,6 +262,7 @@ export const PROPOSAL_VIEWS: Record<ProposalKind, ProposalView> = {
 		rejectLabel: "Dismiss",
 		rejectBusyLabel: "Dismissing...",
 		canEdit: () => true,
+		editPolicy: "gtd",
 		renderBody: renderProjectBody,
 	},
 	create_todo: {
@@ -261,6 +278,7 @@ export const PROPOSAL_VIEWS: Record<ProposalKind, ProposalView> = {
 		rejectLabel: "Dismiss",
 		rejectBusyLabel: "Dismissing...",
 		canEdit: () => true,
+		editPolicy: "gtd",
 		renderBody: renderCreateTodoBody,
 	},
 	update_todo: {
@@ -275,6 +293,7 @@ export const PROPOSAL_VIEWS: Record<ProposalKind, ProposalView> = {
 		rejectLabel: "Keep current Todo",
 		rejectBusyLabel: "Keeping current Todo...",
 		canEdit: () => true,
+		editPolicy: "gtd",
 		renderBody: renderUpdateTodoBody,
 	},
 	update_person: {
@@ -289,6 +308,7 @@ export const PROPOSAL_VIEWS: Record<ProposalKind, ProposalView> = {
 		rejectLabel: "Keep current Person",
 		rejectBusyLabel: "Keeping current Person...",
 		canEdit: () => true,
+		editPolicy: "gtd",
 		// Full-document REPLACE: the proposed payload is the whole new Person body
 		// (the entity_id rides untouched, not surfaced), so its read-only detail
 		// mirrors create_person's.
@@ -306,6 +326,7 @@ export const PROPOSAL_VIEWS: Record<ProposalKind, ProposalView> = {
 		rejectLabel: "Keep current Project",
 		rejectBusyLabel: "Keeping current Project...",
 		canEdit: () => true,
+		editPolicy: "gtd",
 		// Full-document REPLACE: read-only detail mirrors create_project's.
 		renderBody: renderProjectBody,
 	},
@@ -325,13 +346,29 @@ export const PROPOSAL_VIEWS: Record<ProposalKind, ProposalView> = {
 		rejectLabel: "Dismiss",
 		rejectBusyLabel: "Dismissing...",
 		canEdit: () => false,
+		editPolicy: "readonly",
 		renderBody: renderNoBody,
+	},
+	record_observations: {
+		glyph: Activity,
+		acceptGlyph: Activity,
+		summary: observationBatchSummary,
+		reviewCopy: "Inkstone wants to record Observations.",
+		acceptedCopy: "Recorded Observations.",
+		rejectedCopy: "Dismissed.",
+		acceptLabel: "Record Observations",
+		acceptBusyLabel: "Recording...",
+		rejectLabel: "Dismiss",
+		rejectBusyLabel: "Dismissing...",
+		canEdit: () => true,
+		editPolicy: "observation",
+		renderBody: renderObservationBody,
 	},
 };
 
 // An unrecognized kind renders like a generic Journal-Entry create, echoing the
-// raw kind into the review prompt. Unreachable by contract — the Worker only
-// proposes the 8 kinds above — but `mutation_kind` is a bare string on the wire
+// raw kind into the review prompt. Unreachable for rendered rows above, but
+// `mutation_kind` is a bare string on the wire
 // (ADR-0014), so the card stays legible rather than blank if one slips through.
 // No detail body: the raw payload's shape is unknown for an unrecognized kind, so
 // rendering a Journal diff risks a spurious "Proposed entry" block (or worse).
@@ -348,8 +385,13 @@ function fallbackView(kind: string): ProposalView {
 		rejectLabel: "Dismiss",
 		rejectBusyLabel: "Dismissing...",
 		canEdit: () => false,
+		editPolicy: "readonly",
 		renderBody: renderNoBody,
 	};
+}
+
+function assertNever(value: never): never {
+	throw new Error(`Unhandled proposal edit policy: ${value}`);
 }
 
 function proposalView(mutationKind: string): ProposalView {
@@ -375,43 +417,6 @@ type JournalEntryPayload = {
 type UpdateJournalEntryPayload = JournalEntryPayload & {
 	entity_id: string;
 };
-
-// The wire payload is `unknown` — Core forwards the raw, unvalidated model
-// arguments (the GTD validators live in crates/core/src/entities.rs and run on
-// accept, not before the card renders). A malformed payload (missing fields,
-// null, wrong types) must degrade, so the renderers read every field through
-// the defensive helpers below rather than asserting a typed shape.
-
-function textField(payload: unknown, key: string): string {
-	if (payload && typeof payload === "object" && key in payload) {
-		const value = (payload as Record<string, unknown>)[key];
-		return typeof value === "string" ? value : "";
-	}
-	return "";
-}
-
-/** Read `key` as an object, degrading a missing/null/non-object value to null. */
-function objectField(
-	payload: unknown,
-	key: string,
-): Record<string, unknown> | null {
-	if (payload && typeof payload === "object" && key in payload) {
-		const value = (payload as Record<string, unknown>)[key];
-		if (value && typeof value === "object" && !Array.isArray(value)) {
-			return value as Record<string, unknown>;
-		}
-	}
-	return null;
-}
-
-/** Read `key` as an array, degrading a missing/null/non-array value to []. */
-function arrayField(payload: unknown, key: string): unknown[] {
-	if (payload && typeof payload === "object" && key in payload) {
-		const value = (payload as Record<string, unknown>)[key];
-		if (Array.isArray(value)) return value;
-	}
-	return [];
-}
 
 function journalBody(payload: unknown): string {
 	if (!payload || typeof payload !== "object") return "";
@@ -575,6 +580,7 @@ function SingleEntityProposalCard({
 	const endedAtInputId = `${editFormId}-proposal-edit-ended-at`;
 	const bodyInputId = `${editFormId}-proposal-edit-body`;
 	const { status, payload, rationale, mutation_kind } = proposal;
+	const proposalErrorMessage = proposal.error_message;
 	const occurredAt = textField(payload, "occurred_at");
 	const endedAt = textField(payload, "ended_at");
 	const bodyText = journalBody(payload);
@@ -588,14 +594,9 @@ function SingleEntityProposalCard({
 	// The detail-body routing these once also drove now lives in `view.renderBody`.
 	const isCreateProposal = mutation_kind === "create_journal_entry";
 	const isUpdateProposal = mutation_kind === "update_journal_entry";
-	// A GTD kind surfaces the deep GtdEditForm at the fork; everything else (journal
-	// create/update) uses the inline journal form. `isGtdEditKind` (the slice-1
-	// resolver) is the SINGLE editor-selector — the per-kind seed/gate/overlay/render
-	// switch lives INSIDE GtdEditForm, not here.
-	const isGtdEdit = isGtdEditKind(mutation_kind);
 	// The single resolved presentation entry: header glyph, accept-button glyph,
 	// summary, review/accepted/rejected copy, accept/reject labels (+ busy variants),
-	// and edit-ability all read from here instead of a per-kind ternary.
+	// edit policy, and edit-ability all read from here instead of per-kind ternaries.
 	const view = proposalView(mutation_kind);
 	const HeaderGlyph = view.glyph;
 	const AcceptGlyph = view.acceptGlyph;
@@ -653,10 +654,9 @@ function SingleEntityProposalCard({
 			: null;
 	const openEdit = () => {
 		if (!canEdit) return;
-		// A GTD kind opens GtdEditForm, which seeds itself from `payload` on its own
-		// fresh mount (it renders only inside the `editing` branch). The journal arm
-		// re-seeds the journal form's fields here.
-		if (!isGtdEdit) {
+		// Non-journal editors seed themselves from `payload` on fresh mount. The
+		// journal arm re-seeds its local fields here.
+		if (view.editPolicy === "journal") {
 			setEditOccurredAt(occurredAt);
 			setEditEndedAt(endedAt);
 			setEditBody(bodyText);
@@ -675,10 +675,10 @@ function SingleEntityProposalCard({
 		lastAttempt.current = { decision: "edit", editedPayload: decisionPayload };
 		onDecide("edit", decisionPayload);
 	};
-	// GtdEditForm hands back the finished wire payload (it ran the variant's overlay
-	// internally). Commit it through the SAME inFlight/lastAttempt/retry plumbing as
-	// the journal saveEdit — the card learns nothing about the GTD per-kind shape.
-	const saveGtdEdit = (editedPayload: Record<string, unknown>) => {
+	// Structured edit forms hand back the finished wire payload. Commit it through
+	// the SAME inFlight/lastAttempt/retry plumbing as the journal saveEdit — the
+	// card learns nothing about the GTD per-kind shape.
+	const saveStructuredEdit = (editedPayload: Record<string, unknown>) => {
 		if (inFlight !== null || proposal.status === "deciding") return;
 		setInFlight("edit");
 		setEditing(false);
@@ -736,15 +736,22 @@ function SingleEntityProposalCard({
 			</header>
 
 			{editing ? (
-				isGtdEdit ? (
+				view.editPolicy === "gtd" ? (
 					<GtdEditForm
 						kind={mutation_kind}
 						payload={payload}
 						submitting={submitting}
-						onSave={saveGtdEdit}
+						onSave={saveStructuredEdit}
 						onCancel={() => setEditing(false)}
 					/>
-				) : (
+				) : view.editPolicy === "observation" ? (
+					<ObservationEditForm
+						payload={payload}
+						submitting={submitting}
+						onSave={saveStructuredEdit}
+						onCancel={() => setEditing(false)}
+					/>
+				) : view.editPolicy === "journal" ? (
 					<form
 						onSubmit={(event) => {
 							event.preventDefault();
@@ -804,6 +811,8 @@ function SingleEntityProposalCard({
 							</Button>
 						</footer>
 					</form>
+				) : view.editPolicy === "readonly" ? null : (
+					assertNever(view.editPolicy)
 				)
 			) : (
 				<>
@@ -822,7 +831,7 @@ function SingleEntityProposalCard({
 						<p role="alert" className="text-sm text-destructive">
 							{payloadIssue
 								? `Edit required fields: ${payloadIssue}.`
-								: "Couldn't apply. Try again."}
+								: proposalErrorMessage || "Couldn't apply. Try again."}
 						</p>
 					) : payloadIssue ? (
 						<p role="alert" className="text-sm text-destructive">
@@ -989,10 +998,10 @@ function gtdOverlay(
  * exactly the fields the user can change (approval-gate legibility), gates Save on the
  * variant's required field, and on Save runs the variant's overlay against `payload`
  * and hands the finished wire payload back through `onSave`. The card learns only
- * `isGtdEditKind` (the editor-selector) + this component.
+ * this component plus the proposal-view edit policy.
  *
- * Precondition: `isGtdEditKind(kind)` (the fork only mounts this for a GTD kind); a
- * non-GTD kind would resolve to a null variant and the form renders nothing.
+ * Precondition: the proposal-view edit policy only mounts this for a GTD kind; a
+ * non-GTD kind still degrades to null rather than crashing.
  */
 function GtdEditForm({
 	kind,

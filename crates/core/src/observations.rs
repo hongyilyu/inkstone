@@ -4,13 +4,15 @@ use uuid::Uuid;
 
 use crate::db;
 use crate::entities::parse_local_datetime;
-use crate::field_spec::{Field, FieldSpec, PayloadSpec};
+use crate::field_spec::{Field, FieldSpec, ObjErr, PayloadSpec};
 use crate::mutation::EntityType;
 
 const BODYWEIGHT_SCHEMA_KEY: &str = "bodyweight";
 const BODYWEIGHT_SCHEMA_VERSION: i64 = 1;
+const BODYWEIGHT_SCHEMA_KEY_DOMAIN: &[&str] = &[BODYWEIGHT_SCHEMA_KEY];
 const HABIT_CHECKIN_SCHEMA_KEY: &str = "habit.checkin";
 const HABIT_CHECKIN_SCHEMA_VERSION: i64 = 1;
+const HABIT_CHECKIN_SCHEMA_KEY_DOMAIN: &[&str] = &[HABIT_CHECKIN_SCHEMA_KEY];
 
 #[derive(Clone, Debug)]
 pub(crate) struct RecordObservationsInput {
@@ -80,6 +82,111 @@ pub(crate) async fn record_observations(
     input: RecordObservationsInput,
 ) -> Result<Vec<Observation>, ObservationError> {
     let now_ms = db::now_ms();
+    let (inserts, observations) = prepare_observations(input, "user", None, now_ms)?;
+    db::insert_observations(pool, inserts, now_ms)
+        .await
+        .map_err(observation_insert_error)?;
+    Ok(observations)
+}
+
+pub(crate) fn record_observations_payload_spec() -> PayloadSpec {
+    let journal_evidence = PayloadSpec::nested(
+        "observation evidence",
+        ObjErr::Object,
+        vec![
+            Field::required("journal_entry_id", FieldSpec::Uuid { schema_regex: true }),
+            Field::optional("message_id", FieldSpec::Never),
+        ],
+    );
+    let message_evidence = PayloadSpec::nested(
+        "observation evidence",
+        ObjErr::Object,
+        vec![
+            Field::required("message_id", FieldSpec::Uuid { schema_regex: true }),
+            Field::optional("journal_entry_id", FieldSpec::Never),
+        ],
+    );
+    PayloadSpec::payload(
+        "record_observations",
+        vec![
+            Field::required(
+                "observations",
+                FieldSpec::OneOfArray {
+                    variants: record_observation_payload_variants(),
+                    min_items: Some(1),
+                },
+            ),
+            Field::optional(
+                "evidence",
+                FieldSpec::OneOfObject {
+                    variants: vec![journal_evidence, message_evidence],
+                },
+            ),
+        ],
+    )
+}
+
+pub(crate) fn validate_record_observations_payload(payload: &Value) -> Result<(), String> {
+    record_observations_input_from_payload(payload).map(|_| ())
+}
+
+pub(crate) fn record_observations_input_from_payload(
+    payload: &Value,
+) -> Result<RecordObservationsInput, String> {
+    record_observations_payload_spec().check(payload)?;
+    let params: crate::protocol::ObservationRecordParams = serde_json::from_value(payload.clone())
+        .map_err(|e| format!("record_observations payload is invalid: {e}"))?;
+    let input = record_observations_input_from_params(params)?;
+    validate_record_observations_input(&input)?;
+    Ok(input)
+}
+
+pub(crate) fn record_observations_input_from_params(
+    params: crate::protocol::ObservationRecordParams,
+) -> Result<RecordObservationsInput, String> {
+    let source = source_from_evidence(params.evidence)?;
+    Ok(RecordObservationsInput {
+        observations: params
+            .observations
+            .into_iter()
+            .map(|draft| ObservationRecordInput {
+                schema_key: draft.schema_key,
+                occurred_at: draft.occurred_at,
+                ended_at: draft.ended_at,
+                values: draft.values,
+                note: draft.note,
+                source: source.clone(),
+            })
+            .collect(),
+    })
+}
+
+fn validate_record_observations_input(input: &RecordObservationsInput) -> Result<(), String> {
+    if input.observations.is_empty() {
+        return Err("observations must have at least 1 item(s)".to_string());
+    }
+    for record in &input.observations {
+        validate_record(record)?;
+        if let Some(source) = &record.source {
+            validated_source(source)?;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn prepare_observations(
+    input: RecordObservationsInput,
+    created_by: &str,
+    proposal_id: Option<&str>,
+    now_ms: i64,
+) -> Result<(Vec<db::ObservationInsert>, Vec<Observation>), ObservationError> {
+    if input.observations.is_empty() {
+        // Direct-call backstop; live RPC/proposal paths reject this in PayloadSpec first.
+        return Err(ObservationError::Invalid(
+            "observations must have at least 1 item(s)".to_string(),
+        ));
+    }
+
     let mut inserts = Vec::with_capacity(input.observations.len());
     let mut observations = Vec::with_capacity(input.observations.len());
 
@@ -105,8 +212,8 @@ pub(crate) async fn record_observations(
             ended_at: record.ended_at.clone(),
             values_json,
             note: record.note.clone(),
-            created_by: "user".to_string(),
-            created_via_proposal_id: None,
+            created_by: created_by.to_string(),
+            created_via_proposal_id: proposal_id.map(str::to_string),
             relations,
             source: source.as_ref().map(|source| match source {
                 ObservationSource::JournalEntry { id } => {
@@ -131,16 +238,47 @@ pub(crate) async fn record_observations(
         });
     }
 
-    db::insert_observations(pool, inserts, now_ms)
-        .await
-        .map_err(|e| match e {
-            db::ObservationInsertError::InvalidSource(reason) => ObservationError::Invalid(reason),
-            db::ObservationInsertError::InvalidRelation(reason) => {
-                ObservationError::Invalid(reason)
-            }
-            db::ObservationInsertError::Sqlx(err) => ObservationError::Internal(err.into()),
-        })?;
-    Ok(observations)
+    Ok((inserts, observations))
+}
+
+pub(crate) fn render_accept(observations: &[Observation]) -> String {
+    let count = observations.len();
+    let details = observations
+        .iter()
+        .map(observation_accept_text)
+        .collect::<Vec<_>>()
+        .join("; ");
+    if details.is_empty() {
+        format!("Accepted. Recorded {count} observations.")
+    } else {
+        format!("Accepted. Recorded {count} observations ({details}).")
+    }
+}
+
+fn observation_accept_text(observation: &Observation) -> String {
+    let ended_at = observation
+        .ended_at
+        .as_ref()
+        .map(|value| format!(", ended_at={value}"))
+        .unwrap_or_default();
+    let values = observation.values.to_string();
+    let note = observation
+        .note
+        .as_ref()
+        .map(|value| format!(", note={value}"))
+        .unwrap_or_default();
+    format!(
+        "{} at {}{}, values={}{}",
+        observation.schema_key, observation.occurred_at, ended_at, values, note
+    )
+}
+
+pub(crate) fn observation_insert_error(e: db::ObservationInsertError) -> ObservationError {
+    match e {
+        db::ObservationInsertError::InvalidSource(reason) => ObservationError::Invalid(reason),
+        db::ObservationInsertError::InvalidRelation(reason) => ObservationError::Invalid(reason),
+        db::ObservationInsertError::Sqlx(err) => ObservationError::Internal(err.into()),
+    }
 }
 
 pub(crate) async fn query_observations(
@@ -154,12 +292,18 @@ pub(crate) async fn query_observations(
         .map(|id| normalize_uuid(id, "related_entity_id"))
         .transpose()
         .map_err(ObservationError::Invalid)?;
-    let source = filter.source.map(|source| match source {
-        ObservationSourceInput::JournalEntry { id } => {
-            db::ObservationSourceFilter::JournalEntry { id }
-        }
-        ObservationSourceInput::Message { id } => db::ObservationSourceFilter::Message { id },
-    });
+    let source = filter
+        .source
+        .as_ref()
+        .map(validated_source)
+        .transpose()
+        .map_err(ObservationError::Invalid)?
+        .map(|source| match source {
+            ObservationSource::JournalEntry { id } => {
+                db::ObservationSourceFilter::JournalEntry { id }
+            }
+            ObservationSource::Message { id } => db::ObservationSourceFilter::Message { id },
+        });
     let rows = db::query_observations(
         pool,
         db::ObservationFilter {
@@ -179,6 +323,8 @@ pub(crate) async fn query_observations(
 
 struct ObservationSchema {
     key: &'static str,
+    key_domain: &'static [&'static str],
+    key_error: &'static str,
     version: i64,
     values: PayloadSpec,
     relation_fields: &'static [ObservationRelationField],
@@ -191,58 +337,92 @@ struct ObservationRelationField {
 
 fn schema_for(schema_key: &str) -> Option<ObservationSchema> {
     match schema_key {
-        BODYWEIGHT_SCHEMA_KEY => Some(ObservationSchema {
-            key: BODYWEIGHT_SCHEMA_KEY,
-            version: BODYWEIGHT_SCHEMA_VERSION,
-            values: PayloadSpec::payload(
-                "bodyweight values",
-                vec![Field::required(
-                    "kg",
+        BODYWEIGHT_SCHEMA_KEY => Some(bodyweight_schema()),
+        HABIT_CHECKIN_SCHEMA_KEY => Some(habit_checkin_schema()),
+        _ => None,
+    }
+}
+
+fn bodyweight_schema() -> ObservationSchema {
+    ObservationSchema {
+        key: BODYWEIGHT_SCHEMA_KEY,
+        key_domain: BODYWEIGHT_SCHEMA_KEY_DOMAIN,
+        key_error: "schema_key must be bodyweight",
+        version: BODYWEIGHT_SCHEMA_VERSION,
+        values: PayloadSpec::payload(
+            "bodyweight values",
+            vec![Field::required(
+                "kg",
+                FieldSpec::Number {
+                    min: Some(0.0),
+                    max: None,
+                    integer: false,
+                },
+            )],
+        ),
+        relation_fields: &[],
+    }
+}
+
+fn habit_checkin_schema() -> ObservationSchema {
+    ObservationSchema {
+        key: HABIT_CHECKIN_SCHEMA_KEY,
+        key_domain: HABIT_CHECKIN_SCHEMA_KEY_DOMAIN,
+        key_error: "schema_key must be habit.checkin",
+        version: HABIT_CHECKIN_SCHEMA_VERSION,
+        values: PayloadSpec::payload(
+            "habit.checkin values",
+            vec![
+                Field::required("habit_id", FieldSpec::Uuid { schema_regex: true }),
+                Field::required(
+                    "state",
+                    FieldSpec::EnumStr {
+                        domain: &["done", "skipped", "missed"],
+                        err: "habit.checkin state must be one of done, skipped, missed",
+                    },
+                ),
+                Field::optional(
+                    "quantity",
                     FieldSpec::Number {
-                        min: Some(0.0),
+                        min: None,
                         max: None,
                         integer: false,
                     },
-                )],
-            ),
-            relation_fields: &[],
-        }),
-        HABIT_CHECKIN_SCHEMA_KEY => Some(ObservationSchema {
-            key: HABIT_CHECKIN_SCHEMA_KEY,
-            version: HABIT_CHECKIN_SCHEMA_VERSION,
-            values: PayloadSpec::payload(
-                "habit.checkin values",
-                vec![
-                    Field::required(
-                        "habit_id",
-                        FieldSpec::Uuid {
-                            schema_regex: false,
-                        },
-                    ),
-                    Field::required(
-                        "state",
-                        FieldSpec::EnumStr {
-                            domain: &["done", "skipped", "missed"],
-                            err: "habit.checkin state must be one of done, skipped, missed",
-                        },
-                    ),
-                    Field::optional(
-                        "quantity",
-                        FieldSpec::Number {
-                            min: None,
-                            max: None,
-                            integer: false,
-                        },
-                    ),
-                ],
-            ),
-            relation_fields: &[ObservationRelationField {
-                name: "habit_id",
-                target_entity_type: EntityType::Habit,
-            }],
-        }),
-        _ => None,
+                ),
+            ],
+        ),
+        relation_fields: &[ObservationRelationField {
+            name: "habit_id",
+            target_entity_type: EntityType::Habit,
+        }],
     }
+}
+
+pub(crate) fn record_observation_payload_variants() -> Vec<PayloadSpec> {
+    [bodyweight_schema(), habit_checkin_schema()]
+        .into_iter()
+        .map(record_observation_payload_variant)
+        .collect()
+}
+
+fn record_observation_payload_variant(schema: ObservationSchema) -> PayloadSpec {
+    PayloadSpec::nested(
+        "observation",
+        crate::field_spec::ObjErr::JsonObject,
+        vec![
+            Field::required(
+                "schema_key",
+                FieldSpec::EnumStr {
+                    domain: schema.key_domain,
+                    err: schema.key_error,
+                },
+            ),
+            Field::datetime("occurred_at").require(),
+            Field::datetime("ended_at"),
+            Field::required("values", FieldSpec::Object(schema.values)),
+            Field::optional("note", FieldSpec::string()),
+        ],
+    )
 }
 
 fn validate_record(record: &ObservationRecordInput) -> Result<ObservationSchema, String> {
@@ -296,13 +476,31 @@ fn validate_query(filter: &ObservationQuery) -> Result<(), String> {
 fn validated_source(source: &ObservationSourceInput) -> Result<ObservationSource, String> {
     match source {
         ObservationSourceInput::JournalEntry { id } => {
-            parse_uuid(id, "source_entity_id")?;
-            Ok(ObservationSource::JournalEntry { id: id.clone() })
+            let id = normalize_uuid(id, "source_entity_id")?;
+            Ok(ObservationSource::JournalEntry { id })
         }
         ObservationSourceInput::Message { id } => {
-            parse_uuid(id, "source_message_id")?;
-            Ok(ObservationSource::Message { id: id.clone() })
+            let id = normalize_uuid(id, "source_message_id")?;
+            Ok(ObservationSource::Message { id })
         }
+    }
+}
+
+fn source_from_evidence(
+    evidence: Option<crate::protocol::ObservationEvidence>,
+) -> Result<Option<ObservationSourceInput>, String> {
+    let Some(evidence) = evidence else {
+        return Ok(None);
+    };
+    match (evidence.journal_entry_id, evidence.message_id) {
+        (Some(id), None) => Ok(Some(ObservationSourceInput::JournalEntry { id })),
+        (None, Some(id)) => Ok(Some(ObservationSourceInput::Message { id })),
+        (None, None) => Err(
+            "observation evidence must name one of journal_entry_id or message_id".to_string(),
+        ),
+        (Some(_), Some(_)) => Err(
+            "observation evidence must name only one of journal_entry_id or message_id".to_string(),
+        ),
     }
 }
 
@@ -453,526 +651,4 @@ impl ObservationSource {
 }
 
 #[cfg(test)]
-mod observations_tests {
-    use super::*;
-    use serde_json::json;
-    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-
-    async fn memory_pool() -> SqlitePool {
-        let options = SqliteConnectOptions::new()
-            .filename(":memory:")
-            .foreign_keys(true);
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(options)
-            .await
-            .expect("open in-memory sqlite");
-        sqlx::migrate!("./migrations")
-            .run(&pool)
-            .await
-            .expect("run migrations");
-        pool
-    }
-
-    fn bodyweight_at(occurred_at: &str, kg: Value) -> ObservationRecordInput {
-        ObservationRecordInput {
-            schema_key: "bodyweight".to_string(),
-            occurred_at: occurred_at.to_string(),
-            ended_at: None,
-            values: json!({ "kg": kg }),
-            note: None,
-            source: None,
-        }
-    }
-
-    fn habit_checkin_at(occurred_at: &str, habit_id: &str, state: &str) -> ObservationRecordInput {
-        ObservationRecordInput {
-            schema_key: "habit.checkin".to_string(),
-            occurred_at: occurred_at.to_string(),
-            ended_at: None,
-            values: json!({
-                "habit_id": habit_id,
-                "state": state,
-                "quantity": 1
-            }),
-            note: None,
-            source: None,
-        }
-    }
-
-    fn invalid_reason(err: ObservationError) -> String {
-        match err {
-            ObservationError::Invalid(reason) => reason,
-            ObservationError::Internal(err) => panic!("expected invalid observation error: {err:?}"),
-        }
-    }
-
-    async fn seed_message(pool: &SqlitePool, message_id: &str) {
-        let mut tx = pool.begin().await.expect("begin source message seed");
-        sqlx::query(
-            "INSERT INTO threads (id, title, created_at, last_activity_at) \
-             VALUES ('thread-source', 'Source Thread', 1, 1)",
-        )
-        .execute(&mut *tx)
-        .await
-        .expect("insert source thread");
-        sqlx::query(
-            "INSERT INTO runs \
-             (id, thread_id, workflow_name, workflow_version, provider, model, \
-              thinking_level, user_message_id, status, started_at) \
-             VALUES ('run-source', 'thread-source', 'w', '1', 'p', 'm', 'off', ?1, 'completed', 1)",
-        )
-        .bind(message_id)
-        .execute(&mut *tx)
-        .await
-        .expect("insert source run");
-        sqlx::query(
-            "INSERT INTO messages (id, thread_id, run_id, role, status, created_at, updated_at) \
-             VALUES (?1, 'thread-source', 'run-source', 'user', 'completed', 1, 1)",
-        )
-        .bind(message_id)
-        .execute(&mut *tx)
-        .await
-        .expect("insert source message");
-        tx.commit().await.expect("commit source message seed");
-    }
-
-    async fn seed_entity(pool: &SqlitePool, entity_id: &str) {
-        sqlx::query(
-            "INSERT INTO entities \
-             (id, type, schema_version, data, created_by, created_at, updated_at) \
-             VALUES (?1, 'journal_entry', 1, '{}', 'user', 1, 1)",
-        )
-        .bind(entity_id)
-        .execute(pool)
-        .await
-        .expect("insert source entity");
-    }
-
-    async fn seed_habit(pool: &SqlitePool, entity_id: &str) {
-        sqlx::query(
-            "INSERT INTO entities \
-             (id, type, schema_version, data, created_by, created_at, updated_at) \
-             VALUES (?1, 'habit', 1, \
-                     '{\"name\":\"Morning walk\",\"cadence\":{\"interval\":1,\"unit\":\"day\"}}', \
-                     'user', 1, 1)",
-        )
-        .bind(entity_id)
-        .execute(pool)
-        .await
-        .expect("insert habit entity");
-    }
-
-    async fn seed_person(pool: &SqlitePool, entity_id: &str) {
-        sqlx::query(
-            "INSERT INTO entities \
-             (id, type, schema_version, data, created_by, created_at, updated_at) \
-             VALUES (?1, 'person', 1, '{\"name\":\"Al\"}', 'user', 1, 1)",
-        )
-        .bind(entity_id)
-        .execute(pool)
-        .await
-        .expect("insert person entity");
-    }
-
-    #[tokio::test]
-    async fn observations_record_bodyweight_validate_and_query_filters() {
-        let pool = memory_pool().await;
-        seed_message(&pool, "018f0000-0000-7000-8000-000000000001").await;
-        seed_entity(&pool, "018f0000-0000-7000-8000-000000000002").await;
-
-        let mut direct = bodyweight_at("2026-06-01T07:30:00", json!(72.4));
-        direct.note = Some("morning".to_string());
-        let recorded = record_observations(
-            &pool,
-            RecordObservationsInput {
-                observations: vec![direct],
-            },
-        )
-        .await
-        .expect("record direct bodyweight");
-        assert_eq!(recorded.len(), 1);
-
-        let (created_by, created_via): (String, Option<String>) = sqlx::query_as(
-            "SELECT created_by, created_via_proposal_id FROM observations WHERE id = ?1",
-        )
-        .bind(&recorded[0].id)
-        .fetch_one(&pool)
-        .await
-        .expect("observation row");
-        assert_eq!(created_by, "user");
-        assert_eq!(created_via, None);
-        assert_eq!(recorded[0].updated_at, recorded[0].created_at);
-
-        sqlx::query(
-            "INSERT INTO tool_calls (id, run_id, name, request_payload, status, requested_at) \
-             VALUES ('tool-call-observation-check', 'run-source', 'record_observations', '{}', \
-                     'pending', 1)",
-        )
-        .execute(&pool)
-        .await
-        .expect("insert observation check tool call");
-        sqlx::query(
-            "INSERT INTO proposals (id, tool_call_id, mutation_kind, status) \
-             VALUES ('proposal-observation-check', 'tool-call-observation-check', \
-                     'record_observations', 'pending')",
-        )
-        .execute(&pool)
-        .await
-        .expect("insert observation check proposal");
-        let err = sqlx::query(
-            "INSERT INTO observations \
-             (id, schema_key, schema_version, occurred_at, values_json, created_by, \
-              created_via_proposal_id, created_at, updated_at) \
-             VALUES ('observation-invalid-user-proposal', 'bodyweight', 1, \
-                     '2026-06-01T07:30:00', '{\"kg\":72.4}', 'user', \
-                     'proposal-observation-check', 1, 1)",
-        )
-        .execute(&pool)
-        .await
-        .expect_err("user observations cannot carry a proposal id");
-        assert!(err.to_string().contains("CHECK constraint failed"));
-
-        let by_time = query_observations(
-            &pool,
-            ObservationQuery {
-                schema_keys: vec!["bodyweight".to_string()],
-                from: Some("2026-06-01T00:00:00".to_string()),
-                to: Some("2026-06-01T23:59:59".to_string()),
-                limit: Some(10),
-                ..ObservationQuery::default()
-            },
-        )
-        .await
-        .expect("query bodyweight by schema and time");
-        assert_eq!(by_time.len(), 1);
-        assert_eq!(by_time[0].schema_key, "bodyweight");
-        assert_eq!(by_time[0].schema_version, 1);
-        assert_eq!(by_time[0].occurred_at, "2026-06-01T07:30:00");
-        assert_eq!(by_time[0].values, json!({ "kg": 72.4 }));
-        assert_eq!(by_time[0].note.as_deref(), Some("morning"));
-        assert_eq!(by_time[0].updated_at, by_time[0].created_at);
-
-        let mut from_message = bodyweight_at("2026-06-02T07:30:00", json!(72.1));
-        from_message.source = Some(ObservationSourceInput::Message {
-            id: "018f0000-0000-7000-8000-000000000001".to_string(),
-        });
-        let mut from_entity = bodyweight_at("2026-06-03T07:30:00", json!(71.9));
-        from_entity.source = Some(ObservationSourceInput::JournalEntry {
-            id: "018f0000-0000-7000-8000-000000000002".to_string(),
-        });
-        let sourced = record_observations(
-            &pool,
-            RecordObservationsInput {
-                observations: vec![from_message, from_entity],
-            },
-        )
-        .await
-        .expect("record sourced observations");
-
-        let by_message = query_observations(
-            &pool,
-            ObservationQuery {
-                source: Some(ObservationSourceInput::Message {
-                    id: "018f0000-0000-7000-8000-000000000001".to_string(),
-                }),
-                ..ObservationQuery::default()
-            },
-        )
-        .await
-        .expect("query by source message");
-        assert_eq!(by_message.len(), 1);
-        assert_eq!(by_message[0].values, json!({ "kg": 72.1 }));
-
-        let by_entity = query_observations(
-            &pool,
-            ObservationQuery {
-                source: Some(ObservationSourceInput::JournalEntry {
-                    id: "018f0000-0000-7000-8000-000000000002".to_string(),
-                }),
-                ..ObservationQuery::default()
-            },
-        )
-        .await
-        .expect("query by source entity");
-        assert_eq!(by_entity.len(), 1);
-        assert_eq!(by_entity[0].values, json!({ "kg": 71.9 }));
-
-        let duplicate_source = sqlx::query(
-            "INSERT INTO observation_sources \
-             (id, observation_id, source_message_id, relation, created_at) \
-             VALUES ('duplicate-observation-source', ?1, \
-                     '018f0000-0000-7000-8000-000000000001', 'evidenced_by', 1)",
-        )
-        .bind(&sourced[1].id)
-        .execute(&pool)
-        .await
-        .expect_err("one observation accepts at most one source row");
-        assert!(duplicate_source.to_string().contains("UNIQUE"));
-
-        let mismatched_source = sqlx::query(
-            "INSERT INTO observation_sources \
-             (id, observation_id, source_message_id, relation, created_at) \
-             VALUES ('mismatched-observation-source', ?1, \
-                     '018f0000-0000-7000-8000-000000000001', 'created_from', 1)",
-        )
-        .bind(&recorded[0].id)
-        .execute(&pool)
-        .await
-        .expect_err("message sources must use evidenced_by");
-        assert!(mismatched_source.to_string().contains("CHECK"));
-
-        let mismatched_entity_source = sqlx::query(
-            "INSERT INTO observation_sources \
-             (id, observation_id, source_entity_id, relation, created_at) \
-             VALUES ('mismatched-observation-entity-source', ?1, \
-                     '018f0000-0000-7000-8000-000000000002', 'evidenced_by', 1)",
-        )
-        .bind(&recorded[0].id)
-        .execute(&pool)
-        .await
-        .expect_err("entity sources must use created_from");
-        assert!(mismatched_entity_source.to_string().contains("CHECK"));
-
-        let limited = query_observations(
-            &pool,
-            ObservationQuery {
-                schema_keys: vec!["bodyweight".to_string()],
-                limit: Some(2),
-                ..ObservationQuery::default()
-            },
-        )
-        .await
-        .expect("query with limit");
-        assert_eq!(limited.len(), 2);
-        assert_eq!(limited[0].occurred_at, "2026-06-03T07:30:00");
-        assert_eq!(limited[1].occurred_at, "2026-06-02T07:30:00");
-
-        let unknown_schema = ObservationRecordInput {
-            schema_key: "blood_pressure".to_string(),
-            ..bodyweight_at("2026-06-04T07:30:00", json!(120.0))
-        };
-        let reason = record_observations(
-            &pool,
-            RecordObservationsInput {
-                observations: vec![unknown_schema],
-            },
-        )
-        .await
-        .expect_err("unknown schema is rejected");
-        let reason = invalid_reason(reason);
-        assert!(reason.contains("unknown observation schema"));
-
-        let reason = record_observations(
-            &pool,
-            RecordObservationsInput {
-                observations: vec![bodyweight_at("2026-06-04T07:30:00", json!("72.0"))],
-            },
-        )
-        .await
-        .expect_err("bodyweight kg must be numeric");
-        let reason = invalid_reason(reason);
-        assert_eq!(reason, "kg must be a number");
-
-        let reason = record_observations(
-            &pool,
-            RecordObservationsInput {
-                observations: vec![bodyweight_at("2026-06-04T07:30:00", json!(-1.0))],
-            },
-        )
-        .await
-        .expect_err("negative bodyweight is rejected");
-        let reason = invalid_reason(reason);
-        assert_eq!(reason, "kg must be at least 0");
-
-        let ended_before_start = ObservationRecordInput {
-            ended_at: Some("2026-06-04T07:29:59".to_string()),
-            ..bodyweight_at("2026-06-04T07:30:00", json!(72.0))
-        };
-        let reason = record_observations(
-            &pool,
-            RecordObservationsInput {
-                observations: vec![ended_before_start],
-            },
-        )
-        .await
-        .expect_err("ended_at before occurred_at is rejected");
-        let reason = invalid_reason(reason);
-        assert_eq!(
-            reason,
-            "ended_at must be greater than or equal to occurred_at"
-        );
-    }
-
-    #[tokio::test]
-    async fn observations_record_batch_rolls_back_when_later_source_is_invalid() {
-        let pool = memory_pool().await;
-        let valid = bodyweight_at("2026-06-01T07:30:00", json!(72.4));
-        let mut invalid_source = bodyweight_at("2026-06-02T07:30:00", json!(72.1));
-        invalid_source.source = Some(ObservationSourceInput::Message {
-            id: "018f0000-0000-7000-8000-000000000099".to_string(),
-        });
-
-        let reason = record_observations(
-            &pool,
-            RecordObservationsInput {
-                observations: vec![valid, invalid_source],
-            },
-        )
-        .await
-        .expect_err("invalid second source rejects the batch");
-        let reason = invalid_reason(reason);
-        assert_eq!(
-            reason,
-            "observation source_message_id must name an existing message"
-        );
-
-        let rows = query_observations(&pool, ObservationQuery::default())
-            .await
-            .expect("query after rolled-back batch");
-        assert_eq!(rows.len(), 0);
-    }
-
-    #[tokio::test]
-    async fn observations_record_habit_checkin_validates_relation_and_query_filter() {
-        let pool = memory_pool().await;
-        let habit_id = "018f0000-0000-7000-8000-abcdefabcdef";
-        let habit_id_input = habit_id.to_ascii_uppercase();
-        let other_habit_id = "018f0000-0000-7000-8000-000000000103";
-        let person_id = "018f0000-0000-7000-8000-000000000102";
-        seed_habit(&pool, habit_id).await;
-        seed_habit(&pool, other_habit_id).await;
-        seed_person(&pool, person_id).await;
-
-        let recorded = record_observations(
-            &pool,
-            RecordObservationsInput {
-                observations: vec![
-                    habit_checkin_at("2026-06-01T07:30:00", &habit_id_input, "done"),
-                    habit_checkin_at("2026-06-01T08:30:00", other_habit_id, "done"),
-                ],
-            },
-        )
-        .await
-        .expect("record habit check-ins");
-        assert_eq!(recorded.len(), 2);
-        assert_eq!(recorded[0].schema_key, "habit.checkin");
-        assert_eq!(recorded[0].schema_version, 1);
-        assert_eq!(recorded[0].values["habit_id"], json!(habit_id));
-        assert_eq!(recorded[0].values["state"], json!("done"));
-
-        let by_habit = query_observations(
-            &pool,
-            ObservationQuery {
-                related_entity_id: Some(habit_id_input),
-                ..ObservationQuery::default()
-            },
-        )
-        .await
-        .expect("query check-ins by related habit");
-        assert_eq!(by_habit.len(), 1);
-        assert_eq!(by_habit[0].id, recorded[0].id);
-
-        let malformed = ObservationRecordInput {
-            values: json!({ "habit_id": "not-a-uuid", "state": "done" }),
-            ..habit_checkin_at("2026-06-02T07:30:00", habit_id, "done")
-        };
-        let reason = record_observations(
-            &pool,
-            RecordObservationsInput {
-                observations: vec![malformed],
-            },
-        )
-        .await
-        .expect_err("malformed habit_id rejects");
-        assert_eq!(invalid_reason(reason), "habit_id must be a UUID");
-
-        let missing_id = ObservationRecordInput {
-            values: json!({ "state": "done" }),
-            ..habit_checkin_at("2026-06-02T07:30:00", habit_id, "done")
-        };
-        let reason = record_observations(
-            &pool,
-            RecordObservationsInput {
-                observations: vec![missing_id],
-            },
-        )
-        .await
-        .expect_err("missing habit_id rejects");
-        assert_eq!(invalid_reason(reason), "habit_id is required");
-
-        let missing_target = habit_checkin_at(
-            "2026-06-02T07:30:00",
-            "018f0000-0000-7000-8000-000000000199",
-            "done",
-        );
-        let reason = record_observations(
-            &pool,
-            RecordObservationsInput {
-                observations: vec![missing_target],
-            },
-        )
-        .await
-        .expect_err("missing Habit target rejects");
-        assert_eq!(
-            invalid_reason(reason),
-            "observation habit_id must name a habit"
-        );
-
-        let wrong_type = habit_checkin_at("2026-06-02T07:30:00", person_id, "done");
-        let reason = record_observations(
-            &pool,
-            RecordObservationsInput {
-                observations: vec![wrong_type],
-            },
-        )
-        .await
-        .expect_err("non-Habit target rejects");
-        assert_eq!(
-            invalid_reason(reason),
-            "observation habit_id must name a habit"
-        );
-
-        let reason = query_observations(
-            &pool,
-            ObservationQuery {
-                related_entity_id: Some("not-a-uuid".to_string()),
-                ..ObservationQuery::default()
-            },
-        )
-        .await
-        .expect_err("malformed related_entity_id rejects");
-        assert_eq!(invalid_reason(reason), "related_entity_id must be a UUID");
-    }
-
-    #[tokio::test]
-    async fn observations_record_batch_rolls_back_when_later_relation_is_invalid() {
-        let pool = memory_pool().await;
-        let habit_id = "018f0000-0000-7000-8000-000000000201";
-        seed_habit(&pool, habit_id).await;
-        let valid = habit_checkin_at("2026-06-01T07:30:00", habit_id, "done");
-        let invalid_relation = habit_checkin_at(
-            "2026-06-02T07:30:00",
-            "018f0000-0000-7000-8000-000000000299",
-            "done",
-        );
-
-        let reason = record_observations(
-            &pool,
-            RecordObservationsInput {
-                observations: vec![valid, invalid_relation],
-            },
-        )
-        .await
-        .expect_err("invalid second relation rejects the batch");
-        assert_eq!(
-            invalid_reason(reason),
-            "observation habit_id must name a habit"
-        );
-
-        let rows = query_observations(&pool, ObservationQuery::default())
-            .await
-            .expect("query after rolled-back relation batch");
-        assert_eq!(rows.len(), 0);
-    }
-}
+mod observations_tests;

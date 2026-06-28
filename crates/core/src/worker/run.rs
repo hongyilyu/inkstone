@@ -144,6 +144,11 @@ pub(super) async fn run_loop<P: WorkerPort + Send>(
                 open_text_part = None;
                 open_reasoning_part = None;
                 if crate::tools::is_proposal(&name) && !db::should_auto_approve() {
+                    if let Err(message) = crate::tools::validate_proposal_request(&name, &params) {
+                        worker_error = Some(message);
+                        worker.shutdown().await;
+                        break;
+                    }
                     let guard = gate.lock().await;
                     parked = park_on_proposal(&pool, run_id, &tool_call_id, &name, &params).await;
                     drop(guard);
@@ -657,7 +662,10 @@ mod tests {
 
         assert_eq!(exit, Exit::Done);
         assert_eq!(
-            db::run_status(&pool, run_id).await.unwrap().map(db::RunStatus::as_str),
+            db::run_status(&pool, run_id)
+                .await
+                .unwrap()
+                .map(db::RunStatus::as_str),
             Some("completed")
         );
         let snap = db::select_run_snapshot(&pool, run_id)
@@ -692,7 +700,10 @@ mod tests {
 
         assert_eq!(exit, Exit::Errored("boom".to_string()));
         assert_eq!(
-            db::run_status(&pool, run_id).await.unwrap().map(db::RunStatus::as_str),
+            db::run_status(&pool, run_id)
+                .await
+                .unwrap()
+                .map(db::RunStatus::as_str),
             Some("errored")
         );
     }
@@ -723,7 +734,10 @@ mod tests {
 
         assert_eq!(exit, Exit::Disconnected);
         assert_eq!(
-            db::run_status(&pool, run_id).await.unwrap().map(db::RunStatus::as_str),
+            db::run_status(&pool, run_id)
+                .await
+                .unwrap()
+                .map(db::RunStatus::as_str),
             Some("errored")
         );
     }
@@ -1094,7 +1108,10 @@ mod tests {
 
         assert_eq!(exit, Exit::Parked);
         assert_eq!(
-            db::run_status(&pool, run_id).await.unwrap().map(db::RunStatus::as_str),
+            db::run_status(&pool, run_id)
+                .await
+                .unwrap()
+                .map(db::RunStatus::as_str),
             Some("parked")
         );
         assert!(
@@ -1103,6 +1120,115 @@ mod tests {
                 .unwrap()
                 .is_some(),
             "a pending Proposal is persisted on park"
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_proposal_request_errors_without_parking() {
+        let pool = memory_pool().await;
+        let wf = test_workflow(&["propose_workspace_mutation"]);
+        let (run_id, _t, amid) = seed_run(&pool, &wf).await;
+        let (hubs, run_hub) = fixtures(run_id);
+        let (worker, _sent, _sd) = ScriptedWorker::new(vec![WorkerStdout::ToolRequest {
+            run_id: String::new(),
+            tool_call_id: "tc-bad-observation".to_string(),
+            name: "propose_workspace_mutation".to_string(),
+            params: serde_json::json!({
+                "mutation_kind": "record_observations",
+                "payload": {
+                    "observations": [
+                        {
+                            "schema_key": "nutrition.intake",
+                            "occurred_at": "2026-06-10T10:30:00",
+                            "values": { "kcal": 450 }
+                        }
+                    ]
+                }
+            }),
+        }]);
+
+        let exit = run_loop(
+            worker,
+            run_id,
+            wf,
+            pool.clone(),
+            amid,
+            hubs,
+            run_hub.tx.clone(),
+            run_hub.gate.clone(),
+            run_hub.cancel_rx(),
+        )
+        .await;
+
+        match exit {
+            Exit::Errored(message) => assert!(
+                message.contains("schema_key"),
+                "invalid proposal error names schema_key: {message}"
+            ),
+            other => panic!("invalid proposal request must error, got {other:?}"),
+        }
+        assert_eq!(
+            db::run_status(&pool, run_id)
+                .await
+                .unwrap()
+                .map(db::RunStatus::as_str),
+            Some("errored")
+        );
+        assert!(
+            db::get_pending_proposal_for_run(&pool, run_id)
+                .await
+                .unwrap()
+                .is_none(),
+            "invalid proposal args must not create a pending Proposal"
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_editable_entity_proposal_still_parks() {
+        let pool = memory_pool().await;
+        let wf = test_workflow(&["propose_workspace_mutation"]);
+        let (run_id, _t, amid) = seed_run(&pool, &wf).await;
+        let (hubs, run_hub) = fixtures(run_id);
+        let (worker, _sent, _sd) = ScriptedWorker::new(vec![WorkerStdout::ToolRequest {
+            run_id: String::new(),
+            tool_call_id: "tc-invalid-editable".to_string(),
+            name: "propose_workspace_mutation".to_string(),
+            params: serde_json::json!({
+                "mutation_kind": "create_journal_entry",
+                "payload": {
+                    "occurred_at": "2026-06-10",
+                    "body": []
+                }
+            }),
+        }]);
+
+        let exit = run_loop(
+            worker,
+            run_id,
+            wf,
+            pool.clone(),
+            amid,
+            hubs,
+            run_hub.tx.clone(),
+            run_hub.gate.clone(),
+            run_hub.cancel_rx(),
+        )
+        .await;
+
+        assert_eq!(exit, Exit::Parked);
+        assert_eq!(
+            db::run_status(&pool, run_id)
+                .await
+                .unwrap()
+                .map(db::RunStatus::as_str),
+            Some("parked")
+        );
+        assert!(
+            db::get_pending_proposal_for_run(&pool, run_id)
+                .await
+                .unwrap()
+                .is_some(),
+            "editable invalid Entity proposals park for user repair"
         );
     }
 
@@ -1136,11 +1262,18 @@ mod tests {
         .await;
 
         assert_eq!(exit, Exit::Cancelled);
-        assert_eq!(*shutdowns.lock().unwrap(), 1, "the loop shut the Worker down");
+        assert_eq!(
+            *shutdowns.lock().unwrap(),
+            1,
+            "the loop shut the Worker down"
+        );
         // The loop owns no terminal tx on cancel; here no transition ran at
         // all, so the run stays `running`.
         assert_eq!(
-            db::run_status(&pool, run_id).await.unwrap().map(db::RunStatus::as_str),
+            db::run_status(&pool, run_id)
+                .await
+                .unwrap()
+                .map(db::RunStatus::as_str),
             Some("running"),
             "the loop committed neither complete_run nor error_run"
         );
@@ -1185,7 +1318,10 @@ mod tests {
         .await;
 
         assert_eq!(exit, Exit::Cancelled);
-        assert!(*shutdowns.lock().unwrap() >= 1, "the loop shut the Worker down");
+        assert!(
+            *shutdowns.lock().unwrap() >= 1,
+            "the loop shut the Worker down"
+        );
         // The first delta was published; NO Done followed it.
         let events = drain(&mut tail);
         assert!(
@@ -1231,7 +1367,10 @@ mod tests {
         assert_eq!(exit, Exit::Done, "the loop saw `done`");
         // But the terminal tx lost the guard: status stays `cancelled`.
         assert_eq!(
-            db::run_status(&pool, run_id).await.unwrap().map(db::RunStatus::as_str),
+            db::run_status(&pool, run_id)
+                .await
+                .unwrap()
+                .map(db::RunStatus::as_str),
             Some("cancelled"),
             "a later completion does not overwrite a committed cancellation"
         );
@@ -1276,20 +1415,22 @@ mod tests {
         .await;
         assert!(matches!(exit, Exit::Errored(_)), "errored on first attempt");
         assert_eq!(
-            db::run_status(pool, run_id).await.unwrap().map(db::RunStatus::as_str),
+            db::run_status(pool, run_id)
+                .await
+                .unwrap()
+                .map(db::RunStatus::as_str),
             Some("errored")
         );
     }
 
     /// Count a Run's messages by role for the single-turn assertion.
     async fn message_role_counts(pool: &SqlitePool, run_id: Uuid) -> (i64, i64) {
-        let user: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM messages WHERE run_id = ?1 AND role = 'user'",
-        )
-        .bind(run_id.to_string())
-        .fetch_one(pool)
-        .await
-        .expect("count user msgs");
+        let user: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE run_id = ?1 AND role = 'user'")
+                .bind(run_id.to_string())
+                .fetch_one(pool)
+                .await
+                .expect("count user msgs");
         let assistant: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM messages WHERE run_id = ?1 AND role = 'assistant'",
         )
@@ -1313,8 +1454,14 @@ mod tests {
         drive_to_errored_with_partial(&pool, run_id, amid, &wf).await;
 
         // The failed attempt persisted partial text.
-        let before = db::select_run_snapshot(&pool, run_id).await.unwrap().unwrap();
-        assert_eq!(before.text, "half ", "the failed attempt streamed partial text");
+        let before = db::select_run_snapshot(&pool, run_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            before.text, "half ",
+            "the failed attempt streamed partial text"
+        );
 
         // Re-snapshot to a DIFFERENT model so we can assert the columns moved.
         let retry_wf = Workflow {
@@ -1328,26 +1475,39 @@ mod tests {
 
         // Status back to running, terminal fields gone; assistant Message streaming.
         assert_eq!(
-            db::run_status(&pool, run_id).await.unwrap().map(db::RunStatus::as_str),
+            db::run_status(&pool, run_id)
+                .await
+                .unwrap()
+                .map(db::RunStatus::as_str),
             Some("running")
         );
         let amid_str = amid.to_string();
-        let msg_status: String =
-            sqlx::query_scalar("SELECT status FROM messages WHERE id = ?1")
-                .bind(&amid_str)
-                .fetch_one(&pool)
-                .await
-                .expect("read message status");
-        assert_eq!(msg_status, "streaming", "assistant Message re-armed for streaming");
+        let msg_status: String = sqlx::query_scalar("SELECT status FROM messages WHERE id = ?1")
+            .bind(&amid_str)
+            .fetch_one(&pool)
+            .await
+            .expect("read message status");
+        assert_eq!(
+            msg_status, "streaming",
+            "assistant Message re-armed for streaming"
+        );
 
         // The failed parts are GONE — snapshot text empty, no stale message_parts /
         // run_steps for the assistant message.
-        let after = db::select_run_snapshot(&pool, run_id).await.unwrap().unwrap();
-        assert_eq!(after.text, "", "the failed partial text was cleared, not carried");
+        let after = db::select_run_snapshot(&pool, run_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            after.text, "",
+            "the failed partial text was cleared, not carried"
+        );
 
         // Same ids; exactly one user + one assistant row.
         assert_eq!(
-            db::assistant_message_id_for_run(&pool, run_id).await.unwrap(),
+            db::assistant_message_id_for_run(&pool, run_id)
+                .await
+                .unwrap(),
             Some(amid),
             "the assistant_message_id is reused"
         );
@@ -1374,7 +1534,10 @@ mod tests {
         .fetch_one(&pool)
         .await
         .expect("count user run_steps");
-        assert_eq!(user_steps, 1, "the user-prompt run_step survives retry cleanup");
+        assert_eq!(
+            user_steps, 1,
+            "the user-prompt run_step survives retry cleanup"
+        );
         let assistant_steps: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM run_steps \
              WHERE run_id = ?1 AND kind = 'message' AND message_id = ?2",
@@ -1384,7 +1547,10 @@ mod tests {
         .fetch_one(&pool)
         .await
         .expect("count assistant run_steps");
-        assert_eq!(assistant_steps, 0, "the failed attempt's assistant message steps are cleared");
+        assert_eq!(
+            assistant_steps, 0,
+            "the failed attempt's assistant message steps are cleared"
+        );
 
         // Model column re-snapshotted from the freshly-resolved Workflow.
         let model: String = sqlx::query_scalar("SELECT model FROM runs WHERE id = ?1")
@@ -1392,7 +1558,10 @@ mod tests {
             .fetch_one(&pool)
             .await
             .expect("read model");
-        assert_eq!(model, "gpt-retry", "the runs.model column was re-snapshotted");
+        assert_eq!(
+            model, "gpt-retry",
+            "the runs.model column was re-snapshotted"
+        );
     }
 
     /// Test A2 — the failed attempt's tool_calls are cleared too. Pins
@@ -1418,9 +1587,15 @@ mod tests {
         )
         .await
         .expect("persist tool call");
-        db::resolve_tool_call(&pool, "tc_failed", "completed", r#"{"ok":true}"#, db::now_ms())
-            .await
-            .expect("resolve tool call");
+        db::resolve_tool_call(
+            &pool,
+            "tc_failed",
+            "completed",
+            r#"{"ok":true}"#,
+            db::now_ms(),
+        )
+        .await
+        .expect("resolve tool call");
         drive_to_errored_with_partial(&pool, run_id, amid, &wf).await;
 
         async fn count_tool_calls(pool: &SqlitePool, run_id: Uuid) -> i64 {
@@ -1482,9 +1657,15 @@ mod tests {
         )
         .await
         .expect("persist proposal tool call");
-        db::resolve_tool_call(&pool, "tc_prop", "completed", r#"{"ok":true}"#, db::now_ms())
-            .await
-            .expect("resolve proposal tool call");
+        db::resolve_tool_call(
+            &pool,
+            "tc_prop",
+            "completed",
+            r#"{"ok":true}"#,
+            db::now_ms(),
+        )
+        .await
+        .expect("resolve proposal tool call");
         sqlx::query(
             "INSERT INTO proposals (id, tool_call_id, mutation_kind, status, decided_by, \
              decided_at, applied_at) VALUES ('prop-1', 'tc_prop', 'create_person', \
@@ -1528,17 +1709,32 @@ mod tests {
 
         // The decided proposal's committed rows SURVIVE.
         assert_eq!(
-            count(&pool, "SELECT COUNT(*) FROM proposals WHERE id = ?1", "prop-1").await,
+            count(
+                &pool,
+                "SELECT COUNT(*) FROM proposals WHERE id = ?1",
+                "prop-1"
+            )
+            .await,
             1,
             "the accepted proposal survives"
         );
         assert_eq!(
-            count(&pool, "SELECT COUNT(*) FROM entities WHERE id = ?1", "ent-1").await,
+            count(
+                &pool,
+                "SELECT COUNT(*) FROM entities WHERE id = ?1",
+                "ent-1"
+            )
+            .await,
             1,
             "the proposal's entity survives"
         );
         assert_eq!(
-            count(&pool, "SELECT COUNT(*) FROM tool_calls WHERE id = ?1", "tc_prop").await,
+            count(
+                &pool,
+                "SELECT COUNT(*) FROM tool_calls WHERE id = ?1",
+                "tc_prop"
+            )
+            .await,
             1,
             "the proposal-backed tool_call is spared"
         );
@@ -1556,18 +1752,23 @@ mod tests {
 
         // But the failed attempt's partial assistant text IS cleared, and the Run is
         // back to running with a streaming assistant Message.
-        let snap = db::select_run_snapshot(&pool, run_id).await.unwrap().unwrap();
+        let snap = db::select_run_snapshot(&pool, run_id)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(snap.text, "", "the failed partial text was cleared");
         assert_eq!(
-            db::run_status(&pool, run_id).await.unwrap().map(db::RunStatus::as_str),
+            db::run_status(&pool, run_id)
+                .await
+                .unwrap()
+                .map(db::RunStatus::as_str),
             Some("running")
         );
-        let msg_status: String =
-            sqlx::query_scalar("SELECT status FROM messages WHERE id = ?1")
-                .bind(amid.to_string())
-                .fetch_one(&pool)
-                .await
-                .expect("read message status");
+        let msg_status: String = sqlx::query_scalar("SELECT status FROM messages WHERE id = ?1")
+            .bind(amid.to_string())
+            .fetch_one(&pool)
+            .await
+            .expect("read message status");
         assert_eq!(msg_status, "streaming");
     }
 
@@ -1608,11 +1809,20 @@ mod tests {
 
         assert_eq!(exit, Exit::Done);
         assert_eq!(
-            db::run_status(&pool, run_id).await.unwrap().map(db::RunStatus::as_str),
+            db::run_status(&pool, run_id)
+                .await
+                .unwrap()
+                .map(db::RunStatus::as_str),
             Some("completed")
         );
-        let snap = db::select_run_snapshot(&pool, run_id).await.unwrap().unwrap();
-        assert_eq!(snap.text, "full answer", "only the retry's text, not concatenated");
+        let snap = db::select_run_snapshot(&pool, run_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            snap.text, "full answer",
+            "only the retry's text, not concatenated"
+        );
         assert_eq!(message_role_counts(&pool, run_id).await, (1, 1));
     }
 
@@ -1629,9 +1839,15 @@ mod tests {
         let moved = db::prepare_retry(&pool, run_id, &wf, db::now_ms())
             .await
             .expect("prepare_retry");
-        assert!(!moved.won(), "a running Run cannot be retried → not_errored");
+        assert!(
+            !moved.won(),
+            "a running Run cannot be retried → not_errored"
+        );
         assert_eq!(
-            db::run_status(&pool, run_id).await.unwrap().map(db::RunStatus::as_str),
+            db::run_status(&pool, run_id)
+                .await
+                .unwrap()
+                .map(db::RunStatus::as_str),
             Some("running"),
             "the running Run is untouched"
         );

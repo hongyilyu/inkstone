@@ -1,4 +1,4 @@
-// The non-payload struct-parity registry. Unlike the 14-payload `schemas`
+// The non-payload struct-parity registry. Unlike the proposable-payload `schemas`
 // registry (which the Web codec consumes at RUNTIME and lives in
 // `@inkstone/protocol`), this one is TEST-ONLY: it maps each committed fixture to
 // the hand-authored Effect Schema both languages must satisfy, and lives here in

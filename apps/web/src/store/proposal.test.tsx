@@ -4,6 +4,7 @@ import type {
 	ProposalGetResult,
 } from "@inkstone/protocol";
 import {
+	InvalidParamsError,
 	type ProposalNotification,
 	type RunEventValue,
 	type RunId,
@@ -228,6 +229,38 @@ describe("proposal stream + decide", () => {
 		await decideProposal(runtime, "run-1", "accept");
 
 		expect(getChatState().proposals["run-1"]?.status).toBe("accepted");
+
+		await runtime.dispose();
+	});
+
+	it("preserves InvalidParamsError.message when a proposal edit is rejected", async () => {
+		const proposalQueue = Effect.runSync(
+			Queue.unbounded<ProposalNotification>(),
+		);
+		const runtime = makeStubRuntime({
+			proposalQueue,
+			onDecide: () =>
+				Effect.fail(
+					new InvalidParamsError({
+						message: "record_observations payload is invalid",
+					}),
+				),
+		});
+
+		startProposalStream(runtime);
+		Queue.unsafeOffer(proposalQueue, {
+			kind: "pending",
+			run_id: "run-1",
+			proposal_id: "prop-1",
+		});
+		await waitFor(() => getChatState().proposals["run-1"] !== undefined);
+
+		await decideProposal(runtime, "run-1", "edit", { observations: [] });
+
+		expect(getChatState().proposals["run-1"]).toMatchObject({
+			status: "error",
+			error_message: "record_observations payload is invalid",
+		});
 
 		await runtime.dispose();
 	});

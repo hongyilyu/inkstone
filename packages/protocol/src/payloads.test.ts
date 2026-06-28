@@ -1,4 +1,4 @@
-// The promoted payload-schema registry (ADR-0009): the 14 agent-proposable wire
+// The promoted payload-schema registry (ADR-0009): the 15 agent-proposable wire
 // kinds moved here from `tests/contract`, plus the 3 ungated bookmark schemas
 // the Web codec consumes. This test pins the promotion (the registry is intact
 // and decodes) and guards the ungated boundary (bookmark is NOT in `schemas`,
@@ -17,7 +17,7 @@ import {
 	type WireKind,
 } from "./index.js";
 
-/** The 14 agent-proposable wire kinds (mirrors `completeness.test`'s lock). */
+/** The 15 agent-proposable wire kinds (mirrors `completeness.test`'s lock). */
 const WIRE_KINDS = [
 	"create_journal_entry",
 	"update_journal_entry",
@@ -33,12 +33,13 @@ const WIRE_KINDS = [
 	"update_todo",
 	"delete_todo",
 	"apply_intent_graph",
+	"record_observations",
 ] as const;
 
 const sorted = (kinds: readonly string[]): string[] => [...kinds].sort();
 
 describe("promoted payload registry", () => {
-	it("holds exactly the 14 wire kinds", () => {
+	it("holds exactly the 15 wire kinds", () => {
 		expect(sorted(Object.keys(schemas))).toStrictEqual(sorted(WIRE_KINDS));
 	});
 
@@ -51,6 +52,105 @@ describe("promoted payload registry", () => {
 				payload,
 			),
 		).toEqual(payload);
+	});
+});
+
+describe("record_observations payload (ADR-0053)", () => {
+	it("decodes a batch with evidence", () => {
+		const payload = {
+			observations: [
+				{
+					schema_key: "bodyweight",
+					occurred_at: "2026-06-02T07:30:00",
+					values: { kg: 72.4 },
+					note: "after breakfast",
+				},
+				{
+					schema_key: "habit.checkin",
+					occurred_at: "2026-06-03T07:30:00",
+					values: {
+						habit_id: "0190d3c1-0000-7000-8000-000000000004",
+						state: "done",
+					},
+				},
+			],
+			evidence: {
+				journal_entry_id: "0190d3c1-0000-7000-8000-000000000001",
+			},
+		};
+		expect(
+			S.decodeUnknownSync(
+				schemas.record_observations as S.Schema<unknown, unknown>,
+			)(payload),
+		).toEqual(payload);
+	});
+
+	it("rejects malformed or two-source evidence", () => {
+		const base = {
+			observations: [
+				{
+					schema_key: "bodyweight",
+					occurred_at: "2026-06-02T07:30:00",
+					values: { kg: 72.4 },
+				},
+			],
+		};
+		const schema = schemas.record_observations as S.Schema<unknown, unknown>;
+		expect(() =>
+			S.decodeUnknownSync(schema)({
+				...base,
+				evidence: { journal_entry_id: "not-a-uuid" },
+			}),
+		).toThrow();
+		expect(() =>
+			S.decodeUnknownSync(schema)({
+				...base,
+				evidence: {
+					journal_entry_id: "0190d3c1-0000-7000-8000-000000000001",
+					message_id: "0190d3c1-0000-7000-8000-000000000002",
+				},
+			}),
+		).toThrow();
+	});
+
+	it("rejects unknown observation schemas and schema-specific bad values", () => {
+		const schema = schemas.record_observations as S.Schema<unknown, unknown>;
+		expect(() =>
+			S.decodeUnknownSync(schema)({
+				observations: [
+					{
+						schema_key: "nutrition.intake",
+						occurred_at: "2026-06-02T07:30:00",
+						values: { kcal: 450 },
+					},
+				],
+			}),
+		).toThrow();
+		expect(() =>
+			S.decodeUnknownSync(schema)({
+				observations: [
+					{
+						schema_key: "bodyweight",
+						occurred_at: "2026-06-02T07:30:00",
+						values: { lbs: 160 },
+					},
+				],
+			}),
+		).toThrow();
+		expect(() =>
+			S.decodeUnknownSync(schema)({
+				observations: [
+					{
+						schema_key: "habit.checkin",
+						occurred_at: "2026-06-02T07:30:00",
+						values: {
+							habit_id: "not-a-uuid",
+							state: "done",
+						},
+					},
+				],
+			}),
+		).toThrow();
 	});
 });
 

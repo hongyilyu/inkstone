@@ -160,6 +160,7 @@ export interface PendingProposal {
 	 * (live) or the `proposal` SEGMENT's `entity_id` (rehydration); absent for a
 	 * pending or rejected Proposal, or when no Entity resolves. */
 	readonly entity_id?: string;
+	readonly error_message?: string;
 	readonly status: "pending" | "deciding" | "accepted" | "rejected" | "error";
 }
 
@@ -284,16 +285,23 @@ export function setProposalStatus(
 	runId: string,
 	status: PendingProposal["status"],
 	entityId?: string,
+	errorMessage?: string,
 ): void {
 	store.setState((s) => {
 		const existing = s.proposals[runId];
 		if (existing === undefined) {
 			return s;
 		}
-		const next: PendingProposal =
-			entityId === undefined
-				? { ...existing, status }
-				: { ...existing, status, entity_id: entityId };
+		const { error_message: _oldErrorMessage, ...withoutErrorMessage } =
+			existing;
+		const next: PendingProposal = {
+			...(status === "error" ? existing : withoutErrorMessage),
+			status,
+			...(entityId === undefined ? {} : { entity_id: entityId }),
+			...(status === "error" && errorMessage
+				? { error_message: errorMessage }
+				: {}),
+		};
 		return {
 			...s,
 			proposals: { ...s.proposals, [runId]: next },

@@ -1,10 +1,10 @@
-//! Workspace mutation schemas (ADR-0016, ADR-0025). A Proposal's payload is
-//! validated by its [`MutationKind`] before it is durably applied. Supported
-//! mutations create/update/delete a `journal_entry` Entity (plus provenance)
-//! and add inline references from Journal Entries to existing Entities.
+//! Entity-backed Workspace mutation schemas (ADR-0016, ADR-0025). Entity
+//! mutation payloads are validated by their [`MutationKind`] before they are
+//! durably applied. Non-Entity proposal kinds, such as `record_observations`,
+//! validate in their owning modules.
 //!
-//! The closed Entity-Type taxonomy ([`MutationKind`]/[`ProposableMutation`] and
-//! the descriptor) lives in [`crate::mutation`]; this module is the per-kind
+//! The closed Entity-Type taxonomy ([`MutationKind`]/[`crate::mutation::ProposableMutation`]
+//! and the descriptor) lives in [`crate::mutation`]; this module is the per-kind
 //! *schema* layer — the validator bodies plus the accept-text rendering. Both
 //! `validate` and `render_accept` dispatch on the typed kind, so a new kind is a
 //! compile error here, not a runtime panic.
@@ -12,7 +12,7 @@
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::mutation::{todo_data_spec, Mode, MutationKind, ProposableMutation};
+use crate::mutation::{todo_data_spec, Mode, MutationKind};
 
 /// Validate a proposed mutation payload against its schema (ADR-0016),
 /// dispatched on the typed [`MutationKind`]. `Err(reason)` is surfaced as the
@@ -64,19 +64,17 @@ pub(crate) fn validate(kind: MutationKind, payload: &Value) -> Result<(), String
 }
 
 /// Render the human-readable Decision text the model reads on resume as the
-/// awaited tool's result (ADR-0025). An inherent method on [`ProposableMutation`]
-/// (declared in [`crate::mutation`]) so it is total over exactly the 14 kinds
-/// that can reach the agent accept path — the user-only kinds are not in the
-/// type, so there is no `unreachable!` to forget. Defined here, alongside the
-/// private body-text helpers it uses.
+/// awaited tool's result (ADR-0025). Only Entity-backed accept paths call this;
+/// non-Entity proposals such as `record_observations` render in their owning
+/// modules.
 pub(crate) fn render_accept(
-    kind: ProposableMutation,
+    kind: MutationKind,
     payload: &Value,
     entity_id: Option<&str>,
 ) -> String {
-    use ProposableMutation as P;
+    use MutationKind as M;
     match kind {
-        P::CreateJournalEntry => {
+        M::CreateJournalEntry => {
             let entity_id = entity_id.expect("create accept rendering requires entity_id");
             let occurred_at = payload
                 .get("occurred_at")
@@ -87,7 +85,7 @@ pub(crate) fn render_accept(
                 "Accepted. Created Journal Entry (entity_id={entity_id}, occurred_at={occurred_at}, body={body})."
             )
         }
-        P::UpdateJournalEntry => {
+        M::UpdateJournalEntry => {
             let occurred_at = payload
                 .get("occurred_at")
                 .and_then(Value::as_str)
@@ -95,14 +93,14 @@ pub(crate) fn render_accept(
             let body = journal_body_text(payload);
             format!("Accepted. Updated Journal Entry (occurred_at={occurred_at}, body={body}).")
         }
-        P::DeleteJournalEntry => {
+        M::DeleteJournalEntry => {
             let entity_id = payload
                 .get("entity_id")
                 .and_then(Value::as_str)
                 .unwrap_or("unknown");
             format!("Accepted. Deleted Journal Entry (entity_id={entity_id}).")
         }
-        P::ReferenceExistingEntityFromJournalEntry => {
+        M::ReferenceExistingEntityFromJournalEntry => {
             let source_entity_id = payload
                 .get("source_entity_id")
                 .and_then(Value::as_str)
@@ -116,28 +114,28 @@ pub(crate) fn render_accept(
                 "Accepted. Referenced Entity (source_entity_id={source_entity_id}, target_entity_id={target_entity_id}, body={body})."
             )
         }
-        P::DeletePerson => {
+        M::DeletePerson => {
             let entity_id = payload
                 .get("entity_id")
                 .and_then(Value::as_str)
                 .unwrap_or("unknown");
             format!("Accepted. Deleted Person (entity_id={entity_id}).")
         }
-        P::DeleteProject => {
+        M::DeleteProject => {
             let entity_id = payload
                 .get("entity_id")
                 .and_then(Value::as_str)
                 .unwrap_or("unknown");
             format!("Accepted. Deleted Project (entity_id={entity_id}).")
         }
-        P::DeleteTodo => {
+        M::DeleteTodo => {
             let entity_id = payload
                 .get("entity_id")
                 .and_then(Value::as_str)
                 .unwrap_or("unknown");
             format!("Accepted. Deleted Todo (entity_id={entity_id}).")
         }
-        P::CreatePerson => {
+        M::CreatePerson => {
             let entity_id = entity_id.expect("create accept rendering requires entity_id");
             let name = payload
                 .get("name")
@@ -145,14 +143,14 @@ pub(crate) fn render_accept(
                 .unwrap_or("unknown");
             format!("Accepted. Created Person (entity_id={entity_id}, name={name}).")
         }
-        P::UpdatePerson => {
+        M::UpdatePerson => {
             let name = payload
                 .get("name")
                 .and_then(Value::as_str)
                 .unwrap_or("unknown");
             format!("Accepted. Updated Person (name={name}).")
         }
-        P::CreateProject => {
+        M::CreateProject => {
             let entity_id = entity_id.expect("create accept rendering requires entity_id");
             let name = payload
                 .get("name")
@@ -166,7 +164,7 @@ pub(crate) fn render_accept(
                 "Accepted. Created Project (entity_id={entity_id}, name={name}, status={status})."
             )
         }
-        P::UpdateProject => {
+        M::UpdateProject => {
             let name = payload
                 .get("name")
                 .and_then(Value::as_str)
@@ -177,7 +175,7 @@ pub(crate) fn render_accept(
                 .unwrap_or("unknown");
             format!("Accepted. Updated Project (name={name}, status={status}).")
         }
-        P::CreateTodo => {
+        M::CreateTodo => {
             let entity_id = entity_id.expect("create accept rendering requires entity_id");
             let todo = payload.get("todo");
             let title = todo
@@ -192,7 +190,7 @@ pub(crate) fn render_accept(
                 "Accepted. Created Todo (entity_id={entity_id}, title={title}, status={status})."
             )
         }
-        P::UpdateTodo => {
+        M::UpdateTodo => {
             let todo_id = payload
                 .get("todo_id")
                 .and_then(Value::as_str)
@@ -206,7 +204,7 @@ pub(crate) fn render_accept(
         // PROPOSED payload, not the per-node decision vector, so the count is the
         // proposed node count and is phrased "up to N" — the user may have rejected
         // some; the model re-reads what actually landed via `entity/changed`.
-        P::ApplyIntentGraph => {
+        M::ApplyIntentGraph => {
             let anchor = entity_id.unwrap_or("unknown");
             let proposed_count = payload
                 .get("entities")
@@ -224,6 +222,13 @@ pub(crate) fn render_accept(
                 "Accepted. Applied intent graph{je_note} (anchor entity_id={anchor}, up to {proposed_count} entities; some may have been declined)."
             )
         }
+        M::CreateBookmark
+        | M::UpdateBookmark
+        | M::DeleteBookmark
+        | M::CreateHabit
+        | M::UpdateHabit
+        | M::DeleteHabit
+        | M::MarkProjectReviewed => unreachable!("user-only mutation has no proposal accept text"),
     }
 }
 
@@ -1087,11 +1092,10 @@ mod tests {
     }
 
     /// Test shim: render the accept text by wire string (the kind must be
-    /// agent-proposable, as only those reach `render_accept`).
+    /// Entity-backed, as Observation rendering is owned by observations.rs).
     fn render_accept(kind: &str, payload: &Value) -> String {
-        let kind = MutationKind::from_wire(kind).expect("known mutation_kind");
-        let proposable = ProposableMutation::try_from(kind).expect("agent-proposable kind");
-        super::render_accept(proposable, payload, Some("test-entity-id"))
+        let kind = MutationKind::from_wire(kind).expect("known Entity mutation kind");
+        super::render_accept(kind, payload, Some("test-entity-id"))
     }
 
     /// Test shim: the schema version for a wire kind, via its Entity Type — the

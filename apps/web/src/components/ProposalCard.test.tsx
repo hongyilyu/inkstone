@@ -1453,6 +1453,189 @@ describe("ProposalCard", () => {
 		});
 	});
 
+	describe("record_observations", () => {
+		const recordObservations: PendingProposal = {
+			proposal_id: "prop-observations",
+			run_id: "run-observations",
+			mutation_kind: "record_observations",
+			payload: {
+				observations: [
+					{
+						schema_key: "bodyweight",
+						occurred_at: "2026-06-02T07:30:00",
+						values: { kg: 72.4 },
+						note: "after breakfast",
+					},
+					{
+						schema_key: "habit.checkin",
+						occurred_at: "2026-06-03T07:30:00",
+						values: {
+							habit_id: "0190d3c1-0000-7000-8000-000000000004",
+							state: "done",
+						},
+					},
+				],
+				evidence: {
+					journal_entry_id: "0190d3c1-0000-7000-8000-000000000001",
+				},
+			},
+			rationale: "capture tracker facts",
+			status: "pending",
+		};
+
+		it("renders an Observation proposal without falling back to Journal Entry copy", () => {
+			render(
+				<ProposalCard proposal={recordObservations} onDecide={() => {}} />,
+			);
+			expect(
+				screen.getByText("Inkstone wants to record Observations."),
+			).toBeInTheDocument();
+			expect(screen.getByText("2 observations")).toBeInTheDocument();
+			expect(screen.getByText("1. bodyweight")).toBeInTheDocument();
+			expect(screen.getByText("2026-06-02T07:30:00")).toBeInTheDocument();
+			expect(screen.getByText('{"kg":72.4}')).toBeInTheDocument();
+			expect(screen.getByText("after breakfast")).toBeInTheDocument();
+			expect(
+				screen.getByText("Journal Entry: 0190d3c1-0000-7000-8000-000000000001"),
+			).toBeInTheDocument();
+			expect(
+				screen.getByRole("button", { name: /record observations/i }),
+			).toBeInTheDocument();
+			expect(
+				screen.getByRole("button", { name: /^edit$/i }),
+			).toBeInTheDocument();
+		});
+
+		it("saves a whole-payload edit as record_observations edited_payload", () => {
+			const onDecide = vi.fn();
+			render(
+				<ProposalCard proposal={recordObservations} onDecide={onDecide} />,
+			);
+			fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+			fireEvent.change(screen.getByRole("textbox", { name: /payload/i }), {
+				target: {
+					value: JSON.stringify({
+						observations: [
+							{
+								schema_key: "bodyweight",
+								occurred_at: "2026-06-04T07:30:00",
+								values: { kg: 72.2 },
+								note: "corrected scale reading",
+							},
+						],
+					}),
+				},
+			});
+			fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
+			expect(onDecide).toHaveBeenCalledWith("edit", {
+				observations: [
+					{
+						schema_key: "bodyweight",
+						occurred_at: "2026-06-04T07:30:00",
+						values: { kg: 72.2 },
+						note: "corrected scale reading",
+					},
+				],
+			});
+		});
+
+		it("blocks a record_observations edit that fails the shared payload schema", () => {
+			const onDecide = vi.fn();
+			render(
+				<ProposalCard proposal={recordObservations} onDecide={onDecide} />,
+			);
+			fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+			fireEvent.change(screen.getByRole("textbox", { name: /payload/i }), {
+				target: { value: JSON.stringify({ observations: [] }) },
+			});
+
+			expect(screen.getByRole("alert")).toHaveTextContent(
+				"payload must match the record_observations schema",
+			);
+			expect(
+				screen.getByRole("button", { name: /save changes/i }),
+			).toBeDisabled();
+			expect(onDecide).not.toHaveBeenCalled();
+		});
+
+		it("blocks a record_observations edit with fields Core would reject", () => {
+			const onDecide = vi.fn();
+			render(
+				<ProposalCard proposal={recordObservations} onDecide={onDecide} />,
+			);
+			fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+			fireEvent.change(screen.getByRole("textbox", { name: /payload/i }), {
+				target: {
+					value: JSON.stringify({
+						observations: [
+							{
+								schema_key: "bodyweight",
+								occurred_at: "2026-06-04T07:30:00",
+								values: { kg: 72.2 },
+								unit: "kg",
+							},
+						],
+					}),
+				},
+			});
+
+			expect(screen.getByRole("alert")).toHaveTextContent(
+				"payload must match the record_observations schema",
+			);
+			expect(
+				screen.getByRole("button", { name: /save changes/i }),
+			).toBeDisabled();
+			expect(onDecide).not.toHaveBeenCalled();
+		});
+
+		it("blocks a record_observations edit with reversed times", () => {
+			const onDecide = vi.fn();
+			render(
+				<ProposalCard proposal={recordObservations} onDecide={onDecide} />,
+			);
+			fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+			fireEvent.change(screen.getByRole("textbox", { name: /payload/i }), {
+				target: {
+					value: JSON.stringify({
+						observations: [
+							{
+								schema_key: "bodyweight",
+								occurred_at: "2026-06-04T08:30:00",
+								ended_at: "2026-06-04T07:30:00",
+								values: { kg: 72.2 },
+							},
+						],
+					}),
+				},
+			});
+
+			expect(screen.getByRole("alert")).toHaveTextContent(
+				"ended_at must be greater than or equal to occurred_at",
+			);
+			expect(
+				screen.getByRole("button", { name: /save changes/i }),
+			).toBeDisabled();
+			expect(onDecide).not.toHaveBeenCalled();
+		});
+
+		it("renders Core's record_observations validation error", () => {
+			render(
+				<ProposalCard
+					proposal={{
+						...recordObservations,
+						status: "error",
+						error_message: "habit_id must reference an accepted Habit",
+					}}
+					onDecide={() => {}}
+				/>,
+			);
+
+			expect(screen.getByRole("alert")).toHaveTextContent(
+				"habit_id must reference an accepted Habit",
+			);
+		});
+	});
+
 	// Core forwards the RAW, unvalidated model arguments to the card: park_on_proposal
 	// (crates/core/src/worker/run.rs) stores params verbatim, and the proposal-get path
 	// defaults a missing `payload` to null. A real LLM can omit `payload` or emit a
@@ -2608,17 +2791,15 @@ describe("ProposalCard", () => {
 	});
 });
 
-// The edit-affordance fork is two-world: a GTD-editable kind routes to GtdEditForm,
-// a journal create/update to the journal form, everything else is read-only. This
-// partition invariant pins that the two selectors (canEdit and isGtdEditKind) never
-// disagree on a GTD kind, and that no editable kind falls through to NEITHER editor —
-// so the extracted fork stays exhaustive. The behavior gate is the DOM suite above;
-// this is the structural lock.
+// The edit-affordance fork routes GTD kinds to GtdEditForm, journal create/update
+// to the journal form, and observation batches to their payload editor. Everything
+// else is read-only. This structural lock catches an editable kind with no editor.
 describe("proposal edit fork partition", () => {
 	const JOURNAL_EDIT_KINDS = new Set([
 		"create_journal_entry",
 		"update_journal_entry",
 	]);
+	const STRUCTURED_EDIT_KINDS = new Set(["record_observations"]);
 
 	it("every GTD-editable kind is also Edit-offered (canEdit and isGtdEditKind agree)", () => {
 		for (const [kind, view] of Object.entries(PROPOSAL_VIEWS)) {
@@ -2634,7 +2815,11 @@ describe("proposal edit fork partition", () => {
 		for (const [kind, view] of Object.entries(PROPOSAL_VIEWS)) {
 			const editable = view.canEdit(false) || view.canEdit(true);
 			if (!editable) continue;
-			expect(isGtdEditKind(kind) || JOURNAL_EDIT_KINDS.has(kind)).toBe(true);
+			expect(
+				isGtdEditKind(kind) ||
+					JOURNAL_EDIT_KINDS.has(kind) ||
+					STRUCTURED_EDIT_KINDS.has(kind),
+			).toBe(true);
 		}
 	});
 });

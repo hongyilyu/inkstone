@@ -221,6 +221,10 @@ pub async fn resolved_plan_for(
     Ok(plan)
 }
 
+pub(crate) fn validate_intent_graph_payload(payload: &serde_json::Value) -> Result<(), String> {
+    extract_graph(payload).map(|_| ()).map_err(|err| err.to_string())
+}
+
 /// One entity node's resolved disposition for the READ-ONLY plan (ADR-0042). The
 /// display analogue of the resolver's [`Disposition`]: `Ambiguous` is a VARIANT
 /// here (the plan surfaces the competing candidates so the Client can show the

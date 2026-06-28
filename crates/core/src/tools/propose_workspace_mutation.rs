@@ -4,32 +4,30 @@
 
 use serde_json::{Map, Value};
 
-use crate::mutation::ProposableMutation;
+use crate::mutation::{MutationKind, ProposableMutation};
 use crate::protocol::CoreToolDescriptor;
 
 pub const NAME: &str = "propose_workspace_mutation";
 const DESCRIPTION: &str = "Propose a Workspace mutation for user review: capture a journal-worthy lived event or reflection as a Journal Entry, or extract People/Projects/Todos from an already-accepted Journal Entry. Do not create a Journal Entry for a bare reminder, task, or future obligation the user only wants remembered.";
 const LABEL: &str = "Propose Workspace mutation";
 
-/// The agent tool descriptor (ADR-0018): a top-level `oneOf` over the 14
-/// agent-proposable mutation kinds (ADR-0036, ADR-0042), each variant binding its
-/// `mutation_kind` discriminant to the payload schema its
-/// [`crate::mutation::MutationKind::payload_spec`] emits — the SAME single source
-/// the validators derive from. The user-only kind families (bookmarks, habits,
-/// and `mark_project_reviewed`) are validated but deliberately absent from this
-/// surface. Inlined Draft-07 (no `$ref`/`definitions`): ADR-0018 wants inlined
-/// schemas because Anthropic rejects `$ref`.
+/// The agent tool descriptor (ADR-0018): a top-level `oneOf` over the closed
+/// agent-proposable mutation kinds, each variant binding its `mutation_kind`
+/// discriminant to the payload schema its [`ProposableMutation`] emits. The
+/// user-only kind families (bookmarks, habits, and `mark_project_reviewed`) are
+/// validated but deliberately absent from this surface. Inlined Draft-07 (no
+/// `$ref`/`definitions`): ADR-0018 wants inlined schemas because Anthropic
+/// rejects `$ref`.
 pub fn descriptor() -> CoreToolDescriptor {
     let variants = ProposableMutation::ALL
         .iter()
         .map(|proposable| {
-            let kind = proposable.kind();
             serde_json::json!({
                 "type": "object",
                 "additionalProperties": false,
                 "properties": {
-                    "mutation_kind": { "type": "string", "enum": [kind.as_wire()] },
-                    "payload": kind.payload_spec().json_schema(),
+                    "mutation_kind": { "type": "string", "enum": [proposable.as_wire()] },
+                    "payload": proposable.payload_spec().json_schema(),
                     // The model-attached, nullable explanation stored on the
                     // proposal row (read from the row, not the payload).
                     "rationale": { "type": ["string", "null"], "default": null },
@@ -58,6 +56,40 @@ pub fn descriptor() -> CoreToolDescriptor {
     }
 }
 
+pub(crate) fn validate_request(params: &Value) -> Result<ProposableMutation, String> {
+    let obj = params
+        .as_object()
+        .ok_or_else(|| "propose_workspace_mutation params must be a JSON object".to_string())?;
+    for key in obj.keys() {
+        if !matches!(key.as_str(), "mutation_kind" | "payload" | "rationale") {
+            return Err(format!(
+                "unsupported propose_workspace_mutation field {key:?}"
+            ));
+        }
+    }
+    let mutation_kind = obj
+        .get("mutation_kind")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "mutation_kind is required".to_string())?;
+    let proposable = ProposableMutation::from_wire(mutation_kind)
+        .ok_or_else(|| format!("unknown mutation_kind {mutation_kind:?}"))?;
+    let payload = obj
+        .get("payload")
+        .ok_or_else(|| "payload is required".to_string())?;
+    proposable.validate_before_park(payload)?;
+    if proposable == ProposableMutation::ApplyIntentGraph {
+        crate::entities::validate(MutationKind::ApplyIntentGraph, payload)?;
+        crate::db::validate_intent_graph_payload(payload)?;
+    }
+    if let Some(rationale) = obj.get("rationale")
+        && !rationale.is_string()
+        && !rationale.is_null()
+    {
+        return Err("rationale must be a string or null".to_string());
+    }
+    Ok(proposable)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -74,7 +106,7 @@ mod tests {
     /// expression [`descriptor`] binds — NOT the `{mutation_kind, payload,
     /// rationale}` envelope.
     ///
-    /// It writes ALL 14 fixtures — the TS parity test (`tests/contract`)
+    /// It writes ALL fixtures — the TS parity test (`tests/contract`)
     /// asserts every one against its committed fixture. The output is
     /// deterministic (`serde_json` sorts object keys; pretty-print + trailing
     /// newline), so CI re-runs it and `git diff --exit-code` is the staleness
@@ -87,11 +119,10 @@ mod tests {
         std::fs::create_dir_all(&fixtures_dir).expect("create fixtures dir");
 
         for proposable in ProposableMutation::ALL {
-            let kind = proposable.kind();
-            let schema = kind.payload_spec().json_schema();
+            let schema = proposable.payload_spec().json_schema();
             let mut json = serde_json::to_string_pretty(&schema).expect("schema serializes");
             json.push('\n');
-            let path = fixtures_dir.join(format!("{}.json", kind.as_wire()));
+            let path = fixtures_dir.join(format!("{}.json", proposable.as_wire()));
             std::fs::write(&path, json).unwrap_or_else(|e| panic!("write {path:?}: {e}"));
         }
     }
@@ -173,6 +204,10 @@ mod tests {
                 "apply_intent_graph",
                 include_str!("../../../../tests/contract/fixtures/apply_intent_graph.json"),
             ),
+            (
+                "record_observations",
+                include_str!("../../../../tests/contract/fixtures/record_observations.json"),
+            ),
         ];
         // The embedded table must cover exactly the proposable kinds — neither
         // side can gain or drop a kind the other lacks.
@@ -183,9 +218,8 @@ mod tests {
         );
 
         for proposable in ProposableMutation::ALL {
-            let kind = proposable.kind();
-            let wire = kind.as_wire();
-            let fresh = kind.payload_spec().json_schema();
+            let wire = proposable.as_wire();
+            let fresh = proposable.payload_spec().json_schema();
             let raw = committed
                 .iter()
                 .find_map(|(k, raw)| (*k == wire).then_some(*raw))
@@ -581,15 +615,16 @@ mod tests {
         }
     }
 
-    /// The two surfaces that must list the same 14 agent-proposable kinds — the
+    /// The two surfaces that must list the same agent-proposable kinds — the
     /// wire schema generated from `Input`, and `ProposableMutation` (the taxonomy
     /// that carries render_accept/supports_edit/…) — cannot silently drift. Every
     /// `ProposableMutation::ALL` variant binds a top-level schema variant AND
-    /// round-trips through `from_wire` + `try_into`; and the schema has EXACTLY 14
-    /// top-level variants, so neither side can gain a kind the other lacks.
+    /// round-trips through `ProposableMutation::from_wire`; and the schema has
+    /// EXACTLY one top-level variant per proposable kind, so neither side can
+    /// gain a kind the other lacks.
     #[test]
     fn input_schema_and_proposable_mutation_agree() {
-        use crate::mutation::{MutationKind, ProposableMutation};
+        use crate::mutation::ProposableMutation;
 
         let d = descriptor();
         let variants = d.json_schema["oneOf"]
@@ -605,16 +640,15 @@ mod tests {
         );
 
         for proposable in ProposableMutation::ALL {
-            let wire = proposable.kind().as_wire();
+            let wire = proposable.as_wire();
             assert!(
                 top_level_variant(&d.json_schema, wire).is_some(),
                 "Input schema is missing proposable kind {wire}: {}",
                 d.json_schema
             );
             // The wire string round-trips back to the SAME proposable kind.
-            let parsed = MutationKind::from_wire(wire).expect("proposable kind parses");
             assert_eq!(
-                ProposableMutation::try_from(parsed).ok(),
+                ProposableMutation::from_wire(wire),
                 Some(proposable),
                 "{wire} must round-trip to its ProposableMutation"
             );
@@ -626,9 +660,7 @@ mod tests {
     /// entity/link/body unions) must be inlined.
     fn has_ref(value: &Value) -> bool {
         match value {
-            Value::Object(obj) => {
-                obj.contains_key("$ref") || obj.values().any(has_ref)
-            }
+            Value::Object(obj) => obj.contains_key("$ref") || obj.values().any(has_ref),
             Value::Array(items) => items.iter().any(has_ref),
             _ => false,
         }
@@ -644,7 +676,10 @@ mod tests {
         // The graph payload requires `entities` (>= 1) and `links`; `journal_entry`
         // is optional (absent for direct multi-entity capture).
         let required = payload["required"].as_array().unwrap_or_else(|| {
-            panic!("apply_intent_graph payload declares required fields: {}", d.json_schema)
+            panic!(
+                "apply_intent_graph payload declares required fields: {}",
+                d.json_schema
+            )
         });
         assert!(
             required.iter().any(|f| f.as_str() == Some("entities"))
@@ -667,9 +702,19 @@ mod tests {
         let entity_variants = entities["items"]["oneOf"].as_array().unwrap_or_else(|| {
             panic!("entities items must be a oneOf union of typed nodes: {entities}")
         });
-        assert_eq!(entity_variants.len(), 3, "person/project/todo entity nodes: {entities}");
+        assert_eq!(
+            entity_variants.len(),
+            3,
+            "person/project/todo entity nodes: {entities}"
+        );
         let schema_text = d.json_schema.to_string();
-        for needle in ["handle", "existing_id", "todo_project", "todo_person", "journal_ref"] {
+        for needle in [
+            "handle",
+            "existing_id",
+            "todo_project",
+            "todo_person",
+            "journal_ref",
+        ] {
             assert!(
                 schema_text.contains(needle),
                 "apply_intent_graph schema advertises {needle}: {}",
@@ -681,7 +726,11 @@ mod tests {
         let link_variants = payload["properties"]["links"]["items"]["oneOf"]
             .as_array()
             .unwrap_or_else(|| panic!("links items must be a oneOf of link kinds: {payload}"));
-        assert_eq!(link_variants.len(), 3, "todo_project/todo_person/journal_ref: {payload}");
+        assert_eq!(
+            link_variants.len(),
+            3,
+            "todo_project/todo_person/journal_ref: {payload}"
+        );
     }
 
     /// The advertised graph schema must carry NO `$ref` anywhere (Anthropic
@@ -783,6 +832,138 @@ mod tests {
             }))
             .is_err(),
             "an entity node of an unknown type matches no variant and is rejected"
+        );
+    }
+
+    #[test]
+    fn apply_intent_graph_structural_errors_are_rejected_before_parking() {
+        let duplicate_handle = serde_json::json!({
+            "mutation_kind": "apply_intent_graph",
+            "payload": {
+                "journal_entry": {
+                    "handle": "@je",
+                    "occurred_at": "2026-06-10T10:30:00",
+                    "body": [{ "type": "text", "text": "Dup handles." }]
+                },
+                "entities": [
+                    { "handle": "@dup", "type": "person", "name": "Morris" },
+                    { "handle": "@dup", "type": "project", "name": "Lead Ads" }
+                ],
+                "links": []
+            }
+        });
+        let reason = validate_request(&duplicate_handle).expect_err("duplicate handle rejects");
+        assert!(
+            reason.contains("@dup") || reason.to_lowercase().contains("more than one"),
+            "the pre-park error names the duplicate handle: {reason}"
+        );
+
+        let body_ref_without_link = serde_json::json!({
+            "mutation_kind": "apply_intent_graph",
+            "payload": {
+                "journal_entry": {
+                    "handle": "@je",
+                    "occurred_at": "2026-06-10T10:30:00",
+                    "body": [
+                        { "type": "text", "text": "Talked with " },
+                        { "type": "entity_ref", "target": "@morris" }
+                    ]
+                },
+                "entities": [
+                    { "handle": "@morris", "type": "person", "name": "Morris" }
+                ],
+                "links": []
+            }
+        });
+        let reason =
+            validate_request(&body_ref_without_link).expect_err("dangling body ref rejects");
+        assert!(
+            reason.contains("no journal_ref link"),
+            "the pre-park error names the missing journal_ref link: {reason}"
+        );
+    }
+
+    #[test]
+    fn record_observations_payload_rejects_unknown_schema_and_bad_values() {
+        let spec = ProposableMutation::RecordObservations.payload_spec();
+
+        spec.check(&serde_json::json!({
+            "observations": [
+                {
+                    "schema_key": "bodyweight",
+                    "occurred_at": "2026-06-02T07:30:00",
+                    "values": { "kg": 72.4 }
+                },
+                {
+                    "schema_key": "habit.checkin",
+                    "occurred_at": "2026-06-03T07:30:00",
+                    "values": {
+                        "habit_id": "0190d3c1-0000-7000-8000-000000000004",
+                        "state": "done"
+                    }
+                }
+            ]
+        }))
+        .expect("known observation schemas with schema-specific values are accepted");
+
+        assert!(
+            spec.check(&serde_json::json!({
+                "observations": [
+                    {
+                        "schema_key": "nutrition.intake",
+                        "occurred_at": "2026-06-02T07:30:00",
+                        "values": { "kcal": 450 }
+                    }
+                ]
+            }))
+            .is_err(),
+            "unknown observation schema keys must not pass the proposal gate"
+        );
+        assert!(
+            spec.check(&serde_json::json!({
+                "observations": [
+                    {
+                        "schema_key": "bodyweight",
+                        "occurred_at": "2026-06-02T07:30:00",
+                        "values": { "lbs": 160 }
+                    }
+                ]
+            }))
+            .is_err(),
+            "bodyweight values must use the registered kg shape"
+        );
+        assert!(
+            spec.check(&serde_json::json!({
+                "observations": [
+                    {
+                        "schema_key": "habit.checkin",
+                        "occurred_at": "2026-06-02T07:30:00",
+                        "values": {
+                            "habit_id": "not-a-uuid",
+                            "state": "done"
+                        }
+                    }
+                ]
+            }))
+            .is_err(),
+            "habit.checkin relation values must validate before parking"
+        );
+        assert!(
+            validate_request(&serde_json::json!({
+                "mutation_kind": "record_observations",
+                "payload": {
+                    "observations": [
+                        {
+                            "schema_key": "bodyweight",
+                            "occurred_at": "2026-06-02T08:30:00",
+                            "ended_at": "2026-06-02T07:30:00",
+                            "values": { "kg": 72.4 }
+                        }
+                    ]
+                }
+            }))
+            .is_err(),
+            "record_observations must reject reversed times before parking"
         );
     }
 
@@ -1020,14 +1201,15 @@ mod tests {
     /// The per-FIELD half of the drift guard #152's `input_schema_and_proposable_
     /// mutation_agree` (the per-KIND set) does not cover (card 2): each kind's
     /// emitted payload property set + `required` array trace to its
-    /// [`crate::mutation::MutationKind::payload_spec`], and — critically — the
+    /// [`crate::mutation::ProposableMutation::payload_spec`], and — critically — the
     /// schema/validator DIVERGENCES that no other test pins are nailed here, so
     /// single-sourcing cannot silently change the wire contract:
     /// - `entity_id`/`todo_id` advertise BARE (no `pattern`) though the validator
     ///   UUID-checks them; the reference/source ids advertise the full UUID pattern.
     /// - `aliases`/`tags`/`remove_person_ids` advertise PLAIN string items (no
     ///   `minLength`) though the validator requires each non-empty.
-    /// - only the Journal-Entry `body` array carries `minItems`; `person_refs`,
+    /// - only intentional non-empty arrays carry `minItems` (`body`, graph
+    ///   `entities`, `record_observations.observations`); `person_refs`,
     ///   `aliases`, `tags` do not.
     #[test]
     fn schema_fields_and_divergences_trace_to_the_spec() {
@@ -1146,6 +1328,11 @@ mod tests {
                 "apply_intent_graph",
                 &["entities", "journal_entry", "links"],
                 &["entities", "links"],
+            ),
+            (
+                "record_observations",
+                &["evidence", "observations"],
+                &["observations"],
             ),
         ];
         // Every proposable kind is covered exactly once by the literal table.

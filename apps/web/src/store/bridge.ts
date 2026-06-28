@@ -69,6 +69,20 @@ export function resetBridge(): void {
 
 const decodeThreadTitled = S.decodeUnknownEither(ThreadTitledNotification);
 
+function invalidParamsMessage(error: unknown): string | undefined {
+	if (
+		error !== null &&
+		typeof error === "object" &&
+		"_tag" in error &&
+		(error as { _tag?: unknown })._tag === "InvalidParamsError" &&
+		"message" in error &&
+		typeof (error as { message?: unknown }).message === "string"
+	) {
+		return (error as { message: string }).message;
+	}
+	return undefined;
+}
+
 /**
  * Patch the `["threads"]` cache in place for a `thread/titled` push (ADR-0047):
  * re-title the matching row, leave everything else verbatim. Immutable map (new
@@ -497,28 +511,30 @@ export async function decideProposal(
 		});
 	});
 
-	try {
-		const result = await runtime.runPromise(program);
-		// Currency guard: a concurrent cancelRun (the composer Stop button stays
-		// clickable while deciding) may have settled + cleared this Proposal while
-		// the decide was in flight. If so the Run is terminal — don't re-fork a
-		// resume stream for a cancelled Run (it would re-subscribe a dead Run and
-		// its snapshot text_delta would overwrite the settled bubble).
-		if (getChatState().proposals[runId] === undefined) {
-			return;
-		}
-		// Persist the created/updated `entity_id` (ADR-0044 amendment) so the decided
-		// card can name + deep-link it; absent on a reject.
-		setProposalStatus(runId, result.status, result.entity_id);
-		const threadId = getRunThreadId(runId);
-		if (threadId !== undefined) {
-			// Stale-fiber guard (M2): interrupt the parked fiber, then re-subscribe.
-			// startRunStream re-arms the record's snapshot bit, so the resume's first
-			// text_delta SETs (not appends) — the M1 fix; see docs/design/web-store.md.
-			interruptRun(runtime, runId);
-			startRunStream(runtime, threadId, runId);
-		}
-	} catch {
-		setProposalStatus(runId, "error");
+	const exit = await runtime.runPromiseExit(program);
+	if (Exit.isFailure(exit)) {
+		const error = Cause.squash(exit.cause);
+		setProposalStatus(runId, "error", undefined, invalidParamsMessage(error));
+		return;
+	}
+	const result = exit.value;
+	// Currency guard: a concurrent cancelRun (the composer Stop button stays
+	// clickable while deciding) may have settled + cleared this Proposal while
+	// the decide was in flight. If so the Run is terminal — don't re-fork a
+	// resume stream for a cancelled Run (it would re-subscribe a dead Run and
+	// its snapshot text_delta would overwrite the settled bubble).
+	if (getChatState().proposals[runId] === undefined) {
+		return;
+	}
+	// Persist the created/updated `entity_id` (ADR-0044 amendment) so the decided
+	// card can name + deep-link it; absent on a reject.
+	setProposalStatus(runId, result.status, result.entity_id);
+	const threadId = getRunThreadId(runId);
+	if (threadId !== undefined) {
+		// Stale-fiber guard (M2): interrupt the parked fiber, then re-subscribe.
+		// startRunStream re-arms the record's snapshot bit, so the resume's first
+		// text_delta SETs (not appends) — the M1 fix; see docs/design/web-store.md.
+		interruptRun(runtime, runId);
+		startRunStream(runtime, threadId, runId);
 	}
 }
