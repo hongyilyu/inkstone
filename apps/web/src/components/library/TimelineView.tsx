@@ -73,11 +73,9 @@ export function TimelineView({
 				aria-label="Timeline"
 				className="flex h-full min-h-0 flex-1 flex-col"
 			>
-				<div
-					role="tablist"
-					aria-label="Timeline filter"
-					className="flex shrink-0 flex-wrap gap-1 px-6 pt-4 pb-3"
-				>
+				{/* A visual row of filter toggle buttons (each self-labeled); not an ARIA
+				    tablist — that contract needs roving focus + aria-controls we don't have. */}
+				<div className="flex shrink-0 flex-wrap gap-1 px-6 pt-4 pb-3">
 					{TABS.map((tab) => {
 						const Icon = tab.icon;
 						const active = tab.filter === filter;
@@ -85,8 +83,7 @@ export function TimelineView({
 							<button
 								key={tab.filter}
 								type="button"
-								role="tab"
-								aria-selected={active}
+								aria-pressed={active}
 								onClick={() => onFilterChange(tab.filter)}
 								className={cn(
 									"inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 font-medium text-sm transition-colors",

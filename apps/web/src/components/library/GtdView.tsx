@@ -137,11 +137,9 @@ function pillCount(filt: GtdFilter, all: LibraryItem[]): number {
 		case "review":
 			return projectsForReview(all).length;
 		case "projects":
-			return all.filter(
-				(e) =>
-					e.kind === "project" &&
-					(e.status === "active" || e.status === "on_hold"),
-			).length;
+			// Match the body: the projects branch renders every project via
+			// EntityCollection kind="project", so the badge counts all of them.
+			return all.filter((e) => e.kind === "project").length;
 		case "all":
 			return allActiveTodos(all).length;
 	}
@@ -163,11 +161,9 @@ export function GtdView({
 
 	return (
 		<section aria-label="GTD" className="flex h-full min-h-0 flex-col">
-			<div
-				role="tablist"
-				aria-label="GTD filter"
-				className="flex shrink-0 flex-wrap gap-1 px-6 pt-4 pb-3"
-			>
+			{/* A visual row of filter toggle buttons (each self-labeled); not an ARIA
+			    tablist — that contract needs roving focus + aria-controls we don't have. */}
+			<div className="flex shrink-0 flex-wrap gap-1 px-6 pt-4 pb-3">
 				{PILLS.map((pill) => {
 					const Icon = pill.icon;
 					const active = pill.filt === filt;
@@ -176,8 +172,7 @@ export function GtdView({
 						<button
 							key={pill.filt}
 							type="button"
-							role="tab"
-							aria-selected={active}
+							aria-pressed={active}
 							onClick={() => onFilterChange(pill.filt)}
 							className={cn(
 								"inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 font-medium text-sm transition-colors",

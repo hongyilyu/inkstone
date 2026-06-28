@@ -124,20 +124,20 @@ const FUTURE = "2999-01-01T00:00:00";
 afterEach(cleanup);
 
 describe("GtdView", () => {
-	it("renders the seven filter pills as a tablist", async () => {
+	it("renders the seven filter pills", async () => {
 		renderGtd([]);
-		const tabs = await screen.findAllByRole("tab");
-		const labels = tabs.map((t) => t.textContent);
+		// Filter pills are toggle buttons (aria-pressed), not ARIA tabs — a tablist
+		// without roving focus/aria-controls would be a broken tab contract.
+		await screen.findByRole("button", { name: /today/i });
 		for (const label of [
-			"Today",
-			"Inbox",
-			"Waiting",
-			"Scheduled",
-			"Review",
-			"Projects",
-			"All",
+			/^inbox$/i,
+			/waiting/i,
+			/scheduled/i,
+			/review/i,
+			/projects/i,
+			/^all$/i,
 		]) {
-			expect(labels.some((l) => l?.includes(label))).toBe(true);
+			expect(screen.getByRole("button", { name: label })).toBeInTheDocument();
 		}
 	});
 
@@ -158,8 +158,8 @@ describe("GtdView", () => {
 				{ person_id: "priya", role: "waiting_on" },
 			]),
 		]);
-		await screen.findByRole("tab", { name: /waiting/i });
-		await userEvent.click(screen.getByRole("tab", { name: /waiting/i }));
+		await screen.findByRole("button", { name: /waiting/i });
+		await userEvent.click(screen.getByRole("button", { name: /waiting/i }));
 
 		expect(await screen.findByText("Waiting on Priya")).toBeInTheDocument();
 		expect(screen.queryByText("Unsorted errand")).not.toBeInTheDocument();
@@ -175,7 +175,9 @@ describe("GtdView", () => {
 				project_id: "p1",
 			}),
 		]);
-		await userEvent.click(await screen.findByRole("tab", { name: /^inbox$/i }));
+		await userEvent.click(
+			await screen.findByRole("button", { name: /^inbox$/i }),
+		);
 
 		expect(await screen.findByText("Unsorted errand")).toBeInTheDocument();
 		expect(screen.queryByText("Future deferred")).not.toBeInTheDocument();
@@ -190,7 +192,7 @@ describe("GtdView", () => {
 			}),
 		]);
 		await userEvent.click(
-			await screen.findByRole("tab", { name: /scheduled/i }),
+			await screen.findByRole("button", { name: /scheduled/i }),
 		);
 
 		expect(await screen.findByText("Future deferred")).toBeInTheDocument();
@@ -202,7 +204,9 @@ describe("GtdView", () => {
 			[todo("t_inbox", "Unsorted errand")],
 			[project("p_review", "Quarterly planning", { next_review_at: PAST })],
 		);
-		await userEvent.click(await screen.findByRole("tab", { name: /review/i }));
+		await userEvent.click(
+			await screen.findByRole("button", { name: /review/i }),
+		);
 
 		expect(await screen.findByText("Quarterly planning")).toBeInTheDocument();
 		expect(screen.queryByText("Unsorted errand")).not.toBeInTheDocument();
@@ -224,7 +228,9 @@ describe("GtdView", () => {
 			],
 			[project("p1", "Migration", { next_review_at: FUTURE })],
 		);
-		await userEvent.click(await screen.findByRole("tab", { name: /^all$/i }));
+		await userEvent.click(
+			await screen.findByRole("button", { name: /^all$/i }),
+		);
 
 		expect(await screen.findByText("Unsorted errand")).toBeInTheDocument();
 		expect(screen.getByText("Cut over traffic")).toBeInTheDocument();

@@ -1,12 +1,6 @@
 import type { EntityListResult } from "@inkstone/protocol";
 import { WsClient } from "@inkstone/ui-sdk";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import {
-	createMemoryHistory,
-	createRootRoute,
-	createRouter,
-	RouterProvider,
-} from "@tanstack/react-router";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Effect, Layer, ManagedRuntime, Stream } from "effect";
@@ -71,7 +65,8 @@ function StatefulTimeline() {
 	);
 }
 
-/** Mount under a memory router so the chip `<Link>`s render as anchors. */
+/** TimelineView's chips are plain buttons (they set `?focus=` via a callback),
+ * so no router context is needed — render directly under the providers. */
 function renderTimeline(journalEntries: Rows) {
 	const runtime = makeRuntime(journalEntries);
 	const client = new QueryClient({
@@ -79,20 +74,12 @@ function renderTimeline(journalEntries: Rows) {
 			queries: { staleTime: Number.POSITIVE_INFINITY, retry: false },
 		},
 	});
-	const rootRoute = createRootRoute({ component: StatefulTimeline });
-	const router = createRouter({
-		routeTree: rootRoute,
-		history: createMemoryHistory({ initialEntries: ["/"] }),
-	});
 	const Wrapper = ({ children }: { children: ReactNode }) => (
 		<QueryClientProvider client={client}>
 			<RuntimeProvider runtime={runtime}>{children}</RuntimeProvider>
 		</QueryClientProvider>
 	);
-	// biome-ignore lint/suspicious/noExplicitAny: the ad-hoc single-route router type doesn't match the app RegisteredRouter; only runtime rendering matters here.
-	return render(<RouterProvider router={router as any} />, {
-		wrapper: Wrapper,
-	});
+	return render(<StatefulTimeline />, { wrapper: Wrapper });
 }
 
 /** A journal-entry row with a plain-text body. */
@@ -167,12 +154,13 @@ const jeWithProject = (
 afterEach(cleanup);
 
 describe("TimelineView", () => {
-	it("renders the four type tabs as a tablist", async () => {
+	it("renders the four type filters", async () => {
 		renderTimeline([je("je1", "2026-06-10T09:00:00", "Solo day")]);
-		const tabs = await screen.findAllByRole("tab");
-		const labels = tabs.map((t) => t.textContent);
-		for (const label of ["All", "Journal", "People", "Projects"]) {
-			expect(labels.some((l) => l?.includes(label))).toBe(true);
+		// Type filters are toggle buttons (aria-pressed), not ARIA tabs.
+		for (const label of [/^all$/i, /journal/i, /people/i, /projects/i]) {
+			expect(
+				await screen.findByRole("button", { name: label }),
+			).toBeInTheDocument();
 		}
 	});
 
@@ -211,7 +199,7 @@ describe("TimelineView", () => {
 			screen.getByText("Heads-down, no one mentioned"),
 		).toBeInTheDocument();
 
-		await userEvent.click(screen.getByRole("tab", { name: /people/i }));
+		await userEvent.click(screen.getByRole("button", { name: /people/i }));
 
 		// The person-touching entry stays; the chip-less one is filtered out.
 		expect(screen.getByText("Synced with Priya")).toBeInTheDocument();
@@ -235,7 +223,7 @@ describe("TimelineView", () => {
 			await screen.findByRole("button", { name: "Priya" }),
 		).toBeInTheDocument();
 
-		await userEvent.click(screen.getByRole("tab", { name: /journal/i }));
+		await userEvent.click(screen.getByRole("button", { name: /journal/i }));
 
 		// The entry excerpt stays; chipsForFilter returns [] for "journal", so the
 		// chip is gone (a regression that kept chips would fail here).
@@ -266,7 +254,7 @@ describe("TimelineView", () => {
 		// Both entries show under All.
 		expect(screen.getByText("Synced with Priya")).toBeInTheDocument();
 
-		await userEvent.click(screen.getByRole("tab", { name: /projects/i }));
+		await userEvent.click(screen.getByRole("button", { name: /projects/i }));
 
 		// The project-touching entry stays (with its project chip); the person-only
 		// entry is filtered out (a regression that ignored kind would keep it).

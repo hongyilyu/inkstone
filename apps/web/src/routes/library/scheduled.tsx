@@ -9,7 +9,7 @@ interface RetiredSearch {
 
 export const Route = createFileRoute("/library/scheduled")({
 	validateSearch: (search: Record<string, unknown>): RetiredSearch => ({
-		id: typeof search.id === "string" ? search.id : undefined,
+		id: typeof search.id === "string" && search.id ? search.id : undefined,
 	}),
 	beforeLoad: ({ search }) => {
 		throw redirect({

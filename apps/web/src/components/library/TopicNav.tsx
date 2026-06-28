@@ -40,13 +40,15 @@ const TOPICS: {
  * flat entity-type list. */
 export function TopicNav() {
 	const navigate = useNavigate();
-	const { data, isError } = useLibraryItems();
+	const { data } = useLibraryItems();
 	const items = data ?? [];
 	const stats = todayHubStats(items);
-	// Suppress the glance counts ONLY when the read failed AND there's no cached
-	// data — a misleading `0` reads as a fake-empty workspace, while a refetch
-	// error over a coherent cache keeps the real (stale-but-usable) counts.
-	const countsUnknown = isError && items.length === 0;
+	// Suppress the glance counts only while there's no data to count yet — the
+	// initial load or an error with no cache (data === undefined). A successful
+	// empty workspace (data === []) shows real zeros; an error over a coherent
+	// cache keeps the real (stale-but-usable) counts. Gating on `items.length`
+	// instead would flash a fake `0` mid-load and hide legitimate empty zeros.
+	const countsUnknown = data === undefined;
 
 	return (
 		<NavShell
