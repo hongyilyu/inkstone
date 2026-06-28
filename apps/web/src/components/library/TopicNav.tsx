@@ -18,19 +18,19 @@ import { openCommand } from "@/store/command";
 /**
  * The four browse topics (ADR-0054). A fixed, curated set — adding one is a
  * deliberate code change, never configuration. Each dives into its own signature
- * view; GTD's route is live (`/library/gtd`). The remaining three land in later
- * slices, so their `to` points at `/library` temporarily and the row is inert
+ * view; GTD, Health, and Media routes are live. Timeline's route lands in a later
+ * slice, so its `to` points at `/library` temporarily and the row is inert
  * until then.
  */
 const TOPICS: {
 	label: string;
 	icon: LucideIcon;
-	to: "/library" | "/library/gtd";
+	to: "/library" | "/library/gtd" | "/library/health" | "/library/media";
 }[] = [
 	{ label: "GTD", icon: ListTodo, to: "/library/gtd" },
 	{ label: "Timeline", icon: History, to: "/library" },
-	{ label: "Health", icon: HeartPulse, to: "/library" },
-	{ label: "Media", icon: Film, to: "/library" },
+	{ label: "Health", icon: HeartPulse, to: "/library/health" },
+	{ label: "Media", icon: Film, to: "/library/media" },
 ];
 
 /** Left nav for the topic-organized Workspace (ADR-0054): return-to-chat, search,
