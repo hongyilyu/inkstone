@@ -43,7 +43,9 @@ reads that already exist.
      every topic; it is not itself a type-filter.
    - **GTD** — Todo · Project · Person (via `todo_person_refs`). Action board / lists.
    - **Timeline** — Journal Entry · Person · Project, rendered chronologically.
-   - **Health** — observation streams (ADR-0053). Placeholder until #253.
+   - **Health** — observation streams (ADR-0053). Placeholder until #253; its
+     interior IA (the deferred questions below) is resolved in
+     `docs/plans/observation-ui/NAV.md`.
    - **Media** — read/watch queue. Placeholder until #252.
 
 2. **A topic is a client-side presentation/projection over the existing reads — NO
@@ -202,6 +204,8 @@ which is acceptable because that was a developer's view of the data, not a user'
 - [ADR-0053](./0053-observation-records.md) — Observation records (the Health topic's
   eventual backing; UI navigation is decoupled from both entity types and observation
   schemas, which is precisely what topics deliver). Tracked: [#253](https://github.com/hongyilyu/inkstone/issues/253).
+  Health's interior IA (one schema-grouped surface, no per-schema nav) is resolved in
+  `docs/plans/observation-ui/NAV.md`.
 - [ADR-0042](./0042-url-addressable-threads.md) — the `_chat` / `library` layout-route
   pattern (`WorkspaceShell` + `<Outlet/>`, children read params/search) the topic routes
   follow.
