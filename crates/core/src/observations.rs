@@ -261,33 +261,39 @@ pub(crate) fn prepare_observations(
     let mut observations = Vec::with_capacity(input.observations.len());
 
     for record in input.observations {
-        let schema = validate_observation_fields(
-            &record.schema_key,
-            &record.occurred_at,
-            record.ended_at.as_deref(),
-            &record.values,
-        )
-        .map_err(ObservationError::Invalid)?;
-        let (values, relations) = relation_checks(schema.relation_fields, &record.values)
-            .map_err(ObservationError::Invalid)?;
+        let snapshot = prepare_observation_snapshot(
+            record.schema_key,
+            record.occurred_at,
+            record.ended_at,
+            record.values,
+            record.note,
+        )?;
         let id = Uuid::now_v7().to_string();
-        let values_json = serde_json::to_string(&values)
-            .map_err(|e| ObservationError::Internal(anyhow::Error::new(e)))?;
         let source = record
             .source
             .as_ref()
             .map(validated_source)
             .transpose()
             .map_err(ObservationError::Invalid)?;
+        let PreparedObservationSnapshot {
+            schema_key,
+            schema_version,
+            occurred_at,
+            ended_at,
+            values,
+            values_json,
+            note,
+            relations,
+        } = snapshot;
 
         inserts.push(db::ObservationInsert {
             id: id.clone(),
-            schema_key: schema.key.to_string(),
-            schema_version: schema.version,
-            occurred_at: record.occurred_at.clone(),
-            ended_at: record.ended_at.clone(),
+            schema_key: schema_key.clone(),
+            schema_version,
+            occurred_at: occurred_at.clone(),
+            ended_at: ended_at.clone(),
             values_json,
-            note: record.note.clone(),
+            note: note.clone(),
             created_by: created_by.to_string(),
             created_via_proposal_id: proposal_id.map(str::to_string),
             relations,
@@ -302,12 +308,12 @@ pub(crate) fn prepare_observations(
         });
         observations.push(Observation {
             id,
-            schema_key: schema.key.to_string(),
-            schema_version: schema.version,
-            occurred_at: record.occurred_at,
-            ended_at: record.ended_at,
+            schema_key,
+            schema_version,
+            occurred_at,
+            ended_at,
             values,
-            note: record.note,
+            note,
             source,
             created_at: now_ms,
             updated_at: now_ms,
@@ -321,26 +327,64 @@ fn prepare_observation_update(
     id: String,
     record: ObservationUpdateInput,
 ) -> Result<db::ObservationUpdate, ObservationError> {
+    let snapshot = prepare_observation_snapshot(
+        record.schema_key,
+        record.occurred_at,
+        record.ended_at,
+        record.values,
+        record.note,
+    )?;
+
+    Ok(db::ObservationUpdate {
+        id,
+        schema_key: snapshot.schema_key,
+        schema_version: snapshot.schema_version,
+        occurred_at: snapshot.occurred_at,
+        ended_at: snapshot.ended_at,
+        values_json: snapshot.values_json,
+        note: snapshot.note,
+        relations: snapshot.relations,
+    })
+}
+
+struct PreparedObservationSnapshot {
+    schema_key: String,
+    schema_version: i64,
+    occurred_at: String,
+    ended_at: Option<String>,
+    values: Value,
+    values_json: String,
+    note: Option<String>,
+    relations: Vec<db::ObservationRelationInsert>,
+}
+
+fn prepare_observation_snapshot(
+    schema_key: String,
+    occurred_at: String,
+    ended_at: Option<String>,
+    values: Value,
+    note: Option<String>,
+) -> Result<PreparedObservationSnapshot, ObservationError> {
     let schema = validate_observation_fields(
-        &record.schema_key,
-        &record.occurred_at,
-        record.ended_at.as_deref(),
-        &record.values,
+        &schema_key,
+        &occurred_at,
+        ended_at.as_deref(),
+        &values,
     )
     .map_err(ObservationError::Invalid)?;
-    let (values, relations) = relation_checks(schema.relation_fields, &record.values)
+    let (values, relations) = relation_checks(schema.relation_fields, &values)
         .map_err(ObservationError::Invalid)?;
     let values_json = serde_json::to_string(&values)
         .map_err(|e| ObservationError::Internal(anyhow::Error::new(e)))?;
 
-    Ok(db::ObservationUpdate {
-        id,
+    Ok(PreparedObservationSnapshot {
         schema_key: schema.key.to_string(),
         schema_version: schema.version,
-        occurred_at: record.occurred_at,
-        ended_at: record.ended_at,
+        occurred_at,
+        ended_at,
+        values,
         values_json,
-        note: record.note,
+        note,
         relations,
     })
 }

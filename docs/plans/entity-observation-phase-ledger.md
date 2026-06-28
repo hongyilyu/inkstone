@@ -15,7 +15,7 @@ ADR anchor: `docs/adr/0053-observation-records.md`.
 | Phase 2b | Habit earns Canonical Entity identity as a definition, not as check-ins. | Landed | Habit check-in stream, Habit proposal support, Habit UI. |
 | Phase 3 | First relation-bearing Observation schema using `habit.checkin` as the POC. | Landed | All remaining tracker schemas, generic proposal capture, correction history, UI/Health views. |
 | Phase 4 | One generic `record_observations` proposal kind for agent-reviewed capture. | Landed | Per-schema UI, edit/revision history, charts. |
-| Phase 5 | Observation correction history when delete-and-re-record is insufficient. | Planned | Health UI, aggregate UX, sidebar/navigation policy. |
+| Phase 5 | Observation correction history when delete-and-re-record is insufficient. | Landed | Health UI, aggregate UX, sidebar/navigation policy. |
 | Phase 6 | Observation read views such as Health/Tracking without sidebar bloat. | Planned | Runtime plugins, generic relationship graph, every possible tracker schema. |
 
 ## Topic Coverage
@@ -30,7 +30,7 @@ ADR anchor: `docs/adr/0053-observation-records.md`.
 | Query surface | Phase 1, expanded in Phase 3 | `observation/query` supports schema/time/source/limit; Phase 3 adds `related_entity_id`. | Aggregates, buckets, cursors, and richer filters wait for real UI pressure. |
 | Direct user capture | Phase 1 | `observation/record` records direct user observations without proposals. | Keep direct capture separate from agent-reviewed proposal capture. |
 | Agent capture | Phase 4 | One generic `record_observations` proposal kind. | Do not add `create_calorie`, `create_exercise`, `create_habit_checkin`, etc. |
-| Correction model | Phase 5 | Start delete-and-re-record. | Add `observation_revisions` only when an edit surface needs it. |
+| Correction model | Phase 5 | `observation/update` appends `observation_revisions`; queries read the current row. | Revision-history UI and undo remain future product work. |
 | UI/navigation | Phase 6 | Views read observations; schema registration does not add sidebar rows. | Decide Health/Today/Tracking layout later. |
 | Global search/reference | Later | Observations are not Journal Entry inline-reference targets by default. | Add opt-in search/reference policy per schema only when there is a product use case. |
 | Tracker schema growth | Ongoing | Add closed Core-owned schemas one at a time. | Nutrition, exercise, sleep, mood, etc. remain schema work, not architecture work. |

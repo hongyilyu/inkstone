@@ -331,6 +331,30 @@ async fn observations_update_habit_checkin_validates_relation_target() {
     assert_eq!(rows[0].occurred_at, "2026-06-02T07:30:00");
     assert_eq!(rows[0].values["habit_id"], json!(other_habit_id));
     assert_eq!(rows[0].values["state"], json!("skipped"));
+
+    let old_habit_rows = query_observations(
+        &pool,
+        ObservationQuery {
+            related_entity_id: Some(habit_id.to_string()),
+            ..ObservationQuery::default()
+        },
+    )
+    .await
+    .expect("query old relation");
+    assert!(old_habit_rows.is_empty());
+
+    let new_habit_rows = query_observations(
+        &pool,
+        ObservationQuery {
+            related_entity_id: Some(other_habit_id.to_string()),
+            ..ObservationQuery::default()
+        },
+    )
+    .await
+    .expect("query corrected relation");
+    assert_eq!(new_habit_rows.len(), 1);
+    assert_eq!(new_habit_rows[0].id, recorded[0].id);
+    assert_eq!(new_habit_rows[0].values["habit_id"], json!(other_habit_id));
 }
 
 #[tokio::test]

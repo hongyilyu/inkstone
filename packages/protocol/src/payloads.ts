@@ -441,7 +441,7 @@ export const observationRecordDraft = S.Union(
 );
 
 export const observationUpdateParams = S.Struct({
-	observation_id: S.String,
+	observation_id: patternedUuid,
 	observation: observationRecordDraft,
 });
 

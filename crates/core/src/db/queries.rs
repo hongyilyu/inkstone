@@ -1206,6 +1206,11 @@ where
          FROM observations \
          WHERE schema_key = 'habit.checkin' \
            AND json_extract(values_json, '$.habit_id') = ?1 \
+         UNION ALL \
+         SELECT 1 \
+         FROM observation_revisions \
+         WHERE schema_key = 'habit.checkin' \
+           AND json_extract(values_json, '$.habit_id') = ?1 \
          LIMIT 1",
     )
     .bind(habit_id)

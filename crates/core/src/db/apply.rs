@@ -1279,6 +1279,85 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn delete_habit_rejects_historical_checkin_revision_reference() {
+        let pool = memory_pool().await;
+        let original_habit_id = create(
+            &pool,
+            MutationKind::CreateHabit,
+            serde_json::json!({
+                "name": "Original habit",
+                "cadence": { "interval": 1, "unit": "day" }
+            }),
+        )
+        .await;
+        let corrected_habit_id = create(
+            &pool,
+            MutationKind::CreateHabit,
+            serde_json::json!({
+                "name": "Corrected habit",
+                "cadence": { "interval": 1, "unit": "day" }
+            }),
+        )
+        .await;
+        let observation_id = Uuid::now_v7().to_string();
+        let original_values = serde_json::json!({
+            "habit_id": original_habit_id,
+            "state": "done"
+        })
+        .to_string();
+        let corrected_values = serde_json::json!({
+            "habit_id": corrected_habit_id,
+            "state": "skipped"
+        })
+        .to_string();
+        sqlx::query(
+            "INSERT INTO observations \
+             (id, schema_key, schema_version, occurred_at, values_json, created_by, \
+              created_at, updated_at) \
+             VALUES (?1, 'habit.checkin', 1, '2026-06-02T07:30:00', ?2, 'user', 1, 2)",
+        )
+        .bind(&observation_id)
+        .bind(&corrected_values)
+        .execute(&pool)
+        .await
+        .expect("insert corrected current check-in");
+        sqlx::query(
+            "INSERT INTO observation_revisions \
+             (observation_id, seq, schema_key, schema_version, occurred_at, values_json, created_at) \
+             VALUES \
+             (?1, 1, 'habit.checkin', 1, '2026-06-01T07:30:00', ?2, 1), \
+             (?1, 2, 'habit.checkin', 1, '2026-06-02T07:30:00', ?3, 2)",
+        )
+        .bind(&observation_id)
+        .bind(&original_values)
+        .bind(&corrected_values)
+        .execute(&pool)
+        .await
+        .expect("insert revision history");
+
+        let mut tx = pool.begin().await.expect("begin");
+        let result = apply_entity_mutation(
+            &mut tx,
+            EntityMutationSpec {
+                kind: MutationKind::DeleteHabit,
+                target_entity_id: Some(&original_habit_id),
+                payload: &serde_json::json!({ "entity_id": original_habit_id }),
+                edited_payload: None,
+                created_by: "user",
+                proposal_id: None,
+                source: None,
+                now_ms: 3,
+            },
+        )
+        .await;
+
+        assert!(
+            matches!(result, Err(ApplyError::InvalidMutation(_))),
+            "delete_habit is blocked by historical habit.checkin revisions: {result:?}"
+        );
+    }
+
     /// FIX #8 (create_todo): a `create_todo` carrying a `project_id` whose Project
     /// no longer exists at apply time persists no dangling link — the in-tx
     /// re-check returns `InvalidMutation` (project_id is an AUXILIARY ref, not the

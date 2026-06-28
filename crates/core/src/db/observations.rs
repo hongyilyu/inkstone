@@ -145,6 +145,9 @@ pub(super) async fn insert_observations_in_tx(
     now_ms: i64,
 ) -> Result<(), ObservationInsertError> {
     for row in rows {
+        if let Some(reason) = invalid_relation_reason(tx, &row.relations).await? {
+            return Err(ObservationInsertError::InvalidRelation(reason));
+        }
         queries::insert_observation(
             &mut **tx,
             &row.id,
@@ -172,9 +175,6 @@ pub(super) async fn insert_observations_in_tx(
             now_ms,
         )
         .await?;
-        if let Some(reason) = invalid_relation_reason(tx, &row.relations).await? {
-            return Err(ObservationInsertError::InvalidRelation(reason));
-        }
         if let Some(source) = row.source {
             match &source {
                 ObservationSourceInsert::JournalEntry { id } => {
