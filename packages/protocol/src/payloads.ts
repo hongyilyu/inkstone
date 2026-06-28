@@ -419,6 +419,20 @@ const habitCheckinValues = S.Struct({
 	quantity: S.optional(S.Number),
 });
 
+const nutritionIntakeValues = S.Struct({
+	kcal: S.Number.pipe(S.greaterThanOrEqualTo(0, { description: undefined })),
+	protein_g: S.optional(
+		S.Number.pipe(S.greaterThanOrEqualTo(0, { description: undefined })),
+	),
+	carbs_g: S.optional(
+		S.Number.pipe(S.greaterThanOrEqualTo(0, { description: undefined })),
+	),
+	fat_g: S.optional(
+		S.Number.pipe(S.greaterThanOrEqualTo(0, { description: undefined })),
+	),
+	label: S.optional(S.String),
+});
+
 const bodyweightObservationRecordDraft = S.Struct({
 	schema_key: S.Literal("bodyweight"),
 	occurred_at: localDateTime,
@@ -435,9 +449,18 @@ const habitCheckinObservationRecordDraft = S.Struct({
 	note: S.optional(S.String),
 });
 
+const nutritionIntakeObservationRecordDraft = S.Struct({
+	schema_key: S.Literal("nutrition.intake"),
+	occurred_at: localDateTime,
+	ended_at: S.optional(localDateTime),
+	values: nutritionIntakeValues,
+	note: S.optional(S.String),
+});
+
 export const observationRecordDraft = S.Union(
 	bodyweightObservationRecordDraft,
 	habitCheckinObservationRecordDraft,
+	nutritionIntakeObservationRecordDraft,
 );
 
 export const observationUpdateParams = S.Struct({

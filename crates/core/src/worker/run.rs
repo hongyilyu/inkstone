@@ -1138,7 +1138,7 @@ mod tests {
                 "payload": {
                     "observations": [
                         {
-                            "schema_key": "nutrition.intake",
+                            "schema_key": "blood_pressure",
                             "occurred_at": "2026-06-10T10:30:00",
                             "values": { "kcal": 450 }
                         }

@@ -809,18 +809,28 @@ mod tests {
             .as_str()
             .expect("observation id");
 
+        // These two cases assert the *exact* null-field message through the full RPC
+        // path. That depends on variant order: `check_one_of` surfaces the last
+        // `oneOf` variant's error, so the payload uses `nutrition.intake` (currently
+        // last) to get its field message rather than a sibling's `schema_key`
+        // mismatch. (Payload validation runs before the stored-schema check, so the
+        // stored `habit.checkin` schema is irrelevant here.) The order-INDEPENDENT
+        // guarantee — that a present-null `ended_at`/`note` is rejected with
+        // "must be a string" — is pinned directly on the field spec in
+        // `field_spec::observations_number_tests::optional_datetime_and_string_fields_reject_present_null`;
+        // if a future schema is appended after `nutrition.intake`, update the
+        // `schema_key` here to whichever variant is last (that test stays green).
         let update_with_null_ended_at = dispatch_rpc(
             &pool,
             "observation/update",
             json!({
                 "observation_id": observation_id,
                 "observation": {
-                    "schema_key": "habit.checkin",
+                    "schema_key": "nutrition.intake",
                     "occurred_at": "2026-06-01T07:30:00",
                     "ended_at": null,
                     "values": {
-                        "habit_id": valid_habit_id.to_string(),
-                        "state": "done"
+                        "kcal": 1
                     }
                 }
             }),
@@ -834,11 +844,10 @@ mod tests {
             json!({
                 "observation_id": observation_id,
                 "observation": {
-                    "schema_key": "habit.checkin",
+                    "schema_key": "nutrition.intake",
                     "occurred_at": "2026-06-01T07:30:00",
                     "values": {
-                        "habit_id": valid_habit_id.to_string(),
-                        "state": "done"
+                        "kcal": 1
                     },
                     "note": null
                 }
