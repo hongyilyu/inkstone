@@ -238,7 +238,7 @@ CREATE INDEX idx_observation_sources_message     ON observation_sources(source_m
 -- root; SQLite stores only the relative `storage_path`, never the bytes.
 -- `digest` is the sha-256 hex of the content for integrity, NOT identity
 -- (non-unique, no dedup). Provenance reuses the observations XOR. The
--- `media_attachments` polymorphic-link table lands right below this in slice 2.
+-- `media_attachments` polymorphic-link table is defined immediately below.
 CREATE TABLE media (
   id                       TEXT PRIMARY KEY,          -- random UUID
   mime                     TEXT NOT NULL,

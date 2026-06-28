@@ -94,6 +94,11 @@ pub(crate) enum MediaInsertError {
     /// An attachment target does not exist or is the wrong type (rejected in the
     /// write transaction, rolling back the insert).
     InvalidTarget(String),
+    /// A media-root resolution or on-disk write failure — the bytes could not be
+    /// persisted. Kept distinct from [`MediaInsertError::Sqlx`] so a disk fault
+    /// (e.g. permission denied, disk full) is never mistaken for a SQL fault when
+    /// the future wire surface (#252) maps these to error codes.
+    Io(std::io::Error),
     Sqlx(sqlx::Error),
 }
 
@@ -120,9 +125,9 @@ pub(crate) async fn insert_media(
     let now = super::now_ms();
 
     // File first, so a row never points at missing bytes (ADR-0058).
-    let abs_path = super::resolve_media_path(&storage_path).map_err(to_sqlx_io)?;
-    std::fs::create_dir_all(super::media_root().map_err(to_sqlx_io)?).map_err(to_sqlx_io)?;
-    std::fs::write(&abs_path, bytes).map_err(to_sqlx_io)?;
+    let abs_path = super::resolve_media_path(&storage_path).map_err(to_io)?;
+    std::fs::create_dir_all(super::media_root().map_err(to_io)?).map_err(MediaInsertError::Io)?;
+    std::fs::write(&abs_path, bytes).map_err(MediaInsertError::Io)?;
 
     let write_row = async {
         let mut tx = pool.begin().await?;
@@ -180,11 +185,12 @@ pub(crate) async fn insert_media(
     Ok(id)
 }
 
-/// Surface an `io::Error` from the on-disk write/resolve as a `sqlx::Error::Io`,
-/// so `insert_media` keeps a single `MediaInsertError` shape (the file and the
-/// row failures both flow through `Sqlx`).
-fn to_sqlx_io<E: Into<Box<dyn std::error::Error + Send + Sync>>>(err: E) -> MediaInsertError {
-    MediaInsertError::Sqlx(sqlx::Error::Io(std::io::Error::other(err)))
+/// Coerce a media-root resolution failure (an `anyhow::Error` from `media_root`/
+/// `resolve_media_path`, e.g. an unresolvable data dir) into the `Io` variant —
+/// it is a "the bytes can't be placed on disk" failure, the same class as the
+/// `std::fs` errors that flow straight into [`MediaInsertError::Io`].
+fn to_io<E: Into<Box<dyn std::error::Error + Send + Sync>>>(err: E) -> MediaInsertError {
+    MediaInsertError::Io(std::io::Error::other(err))
 }
 
 /// Confirm an attachment target row exists (and, for a typed Entity, is the

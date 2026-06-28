@@ -1041,9 +1041,9 @@ where
     .await
 }
 
-/// Delete a media row by id. Returns the affected row count so the caller knows
-/// whether a row existed (mirrors [`delete_entity`]).
-pub(super) async fn delete_media<'e, E>(executor: E, id: &str) -> sqlx::Result<u64>
+/// Delete a media row by id. The caller (`media::delete_media`) has already
+/// confirmed the row via `media_by_id`, so the affected count isn't needed here.
+pub(super) async fn delete_media<'e, E>(executor: E, id: &str) -> sqlx::Result<()>
 where
     E: Executor<'e, Database = Sqlite>,
 {
@@ -1051,7 +1051,7 @@ where
         .bind(id)
         .execute(executor)
         .await
-        .map(|r| r.rows_affected())
+        .map(|_| ())
 }
 
 /// Insert one `media_attachments` row. Exactly one of the four `target_*` ids is
