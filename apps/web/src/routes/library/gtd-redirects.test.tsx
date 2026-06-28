@@ -83,4 +83,33 @@ describe("library workflow-route redirects (ADR-0054)", () => {
 			await runtime.dispose();
 		});
 	}
+
+	// A deep-linked/bookmarked selection (`?id=`) must survive the redirect so the
+	// entity's detail rail still opens on the GTD surface (which threads `?id=`).
+	it("forwards ?id= through the redirect to GTD", async () => {
+		const runtime = emptyRuntime();
+		const router = createRouter({
+			routeTree,
+			history: createMemoryHistory({
+				initialEntries: ["/library/waiting?id=person_priya"],
+			}),
+		});
+		renderWithQuery(
+			<RuntimeProvider runtime={runtime}>
+				<RouterProvider router={router} />
+			</RuntimeProvider>,
+		);
+
+		await waitFor(() => {
+			expect(router.state.location.pathname).toBe("/library/gtd");
+		});
+		const search = router.state.location.search as {
+			filt?: string;
+			id?: string;
+		};
+		expect(search.filt).toBe("waiting");
+		expect(search.id).toBe("person_priya");
+
+		await runtime.dispose();
+	});
 });
