@@ -79,7 +79,7 @@ The guarantees the model holds, each with its enforcing anchor:
   lives in `todo_status_timestamp_invariant` (`entities.rs:789`).
 - **At most one ref per `(todo_id, person_id)`, with `waiting_on ⊇ related`.** A
   `related` ref never downgrades an existing `waiting_on`. De-dup is in
-  `deduped_refs` (`apply.rs:230` — `waiting_on` wins; first-seen order preserved),
+  `deduped_refs` (`apply.rs:216` — `waiting_on` wins; first-seen order preserved),
   applied across both `set` and `add` (`apply.rs:293`), and the persistence-level
   upsert keeps the same rule (`upsert_todo_person_ref` SQL: `role = CASE WHEN
   todo_person_refs.role = 'waiting_on' THEN 'waiting_on' ELSE excluded.role END`).
