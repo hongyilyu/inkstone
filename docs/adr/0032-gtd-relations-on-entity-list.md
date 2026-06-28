@@ -120,3 +120,6 @@ adds no contract delta. See ADR-0054 for the topic model.
   why load-all-derive beats a relation-RPC surface.
 - [ADR-0014](./0014-client-core-wire-protocol.md) — the Client↔Core wire protocol
   `person_refs` extends.
+- [ADR-0055](./0055-gtd-ownership-and-relation-model.md) — names this `entity/list`
+  read (plus client derivation) as the single canonical GTD relation path and
+  reclassifies `entity/backlinks` as the reverse-read seam, not a competing path.

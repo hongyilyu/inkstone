@@ -2247,4 +2247,169 @@ mod tests {
             "the title carries forward"
         );
     }
+
+    /// delete_project is a hand-rolled JSON cascade (ADR-0031/0055): it unsets
+    /// `project_id` on every owning Todo and deletes the Project row, but leaves
+    /// the Todo's `title`/`note` and its `todo_person_refs` rows intact.
+    #[tokio::test]
+    async fn delete_project_unsets_project_id_keeps_title_note_refs() {
+        let pool = memory_pool().await;
+        let alice = create(
+            &pool,
+            MutationKind::CreatePerson,
+            serde_json::json!({ "name": "Alice" }),
+        )
+        .await;
+        let project = create(
+            &pool,
+            MutationKind::CreateProject,
+            serde_json::json!({ "name": "Roadmap", "status": "active" }),
+        )
+        .await;
+        let todo = create(
+            &pool,
+            MutationKind::CreateTodo,
+            serde_json::json!({
+                "todo": {
+                    "title": "Ship it",
+                    "note": "the note",
+                    "project_id": project,
+                    "status": "active"
+                },
+                "person_refs": [{ "person_id": alice, "role": "related" }]
+            }),
+        )
+        .await;
+
+        let mut tx = pool.begin().await.unwrap();
+        apply_entity_mutation(
+            &mut tx,
+            EntityMutationSpec {
+                kind: MutationKind::DeleteProject,
+                target_entity_id: Some(&project),
+                payload: &serde_json::json!({ "entity_id": project }),
+                edited_payload: None,
+                created_by: "user",
+                proposal_id: None,
+                source: None,
+                now_ms: 200,
+            },
+        )
+        .await
+        .expect("delete_project applies");
+        tx.commit().await.unwrap();
+
+        let data = todo_data(&pool, &todo).await;
+        assert!(
+            data.get("project_id").is_none(),
+            "the cascade unsets project_id: {data}"
+        );
+        assert_eq!(data["title"].as_str(), Some("Ship it"), "title is preserved");
+        assert_eq!(data["note"].as_str(), Some("the note"), "note is preserved");
+
+        let ref_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM todo_person_refs WHERE todo_id = ?1 AND person_id = ?2",
+        )
+        .bind(&todo)
+        .bind(&alice)
+        .fetch_one(&pool)
+        .await
+        .expect("count refs");
+        assert_eq!(ref_count, 1, "the Todo Person Reference is preserved");
+
+        let project_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM entities WHERE id = ?1")
+                .bind(&project)
+                .fetch_one(&pool)
+                .await
+                .expect("count project");
+        assert_eq!(project_count, 0, "the Project entity is deleted");
+    }
+
+    /// update_todo ref-op precedence (ADR-0031/0055): `set_person_refs` replaces the
+    /// whole set wholesale, THEN `add_person_refs` upserts on top — and the upsert
+    /// never downgrades an existing `waiting_on` to `related`.
+    #[tokio::test]
+    async fn set_then_add_person_refs_replaces_then_upserts_no_downgrade() {
+        let pool = memory_pool().await;
+        let alice = create(
+            &pool,
+            MutationKind::CreatePerson,
+            serde_json::json!({ "name": "Alice" }),
+        )
+        .await;
+        let bob = create(
+            &pool,
+            MutationKind::CreatePerson,
+            serde_json::json!({ "name": "Bob" }),
+        )
+        .await;
+        let carol = create(
+            &pool,
+            MutationKind::CreatePerson,
+            serde_json::json!({ "name": "Carol" }),
+        )
+        .await;
+        let todo = create(
+            &pool,
+            MutationKind::CreateTodo,
+            serde_json::json!({
+                "todo": { "title": "Coordinate", "status": "active" },
+                "person_refs": [{ "person_id": carol, "role": "related" }]
+            }),
+        )
+        .await;
+
+        let mut tx = pool.begin().await.unwrap();
+        apply_entity_mutation(
+            &mut tx,
+            EntityMutationSpec {
+                kind: MutationKind::UpdateTodo,
+                target_entity_id: Some(&todo),
+                payload: &serde_json::json!({
+                    "todo_id": todo,
+                    "set_person_refs": [{ "person_id": alice, "role": "waiting_on" }],
+                    "add_person_refs": [
+                        { "person_id": alice, "role": "related" },
+                        { "person_id": bob, "role": "related" }
+                    ]
+                }),
+                edited_payload: None,
+                created_by: "user",
+                proposal_id: None,
+                source: None,
+                now_ms: 200,
+            },
+        )
+        .await
+        .expect("update_todo ref-ops apply");
+        tx.commit().await.unwrap();
+
+        let refs: Vec<(String, String)> = sqlx::query_as(
+            "SELECT person_id, role FROM todo_person_refs WHERE todo_id = ?1 ORDER BY person_id",
+        )
+        .bind(&todo)
+        .fetch_all(&pool)
+        .await
+        .expect("query refs");
+
+        let alice_role = refs
+            .iter()
+            .find(|(id, _)| id == &alice)
+            .map(|(_, role)| role.as_str());
+        let bob_role = refs
+            .iter()
+            .find(|(id, _)| id == &bob)
+            .map(|(_, role)| role.as_str());
+        let has_carol = refs.iter().any(|(id, _)| id == &carol);
+
+        assert!(!has_carol, "set replaced the carol ref wholesale");
+        assert_eq!(
+            alice_role,
+            Some("waiting_on"),
+            "add upserts but never downgrades alice's waiting_on"
+        );
+        assert_eq!(bob_role, Some("related"), "add inserted bob as related");
+        assert_eq!(refs.len(), 2, "exactly two refs after set+add");
+    }
 }
