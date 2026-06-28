@@ -89,6 +89,27 @@ pub(crate) async fn record_observations(
     Ok(observations)
 }
 
+#[allow(dead_code)] // Phase 5 core API; Phase 6 decides the public edit surface.
+pub(crate) async fn update_observation(
+    pool: &SqlitePool,
+    observation_id: &str,
+    record: ObservationRecordInput,
+) -> Result<(), ObservationError> {
+    let observation_id =
+        normalize_uuid(observation_id, "observation_id").map_err(ObservationError::Invalid)?;
+    if record.source.is_some() {
+        return Err(ObservationError::Invalid(
+            "observation source cannot be updated".to_string(),
+        ));
+    }
+
+    let now_ms = db::now_ms();
+    let update = prepare_observation_update(observation_id, record, None)?;
+    db::update_observation(pool, update, now_ms)
+        .await
+        .map_err(observation_update_error)
+}
+
 pub(crate) fn record_observations_payload_spec() -> PayloadSpec {
     let journal_evidence = PayloadSpec::nested(
         "observation evidence",
@@ -241,6 +262,31 @@ pub(crate) fn prepare_observations(
     Ok((inserts, observations))
 }
 
+#[allow(dead_code)]
+fn prepare_observation_update(
+    id: String,
+    record: ObservationRecordInput,
+    proposal_id: Option<&str>,
+) -> Result<db::ObservationUpdate, ObservationError> {
+    let schema = validate_record(&record).map_err(ObservationError::Invalid)?;
+    let (values, relations) = relation_checks(schema.relation_fields, &record.values)
+        .map_err(ObservationError::Invalid)?;
+    let values_json = serde_json::to_string(&values)
+        .map_err(|e| ObservationError::Internal(anyhow::Error::new(e)))?;
+
+    Ok(db::ObservationUpdate {
+        id,
+        schema_key: schema.key.to_string(),
+        schema_version: schema.version,
+        occurred_at: record.occurred_at,
+        ended_at: record.ended_at,
+        values_json,
+        note: record.note,
+        proposal_id: proposal_id.map(str::to_string),
+        relations,
+    })
+}
+
 pub(crate) fn render_accept(observations: &[Observation]) -> String {
     let count = observations.len();
     let details = observations
@@ -278,6 +324,17 @@ pub(crate) fn observation_insert_error(e: db::ObservationInsertError) -> Observa
         db::ObservationInsertError::InvalidSource(reason) => ObservationError::Invalid(reason),
         db::ObservationInsertError::InvalidRelation(reason) => ObservationError::Invalid(reason),
         db::ObservationInsertError::Sqlx(err) => ObservationError::Internal(err.into()),
+    }
+}
+
+#[allow(dead_code)]
+pub(crate) fn observation_update_error(e: db::ObservationUpdateError) -> ObservationError {
+    match e {
+        db::ObservationUpdateError::InvalidRelation(reason) => ObservationError::Invalid(reason),
+        db::ObservationUpdateError::NotFound => {
+            ObservationError::Invalid("observation not found".to_string())
+        }
+        db::ObservationUpdateError::Sqlx(err) => ObservationError::Internal(err.into()),
     }
 }
 

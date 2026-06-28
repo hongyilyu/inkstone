@@ -958,6 +958,119 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
+pub(super) async fn insert_observation_revision<'e, E>(
+    executor: E,
+    observation_id: &str,
+    seq: i64,
+    schema_key: &str,
+    schema_version: i64,
+    occurred_at: &str,
+    ended_at: Option<&str>,
+    values_json: &str,
+    note: Option<&str>,
+    proposal_id: Option<&str>,
+    now_ms: i64,
+) -> sqlx::Result<()>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query(
+        "INSERT INTO observation_revisions \
+         (observation_id, seq, schema_key, schema_version, occurred_at, ended_at, values_json, \
+          note, proposal_id, created_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(observation_id)
+    .bind(seq)
+    .bind(schema_key)
+    .bind(schema_version)
+    .bind(occurred_at)
+    .bind(ended_at)
+    .bind(values_json)
+    .bind(note)
+    .bind(proposal_id)
+    .bind(now_ms)
+    .execute(executor)
+    .await
+    .map(|_| ())
+}
+
+#[allow(clippy::too_many_arguments, dead_code)]
+pub(super) async fn insert_next_observation_revision<'e, E>(
+    executor: E,
+    observation_id: &str,
+    schema_key: &str,
+    schema_version: i64,
+    occurred_at: &str,
+    ended_at: Option<&str>,
+    values_json: &str,
+    note: Option<&str>,
+    proposal_id: Option<&str>,
+    now_ms: i64,
+) -> sqlx::Result<()>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query(
+        "INSERT INTO observation_revisions \
+         (observation_id, seq, schema_key, schema_version, occurred_at, ended_at, values_json, \
+          note, proposal_id, created_at) \
+         VALUES ( \
+           ?, \
+           (SELECT COALESCE(MAX(seq), 0) + 1 FROM observation_revisions WHERE observation_id = ?), \
+           ?, ?, ?, ?, ?, ?, ?, ? \
+         )",
+    )
+    .bind(observation_id)
+    .bind(observation_id)
+    .bind(schema_key)
+    .bind(schema_version)
+    .bind(occurred_at)
+    .bind(ended_at)
+    .bind(values_json)
+    .bind(note)
+    .bind(proposal_id)
+    .bind(now_ms)
+    .execute(executor)
+    .await
+    .map(|_| ())
+}
+
+#[allow(clippy::too_many_arguments, dead_code)]
+pub(super) async fn update_observation<'e, E>(
+    executor: E,
+    observation_id: &str,
+    schema_key: &str,
+    schema_version: i64,
+    occurred_at: &str,
+    ended_at: Option<&str>,
+    values_json: &str,
+    note: Option<&str>,
+    now_ms: i64,
+) -> sqlx::Result<u64>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query(
+        "UPDATE observations \
+         SET schema_key = ?, schema_version = ?, occurred_at = ?, ended_at = ?, \
+             values_json = ?, note = ?, updated_at = ? \
+         WHERE id = ?",
+    )
+    .bind(schema_key)
+    .bind(schema_version)
+    .bind(occurred_at)
+    .bind(ended_at)
+    .bind(values_json)
+    .bind(note)
+    .bind(now_ms)
+    .bind(observation_id)
+    .execute(executor)
+    .await
+    .map(|result| result.rows_affected())
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn insert_observation_source<'e, E>(
     executor: E,
     id: &str,

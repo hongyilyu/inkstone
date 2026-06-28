@@ -24,6 +24,19 @@ pub(crate) struct ObservationInsert {
     pub source: Option<ObservationSourceInsert>,
 }
 
+#[allow(dead_code)] // Phase 5 lands the core correction path before public UI/RPC callers.
+pub(crate) struct ObservationUpdate {
+    pub id: String,
+    pub schema_key: String,
+    pub schema_version: i64,
+    pub occurred_at: String,
+    pub ended_at: Option<String>,
+    pub values_json: String,
+    pub note: Option<String>,
+    pub proposal_id: Option<String>,
+    pub relations: Vec<ObservationRelationInsert>,
+}
+
 pub(crate) struct ObservationRelationInsert {
     pub field_name: &'static str,
     pub entity_id: String,
@@ -94,9 +107,23 @@ pub(crate) enum ObservationInsertError {
     Sqlx(sqlx::Error),
 }
 
+#[allow(dead_code)]
+#[derive(Debug)]
+pub(crate) enum ObservationUpdateError {
+    InvalidRelation(String),
+    NotFound,
+    Sqlx(sqlx::Error),
+}
+
 impl From<sqlx::Error> for ObservationInsertError {
     fn from(value: sqlx::Error) -> Self {
         ObservationInsertError::Sqlx(value)
+    }
+}
+
+impl From<sqlx::Error> for ObservationUpdateError {
+    fn from(value: sqlx::Error) -> Self {
+        ObservationUpdateError::Sqlx(value)
     }
 }
 
@@ -130,6 +157,20 @@ pub(super) async fn insert_observations_in_tx(
             &row.values_json,
             row.note.as_deref(),
             &row.created_by,
+            row.created_via_proposal_id.as_deref(),
+            now_ms,
+        )
+        .await?;
+        queries::insert_observation_revision(
+            &mut **tx,
+            &row.id,
+            1,
+            &row.schema_key,
+            row.schema_version,
+            &row.occurred_at,
+            row.ended_at.as_deref(),
+            &row.values_json,
+            row.note.as_deref(),
             row.created_via_proposal_id.as_deref(),
             now_ms,
         )
@@ -185,6 +226,64 @@ pub(super) async fn insert_observations_in_tx(
             .await?;
         }
     }
+    Ok(())
+}
+
+#[allow(dead_code)]
+pub(crate) async fn update_observation(
+    pool: &SqlitePool,
+    row: ObservationUpdate,
+    now_ms: i64,
+) -> Result<(), ObservationUpdateError> {
+    let mut tx = pool.begin().await?;
+
+    for relation in &row.relations {
+        if !queries::entity_is_type(
+            &mut *tx,
+            &relation.entity_id,
+            relation.target_entity_type.as_str(),
+        )
+        .await?
+        {
+            return Err(ObservationUpdateError::InvalidRelation(format!(
+                "observation {} must name a {}",
+                relation.field_name,
+                relation.target_entity_type.as_str()
+            )));
+        }
+    }
+
+    let rows_affected = queries::update_observation(
+        &mut *tx,
+        &row.id,
+        &row.schema_key,
+        row.schema_version,
+        &row.occurred_at,
+        row.ended_at.as_deref(),
+        &row.values_json,
+        row.note.as_deref(),
+        now_ms,
+    )
+    .await?;
+    if rows_affected == 0 {
+        return Err(ObservationUpdateError::NotFound);
+    }
+
+    queries::insert_next_observation_revision(
+        &mut *tx,
+        &row.id,
+        &row.schema_key,
+        row.schema_version,
+        &row.occurred_at,
+        row.ended_at.as_deref(),
+        &row.values_json,
+        row.note.as_deref(),
+        row.proposal_id.as_deref(),
+        now_ms,
+    )
+    .await?;
+
+    tx.commit().await?;
     Ok(())
 }
 
