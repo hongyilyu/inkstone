@@ -21,7 +21,13 @@ being rows in `entities`:
 - `observations` stores the common envelope: schema key/version, occurred time,
   optional ended time, values JSON, note, provenance origin, and timestamps.
 - `observation_sources` stores optional evidence/provenance pointing at exactly
-  one Message or Entity.
+  one Message or Entity. Its `CHECK` pins `relation` to the id column it rides —
+  `(entity AND created_from) XOR (message AND evidenced_by)` — tighter than the
+  plan's 2-value CHECK, which left `relation` unconstrained. It also diverges
+  structurally from `entity_sources`: it drops the `updated_from` relation and
+  adds `UNIQUE(observation_id)` (one original source; corrections live in
+  `observation_revisions`), versus `entity_sources`' 3-relation multi-source
+  shape. Reconciling the two source tables is tracked by #266.
 - The first client/Core surface is `observation/record` and
   `observation/query`.
 - Agent-reviewed capture later uses one generic `record_observations` proposal
