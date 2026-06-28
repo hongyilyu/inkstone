@@ -16,6 +16,7 @@ import { Route as LibraryIndexRouteImport } from './routes/library/index'
 import { Route as ChatIndexRouteImport } from './routes/_chat/index'
 import { Route as SettingsModelsRouteImport } from './routes/settings/models'
 import { Route as LibraryWaitingRouteImport } from './routes/library/waiting'
+import { Route as LibraryTimelineRouteImport } from './routes/library/timeline'
 import { Route as LibraryScheduledRouteImport } from './routes/library/scheduled'
 import { Route as LibraryReviewRouteImport } from './routes/library/review'
 import { Route as LibraryMediaRouteImport } from './routes/library/media'
@@ -58,6 +59,11 @@ const SettingsModelsRoute = SettingsModelsRouteImport.update({
 const LibraryWaitingRoute = LibraryWaitingRouteImport.update({
   id: '/waiting',
   path: '/waiting',
+  getParentRoute: () => LibraryRouteRoute,
+} as any)
+const LibraryTimelineRoute = LibraryTimelineRouteImport.update({
+  id: '/timeline',
+  path: '/timeline',
   getParentRoute: () => LibraryRouteRoute,
 } as any)
 const LibraryScheduledRoute = LibraryScheduledRouteImport.update({
@@ -118,6 +124,7 @@ export interface FileRoutesByFullPath {
   '/library/media': typeof LibraryMediaRoute
   '/library/review': typeof LibraryReviewRoute
   '/library/scheduled': typeof LibraryScheduledRoute
+  '/library/timeline': typeof LibraryTimelineRoute
   '/library/waiting': typeof LibraryWaitingRoute
   '/settings/models': typeof SettingsModelsRoute
   '/library/': typeof LibraryIndexRoute
@@ -133,6 +140,7 @@ export interface FileRoutesByTo {
   '/library/media': typeof LibraryMediaRoute
   '/library/review': typeof LibraryReviewRoute
   '/library/scheduled': typeof LibraryScheduledRoute
+  '/library/timeline': typeof LibraryTimelineRoute
   '/library/waiting': typeof LibraryWaitingRoute
   '/settings/models': typeof SettingsModelsRoute
   '/': typeof ChatIndexRoute
@@ -152,6 +160,7 @@ export interface FileRoutesById {
   '/library/media': typeof LibraryMediaRoute
   '/library/review': typeof LibraryReviewRoute
   '/library/scheduled': typeof LibraryScheduledRoute
+  '/library/timeline': typeof LibraryTimelineRoute
   '/library/waiting': typeof LibraryWaitingRoute
   '/settings/models': typeof SettingsModelsRoute
   '/_chat/': typeof ChatIndexRoute
@@ -172,6 +181,7 @@ export interface FileRouteTypes {
     | '/library/media'
     | '/library/review'
     | '/library/scheduled'
+    | '/library/timeline'
     | '/library/waiting'
     | '/settings/models'
     | '/library/'
@@ -187,6 +197,7 @@ export interface FileRouteTypes {
     | '/library/media'
     | '/library/review'
     | '/library/scheduled'
+    | '/library/timeline'
     | '/library/waiting'
     | '/settings/models'
     | '/'
@@ -205,6 +216,7 @@ export interface FileRouteTypes {
     | '/library/media'
     | '/library/review'
     | '/library/scheduled'
+    | '/library/timeline'
     | '/library/waiting'
     | '/settings/models'
     | '/_chat/'
@@ -267,6 +279,13 @@ declare module '@tanstack/react-router' {
       path: '/waiting'
       fullPath: '/library/waiting'
       preLoaderRoute: typeof LibraryWaitingRouteImport
+      parentRoute: typeof LibraryRouteRoute
+    }
+    '/library/timeline': {
+      id: '/library/timeline'
+      path: '/timeline'
+      fullPath: '/library/timeline'
+      preLoaderRoute: typeof LibraryTimelineRouteImport
       parentRoute: typeof LibraryRouteRoute
     }
     '/library/scheduled': {
@@ -343,6 +362,7 @@ interface LibraryRouteRouteChildren {
   LibraryMediaRoute: typeof LibraryMediaRoute
   LibraryReviewRoute: typeof LibraryReviewRoute
   LibraryScheduledRoute: typeof LibraryScheduledRoute
+  LibraryTimelineRoute: typeof LibraryTimelineRoute
   LibraryWaitingRoute: typeof LibraryWaitingRoute
   LibraryIndexRoute: typeof LibraryIndexRoute
 }
@@ -355,6 +375,7 @@ const LibraryRouteRouteChildren: LibraryRouteRouteChildren = {
   LibraryMediaRoute: LibraryMediaRoute,
   LibraryReviewRoute: LibraryReviewRoute,
   LibraryScheduledRoute: LibraryScheduledRoute,
+  LibraryTimelineRoute: LibraryTimelineRoute,
   LibraryWaitingRoute: LibraryWaitingRoute,
   LibraryIndexRoute: LibraryIndexRoute,
 }

@@ -18,17 +18,19 @@ import { openCommand } from "@/store/command";
 /**
  * The four browse topics (ADR-0054). A fixed, curated set — adding one is a
  * deliberate code change, never configuration. Each dives into its own signature
- * view; GTD, Health, and Media routes are live. Timeline's route lands in a later
- * slice, so its `to` points at `/library` temporarily and the row is inert
- * until then.
+ * view; all four routes are live.
  */
 const TOPICS: {
 	label: string;
 	icon: LucideIcon;
-	to: "/library" | "/library/gtd" | "/library/health" | "/library/media";
+	to:
+		| "/library/gtd"
+		| "/library/timeline"
+		| "/library/health"
+		| "/library/media";
 }[] = [
 	{ label: "GTD", icon: ListTodo, to: "/library/gtd" },
-	{ label: "Timeline", icon: History, to: "/library" },
+	{ label: "Timeline", icon: History, to: "/library/timeline" },
 	{ label: "Health", icon: HeartPulse, to: "/library/health" },
 	{ label: "Media", icon: Film, to: "/library/media" },
 ];
