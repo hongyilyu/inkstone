@@ -489,6 +489,44 @@ mod tests {
         .expect("insert entity");
     }
 
+    /// Seed a standalone user Observation so an `Observation` attachment target
+    /// resolves (`created_by='user'`, so the observations XOR needs no proposal).
+    async fn seed_observation(pool: &SqlitePool, observation_id: &str) {
+        sqlx::query(
+            "INSERT INTO observations \
+             (id, schema_key, schema_version, occurred_at, values_json, \
+              created_by, created_at, updated_at) \
+             VALUES (?1, 'bodyweight', 1, '2026-01-01T00:00:00', '{\"kg\":70}', 'user', 1, 1)",
+        )
+        .bind(observation_id)
+        .execute(pool)
+        .await
+        .expect("insert observation");
+    }
+
+    /// Seed a Proposal so a `Proposal` attachment target resolves. A Proposal is a
+    /// sidecar of a `tool_call`, which needs a `run` + `thread`; reuse the
+    /// `seed_message` thread/run so the `tool_calls.run_id` FK resolves.
+    async fn seed_proposal(pool: &SqlitePool, proposal_id: &str) {
+        let mut tx = pool.begin().await.expect("begin proposal seed");
+        sqlx::query(
+            "INSERT INTO tool_calls (id, run_id, name, request_payload, status, requested_at) \
+             VALUES ('tc-media', 'run-media', 'propose_create_entities', '{}', 'pending', 1)",
+        )
+        .execute(&mut *tx)
+        .await
+        .expect("insert tool_call");
+        sqlx::query(
+            "INSERT INTO proposals (id, tool_call_id, mutation_kind, status) \
+             VALUES (?1, 'tc-media', 'create_todo', 'pending')",
+        )
+        .bind(proposal_id)
+        .execute(&mut *tx)
+        .await
+        .expect("insert proposal");
+        tx.commit().await.expect("commit proposal seed");
+    }
+
     /// Build a `MediaInput` carrying the given attachment targets. `created_by`
     /// is `'user'` so the provenance XOR holds without a proposal id.
     fn media_input(attachments: Vec<MediaAttachmentTarget>) -> MediaInput {
@@ -517,8 +555,12 @@ mod tests {
             let pool = memory_pool().await;
             let message_id = "018f0000-0000-7000-8000-0000000000a1";
             let entity_id = "018f0000-0000-7000-8000-0000000000a2";
+            let observation_id = "018f0000-0000-7000-8000-0000000000a3";
+            let proposal_id = "018f0000-0000-7000-8000-0000000000a4";
             seed_message(&pool, message_id).await;
             seed_entity(&pool, entity_id, EntityType::Person.as_str()).await;
+            seed_observation(&pool, observation_id).await;
+            seed_proposal(&pool, proposal_id).await;
 
             let media_id = insert_media(
                 &pool,
@@ -531,13 +573,19 @@ mod tests {
                         id: entity_id.to_string(),
                         expected_type: Some(EntityType::Person),
                     },
+                    MediaAttachmentTarget::Observation {
+                        id: observation_id.to_string(),
+                    },
+                    MediaAttachmentTarget::Proposal {
+                        id: proposal_id.to_string(),
+                    },
                 ]),
             )
             .await
             .expect("insert media with attachments");
 
-            // One row per target, each tagged with the right kind and the single
-            // populated target column.
+            // One row per target, each tagged with the right kind and exactly the
+            // single matching target column populated (every discriminator covered).
             let rows: Vec<(String, Option<String>, Option<String>, Option<String>, Option<String>)> =
                 sqlx::query_as(
                     "SELECT target_kind, target_entity_id, target_message_id, \
@@ -549,20 +597,30 @@ mod tests {
                 .fetch_all(&pool)
                 .await
                 .expect("select attachments");
-            assert_eq!(rows.len(), 2, "one media_attachments row per target");
+            assert_eq!(rows.len(), 4, "one media_attachments row per target");
 
-            // ORDER BY target_kind: 'entity' before 'message'.
+            // ORDER BY target_kind: entity, message, observation, proposal. Each row
+            // has its own column set and all three others NULL.
             assert_eq!(rows[0].0, "entity");
-            assert_eq!(rows[0].1.as_deref(), Some(entity_id));
-            assert_eq!(rows[0].2, None);
-            assert_eq!(rows[0].3, None);
-            assert_eq!(rows[0].4, None);
-
+            assert_eq!(
+                (rows[0].1.as_deref(), &rows[0].2, &rows[0].3, &rows[0].4),
+                (Some(entity_id), &None, &None, &None)
+            );
             assert_eq!(rows[1].0, "message");
-            assert_eq!(rows[1].2.as_deref(), Some(message_id));
-            assert_eq!(rows[1].1, None);
-            assert_eq!(rows[1].3, None);
-            assert_eq!(rows[1].4, None);
+            assert_eq!(
+                (&rows[1].1, rows[1].2.as_deref(), &rows[1].3, &rows[1].4),
+                (&None, Some(message_id), &None, &None)
+            );
+            assert_eq!(rows[2].0, "observation");
+            assert_eq!(
+                (&rows[2].1, &rows[2].2, rows[2].3.as_deref(), &rows[2].4),
+                (&None, &None, Some(observation_id), &None)
+            );
+            assert_eq!(rows[3].0, "proposal");
+            assert_eq!(
+                (&rows[3].1, &rows[3].2, &rows[3].3, rows[3].4.as_deref()),
+                (&None, &None, &None, Some(proposal_id))
+            );
         }
         .await;
 

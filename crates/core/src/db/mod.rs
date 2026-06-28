@@ -48,13 +48,10 @@ pub use lifecycle::TerminalReason;
 // at query time — no standing projection to maintain or rebuild.
 pub use message_fts::search_messages;
 // The media substrate (ADR-0058) has no production consumer yet — its wire verb /
-// Media entity caller lands later (#252) — so the re-exported surface is reached
-// only by `db::media`'s own tests for now.
-#[allow(unused_imports)]
-pub(crate) use media::{
-    MediaAttachmentTarget, MediaInput, MediaInsertError, MediaRow, delete_media, get_media,
-    insert_media,
-};
+// Media entity caller lands later (#252). The `db::media` facade surface
+// (`insert_media`/`get_media`/`delete_media` + `MediaInput`/`MediaRow`/…) is
+// reached only by the module's own tests for now, so it is NOT re-exported from
+// `db` until a real caller exists; `#252` adds the re-export with its consumer.
 pub(crate) use observations::{
     ObservationFilter, ObservationInsert, ObservationInsertError, ObservationRelationInsert,
     ObservationRow, ObservationSourceFilter, ObservationSourceInsert, ObservationUpdate,

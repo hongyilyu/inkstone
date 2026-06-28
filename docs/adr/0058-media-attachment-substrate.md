@@ -64,9 +64,10 @@ non-goal here.
 
 ## Scope boundary
 
-This issue ships the Core-internal create/read path and its tests only. There is
-**no** `media/*` RPC method, no protocol struct, no contract-parity slice, no
-codec, no thumbnailer, and no UI. `insert_media` takes a fully-specified
+This issue ships the Core-internal create/read/delete path and its tests only
+(`insert_media`, `get_media`, `delete_media`). There is **no** `media/*` RPC
+method, no protocol struct, no contract-parity slice, no codec, no thumbnailer,
+and no UI. `insert_media` takes a fully-specified
 `MediaInput` (the caller passes `mime`, dimensions, capture time); Core computes
 only `byte_size` and `digest` and never sniffs mime or extracts dimensions —
 that machinery (and a media wire surface) lands with the Media entity work
