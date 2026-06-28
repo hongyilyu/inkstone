@@ -27,6 +27,7 @@ import {
 	scheduledTodos,
 	searchLibraryItems,
 	type Todo,
+	todayHubStats,
 	todoIsOverdue,
 	todosForPerson,
 	todosForProject,
@@ -439,6 +440,41 @@ describe("library item helpers", () => {
 			expect(scheduledTodos([withProject], now).map((t) => t.id)).toEqual([
 				"with_proj",
 			]);
+		});
+	});
+
+	describe("todayHubStats (Today hub glance counts, ADR-0054)", () => {
+		// Fixed "now" so the due-today / review windows are clock-independent
+		// (today = 2026-06-12). Composes inboxTodos / dueSoonTodos / projectsForReview.
+		const now = new Date("2026-06-12T12:00:00");
+
+		it("counts inbox todos, due-today todos, and reviewable projects", () => {
+			const inbox = mkTodo("inbox_me"); // active, no project/due/refs → inbox
+			const dueToday = mkTodo("due_today", { dueAt: "2026-06-12T00:00:00" });
+			const reviewable: Project = {
+				...mkProject("rev", "Reviewable"),
+				nextReviewAt: "2026-06-10T00:00:00",
+			};
+			expect(todayHubStats([inbox, dueToday, reviewable], now)).toEqual({
+				todo: 1,
+				dueToday: 1,
+				toReview: 1,
+			});
+		});
+
+		it("is all-zero for an empty workspace", () => {
+			expect(todayHubStats([], now)).toEqual({
+				todo: 0,
+				dueToday: 0,
+				toReview: 0,
+			});
+		});
+
+		it("counts only today/overdue under dueToday, not a future-due todo", () => {
+			const dueToday = mkTodo("today", { dueAt: "2026-06-12T00:00:00" });
+			const overdue = mkTodo("overdue", { dueAt: "2026-06-10T00:00:00" });
+			const future = mkTodo("future", { dueAt: "2026-06-20T00:00:00" });
+			expect(todayHubStats([dueToday, overdue, future], now).dueToday).toBe(2);
 		});
 	});
 

@@ -9,10 +9,10 @@ import { useEffect, useState } from "react";
 import { BookmarkEditor } from "@/components/library/BookmarkEditor";
 import { EntityDetail } from "@/components/library/EntityDetail";
 import { JournalEntryEditor } from "@/components/library/JournalEntryEditor";
-import { LibraryNav } from "@/components/library/LibraryNav";
 import { PersonEditor } from "@/components/library/PersonEditor";
 import { ProjectEditor } from "@/components/library/ProjectEditor";
 import { TodoEditor } from "@/components/library/TodoEditor";
+import { TopicNav } from "@/components/library/TopicNav";
 import { WorkspaceShell } from "@/components/ui/workspace-shell";
 import { useLibraryItems } from "@/lib/hooks/useLibraryItems";
 import {
@@ -103,7 +103,7 @@ function LibraryLayout() {
 
 	return (
 		<WorkspaceShell
-			nav={<LibraryNav />}
+			nav={<TopicNav />}
 			rightRail={rail}
 			rightRailWidth={railWidth}
 			railLabel="details panel"

@@ -580,6 +580,25 @@ export function projectsForReview(
 }
 
 /**
+ * The Today hub's three glance counts (ADR-0054): the unorganized `inbox` pile,
+ * todos due today (or overdue), and projects whose review is due. Pure composition
+ * of the existing GTD selectors — no new derivation. `dueToday` uses a zero-day
+ * `dueSoonTodos` horizon (`withinDays = 0`), so it counts todos due *today or
+ * earlier* and excludes anything due in the future. `now` is injectable for
+ * clock-independent tests; the live hub passes the real wall clock.
+ */
+export function todayHubStats(
+	all: LibraryItem[],
+	now: Date = new Date(),
+): { todo: number; dueToday: number; toReview: number } {
+	return {
+		todo: inboxTodos(all).length,
+		dueToday: dueSoonTodos(all, 0, now).length,
+		toReview: projectsForReview(all, localNowString(now)).length,
+	};
+}
+
+/**
  * Human label for a Project's review cadence, read from the verbatim stored
  * `review_every` (`{interval, unit}`, ADR-0031) the projection doesn't surface.
  * "Every week" for the weekly default; "Every 2 weeks" / "Every month" otherwise.
