@@ -233,10 +233,9 @@ pub(crate) async fn update_observation(
         return Err(ObservationUpdateError::InvalidRelation(reason));
     }
 
-    let rows_affected = queries::update_observation(
+    queries::update_observation(
         &mut *tx,
         &row.id,
-        &row.schema_key,
         row.schema_version,
         &row.occurred_at,
         row.ended_at.as_deref(),
@@ -245,9 +244,6 @@ pub(crate) async fn update_observation(
         now_ms,
     )
     .await?;
-    if rows_affected == 0 {
-        return Err(ObservationUpdateError::NotFound);
-    }
 
     queries::insert_next_observation_revision(
         &mut *tx,

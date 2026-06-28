@@ -1002,24 +1002,22 @@ where
 pub(super) async fn update_observation<'e, E>(
     executor: E,
     observation_id: &str,
-    schema_key: &str,
     schema_version: i64,
     occurred_at: &str,
     ended_at: Option<&str>,
     values_json: &str,
     note: Option<&str>,
     now_ms: i64,
-) -> sqlx::Result<u64>
+) -> sqlx::Result<()>
 where
     E: Executor<'e, Database = Sqlite>,
 {
     sqlx::query(
         "UPDATE observations \
-         SET schema_key = ?, schema_version = ?, occurred_at = ?, ended_at = ?, \
+         SET schema_version = ?, occurred_at = ?, ended_at = ?, \
              values_json = ?, note = ?, updated_at = ? \
          WHERE id = ?",
     )
-    .bind(schema_key)
     .bind(schema_version)
     .bind(occurred_at)
     .bind(ended_at)
@@ -1029,7 +1027,7 @@ where
     .bind(observation_id)
     .execute(executor)
     .await
-    .map(|result| result.rows_affected())
+    .map(|_| ())
 }
 
 pub(super) async fn observation_schema_key<'e, E>(
