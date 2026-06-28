@@ -689,4 +689,28 @@ mod observations_number_tests {
             .expect_err("decimal is not an integer");
         assert_eq!(reason, "reps must be an integer");
     }
+
+    #[test]
+    fn optional_datetime_and_string_fields_reject_present_null() {
+        // Pins the observation envelope's present-`null` rejection messages at the
+        // value-spec layer, independent of `oneOf` variant order. The RPC-level
+        // `observation/update` tests surface these same messages only because the
+        // matched variant is last in the union (`check_one_of` reports the last
+        // variant's error); this test keeps the guarantee bound to the field spec
+        // itself, so appending a new observation schema can't silently drop it.
+        let spec = PayloadSpec::payload(
+            "observation envelope",
+            vec![Field::datetime("ended_at"), Field::optional("note", FieldSpec::string())],
+        );
+        assert_eq!(
+            spec.check(&json!({ "ended_at": null }))
+                .expect_err("present-null ended_at is rejected"),
+            "ended_at must be a string"
+        );
+        assert_eq!(
+            spec.check(&json!({ "note": null }))
+                .expect_err("present-null note is rejected"),
+            "note must be a string"
+        );
+    }
 }
