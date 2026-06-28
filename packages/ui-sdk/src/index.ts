@@ -7,6 +7,8 @@ import {
 	JournalEntryRescanResult,
 	MessageSearchResult,
 	ModelCatalogResult,
+	type ObservationQueryParams,
+	ObservationQueryResult,
 	PostMessageResult,
 	ProposalChangedNotification,
 	type ProposalDecideParams,
@@ -232,6 +234,9 @@ export class WsClient extends Context.Tag("@inkstone/ui-sdk/WsClient")<
 		readonly getBacklinks: (
 			entityId: string,
 		) => Effect.Effect<EntityBacklinksResult, WsError>;
+		readonly observationQuery: (
+			params: ObservationQueryParams,
+		) => Effect.Effect<ObservationQueryResult, WsError>;
 		readonly entityMutate: (
 			params: EntityMutateParams,
 		) => Effect.Effect<EntityMutateResult, WsError>;
@@ -609,6 +614,13 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 					EntityBacklinksResult,
 				);
 
+			// observation/query (#253): read-only typed-observation fetch — an
+			// all-optional filter object spread onto the wire like entityMutate.
+			const observationQuery = (
+				params: ObservationQueryParams,
+			): Effect.Effect<ObservationQueryResult, WsError> =>
+				request("observation/query", { ...params }, ObservationQueryResult);
+
 			// entity/mutate (ADR-0033): a user-initiated CRUD request — same
 			// {mutation_kind, payload} envelope as the Worker's propose tool.
 			const entityMutate = (
@@ -717,6 +729,7 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 				threadListArchived,
 				listEntities,
 				getBacklinks,
+				observationQuery,
 				entityMutate,
 				rescanJournalEntry,
 				messageSearch,

@@ -66,6 +66,7 @@ describe("_chat layout route (ADR-0042)", () => {
 			threadListArchived: () => unused,
 			listEntities: () => Effect.succeed({ entities: [] }),
 			getBacklinks: () => unused,
+			observationQuery: () => unused,
 			entityMutate: () => unused,
 			subscribeRun: () => unused,
 			cancelRun: () => unused,

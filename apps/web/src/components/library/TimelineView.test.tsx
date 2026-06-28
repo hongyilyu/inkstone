@@ -31,6 +31,7 @@ function makeRuntime(journalEntries: Rows) {
 				? Effect.succeed({ entities: journalEntries })
 				: Effect.succeed({ entities: [] }),
 		getBacklinks: () => unused,
+		observationQuery: () => unused,
 		entityMutate: () => unused,
 		subscribeRun: () => unused,
 		cancelRun: () => unused,

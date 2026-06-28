@@ -64,6 +64,7 @@ const stub = WsClient.of({
 		return Effect.succeed({ entities: [] });
 	},
 	getBacklinks: die,
+	observationQuery: die,
 	entityMutate: die,
 	messageSearch: (query) =>
 		query.trim().toLowerCase().includes("daycare")

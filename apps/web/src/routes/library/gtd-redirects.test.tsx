@@ -31,6 +31,7 @@ function emptyRuntime() {
 		threadListArchived: () => unused,
 		listEntities: () => Effect.succeed({ entities: [] }),
 		getBacklinks: () => unused,
+		observationQuery: () => unused,
 		entityMutate: () => unused,
 		subscribeRun: () => Stream.empty,
 		cancelRun: () => unused,

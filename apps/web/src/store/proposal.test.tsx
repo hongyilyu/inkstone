@@ -69,6 +69,7 @@ function makeStubRuntime(opts: {
 		threadListArchived: () => unused,
 		listEntities: () => unused,
 		getBacklinks: () => unused,
+		observationQuery: () => unused,
 		entityMutate: () => unused,
 		rescanJournalEntry: () => unused,
 		subscribeRun: () => {
