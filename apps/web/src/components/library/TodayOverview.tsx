@@ -1,5 +1,14 @@
-import { useNavigate } from "@tanstack/react-router";
-import { ArrowUpRight, Sparkles, TriangleAlert } from "lucide-react";
+import { Link, useNavigate } from "@tanstack/react-router";
+import {
+	ArrowUpRight,
+	CalendarClock,
+	ChevronRight,
+	Film,
+	HeartPulse,
+	type LucideIcon,
+	Sparkles,
+	TriangleAlert,
+} from "lucide-react";
 import type { ReactNode } from "react";
 import { Button } from "@/components/ui/button.js";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -8,6 +17,7 @@ import {
 	activeProjectItems,
 	dueSoonTodos,
 	projectProgress,
+	projectsForReview,
 	recentlyCapturedItems,
 } from "@/lib/libraryItems";
 import { EntityGlyph } from "./EntityGlyph.js";
@@ -74,6 +84,7 @@ export function TodayOverview() {
 	const due = dueSoonTodos(data);
 	const recent = recentlyCapturedItems(data, 6);
 	const projects = activeProjectItems(data).slice(0, 4);
+	const reviewable = projectsForReview(data);
 
 	const summary = due.length > 0 ? `${due.length} due soon` : "";
 
@@ -90,6 +101,33 @@ export function TodayOverview() {
 					{summary || "Everything's clear. Nothing needs you right now."}
 				</p>
 			</header>
+
+			{reviewable.length > 0 ? (
+				<div
+					className="motion-safe:animate-rise flex items-center gap-3 rounded-xl border border-border bg-secondary/30 px-4 py-3"
+					style={{ animationDelay: "60ms" }}
+				>
+					<CalendarClock className="size-5 shrink-0 text-primary" aria-hidden />
+					<div className="min-w-0 flex-1">
+						<p className="font-medium text-foreground text-sm">
+							{reviewable.length === 1
+								? "1 project is ready for review"
+								: `${reviewable.length} projects are ready for review`}
+						</p>
+						<p className="text-muted-foreground text-xs">
+							Their review date has arrived. A quick pass keeps them current.
+						</p>
+					</div>
+					<Link
+						to="/library/gtd"
+						search={{ filt: "review" }}
+						className="inline-flex shrink-0 items-center gap-0.5 rounded-md px-1 font-medium text-primary text-sm transition-colors hover:text-primary/80 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+					>
+						Review now
+						<ArrowUpRight className="size-3.5" aria-hidden />
+					</Link>
+				</div>
+			) : null}
 
 			{due.length > 0 ? (
 				<Section
@@ -163,7 +201,59 @@ export function TodayOverview() {
 					))}
 				</div>
 			</Section>
+
+			{/* Cross-topic digest: calm entry points into the other topics so Today is
+			    a real hub, not just the GTD core. Health and Media are stub surfaces
+			    (ADR-0054 dec.5), so the cards link in WITHOUT fabricating any counts. */}
+			<Section title="Browse topics" delay={300}>
+				<div className="-mx-1 grid gap-2 sm:grid-cols-2">
+					<TopicDigest
+						to="/library/health"
+						icon={HeartPulse}
+						label="Health"
+						blurb="Tracking — coming soon"
+					/>
+					<TopicDigest
+						to="/library/media"
+						icon={Film}
+						label="Media"
+						blurb="Reading & watching — coming soon"
+					/>
+				</div>
+			</Section>
 		</Shell>
+	);
+}
+
+/** One entry card in the cross-topic digest strip: a labelled link into a topic.
+ * Honest copy only — Health/Media are stubs, so `blurb` names what the topic WILL
+ * hold without inventing any stats (ADR-0054 dec.5). */
+function TopicDigest({
+	to,
+	icon: Icon,
+	label,
+	blurb,
+}: {
+	to: "/library/health" | "/library/media";
+	icon: LucideIcon;
+	label: string;
+	blurb: string;
+}) {
+	return (
+		<Link
+			to={to}
+			className="flex items-center gap-3 rounded-xl border border-border px-4 py-3 transition-colors hover:bg-secondary/40 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+		>
+			<Icon className="size-5 shrink-0 text-muted-foreground" aria-hidden />
+			<div className="min-w-0 flex-1">
+				<p className="font-medium text-foreground text-sm">{label}</p>
+				<p className="truncate text-muted-foreground text-xs">{blurb}</p>
+			</div>
+			<ChevronRight
+				className="size-4 shrink-0 text-muted-foreground"
+				aria-hidden
+			/>
+		</Link>
 	);
 }
 
