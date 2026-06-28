@@ -220,6 +220,12 @@ export const fixtures: readonly FixtureEntry[] = [
 		dir: "authored",
 	},
 	{
+		message: "ObservationUpdateParams",
+		file: "observation_update_params.bare.json",
+		schema: ObservationUpdateParams,
+		dir: "authored",
+	},
+	{
 		message: "ObservationQueryParams",
 		file: "observation_query_params.json",
 		schema: ObservationQueryParams,

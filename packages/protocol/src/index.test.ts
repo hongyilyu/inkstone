@@ -577,6 +577,18 @@ describe("ObservationUpdateParams", () => {
 		expect(S.encodeSync(ObservationUpdateParams)(decoded)).toEqual(wire);
 	});
 
+	it("decodes the bare optional shape", () => {
+		const bare = {
+			observation_id: "0190d3c1-0000-7000-8000-000000000001",
+			observation: {
+				schema_key: "bodyweight",
+				occurred_at: "2026-06-03T07:30:00",
+				values: { kg: 71.8 },
+			},
+		};
+		expect(S.decodeUnknownSync(ObservationUpdateParams)(bare)).toEqual(bare);
+	});
+
 	it("rejects evidence on the replacement observation", () => {
 		expect(() =>
 			S.decodeUnknownSync(ObservationUpdateParams, {

@@ -8,7 +8,7 @@ use super::handler::{self, HandlerError};
 use crate::observations::{self, ObservationQuery, ObservationSource, ObservationSourceInput};
 use crate::protocol::{
     ObservationQueryParams, ObservationQueryResult, ObservationRecordResult, ObservationRow,
-    ObservationSourceView, ObservationUpdateParams, ObservationUpdateResult,
+    ObservationSourceView, ObservationUpdateResult,
 };
 
 pub(super) async fn handle_record(
@@ -89,9 +89,8 @@ pub(super) async fn handle_update(
         params,
         out_tx,
         |raw: serde_json::Value| async move {
-            let params: ObservationUpdateParams = serde_json::from_value(raw)
-                .map_err(|e| HandlerError::InvalidParams(format!("invalid params: {e}")))?;
-            let (observation_id, input) = observations::observation_update_input_from_params(params);
+            let (observation_id, input) = observations::observation_update_input_from_payload(&raw)
+                .map_err(HandlerError::InvalidParams)?;
             let observation_id = observations::update_observation(pool, &observation_id, input)
                 .await
                 .map_err(observation_error_to_handler)?;
@@ -202,6 +201,17 @@ mod tests {
     fn assert_invalid_params(value: &Value) {
         assert_eq!(value["error"]["code"], json!(-32602), "{value:?}");
         assert!(value.get("result").is_none(), "{value:?}");
+    }
+
+    fn assert_invalid_params_contains(value: &Value, expected: &str) {
+        assert_invalid_params(value);
+        let message = value["error"]["message"]
+            .as_str()
+            .expect("invalid params message");
+        assert!(
+            message.contains(expected),
+            "expected message to contain {expected:?}, got {message:?}"
+        );
     }
 
     fn assert_internal_error(value: &Value) {
@@ -777,21 +787,84 @@ mod tests {
         .await;
         assert_invalid_params(&non_habit_target);
 
+        let valid_habit_id = Uuid::now_v7();
+        seed_habit(&pool, valid_habit_id).await;
+        let recorded = dispatch_rpc(
+            &pool,
+            "observation/record",
+            json!({
+                "observations": [{
+                    "schema_key": "habit.checkin",
+                    "occurred_at": "2026-06-01T07:30:00",
+                    "values": {
+                        "habit_id": valid_habit_id.to_string(),
+                        "state": "done"
+                    }
+                }]
+            }),
+        )
+        .await;
+        assert!(recorded.get("error").is_none(), "{recorded:?}");
+        let observation_id = recorded["result"]["observation_ids"][0]
+            .as_str()
+            .expect("observation id");
+
+        let update_with_null_ended_at = dispatch_rpc(
+            &pool,
+            "observation/update",
+            json!({
+                "observation_id": observation_id,
+                "observation": {
+                    "schema_key": "habit.checkin",
+                    "occurred_at": "2026-06-01T07:30:00",
+                    "ended_at": null,
+                    "values": {
+                        "habit_id": valid_habit_id.to_string(),
+                        "state": "done"
+                    }
+                }
+            }),
+        )
+        .await;
+        assert_invalid_params_contains(&update_with_null_ended_at, "ended_at must be a string");
+
+        let update_with_null_note = dispatch_rpc(
+            &pool,
+            "observation/update",
+            json!({
+                "observation_id": observation_id,
+                "observation": {
+                    "schema_key": "habit.checkin",
+                    "occurred_at": "2026-06-01T07:30:00",
+                    "values": {
+                        "habit_id": valid_habit_id.to_string(),
+                        "state": "done"
+                    },
+                    "note": null
+                }
+            }),
+        )
+        .await;
+        assert_invalid_params_contains(&update_with_null_note, "note must be a string");
+
         let update_with_evidence = dispatch_rpc(
             &pool,
             "observation/update",
             json!({
-                "observation_id": Uuid::now_v7().to_string(),
+                "observation_id": observation_id,
                 "observation": {
-                    "schema_key": "bodyweight",
+                    "schema_key": "habit.checkin",
                     "occurred_at": "2026-06-01T07:30:00",
-                    "values": { "kg": 72.4 },
+                    "values": {
+                        "habit_id": valid_habit_id.to_string(),
+                        "state": "done"
+                    },
                     "evidence": { "message_id": Uuid::now_v7().to_string() }
                 }
             }),
         )
         .await;
-        assert_invalid_params(&update_with_evidence);
+        assert_invalid_params_contains(&update_with_evidence, "unsupported observation field");
     }
 
     #[tokio::test]

@@ -166,6 +166,30 @@ pub(crate) fn record_observations_input_from_payload(
     Ok(input)
 }
 
+pub(crate) fn observation_update_payload_spec() -> PayloadSpec {
+    PayloadSpec::payload(
+        "update_observation",
+        vec![
+            Field::required("observation_id", FieldSpec::Uuid { schema_regex: true }),
+            Field::required(
+                "observation",
+                FieldSpec::OneOfObject {
+                    variants: record_observation_payload_variants(),
+                },
+            ),
+        ],
+    )
+}
+
+pub(crate) fn observation_update_input_from_payload(
+    payload: &Value,
+) -> Result<(String, ObservationUpdateInput), String> {
+    observation_update_payload_spec().check(payload)?;
+    let params: crate::protocol::ObservationUpdateParams = serde_json::from_value(payload.clone())
+        .map_err(|e| format!("update_observation payload is invalid: {e}"))?;
+    Ok(observation_update_input_from_params(params))
+}
+
 pub(crate) fn record_observations_input_from_params(
     params: crate::protocol::ObservationRecordParams,
 ) -> Result<RecordObservationsInput, String> {
