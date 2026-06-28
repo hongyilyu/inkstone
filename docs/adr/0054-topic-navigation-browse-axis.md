@@ -209,6 +209,12 @@ which is acceptable because that was a developer's view of the data, not a user'
 - [ADR-0042](./0042-url-addressable-threads.md) — the `_chat` / `library` layout-route
   pattern (`WorkspaceShell` + `<Outlet/>`, children read params/search) the topic routes
   follow.
+- [ADR-0057](./0057-backend-timeline-read-model.md) — the backend timeline read model.
+  **It coexists with §4 (different consumer)**: §4 here is the client-side **Timeline
+  Topic** presentation projection (Journal Entry · Person · Project, view-model-derived,
+  no contract); ADR-0057 is the backend `(occurred_at, kind, ref)` union read (Journal
+  Entry · Observation, behind `timeline/query`). Different membership, different
+  altitude; §4 is annotated, not superseded.
 - [ADR-0021](./0021-web-client-styling.md) — Lamplit Desk styling system topics render
   through, unchanged.
 - [ADR-0007](./0007-local-first-single-user.md) / [ADR-0004](./0004-three-tier-storage-authority.md)
