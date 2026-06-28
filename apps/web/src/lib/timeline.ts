@@ -14,11 +14,12 @@ import {
  * read — this is a pure re-grouping of `useLibraryItems`.
  */
 
-/** A People/Project a Journal Entry touches, derived from a body `entity_ref` node. */
+/** A Person/Project a Journal Entry touches, derived from a body `entity_ref` node. */
 export interface TimelineChip {
 	entityId: string;
-	/** entity_ref targets are person/project/todo; only these reach the chip rail. */
-	kind: Extract<LibraryItemKind, "person" | "project" | "todo">;
+	/** Only people/projects reach the chip rail — the type tabs and the focus rail
+	 * support those two lenses; todo refs are dropped (see chipsForEntry). */
+	kind: Extract<LibraryItemKind, "person" | "project">;
 	title: string;
 }
 
@@ -38,9 +39,11 @@ export interface TimelineDay {
 }
 
 /**
- * The People/Project chips a Journal Entry touches, in body order, de-duplicated
+ * The Person/Project chips a Journal Entry touches, in body order, de-duplicated
  * by entity id. A ref missing its resolved `targetEntityId` / `targetKind` (an
- * unresolved mention) is dropped — a chip must link somewhere.
+ * unresolved mention) is dropped — a chip must link somewhere. Todo refs are also
+ * dropped: the Timeline tabs and the focus rail only render the person/project
+ * lenses, so a todo chip would be an orphan button that focuses nothing.
  */
 function chipsForEntry(entry: JournalEntry): TimelineChip[] {
 	const chips: TimelineChip[] = [];
@@ -48,6 +51,7 @@ function chipsForEntry(entry: JournalEntry): TimelineChip[] {
 	for (const node of entry.body) {
 		if (node.type !== "entity_ref") continue;
 		if (!node.targetEntityId || !node.targetKind) continue;
+		if (node.targetKind !== "person" && node.targetKind !== "project") continue;
 		if (seen.has(node.targetEntityId)) continue;
 		seen.add(node.targetEntityId);
 		chips.push({

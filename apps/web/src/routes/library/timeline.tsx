@@ -53,7 +53,12 @@ export const Route = createFileRoute("/library/timeline")({
 		filter: TIMELINE_FILTERS.includes(search.filter as TimelineFilter)
 			? (search.filter as TimelineFilter)
 			: undefined,
-		focus: typeof search.focus === "string" ? search.focus : undefined,
+		// Absent (or empty) `?focus=` means "no rail" — onFocusChange clears it by
+		// writing undefined, so normalize "" to undefined to keep the two in sync.
+		focus:
+			typeof search.focus === "string" && search.focus
+				? search.focus
+				: undefined,
 	}),
 	component: TimelineRoute,
 });

@@ -212,6 +212,22 @@ describe("GtdView", () => {
 		expect(screen.queryByText("Unsorted errand")).not.toBeInTheDocument();
 	});
 
+	it("shows projects under the Projects pill (the full project list, not just reviewable)", async () => {
+		// A project with no next_review_at — it's NOT reviewable, so this proves the
+		// Projects body lists every project (matching the badge count, which counts
+		// all projects regardless of status/review state).
+		renderGtd(
+			[todo("t_inbox", "Unsorted errand")],
+			[project("p_active", "Marketing launch")],
+		);
+		await userEvent.click(
+			await screen.findByRole("button", { name: /^projects$/i }),
+		);
+
+		expect(await screen.findByText("Marketing launch")).toBeInTheDocument();
+		expect(screen.queryByText("Unsorted errand")).not.toBeInTheDocument();
+	});
+
 	it("shows every active todo under the All pill, not just the inbox subset", async () => {
 		// Two active todos: one inbox-eligible (bare), one organized (project + due) so
 		// it is NOT in inboxTodos. "All" must show BOTH todo titles — which makes the

@@ -45,7 +45,9 @@ export const Route = createFileRoute("/library/gtd")({
 		filt: GTD_FILTERS.includes(search.filt as GtdFilter)
 			? (search.filt as GtdFilter)
 			: undefined,
-		id: typeof search.id === "string" ? search.id : undefined,
+		// An empty `?id=` is "no selection", not a selection of "" — match the
+		// retired-route redirects, which already strip empty ids before forwarding.
+		id: typeof search.id === "string" && search.id ? search.id : undefined,
 	}),
 	component: GtdRoute,
 });
