@@ -145,7 +145,28 @@ pub(crate) async fn insert_media(
             now,
         )
         .await?;
-        // Slice 2 validates and inserts `input.attachments` here, in this tx.
+        // Validate each attachment target exists (and, for an Entity with an
+        // expected type, is that type) IN THIS TX — the FK existence reads see
+        // the just-inserted `media` row and any prior loop inserts via the same
+        // `&mut *tx` executor. A miss returns `Err`, rolling the tx back so the
+        // already-written file is unlinked by the arm below (no orphan row).
+        for target in &input.attachments {
+            validate_target(&mut *tx, target).await?;
+            let (target_kind, entity_id, message_id, observation_id, proposal_id) =
+                target_columns(target);
+            queries::insert_media_attachment(
+                &mut *tx,
+                &Uuid::now_v7().to_string(),
+                &id,
+                target_kind,
+                entity_id,
+                message_id,
+                observation_id,
+                proposal_id,
+                now,
+            )
+            .await?;
+        }
         tx.commit().await?;
         Ok::<(), MediaInsertError>(())
     }
@@ -166,6 +187,93 @@ pub(crate) async fn insert_media(
 /// row failures both flow through `Sqlx`).
 fn to_sqlx_io<E: Into<Box<dyn std::error::Error + Send + Sync>>>(err: E) -> MediaInsertError {
     MediaInsertError::Sqlx(sqlx::Error::Io(std::io::Error::other(err)))
+}
+
+/// Confirm an attachment target row exists (and, for a typed Entity, is the
+/// expected type) using the in-flight transaction's executor — mirrors
+/// `insert_observations_in_tx`'s source validation. A miss is
+/// `MediaInsertError::InvalidTarget`, naming the kind + id so the rollback
+/// surfaces a clear reason.
+async fn validate_target<'e, E>(
+    executor: E,
+    target: &MediaAttachmentTarget,
+) -> Result<(), MediaInsertError>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+{
+    let ok = match target {
+        MediaAttachmentTarget::Entity {
+            id,
+            expected_type: Some(expected),
+        } => queries::entity_is_type(executor, id, expected.as_str()).await?,
+        MediaAttachmentTarget::Entity {
+            id,
+            expected_type: None,
+        } => queries::entity_exists(executor, id).await?,
+        MediaAttachmentTarget::Message { id } => queries::message_exists(executor, id).await?,
+        MediaAttachmentTarget::Observation { id } => {
+            queries::observation_exists(executor, id).await?
+        }
+        MediaAttachmentTarget::Proposal { id } => queries::proposal_exists(executor, id).await?,
+    };
+    if ok {
+        return Ok(());
+    }
+    Err(MediaInsertError::InvalidTarget(invalid_target_reason(target)))
+}
+
+/// A clear miss reason naming the target kind and id (Entity with an expected
+/// type also names the type it had to match).
+fn invalid_target_reason(target: &MediaAttachmentTarget) -> String {
+    match target {
+        MediaAttachmentTarget::Entity {
+            id,
+            expected_type: Some(expected),
+        } => format!(
+            "media attachment target entity {id} must name an existing {} entity",
+            expected.as_str()
+        ),
+        MediaAttachmentTarget::Entity {
+            id,
+            expected_type: None,
+        } => format!("media attachment target entity {id} must name an existing entity"),
+        MediaAttachmentTarget::Message { id } => {
+            format!("media attachment target message {id} must name an existing message")
+        }
+        MediaAttachmentTarget::Observation { id } => {
+            format!("media attachment target observation {id} must name an existing observation")
+        }
+        MediaAttachmentTarget::Proposal { id } => {
+            format!("media attachment target proposal {id} must name an existing proposal")
+        }
+    }
+}
+
+/// Map a target to its stored `target_kind` plus the one populated target id
+/// column (the other three stay `None` — the table CHECK enforces this).
+fn target_columns(
+    target: &MediaAttachmentTarget,
+) -> (
+    &'static str,
+    Option<&str>,
+    Option<&str>,
+    Option<&str>,
+    Option<&str>,
+) {
+    match target {
+        MediaAttachmentTarget::Entity { id, .. } => {
+            ("entity", Some(id.as_str()), None, None, None)
+        }
+        MediaAttachmentTarget::Message { id } => {
+            ("message", None, Some(id.as_str()), None, None)
+        }
+        MediaAttachmentTarget::Observation { id } => {
+            ("observation", None, None, Some(id.as_str()), None)
+        }
+        MediaAttachmentTarget::Proposal { id } => {
+            ("proposal", None, None, None, Some(id.as_str()))
+        }
+    }
 }
 
 /// Read a media row's metadata by id. `None` when no such row exists.
@@ -322,5 +430,383 @@ mod tests {
             std::env::remove_var("INKSTONE_MEDIA_DIR");
         }
         result
+    }
+
+    /// Seed a thread + run + one user message so a `Message` attachment target
+    /// resolves (mirrors observations_tests' `seed_message`).
+    async fn seed_message(pool: &SqlitePool, message_id: &str) {
+        let mut tx = pool.begin().await.expect("begin message seed");
+        sqlx::query(
+            "INSERT INTO threads (id, title, created_at, last_activity_at) \
+             VALUES ('thread-media', 'Media Thread', 1, 1)",
+        )
+        .execute(&mut *tx)
+        .await
+        .expect("insert thread");
+        sqlx::query(
+            "INSERT INTO runs \
+             (id, thread_id, workflow_name, workflow_version, provider, model, \
+              thinking_level, user_message_id, status, started_at) \
+             VALUES ('run-media', 'thread-media', 'w', '1', 'p', 'm', 'off', ?1, 'completed', 1)",
+        )
+        .bind(message_id)
+        .execute(&mut *tx)
+        .await
+        .expect("insert run");
+        sqlx::query(
+            "INSERT INTO messages (id, thread_id, run_id, role, status, created_at, updated_at) \
+             VALUES (?1, 'thread-media', 'run-media', 'user', 'completed', 1, 1)",
+        )
+        .bind(message_id)
+        .execute(&mut *tx)
+        .await
+        .expect("insert message");
+        tx.commit().await.expect("commit message seed");
+    }
+
+    /// Seed one entity of the given `entities.type` so an `Entity` attachment
+    /// target resolves.
+    async fn seed_entity(pool: &SqlitePool, entity_id: &str, entity_type: &str) {
+        sqlx::query(
+            "INSERT INTO entities \
+             (id, type, schema_version, data, created_by, created_at, updated_at) \
+             VALUES (?1, ?2, 1, '{}', 'user', 1, 1)",
+        )
+        .bind(entity_id)
+        .bind(entity_type)
+        .execute(pool)
+        .await
+        .expect("insert entity");
+    }
+
+    /// Build a `MediaInput` carrying the given attachment targets. `created_by`
+    /// is `'user'` so the provenance XOR holds without a proposal id.
+    fn media_input(attachments: Vec<MediaAttachmentTarget>) -> MediaInput {
+        MediaInput {
+            mime: "image/png".to_string(),
+            width: None,
+            height: None,
+            duration_ms: None,
+            capture_time: None,
+            thumbnail_path: None,
+            created_by: "user".to_string(),
+            created_via_proposal_id: None,
+            attachments,
+        }
+    }
+
+    #[tokio::test]
+    async fn insert_media_links_each_attachment_target() {
+        let _guard = MEDIA_ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = tempfile::tempdir().expect("tempdir");
+        unsafe {
+            std::env::set_var("INKSTONE_MEDIA_DIR", tmp.path());
+        }
+
+        let result = async {
+            let pool = memory_pool().await;
+            let message_id = "018f0000-0000-7000-8000-0000000000a1";
+            let entity_id = "018f0000-0000-7000-8000-0000000000a2";
+            seed_message(&pool, message_id).await;
+            seed_entity(&pool, entity_id, EntityType::Person.as_str()).await;
+
+            let media_id = insert_media(
+                &pool,
+                b"bytes",
+                media_input(vec![
+                    MediaAttachmentTarget::Message {
+                        id: message_id.to_string(),
+                    },
+                    MediaAttachmentTarget::Entity {
+                        id: entity_id.to_string(),
+                        expected_type: Some(EntityType::Person),
+                    },
+                ]),
+            )
+            .await
+            .expect("insert media with attachments");
+
+            // One row per target, each tagged with the right kind and the single
+            // populated target column.
+            let rows: Vec<(String, Option<String>, Option<String>, Option<String>, Option<String>)> =
+                sqlx::query_as(
+                    "SELECT target_kind, target_entity_id, target_message_id, \
+                     target_observation_id, target_proposal_id \
+                     FROM media_attachments WHERE media_id = ?1 \
+                     ORDER BY target_kind",
+                )
+                .bind(&media_id)
+                .fetch_all(&pool)
+                .await
+                .expect("select attachments");
+            assert_eq!(rows.len(), 2, "one media_attachments row per target");
+
+            // ORDER BY target_kind: 'entity' before 'message'.
+            assert_eq!(rows[0].0, "entity");
+            assert_eq!(rows[0].1.as_deref(), Some(entity_id));
+            assert_eq!(rows[0].2, None);
+            assert_eq!(rows[0].3, None);
+            assert_eq!(rows[0].4, None);
+
+            assert_eq!(rows[1].0, "message");
+            assert_eq!(rows[1].2.as_deref(), Some(message_id));
+            assert_eq!(rows[1].1, None);
+            assert_eq!(rows[1].3, None);
+            assert_eq!(rows[1].4, None);
+        }
+        .await;
+
+        unsafe {
+            std::env::remove_var("INKSTONE_MEDIA_DIR");
+        }
+        result
+    }
+
+    /// A bad target (missing message / wrong entity type) rolls the whole insert
+    /// back: `InvalidTarget`, no `media` row, and no orphan file on disk.
+    #[tokio::test]
+    async fn insert_media_rejects_invalid_target_without_orphan() {
+        let _guard = MEDIA_ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = tempfile::tempdir().expect("tempdir");
+        unsafe {
+            std::env::set_var("INKSTONE_MEDIA_DIR", tmp.path());
+        }
+
+        let result = async {
+            let pool = memory_pool().await;
+            let person_id = "018f0000-0000-7000-8000-0000000000b1";
+            seed_entity(&pool, person_id, EntityType::Person.as_str()).await;
+
+            // (1) A message target naming no existing message.
+            let err = insert_media(
+                &pool,
+                b"orphan-a",
+                media_input(vec![MediaAttachmentTarget::Message {
+                    id: "no-such-message".to_string(),
+                }]),
+            )
+            .await
+            .expect_err("missing message target is rejected");
+            assert!(matches!(err, MediaInsertError::InvalidTarget(_)), "{err:?}");
+
+            // (2) An entity that exists but is the wrong type.
+            let err = insert_media(
+                &pool,
+                b"orphan-b",
+                media_input(vec![MediaAttachmentTarget::Entity {
+                    id: person_id.to_string(),
+                    expected_type: Some(EntityType::JournalEntry),
+                }]),
+            )
+            .await
+            .expect_err("wrong-type entity target is rejected");
+            assert!(matches!(err, MediaInsertError::InvalidTarget(_)), "{err:?}");
+
+            // No media row landed for either failed insert, and the media root
+            // holds no orphan files (each failed insert unlinked its bytes).
+            let media_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM media")
+                .fetch_one(&pool)
+                .await
+                .expect("count media");
+            assert_eq!(media_count, 0, "no media row survives a rejected insert");
+
+            let stray = std::fs::read_dir(tmp.path())
+                .expect("read media root")
+                .count();
+            assert_eq!(stray, 0, "no orphan file remains after a rejected insert");
+        }
+        .await;
+
+        unsafe {
+            std::env::remove_var("INKSTONE_MEDIA_DIR");
+        }
+        result
+    }
+
+    /// The table CHECK rejects a forged row with zero targets and one with two
+    /// targets (direct SQL, foreign keys + checks on via `memory_pool`).
+    #[tokio::test]
+    async fn media_attachments_check_rejects_zero_or_two_targets() {
+        let _guard = MEDIA_ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = tempfile::tempdir().expect("tempdir");
+        unsafe {
+            std::env::set_var("INKSTONE_MEDIA_DIR", tmp.path());
+        }
+
+        let result = async {
+            let pool = memory_pool().await;
+            let message_id = "018f0000-0000-7000-8000-0000000000c1";
+            let entity_id = "018f0000-0000-7000-8000-0000000000c2";
+            seed_message(&pool, message_id).await;
+            seed_entity(&pool, entity_id, EntityType::Person.as_str()).await;
+            let media_id = insert_media(&pool, b"bytes", media_input(Vec::new()))
+                .await
+                .expect("insert standalone media");
+
+            // Zero targets — discriminator says 'message' but no id is set.
+            let err = sqlx::query(
+                "INSERT INTO media_attachments \
+                 (id, media_id, target_kind, created_at) VALUES (?1, ?2, 'message', 1)",
+            )
+            .bind("attach-zero")
+            .bind(&media_id)
+            .execute(&pool)
+            .await
+            .expect_err("zero-target row fails the CHECK");
+            assert!(err.to_string().contains("CHECK constraint failed"), "{err}");
+
+            // Two targets — both an entity and a message id populated.
+            let err = sqlx::query(
+                "INSERT INTO media_attachments \
+                 (id, media_id, target_kind, target_entity_id, target_message_id, created_at) \
+                 VALUES (?1, ?2, 'message', ?3, ?4, 1)",
+            )
+            .bind("attach-two")
+            .bind(&media_id)
+            .bind(entity_id)
+            .bind(message_id)
+            .execute(&pool)
+            .await
+            .expect_err("two-target row fails the CHECK");
+            assert!(err.to_string().contains("CHECK constraint failed"), "{err}");
+        }
+        .await;
+
+        unsafe {
+            std::env::remove_var("INKSTONE_MEDIA_DIR");
+        }
+        result
+    }
+
+    /// `delete_media` cascades its attachment rows away and removes the file;
+    /// deleting a linked target cascades only that link, leaving the media row
+    /// intact (no orphan GC).
+    #[tokio::test]
+    async fn delete_cascades_links_in_both_directions_without_orphan_gc() {
+        let _guard = MEDIA_ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = tempfile::tempdir().expect("tempdir");
+        unsafe {
+            std::env::set_var("INKSTONE_MEDIA_DIR", tmp.path());
+        }
+
+        let result = async {
+            let pool = memory_pool().await;
+
+            // --- delete_media cascades the link + removes the file ---
+            let message_id = "018f0000-0000-7000-8000-0000000000d1";
+            seed_message(&pool, message_id).await;
+            let media_id = insert_media(
+                &pool,
+                b"bytes",
+                media_input(vec![MediaAttachmentTarget::Message {
+                    id: message_id.to_string(),
+                }]),
+            )
+            .await
+            .expect("insert media with one attachment");
+            let row = get_media(&pool, &media_id)
+                .await
+                .expect("get_media ok")
+                .expect("media row present");
+            let resolved =
+                crate::db::resolve_media_path(&row.storage_path).expect("resolve path");
+            assert!(resolved.exists(), "file written before delete");
+
+            delete_media(&pool, &media_id).await.expect("delete media");
+            let link_count: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM media_attachments WHERE media_id = ?1")
+                    .bind(&media_id)
+                    .fetch_one(&pool)
+                    .await
+                    .expect("count links");
+            assert_eq!(link_count, 0, "delete_media cascades its attachment rows");
+            assert!(
+                std::fs::metadata(&resolved).is_err(),
+                "delete_media removes the file"
+            );
+
+            // --- deleting a linked target cascades only the link, media survives ---
+            let other_message = "018f0000-0000-7000-8000-0000000000d2";
+            seed_message_other(&pool, other_message).await;
+            let media_id2 = insert_media(
+                &pool,
+                b"bytes2",
+                media_input(vec![MediaAttachmentTarget::Message {
+                    id: other_message.to_string(),
+                }]),
+            )
+            .await
+            .expect("insert second media with attachment");
+
+            // Delete the linked message. `runs.user_message_id` references it
+            // (DEFERRABLE INITIALLY DEFERRED, no cascade), so drop the run in the
+            // same transaction; the deferred FK is checked only at commit, by
+            // which point both are gone. The message deletion is what cascades
+            // the `media_attachments` link via `target_message_id ON DELETE CASCADE`.
+            let mut tx = pool.begin().await.expect("begin target delete");
+            sqlx::query("DELETE FROM runs WHERE id = 'run-media-2'")
+                .execute(&mut *tx)
+                .await
+                .expect("delete linked run");
+            sqlx::query("DELETE FROM messages WHERE id = ?1")
+                .bind(other_message)
+                .execute(&mut *tx)
+                .await
+                .expect("delete linked message");
+            tx.commit().await.expect("commit target delete");
+
+            let link_count2: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM media_attachments WHERE media_id = ?1")
+                    .bind(&media_id2)
+                    .fetch_one(&pool)
+                    .await
+                    .expect("count links after target delete");
+            assert_eq!(link_count2, 0, "deleting the target cascades its link away");
+            assert!(
+                get_media(&pool, &media_id2)
+                    .await
+                    .expect("get_media ok")
+                    .is_some(),
+                "the media row survives its last link being deleted (no orphan GC)"
+            );
+        }
+        .await;
+
+        unsafe {
+            std::env::remove_var("INKSTONE_MEDIA_DIR");
+        }
+        result
+    }
+
+    /// A second thread + run + message so a test can delete one linked message
+    /// without disturbing the first `seed_message` thread.
+    async fn seed_message_other(pool: &SqlitePool, message_id: &str) {
+        let mut tx = pool.begin().await.expect("begin message seed");
+        sqlx::query(
+            "INSERT INTO threads (id, title, created_at, last_activity_at) \
+             VALUES ('thread-media-2', 'Media Thread 2', 1, 1)",
+        )
+        .execute(&mut *tx)
+        .await
+        .expect("insert thread");
+        sqlx::query(
+            "INSERT INTO runs \
+             (id, thread_id, workflow_name, workflow_version, provider, model, \
+              thinking_level, user_message_id, status, started_at) \
+             VALUES ('run-media-2', 'thread-media-2', 'w', '1', 'p', 'm', 'off', ?1, 'completed', 1)",
+        )
+        .bind(message_id)
+        .execute(&mut *tx)
+        .await
+        .expect("insert run");
+        sqlx::query(
+            "INSERT INTO messages (id, thread_id, run_id, role, status, created_at, updated_at) \
+             VALUES (?1, 'thread-media-2', 'run-media-2', 'user', 'completed', 1, 1)",
+        )
+        .bind(message_id)
+        .execute(&mut *tx)
+        .await
+        .expect("insert message");
+        tx.commit().await.expect("commit message seed");
     }
 }

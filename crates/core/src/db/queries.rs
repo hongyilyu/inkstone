@@ -1054,6 +1054,78 @@ where
         .map(|r| r.rows_affected())
 }
 
+/// Insert one `media_attachments` row. Exactly one of the four `target_*` ids is
+/// `Some`, matching `target_kind`; the table CHECK enforces that invariant.
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn insert_media_attachment<'e, E>(
+    executor: E,
+    id: &str,
+    media_id: &str,
+    target_kind: &str,
+    target_entity_id: Option<&str>,
+    target_message_id: Option<&str>,
+    target_observation_id: Option<&str>,
+    target_proposal_id: Option<&str>,
+    now_ms: i64,
+) -> sqlx::Result<()>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query(
+        "INSERT INTO media_attachments \
+         (id, media_id, target_kind, target_entity_id, target_message_id, \
+          target_observation_id, target_proposal_id, created_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(id)
+    .bind(media_id)
+    .bind(target_kind)
+    .bind(target_entity_id)
+    .bind(target_message_id)
+    .bind(target_observation_id)
+    .bind(target_proposal_id)
+    .bind(now_ms)
+    .execute(executor)
+    .await
+    .map(|_| ())
+}
+
+pub(super) async fn entity_exists<'e, E>(executor: E, entity_id: &str) -> sqlx::Result<bool>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    let row: Option<i64> = sqlx::query_scalar("SELECT 1 FROM entities WHERE id = ?1 LIMIT 1")
+        .bind(entity_id)
+        .fetch_optional(executor)
+        .await?;
+    Ok(row.is_some())
+}
+
+pub(super) async fn observation_exists<'e, E>(
+    executor: E,
+    observation_id: &str,
+) -> sqlx::Result<bool>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    let row: Option<i64> = sqlx::query_scalar("SELECT 1 FROM observations WHERE id = ?1 LIMIT 1")
+        .bind(observation_id)
+        .fetch_optional(executor)
+        .await?;
+    Ok(row.is_some())
+}
+
+pub(super) async fn proposal_exists<'e, E>(executor: E, proposal_id: &str) -> sqlx::Result<bool>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    let row: Option<i64> = sqlx::query_scalar("SELECT 1 FROM proposals WHERE id = ?1 LIMIT 1")
+        .bind(proposal_id)
+        .fetch_optional(executor)
+        .await?;
+    Ok(row.is_some())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn insert_next_observation_revision<'e, E>(
     executor: E,
