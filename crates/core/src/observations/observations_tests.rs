@@ -44,11 +44,29 @@ fn habit_checkin_at(occurred_at: &str, habit_id: &str, state: &str) -> Observati
     }
 }
 
+fn update_from(record: ObservationRecordInput) -> ObservationUpdateInput {
+    ObservationUpdateInput {
+        schema_key: record.schema_key,
+        occurred_at: record.occurred_at,
+        ended_at: record.ended_at,
+        values: record.values,
+        note: record.note,
+    }
+}
+
 fn invalid_reason(err: ObservationError) -> String {
     match err {
         ObservationError::Invalid(reason) => reason,
         ObservationError::Internal(err) => panic!("expected invalid observation error: {err:?}"),
     }
+}
+
+async fn revision_count(pool: &SqlitePool, observation_id: &str) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM observation_revisions WHERE observation_id = ?1")
+        .bind(observation_id)
+        .fetch_one(pool)
+        .await
+        .expect("count observation revisions")
 }
 
 #[test]
@@ -106,6 +124,335 @@ fn render_accept_uses_prepared_observation_rows() {
     assert!(text.contains(expected_habit_id));
     assert!(!text.contains(raw_habit_id));
     assert!(text.contains("morning walk"));
+}
+
+#[tokio::test]
+async fn observations_record_writes_initial_revision() {
+    let pool = memory_pool().await;
+    let mut input = bodyweight_at("2026-06-01T07:30:00", json!(72.4));
+    input.note = Some("morning".to_string());
+
+    let recorded = record_observations(
+        &pool,
+        RecordObservationsInput {
+            observations: vec![input],
+        },
+    )
+    .await
+    .expect("record bodyweight");
+
+    let row: (
+        i64,
+        String,
+        i64,
+        String,
+        Option<String>,
+        String,
+        Option<String>,
+    ) = sqlx::query_as(
+        "SELECT seq, schema_key, schema_version, occurred_at, ended_at, values_json, note \
+             FROM observation_revisions \
+             WHERE observation_id = ?1",
+    )
+    .bind(&recorded[0].id)
+    .fetch_one(&pool)
+    .await
+    .expect("initial revision");
+
+    assert_eq!(row.0, 1);
+    assert_eq!(row.1, "bodyweight");
+    assert_eq!(row.2, 1);
+    assert_eq!(row.3, "2026-06-01T07:30:00");
+    assert_eq!(row.4, None);
+    assert_eq!(row.5, json!({ "kg": 72.4 }).to_string());
+    assert_eq!(row.6.as_deref(), Some("morning"));
+}
+
+#[tokio::test]
+async fn observations_update_appends_revision_and_query_returns_current_state() {
+    let pool = memory_pool().await;
+    let recorded = record_observations(
+        &pool,
+        RecordObservationsInput {
+            observations: vec![bodyweight_at("2026-06-01T07:30:00", json!(72.4))],
+        },
+    )
+    .await
+    .expect("record bodyweight");
+    let mut replacement = bodyweight_at("2026-06-02T07:35:00", json!(71.8));
+    replacement.ended_at = Some("2026-06-02T07:40:00".to_string());
+    replacement.note = Some("corrected".to_string());
+
+    update_observation(&pool, &recorded[0].id, update_from(replacement))
+        .await
+        .expect("update observation");
+
+    let revisions: Vec<(i64, String, Option<String>, String, Option<String>)> = sqlx::query_as(
+        "SELECT seq, occurred_at, ended_at, values_json, note \
+             FROM observation_revisions \
+             WHERE observation_id = ?1 \
+             ORDER BY seq",
+    )
+    .bind(&recorded[0].id)
+    .fetch_all(&pool)
+    .await
+    .expect("observation revisions");
+    assert_eq!(revisions.len(), 2);
+    assert_eq!(revisions[0].0, 1);
+    assert_eq!(revisions[0].1, "2026-06-01T07:30:00");
+    assert_eq!(revisions[0].3, json!({ "kg": 72.4 }).to_string());
+    assert_eq!(revisions[1].0, 2);
+    assert_eq!(revisions[1].1, "2026-06-02T07:35:00");
+    assert_eq!(revisions[1].2.as_deref(), Some("2026-06-02T07:40:00"));
+    assert_eq!(revisions[1].3, json!({ "kg": 71.8 }).to_string());
+    assert_eq!(revisions[1].4.as_deref(), Some("corrected"));
+
+    let rows = query_observations(
+        &pool,
+        ObservationQuery {
+            schema_keys: vec!["bodyweight".to_string()],
+            ..ObservationQuery::default()
+        },
+    )
+    .await
+    .expect("query current observations");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].id, recorded[0].id);
+    assert_eq!(rows[0].occurred_at, "2026-06-02T07:35:00");
+    assert_eq!(rows[0].ended_at.as_deref(), Some("2026-06-02T07:40:00"));
+    assert_eq!(rows[0].values, json!({ "kg": 71.8 }));
+    assert_eq!(rows[0].note.as_deref(), Some("corrected"));
+}
+
+#[tokio::test]
+async fn observations_update_clears_optional_fields_when_omitted() {
+    let pool = memory_pool().await;
+    let mut original = bodyweight_at("2026-06-01T07:30:00", json!(72.4));
+    original.ended_at = Some("2026-06-01T07:35:00".to_string());
+    original.note = Some("original note".to_string());
+    let recorded = record_observations(
+        &pool,
+        RecordObservationsInput {
+            observations: vec![original],
+        },
+    )
+    .await
+    .expect("record bodyweight");
+
+    update_observation(
+        &pool,
+        &recorded[0].id,
+        update_from(bodyweight_at("2026-06-02T07:30:00", json!(71.8))),
+    )
+    .await
+    .expect("clear optional fields");
+
+    let revisions: Vec<(i64, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT seq, ended_at, note \
+             FROM observation_revisions \
+             WHERE observation_id = ?1 \
+             ORDER BY seq",
+    )
+    .bind(&recorded[0].id)
+    .fetch_all(&pool)
+    .await
+    .expect("observation revisions");
+    assert_eq!(revisions.len(), 2);
+    assert_eq!(revisions[0].0, 1);
+    assert_eq!(revisions[0].1.as_deref(), Some("2026-06-01T07:35:00"));
+    assert_eq!(revisions[0].2.as_deref(), Some("original note"));
+    assert_eq!(revisions[1].0, 2);
+    assert_eq!(revisions[1].1, None);
+    assert_eq!(revisions[1].2, None);
+
+    let rows = query_observations(
+        &pool,
+        ObservationQuery {
+            schema_keys: vec!["bodyweight".to_string()],
+            ..ObservationQuery::default()
+        },
+    )
+    .await
+    .expect("query current observations");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].id, recorded[0].id);
+    assert_eq!(rows[0].occurred_at, "2026-06-02T07:30:00");
+    assert_eq!(rows[0].ended_at, None);
+    assert_eq!(rows[0].note, None);
+}
+
+#[tokio::test]
+async fn observations_failed_update_writes_no_revision_and_leaves_current_state() {
+    let pool = memory_pool().await;
+    let recorded = record_observations(
+        &pool,
+        RecordObservationsInput {
+            observations: vec![bodyweight_at("2026-06-01T07:30:00", json!(72.4))],
+        },
+    )
+    .await
+    .expect("record bodyweight");
+
+    let reason = update_observation(
+        &pool,
+        &recorded[0].id,
+        update_from(bodyweight_at("2026-06-02T07:30:00", json!("71.8"))),
+    )
+    .await
+    .expect_err("invalid replacement rejects");
+    assert_eq!(invalid_reason(reason), "kg must be a number");
+    assert_eq!(revision_count(&pool, &recorded[0].id).await, 1);
+
+    let rows = query_observations(&pool, ObservationQuery::default())
+        .await
+        .expect("query current observations");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].id, recorded[0].id);
+    assert_eq!(rows[0].occurred_at, "2026-06-01T07:30:00");
+    assert_eq!(rows[0].values, json!({ "kg": 72.4 }));
+}
+
+#[tokio::test]
+async fn observations_update_missing_observation_rejects_without_revision() {
+    let pool = memory_pool().await;
+    let missing_id = "018f0000-0000-7000-8000-000000000304";
+
+    let reason = update_observation(
+        &pool,
+        missing_id,
+        update_from(bodyweight_at("2026-06-02T07:30:00", json!(71.8))),
+    )
+    .await
+    .expect_err("missing observation rejects");
+
+    assert_eq!(invalid_reason(reason), "observation not found");
+    let observation_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM observations")
+        .fetch_one(&pool)
+        .await
+        .expect("count observations");
+    assert_eq!(observation_count, 0);
+    assert_eq!(revision_count(&pool, missing_id).await, 0);
+}
+
+#[tokio::test]
+async fn observations_update_habit_checkin_validates_relation_target() {
+    let pool = memory_pool().await;
+    let habit_id = "018f0000-0000-7000-8000-000000000301";
+    let other_habit_id = "018f0000-0000-7000-8000-000000000302";
+    let person_id = "018f0000-0000-7000-8000-000000000303";
+    seed_habit(&pool, habit_id).await;
+    seed_habit(&pool, other_habit_id).await;
+    seed_person(&pool, person_id).await;
+    let recorded = record_observations(
+        &pool,
+        RecordObservationsInput {
+            observations: vec![habit_checkin_at("2026-06-01T07:30:00", habit_id, "done")],
+        },
+    )
+    .await
+    .expect("record habit check-in");
+
+    update_observation(
+        &pool,
+        &recorded[0].id,
+        update_from(habit_checkin_at(
+            "2026-06-02T07:30:00",
+            &other_habit_id.to_ascii_uppercase(),
+            "skipped",
+        )),
+    )
+    .await
+    .expect("update to another habit");
+
+    let reason = update_observation(
+        &pool,
+        &recorded[0].id,
+        update_from(habit_checkin_at(
+            "2026-06-03T07:30:00",
+            person_id,
+            "missed",
+        )),
+    )
+    .await
+    .expect_err("wrong relation target type rejects");
+    assert_eq!(
+        invalid_reason(reason),
+        "observation habit_id must name a habit"
+    );
+    assert_eq!(revision_count(&pool, &recorded[0].id).await, 2);
+
+    let rows = query_observations(&pool, ObservationQuery::default())
+        .await
+        .expect("query current observations");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].occurred_at, "2026-06-02T07:30:00");
+    assert_eq!(rows[0].values["habit_id"], json!(other_habit_id));
+    assert_eq!(rows[0].values["state"], json!("skipped"));
+
+    let old_habit_rows = query_observations(
+        &pool,
+        ObservationQuery {
+            related_entity_id: Some(habit_id.to_string()),
+            ..ObservationQuery::default()
+        },
+    )
+    .await
+    .expect("query old relation");
+    assert!(old_habit_rows.is_empty());
+
+    let new_habit_rows = query_observations(
+        &pool,
+        ObservationQuery {
+            related_entity_id: Some(other_habit_id.to_string()),
+            ..ObservationQuery::default()
+        },
+    )
+    .await
+    .expect("query corrected relation");
+    assert_eq!(new_habit_rows.len(), 1);
+    assert_eq!(new_habit_rows[0].id, recorded[0].id);
+    assert_eq!(new_habit_rows[0].values["habit_id"], json!(other_habit_id));
+}
+
+#[tokio::test]
+async fn observations_update_rejects_schema_key_changes() {
+    let pool = memory_pool().await;
+    let habit_id = "018f0000-0000-7000-8000-000000000301";
+    seed_habit(&pool, habit_id).await;
+    let recorded = record_observations(
+        &pool,
+        RecordObservationsInput {
+            observations: vec![bodyweight_at("2026-06-01T07:30:00", json!(72.4))],
+        },
+    )
+    .await
+    .expect("record bodyweight");
+
+    let reason = update_observation(
+        &pool,
+        &recorded[0].id,
+        update_from(habit_checkin_at("2026-06-02T07:30:00", habit_id, "done")),
+    )
+    .await
+    .expect_err("schema key change is rejected");
+    assert_eq!(
+        invalid_reason(reason),
+        "observation schema_key cannot change"
+    );
+    assert_eq!(revision_count(&pool, &recorded[0].id).await, 1);
+
+    let rows = query_observations(
+        &pool,
+        ObservationQuery {
+            schema_keys: vec!["bodyweight".to_string()],
+            ..ObservationQuery::default()
+        },
+    )
+    .await
+    .expect("query after rejected schema change");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].id, recorded[0].id);
+    assert_eq!(rows[0].values, json!({ "kg": 72.4 }));
 }
 
 async fn seed_message(pool: &SqlitePool, message_id: &str) {

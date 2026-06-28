@@ -111,6 +111,9 @@ pub async fn dispatch(
         "observation/record" => {
             observation::handle_record(pool, req.id, req.params, out_tx).await;
         }
+        "observation/update" => {
+            observation::handle_update(pool, req.id, req.params, out_tx).await;
+        }
         "observation/query" => {
             observation::handle_query(pool, req.id, req.params, out_tx).await;
         }

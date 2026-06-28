@@ -440,6 +440,11 @@ export const observationRecordDraft = S.Union(
 	habitCheckinObservationRecordDraft,
 );
 
+export const observationUpdateParams = S.Struct({
+	observation_id: patternedUuid,
+	observation: observationRecordDraft,
+});
+
 export const observationEvidence = S.Union(
 	S.Struct({
 		journal_entry_id: patternedUuid,

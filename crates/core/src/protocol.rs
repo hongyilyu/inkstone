@@ -426,6 +426,7 @@ pub struct RecurrencePreviewResult {
 /// schema-specific opaque JSON; Core validates it against the observation schema
 /// registry before storage.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ObservationRecordDraft {
     pub schema_key: String,
     pub occurred_at: String,
@@ -460,6 +461,22 @@ pub struct ObservationRecordParams {
 #[derive(Debug, Serialize)]
 pub struct ObservationRecordResult {
     pub observation_ids: Vec<String>,
+}
+
+/// `observation/update` params: the target Observation id plus a source-free
+/// replacement draft. Provenance stays immutable; corrections only change the
+/// current fact fields and append `observation_revisions`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ObservationUpdateParams {
+    pub observation_id: uuid::Uuid,
+    pub observation: ObservationRecordDraft,
+}
+
+/// `observation/update` result: the canonical id of the updated Observation.
+#[derive(Debug, Serialize)]
+pub struct ObservationUpdateResult {
+    pub observation_id: String,
 }
 
 /// `observation/query` params (ADR-0053): optional schema, time, evidence
@@ -1571,6 +1588,39 @@ mod mirror_tests {
     }
 
     #[test]
+    fn observation_update_params_decodes_source_free_replacement() {
+        let wire = json!({
+            "observation_id": UUID_A,
+            "observation": {
+                "schema_key": "bodyweight",
+                "occurred_at": "2026-06-03T07:30:00",
+                "ended_at": "2026-06-03T07:35:00",
+                "values": { "kg": 71.8 },
+                "note": "corrected"
+            }
+        });
+        let p: ObservationUpdateParams = serde_json::from_value(wire).unwrap();
+        assert_eq!(p.observation_id.to_string(), UUID_A);
+        assert_eq!(p.observation.schema_key, "bodyweight");
+        assert_eq!(p.observation.ended_at.as_deref(), Some("2026-06-03T07:35:00"));
+        assert_eq!(p.observation.values["kg"], json!(71.8));
+        assert_eq!(p.observation.note.as_deref(), Some("corrected"));
+    }
+
+    #[test]
+    fn observation_update_params_rejects_malformed_observation_id() {
+        let wire = json!({
+            "observation_id": "not-a-uuid",
+            "observation": {
+                "schema_key": "bodyweight",
+                "occurred_at": "2026-06-03T07:30:00",
+                "values": { "kg": 71.8 }
+            }
+        });
+        assert!(serde_json::from_value::<ObservationUpdateParams>(wire).is_err());
+    }
+
+    #[test]
     fn observation_query_params_decodes_omitted_filters() {
         let p: ObservationQueryParams = serde_json::from_value(json!({})).unwrap();
         assert!(p.schema_keys.is_none());
@@ -1590,6 +1640,13 @@ mod mirror_tests {
         assert_eq!(
             serde_json::to_value(&record).unwrap(),
             json!({ "observation_ids": [UUID_A, UUID_B] }),
+        );
+        let update = ObservationUpdateResult {
+            observation_id: UUID_A.to_string(),
+        };
+        assert_eq!(
+            serde_json::to_value(&update).unwrap(),
+            json!({ "observation_id": UUID_A }),
         );
 
         let query = ObservationQueryResult {
@@ -2149,6 +2206,12 @@ mod parity_fixtures {
                     observation_ids: vec![UUID_A.to_string(), UUID_B.to_string()],
                 }
             ),
+            fx!(
+                "observation_update_result.json",
+                ObservationUpdateResult {
+                    observation_id: UUID_A.to_string(),
+                }
+            ),
             // Maximal row: nullable fields populated, opaque values present, and
             // an entity source using the created_from relation.
             fx!(
@@ -2696,6 +2759,7 @@ mod parity_fixtures {
             "recurrence_preview_result.json",
             "recurrence_preview_result.ended.json",
             "observation_record_result.json",
+            "observation_update_result.json",
             "observation_query_result.json",
             "observation_query_result.message_source.json",
             "observation_query_result.bare.json",
@@ -2799,6 +2863,11 @@ mod parity_fixtures {
         parses!(
             ObservationRecordParams,
             "observation_record_params.bare.json"
+        );
+        parses!(ObservationUpdateParams, "observation_update_params.json");
+        parses!(
+            ObservationUpdateParams,
+            "observation_update_params.bare.json"
         );
         parses!(ObservationQueryParams, "observation_query_params.json");
         parses!(

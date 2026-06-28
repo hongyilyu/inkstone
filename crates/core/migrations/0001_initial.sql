@@ -198,13 +198,29 @@ CREATE TABLE observations (
 CREATE INDEX idx_observations_schema_time ON observations(schema_key, occurred_at);
 CREATE INDEX idx_observations_time        ON observations(occurred_at);
 
+CREATE TABLE observation_revisions (
+  observation_id  TEXT NOT NULL REFERENCES observations(id) ON DELETE CASCADE,
+  seq             INTEGER NOT NULL CHECK (seq >= 1),
+  schema_key      TEXT NOT NULL,
+  schema_version  INTEGER NOT NULL,
+  occurred_at     TEXT NOT NULL,
+  ended_at        TEXT,
+  values_json     TEXT NOT NULL,
+  note            TEXT,
+  proposal_id     TEXT REFERENCES proposals(id),
+  created_at      INTEGER NOT NULL,
+  PRIMARY KEY (observation_id, seq)
+);
+CREATE INDEX idx_observation_revisions_habit_checkin_habit_id
+  ON observation_revisions(json_extract(values_json, '$.habit_id'))
+  WHERE schema_key = 'habit.checkin';
+
 CREATE TABLE observation_sources (
   id                 TEXT PRIMARY KEY,
   observation_id     TEXT NOT NULL REFERENCES observations(id) ON DELETE CASCADE,
   source_entity_id   TEXT REFERENCES entities(id) ON DELETE CASCADE,
   source_message_id  TEXT REFERENCES messages(id) ON DELETE CASCADE,
-  -- No updated_from while observations are append-mostly and corrections are
-  -- delete-and-re-record.
+  -- Source rows are original provenance; corrections live in observation_revisions.
   relation           TEXT NOT NULL CHECK (relation IN ('created_from','evidenced_by')),
   created_at         INTEGER NOT NULL,
   CHECK (

@@ -8,7 +8,7 @@ use super::handler::{self, HandlerError};
 use crate::observations::{self, ObservationQuery, ObservationSource, ObservationSourceInput};
 use crate::protocol::{
     ObservationQueryParams, ObservationQueryResult, ObservationRecordResult, ObservationRow,
-    ObservationSourceView,
+    ObservationSourceView, ObservationUpdateResult,
 };
 
 pub(super) async fn handle_record(
@@ -73,6 +73,29 @@ pub(super) async fn handle_query(
             Ok(ObservationQueryResult {
                 observations: observations.into_iter().map(observation_to_wire).collect(),
             })
+        },
+    )
+    .await;
+}
+
+pub(super) async fn handle_update(
+    pool: &SqlitePool,
+    id: serde_json::Value,
+    params: serde_json::Value,
+    out_tx: &UnboundedSender<String>,
+) {
+    handler::handle(
+        id,
+        params,
+        out_tx,
+        |raw: serde_json::Value| async move {
+            let (observation_id, input) = observations::observation_update_input_from_payload(&raw)
+                .map_err(HandlerError::InvalidParams)?;
+            let observation_id = observations::update_observation(pool, &observation_id, input)
+                .await
+                .map_err(observation_error_to_handler)?;
+
+            Ok(ObservationUpdateResult { observation_id })
         },
     )
     .await;
@@ -178,6 +201,17 @@ mod tests {
     fn assert_invalid_params(value: &Value) {
         assert_eq!(value["error"]["code"], json!(-32602), "{value:?}");
         assert!(value.get("result").is_none(), "{value:?}");
+    }
+
+    fn assert_invalid_params_contains(value: &Value, expected: &str) {
+        assert_invalid_params(value);
+        let message = value["error"]["message"]
+            .as_str()
+            .expect("invalid params message");
+        assert!(
+            message.contains(expected),
+            "expected message to contain {expected:?}, got {message:?}"
+        );
     }
 
     fn assert_internal_error(value: &Value) {
@@ -392,6 +426,77 @@ mod tests {
             .expect("latest observations array");
         assert_eq!(observations[0]["id"], bare_id);
         assert_eq!(observations[0]["source"], Value::Null);
+    }
+
+    #[tokio::test]
+    async fn observation_rpc_updates_bodyweight_and_appends_revision() {
+        let pool = memory_pool().await;
+
+        let recorded = dispatch_rpc(
+            &pool,
+            "observation/record",
+            json!({
+                "observations": [{
+                    "schema_key": "bodyweight",
+                    "occurred_at": "2026-06-01T07:30:00",
+                    "values": { "kg": 72.4 }
+                }]
+            }),
+        )
+        .await;
+        assert!(recorded.get("error").is_none(), "{recorded:?}");
+        let observation_id = recorded["result"]["observation_ids"][0]
+            .as_str()
+            .expect("observation id")
+            .to_string();
+
+        let updated = dispatch_rpc(
+            &pool,
+            "observation/update",
+            json!({
+                "observation_id": observation_id.to_ascii_uppercase(),
+                "observation": {
+                    "schema_key": "bodyweight",
+                    "occurred_at": "2026-06-02T07:35:00",
+                    "ended_at": "2026-06-02T07:40:00",
+                    "values": { "kg": 71.8 },
+                    "note": "corrected"
+                }
+            }),
+        )
+        .await;
+        assert!(updated.get("error").is_none(), "{updated:?}");
+        assert_eq!(updated["result"]["observation_id"], json!(observation_id));
+
+        let queried = dispatch_rpc(
+            &pool,
+            "observation/query",
+            json!({ "schema_keys": ["bodyweight"] }),
+        )
+        .await;
+        assert!(queried.get("error").is_none(), "{queried:?}");
+        let row = &queried["result"]["observations"][0];
+        assert_eq!(row["id"], json!(observation_id));
+        assert_eq!(row["occurred_at"], json!("2026-06-02T07:35:00"));
+        assert_eq!(row["ended_at"], json!("2026-06-02T07:40:00"));
+        assert_eq!(row["values"], json!({ "kg": 71.8 }));
+        assert_eq!(row["note"], json!("corrected"));
+
+        let revisions: Vec<(i64, String)> = sqlx::query_as(
+            "SELECT seq, values_json \
+             FROM observation_revisions \
+             WHERE observation_id = ?1 \
+             ORDER BY seq",
+        )
+        .bind(&observation_id)
+        .fetch_all(&pool)
+        .await
+        .expect("observation revisions");
+        assert_eq!(revisions.len(), 2);
+        assert_eq!(revisions[0].0, 1);
+        assert_eq!(revisions[0].1, json!({ "kg": 72.4 }).to_string());
+        assert_eq!(revisions[1].0, 2);
+        assert_eq!(revisions[1].1, json!({ "kg": 71.8 }).to_string());
     }
 
     #[tokio::test]
@@ -681,6 +786,85 @@ mod tests {
         )
         .await;
         assert_invalid_params(&non_habit_target);
+
+        let valid_habit_id = Uuid::now_v7();
+        seed_habit(&pool, valid_habit_id).await;
+        let recorded = dispatch_rpc(
+            &pool,
+            "observation/record",
+            json!({
+                "observations": [{
+                    "schema_key": "habit.checkin",
+                    "occurred_at": "2026-06-01T07:30:00",
+                    "values": {
+                        "habit_id": valid_habit_id.to_string(),
+                        "state": "done"
+                    }
+                }]
+            }),
+        )
+        .await;
+        assert!(recorded.get("error").is_none(), "{recorded:?}");
+        let observation_id = recorded["result"]["observation_ids"][0]
+            .as_str()
+            .expect("observation id");
+
+        let update_with_null_ended_at = dispatch_rpc(
+            &pool,
+            "observation/update",
+            json!({
+                "observation_id": observation_id,
+                "observation": {
+                    "schema_key": "habit.checkin",
+                    "occurred_at": "2026-06-01T07:30:00",
+                    "ended_at": null,
+                    "values": {
+                        "habit_id": valid_habit_id.to_string(),
+                        "state": "done"
+                    }
+                }
+            }),
+        )
+        .await;
+        assert_invalid_params_contains(&update_with_null_ended_at, "ended_at must be a string");
+
+        let update_with_null_note = dispatch_rpc(
+            &pool,
+            "observation/update",
+            json!({
+                "observation_id": observation_id,
+                "observation": {
+                    "schema_key": "habit.checkin",
+                    "occurred_at": "2026-06-01T07:30:00",
+                    "values": {
+                        "habit_id": valid_habit_id.to_string(),
+                        "state": "done"
+                    },
+                    "note": null
+                }
+            }),
+        )
+        .await;
+        assert_invalid_params_contains(&update_with_null_note, "note must be a string");
+
+        let update_with_evidence = dispatch_rpc(
+            &pool,
+            "observation/update",
+            json!({
+                "observation_id": observation_id,
+                "observation": {
+                    "schema_key": "habit.checkin",
+                    "occurred_at": "2026-06-01T07:30:00",
+                    "values": {
+                        "habit_id": valid_habit_id.to_string(),
+                        "state": "done"
+                    },
+                    "evidence": { "message_id": Uuid::now_v7().to_string() }
+                }
+            }),
+        )
+        .await;
+        assert_invalid_params_contains(&update_with_evidence, "unsupported observation field");
     }
 
     #[tokio::test]

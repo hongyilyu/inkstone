@@ -24,6 +24,17 @@ pub(crate) struct ObservationInsert {
     pub source: Option<ObservationSourceInsert>,
 }
 
+pub(crate) struct ObservationUpdate {
+    pub id: String,
+    pub schema_key: String,
+    pub schema_version: i64,
+    pub occurred_at: String,
+    pub ended_at: Option<String>,
+    pub values_json: String,
+    pub note: Option<String>,
+    pub relations: Vec<ObservationRelationInsert>,
+}
+
 pub(crate) struct ObservationRelationInsert {
     pub field_name: &'static str,
     pub entity_id: String,
@@ -94,9 +105,23 @@ pub(crate) enum ObservationInsertError {
     Sqlx(sqlx::Error),
 }
 
+#[derive(Debug)]
+pub(crate) enum ObservationUpdateError {
+    InvalidRelation(String),
+    SchemaMismatch,
+    NotFound,
+    Sqlx(sqlx::Error),
+}
+
 impl From<sqlx::Error> for ObservationInsertError {
     fn from(value: sqlx::Error) -> Self {
         ObservationInsertError::Sqlx(value)
+    }
+}
+
+impl From<sqlx::Error> for ObservationUpdateError {
+    fn from(value: sqlx::Error) -> Self {
+        ObservationUpdateError::Sqlx(value)
     }
 }
 
@@ -120,6 +145,9 @@ pub(super) async fn insert_observations_in_tx(
     now_ms: i64,
 ) -> Result<(), ObservationInsertError> {
     for row in rows {
+        if let Some(reason) = invalid_relation_reason(tx, &row.relations).await? {
+            return Err(ObservationInsertError::InvalidRelation(reason));
+        }
         queries::insert_observation(
             &mut **tx,
             &row.id,
@@ -134,21 +162,19 @@ pub(super) async fn insert_observations_in_tx(
             now_ms,
         )
         .await?;
-        for relation in row.relations {
-            if !queries::entity_is_type(
-                &mut **tx,
-                &relation.entity_id,
-                relation.target_entity_type.as_str(),
-            )
-            .await?
-            {
-                return Err(ObservationInsertError::InvalidRelation(format!(
-                    "observation {} must name a {}",
-                    relation.field_name,
-                    relation.target_entity_type.as_str()
-                )));
-            }
-        }
+        queries::insert_next_observation_revision(
+            &mut **tx,
+            &row.id,
+            &row.schema_key,
+            row.schema_version,
+            &row.occurred_at,
+            row.ended_at.as_deref(),
+            &row.values_json,
+            row.note.as_deref(),
+            row.created_via_proposal_id.as_deref(),
+            now_ms,
+        )
+        .await?;
         if let Some(source) = row.source {
             match &source {
                 ObservationSourceInsert::JournalEntry { id } => {
@@ -186,6 +212,77 @@ pub(super) async fn insert_observations_in_tx(
         }
     }
     Ok(())
+}
+
+pub(crate) async fn update_observation(
+    pool: &SqlitePool,
+    row: ObservationUpdate,
+    now_ms: i64,
+) -> Result<(), ObservationUpdateError> {
+    let mut tx = pool.begin().await?;
+
+    let current_schema_key = queries::observation_schema_key(&mut *tx, &row.id).await?;
+    let Some(current_schema_key) = current_schema_key else {
+        return Err(ObservationUpdateError::NotFound);
+    };
+    if current_schema_key != row.schema_key {
+        return Err(ObservationUpdateError::SchemaMismatch);
+    }
+
+    if let Some(reason) = invalid_relation_reason(&mut tx, &row.relations).await? {
+        return Err(ObservationUpdateError::InvalidRelation(reason));
+    }
+
+    queries::update_observation(
+        &mut *tx,
+        &row.id,
+        row.schema_version,
+        &row.occurred_at,
+        row.ended_at.as_deref(),
+        &row.values_json,
+        row.note.as_deref(),
+        now_ms,
+    )
+    .await?;
+
+    queries::insert_next_observation_revision(
+        &mut *tx,
+        &row.id,
+        &row.schema_key,
+        row.schema_version,
+        &row.occurred_at,
+        row.ended_at.as_deref(),
+        &row.values_json,
+        row.note.as_deref(),
+        None,
+        now_ms,
+    )
+    .await?;
+
+    tx.commit().await?;
+    Ok(())
+}
+
+async fn invalid_relation_reason(
+    tx: &mut Transaction<'_, Sqlite>,
+    relations: &[ObservationRelationInsert],
+) -> sqlx::Result<Option<String>> {
+    for relation in relations {
+        if !queries::entity_is_type(
+            &mut **tx,
+            &relation.entity_id,
+            relation.target_entity_type.as_str(),
+        )
+        .await?
+        {
+            return Ok(Some(format!(
+                "observation {} must name a {}",
+                relation.field_name,
+                relation.target_entity_type.as_str()
+            )));
+        }
+    }
+    Ok(None)
 }
 
 #[allow(clippy::too_many_arguments)]

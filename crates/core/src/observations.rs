@@ -30,6 +30,15 @@ pub(crate) struct ObservationRecordInput {
 }
 
 #[derive(Clone, Debug)]
+pub(crate) struct ObservationUpdateInput {
+    pub(crate) schema_key: String,
+    pub(crate) occurred_at: String,
+    pub(crate) ended_at: Option<String>,
+    pub(crate) values: Value,
+    pub(crate) note: Option<String>,
+}
+
+#[derive(Clone, Debug)]
 pub(crate) enum ObservationSourceInput {
     JournalEntry { id: String },
     Message { id: String },
@@ -89,6 +98,22 @@ pub(crate) async fn record_observations(
     Ok(observations)
 }
 
+pub(crate) async fn update_observation(
+    pool: &SqlitePool,
+    observation_id: &str,
+    record: ObservationUpdateInput,
+) -> Result<String, ObservationError> {
+    let observation_id =
+        normalize_uuid(observation_id, "observation_id").map_err(ObservationError::Invalid)?;
+
+    let now_ms = db::now_ms();
+    let update = prepare_observation_update(observation_id.clone(), record)?;
+    db::update_observation(pool, update, now_ms)
+        .await
+        .map_err(observation_update_error)?;
+    Ok(observation_id)
+}
+
 pub(crate) fn record_observations_payload_spec() -> PayloadSpec {
     let journal_evidence = PayloadSpec::nested(
         "observation evidence",
@@ -141,6 +166,30 @@ pub(crate) fn record_observations_input_from_payload(
     Ok(input)
 }
 
+pub(crate) fn observation_update_payload_spec() -> PayloadSpec {
+    PayloadSpec::payload(
+        "update_observation",
+        vec![
+            Field::required("observation_id", FieldSpec::Uuid { schema_regex: true }),
+            Field::required(
+                "observation",
+                FieldSpec::OneOfObject {
+                    variants: record_observation_payload_variants(),
+                },
+            ),
+        ],
+    )
+}
+
+pub(crate) fn observation_update_input_from_payload(
+    payload: &Value,
+) -> Result<(String, ObservationUpdateInput), String> {
+    observation_update_payload_spec().check(payload)?;
+    let params: crate::protocol::ObservationUpdateParams = serde_json::from_value(payload.clone())
+        .map_err(|e| format!("update_observation payload is invalid: {e}"))?;
+    Ok(observation_update_input_from_params(params))
+}
+
 pub(crate) fn record_observations_input_from_params(
     params: crate::protocol::ObservationRecordParams,
 ) -> Result<RecordObservationsInput, String> {
@@ -161,12 +210,33 @@ pub(crate) fn record_observations_input_from_params(
     })
 }
 
+pub(crate) fn observation_update_input_from_params(
+    params: crate::protocol::ObservationUpdateParams,
+) -> (String, ObservationUpdateInput) {
+    let draft = params.observation;
+    (
+        params.observation_id.to_string(),
+        ObservationUpdateInput {
+            schema_key: draft.schema_key,
+            occurred_at: draft.occurred_at,
+            ended_at: draft.ended_at,
+            values: draft.values,
+            note: draft.note,
+        },
+    )
+}
+
 fn validate_record_observations_input(input: &RecordObservationsInput) -> Result<(), String> {
     if input.observations.is_empty() {
         return Err("observations must have at least 1 item(s)".to_string());
     }
     for record in &input.observations {
-        validate_record(record)?;
+        validate_observation_fields(
+            &record.schema_key,
+            &record.occurred_at,
+            record.ended_at.as_deref(),
+            &record.values,
+        )?;
         if let Some(source) = &record.source {
             validated_source(source)?;
         }
@@ -191,27 +261,39 @@ pub(crate) fn prepare_observations(
     let mut observations = Vec::with_capacity(input.observations.len());
 
     for record in input.observations {
-        let schema = validate_record(&record).map_err(ObservationError::Invalid)?;
-        let (values, relations) = relation_checks(schema.relation_fields, &record.values)
-            .map_err(ObservationError::Invalid)?;
+        let snapshot = prepare_observation_snapshot(
+            record.schema_key,
+            record.occurred_at,
+            record.ended_at,
+            record.values,
+            record.note,
+        )?;
         let id = Uuid::now_v7().to_string();
-        let values_json = serde_json::to_string(&values)
-            .map_err(|e| ObservationError::Internal(anyhow::Error::new(e)))?;
         let source = record
             .source
             .as_ref()
             .map(validated_source)
             .transpose()
             .map_err(ObservationError::Invalid)?;
+        let PreparedObservationSnapshot {
+            schema_key,
+            schema_version,
+            occurred_at,
+            ended_at,
+            values,
+            values_json,
+            note,
+            relations,
+        } = snapshot;
 
         inserts.push(db::ObservationInsert {
             id: id.clone(),
-            schema_key: schema.key.to_string(),
-            schema_version: schema.version,
-            occurred_at: record.occurred_at.clone(),
-            ended_at: record.ended_at.clone(),
+            schema_key: schema_key.clone(),
+            schema_version,
+            occurred_at: occurred_at.clone(),
+            ended_at: ended_at.clone(),
             values_json,
-            note: record.note.clone(),
+            note: note.clone(),
             created_by: created_by.to_string(),
             created_via_proposal_id: proposal_id.map(str::to_string),
             relations,
@@ -226,12 +308,12 @@ pub(crate) fn prepare_observations(
         });
         observations.push(Observation {
             id,
-            schema_key: schema.key.to_string(),
-            schema_version: schema.version,
-            occurred_at: record.occurred_at,
-            ended_at: record.ended_at,
+            schema_key,
+            schema_version,
+            occurred_at,
+            ended_at,
             values,
-            note: record.note,
+            note,
             source,
             created_at: now_ms,
             updated_at: now_ms,
@@ -239,6 +321,72 @@ pub(crate) fn prepare_observations(
     }
 
     Ok((inserts, observations))
+}
+
+fn prepare_observation_update(
+    id: String,
+    record: ObservationUpdateInput,
+) -> Result<db::ObservationUpdate, ObservationError> {
+    let snapshot = prepare_observation_snapshot(
+        record.schema_key,
+        record.occurred_at,
+        record.ended_at,
+        record.values,
+        record.note,
+    )?;
+
+    Ok(db::ObservationUpdate {
+        id,
+        schema_key: snapshot.schema_key,
+        schema_version: snapshot.schema_version,
+        occurred_at: snapshot.occurred_at,
+        ended_at: snapshot.ended_at,
+        values_json: snapshot.values_json,
+        note: snapshot.note,
+        relations: snapshot.relations,
+    })
+}
+
+struct PreparedObservationSnapshot {
+    schema_key: String,
+    schema_version: i64,
+    occurred_at: String,
+    ended_at: Option<String>,
+    values: Value,
+    values_json: String,
+    note: Option<String>,
+    relations: Vec<db::ObservationRelationInsert>,
+}
+
+fn prepare_observation_snapshot(
+    schema_key: String,
+    occurred_at: String,
+    ended_at: Option<String>,
+    values: Value,
+    note: Option<String>,
+) -> Result<PreparedObservationSnapshot, ObservationError> {
+    let schema = validate_observation_fields(
+        &schema_key,
+        &occurred_at,
+        ended_at.as_deref(),
+        &values,
+    )
+    .map_err(ObservationError::Invalid)?;
+    let (values, relations) = relation_checks(schema.relation_fields, &values)
+        .map_err(ObservationError::Invalid)?;
+    let values_json = serde_json::to_string(&values)
+        .map_err(|e| ObservationError::Internal(anyhow::Error::new(e)))?;
+
+    Ok(PreparedObservationSnapshot {
+        schema_key: schema.key.to_string(),
+        schema_version: schema.version,
+        occurred_at,
+        ended_at,
+        values,
+        values_json,
+        note,
+        relations,
+    })
 }
 
 pub(crate) fn render_accept(observations: &[Observation]) -> String {
@@ -278,6 +426,19 @@ pub(crate) fn observation_insert_error(e: db::ObservationInsertError) -> Observa
         db::ObservationInsertError::InvalidSource(reason) => ObservationError::Invalid(reason),
         db::ObservationInsertError::InvalidRelation(reason) => ObservationError::Invalid(reason),
         db::ObservationInsertError::Sqlx(err) => ObservationError::Internal(err.into()),
+    }
+}
+
+pub(crate) fn observation_update_error(e: db::ObservationUpdateError) -> ObservationError {
+    match e {
+        db::ObservationUpdateError::InvalidRelation(reason) => ObservationError::Invalid(reason),
+        db::ObservationUpdateError::SchemaMismatch => {
+            ObservationError::Invalid("observation schema_key cannot change".to_string())
+        }
+        db::ObservationUpdateError::NotFound => {
+            ObservationError::Invalid("observation not found".to_string())
+        }
+        db::ObservationUpdateError::Sqlx(err) => ObservationError::Internal(err.into()),
     }
 }
 
@@ -425,18 +586,23 @@ fn record_observation_payload_variant(schema: ObservationSchema) -> PayloadSpec 
     )
 }
 
-fn validate_record(record: &ObservationRecordInput) -> Result<ObservationSchema, String> {
-    let schema = schema_for(&record.schema_key)
-        .ok_or_else(|| format!("unknown observation schema {:?}", record.schema_key))?;
+fn validate_observation_fields(
+    schema_key: &str,
+    occurred_at: &str,
+    ended_at: Option<&str>,
+    values: &Value,
+) -> Result<ObservationSchema, String> {
+    let schema =
+        schema_for(schema_key).ok_or_else(|| format!("unknown observation schema {schema_key:?}"))?;
 
-    let occurred = parse_local_datetime(&record.occurred_at, "occurred_at")?;
-    if let Some(ended_at) = &record.ended_at {
+    let occurred = parse_local_datetime(occurred_at, "occurred_at")?;
+    if let Some(ended_at) = ended_at {
         let ended = parse_local_datetime(ended_at, "ended_at")?;
         if ended < occurred {
             return Err("ended_at must be greater than or equal to occurred_at".to_string());
         }
     }
-    schema.values.check(&record.values)?;
+    schema.values.check(values)?;
     Ok(schema)
 }
 
