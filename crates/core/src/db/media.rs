@@ -6,13 +6,13 @@
 //! the relative `storage_path` (a bare random-UUID filename in a flat root, no
 //! extension). `insert_media` writes the file first, then the row in a
 //! transaction, and unlinks the file if the transaction fails; `delete_media`
-//! deletes the row first (committing the future `media_attachments` cascade),
-//! then unlinks the file. Both orderings lean toward a recoverable
+//! deletes the row first (committing the `media_attachments` cascade), then
+//! unlinks the file. Both orderings lean toward a recoverable
 //! orphan-file-on-disk over a row pointing at missing bytes.
 //!
 //! The whole surface here is Core-internal and reached only by this module's
-//! tests in slice 1 — its production consumer (a media wire verb / the Media
-//! entity, #252) lands later, so `dead_code` is allowed module-wide for now.
+//! tests for now — its production consumer (a media wire verb / the Media
+//! entity, #252) lands later, so `dead_code` is allowed module-wide.
 #![allow(dead_code)]
 
 use sha2::{Digest, Sha256};
@@ -37,9 +37,8 @@ fn sha256_hex(bytes: &[u8]) -> String {
 /// A fully-specified media create request. The caller supplies `mime`,
 /// dimensions, capture time, and provenance; Core computes only `byte_size` and
 /// `digest` from the bytes (ADR-0055 §Scope boundary — no mime sniffing, no
-/// dimension extraction). `attachments` is empty on the standalone-media path
-/// exercised this slice; slice 2 fills in the per-target validation + link loop
-/// without reshaping this struct.
+/// dimension extraction). `attachments` may be empty (standalone media) or carry
+/// targets, each validated and linked in `insert_media`'s write transaction.
 pub(crate) struct MediaInput {
     pub mime: String,
     pub width: Option<i64>,
@@ -52,10 +51,9 @@ pub(crate) struct MediaInput {
     pub attachments: Vec<MediaAttachmentTarget>,
 }
 
-/// One polymorphic attachment target — exactly one media row links to exactly one
-/// of these (ADR-0055). Defined now; only the empty-`attachments` path runs this
-/// slice, so the variants are not yet constructed. Slice 2 consumes them in the
-/// in-transaction validation loop.
+/// One polymorphic attachment target — a media row links to exactly one of these
+/// (ADR-0055). `insert_media` validates each target's existence (and, for a typed
+/// Entity, its type) in the write transaction before inserting the link row.
 pub(crate) enum MediaAttachmentTarget {
     Entity {
         id: String,
@@ -93,8 +91,8 @@ pub(crate) struct MediaRow {
 
 #[derive(Debug)]
 pub(crate) enum MediaInsertError {
-    /// An attachment target does not exist or is the wrong type. Unused until
-    /// slice 2 wires the validation loop.
+    /// An attachment target does not exist or is the wrong type (rejected in the
+    /// write transaction, rolling back the insert).
     InvalidTarget(String),
     Sqlx(sqlx::Error),
 }
