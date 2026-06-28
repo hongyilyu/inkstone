@@ -5,6 +5,7 @@
 mod apply;
 mod intent_graph;
 mod lifecycle;
+mod media;
 mod message_fts;
 mod observations;
 mod queries;
@@ -46,6 +47,14 @@ pub use lifecycle::TerminalReason;
 // without naming the db type. The search assembles text live from `message_parts`
 // at query time — no standing projection to maintain or rebuild.
 pub use message_fts::search_messages;
+// The media substrate (ADR-0055) has no production consumer in slice 1 — its
+// wire verb / Media entity caller lands later (#252) — so the re-exported surface
+// is reached only by `db::media`'s own tests for now.
+#[allow(unused_imports)]
+pub(crate) use media::{
+    MediaAttachmentTarget, MediaInput, MediaInsertError, MediaRow, delete_media, get_media,
+    insert_media,
+};
 pub(crate) use observations::{
     ObservationFilter, ObservationInsert, ObservationInsertError, ObservationRelationInsert,
     ObservationRow, ObservationSourceFilter, ObservationSourceInsert, ObservationUpdate,
@@ -68,6 +77,24 @@ pub(crate) fn resolve_db_path() -> Result<PathBuf> {
         return Ok(PathBuf::from(env));
     }
     Ok(os_data_dir()?.join("inkstone").join("db.sqlite"))
+}
+
+/// Resolve the media root: `INKSTONE_MEDIA_DIR` env override wins (empty treated
+/// as unset, like `skills_dir`), else `<OS data dir>/inkstone/media/`. The same
+/// override-or-data-dir shape as `resolve_db_path`; binary media bytes live under
+/// this root with only the relative path stored in SQLite (ADR-0055).
+pub(crate) fn media_root() -> Result<PathBuf> {
+    if let Some(dir) = std::env::var_os("INKSTONE_MEDIA_DIR").filter(|d| !d.is_empty()) {
+        return Ok(PathBuf::from(dir));
+    }
+    Ok(os_data_dir()?.join("inkstone").join("media"))
+}
+
+/// Resolve a stored relative `storage_path` to its absolute on-disk location
+/// under [`media_root`]. Both `insert_media`/`delete_media` and the tests turn the
+/// relative stored path into the real file path through here.
+pub(crate) fn resolve_media_path(storage_path: &str) -> Result<PathBuf> {
+    Ok(media_root()?.join(storage_path))
 }
 
 /// Per-OS application-data directory (hand-rolled to avoid a crate dep).

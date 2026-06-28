@@ -233,6 +233,35 @@ CREATE INDEX idx_observation_sources_observation ON observation_sources(observat
 CREATE INDEX idx_observation_sources_entity      ON observation_sources(source_entity_id);
 CREATE INDEX idx_observation_sources_message     ON observation_sources(source_message_id);
 
+-- Media substrate (ADR-0055) -------------------------------------------
+-- Metadata envelope for a binary whose bytes live on disk under the media
+-- root; SQLite stores only the relative `storage_path`, never the bytes.
+-- `digest` is the sha-256 hex of the content for integrity, NOT identity
+-- (non-unique, no dedup). Provenance reuses the observations XOR. The
+-- `media_attachments` polymorphic-link table lands right below this in slice 2.
+CREATE TABLE media (
+  id                       TEXT PRIMARY KEY,          -- random UUID
+  mime                     TEXT NOT NULL,
+  byte_size                INTEGER NOT NULL,
+  digest                   TEXT NOT NULL,             -- sha-256 hex, non-unique (integrity, not dedup)
+  storage_path             TEXT NOT NULL,             -- relative to the media root
+  width                    INTEGER,
+  height                   INTEGER,
+  duration_ms              INTEGER,
+  capture_time             INTEGER,                   -- ms-epoch, nullable
+  thumbnail_path           TEXT,                      -- nullable; nothing writes it this issue
+  created_by               TEXT NOT NULL CHECK (created_by IN ('user','proposal')),
+  created_via_proposal_id  TEXT REFERENCES proposals(id),
+  created_at               INTEGER NOT NULL,
+  updated_at               INTEGER NOT NULL,
+  -- Same stricter XOR as observations: direct user media must not carry a
+  -- proposal id, while proposal-born media must carry one.
+  CHECK (
+    (created_by = 'user' AND created_via_proposal_id IS NULL) OR
+    (created_by = 'proposal' AND created_via_proposal_id IS NOT NULL)
+  )
+);
+
 -- Todo Person References (ADR-0031) ------------------------------------
 -- A task-specific Person association on a Todo (not a generic relationship
 -- graph, not an Entity Reference). At most one row per (todo_id, person_id);
