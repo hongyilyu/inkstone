@@ -93,8 +93,25 @@ pub(crate) fn media_root() -> Result<PathBuf> {
 /// Resolve a stored relative `storage_path` to its absolute on-disk location
 /// under [`media_root`]. Both `insert_media`/`delete_media` and the tests turn the
 /// relative stored path into the real file path through here.
+///
+/// `insert_media` only ever stores a bare UUID, but this is the trust boundary
+/// where a stored string becomes a real filesystem path fed to `write`/
+/// `remove_file`. `PathBuf::join` silently discards the root for an absolute input
+/// and preserves `..`, so a malformed row could otherwise escape `media_root`.
+/// Reject any absolute path or traversal component rather than join it blindly.
 pub(crate) fn resolve_media_path(storage_path: &str) -> Result<PathBuf> {
-    Ok(media_root()?.join(storage_path))
+    use std::path::Component;
+    let path = std::path::Path::new(storage_path);
+    let escapes_root = path.components().any(|component| {
+        matches!(
+            component,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
+    });
+    if escapes_root {
+        anyhow::bail!("media storage_path must be a relative path under media_root");
+    }
+    Ok(media_root()?.join(path))
 }
 
 /// Per-OS application-data directory (hand-rolled to avoid a crate dep).

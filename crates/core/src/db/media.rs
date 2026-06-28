@@ -127,7 +127,13 @@ pub(crate) async fn insert_media(
     // File first, so a row never points at missing bytes (ADR-0058).
     let abs_path = super::resolve_media_path(&storage_path).map_err(to_io)?;
     std::fs::create_dir_all(super::media_root().map_err(to_io)?).map_err(MediaInsertError::Io)?;
-    std::fs::write(&abs_path, bytes).map_err(MediaInsertError::Io)?;
+    // `fs::write` creates+truncates before writing, so a mid-write failure can
+    // leave a partial file. Unlink it before bailing — symmetric with the
+    // tx-failure arm below, so no write failure path leaves an orphan.
+    if let Err(err) = std::fs::write(&abs_path, bytes) {
+        let _ = std::fs::remove_file(&abs_path);
+        return Err(MediaInsertError::Io(err));
+    }
 
     let write_row = async {
         let mut tx = pool.begin().await?;
@@ -333,12 +339,12 @@ pub(crate) async fn delete_media(pool: &SqlitePool, id: &str) -> sqlx::Result<()
 
     queries::delete_media(pool, id).await?;
 
+    // The row is already gone, so the unlink is genuinely best-effort: returning an
+    // error here would be falsely retryable (a re-`delete_media` finds no row and
+    // no-ops), and ADR-0058 treats an orphan file as an accepted, recoverable state.
+    // Swallow any unlink failure (missing file included).
     if let Ok(abs_path) = super::resolve_media_path(&storage_path) {
-        match std::fs::remove_file(&abs_path) {
-            Ok(()) => {}
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-            Err(err) => return Err(sqlx::Error::Io(err)),
-        }
+        let _ = std::fs::remove_file(&abs_path);
     }
     Ok(())
 }
@@ -812,5 +818,41 @@ mod tests {
         .await
         .expect("insert message");
         tx.commit().await.expect("commit message seed");
+    }
+
+    /// `resolve_media_path` keeps a stored path under the media root: a bare-UUID
+    /// `storage_path` (what `insert_media` writes) resolves inside the root, while
+    /// an absolute path or a `..` traversal — only reachable via a corrupted row —
+    /// is rejected rather than silently escaping it.
+    #[test]
+    fn resolve_media_path_rejects_escaping_storage_path() {
+        let _guard = MEDIA_ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = tempfile::tempdir().expect("tempdir");
+        unsafe {
+            std::env::set_var("INKSTONE_MEDIA_DIR", tmp.path());
+        }
+
+        let result = (|| {
+            // A bare UUID (the only thing insert_media stores) resolves under root.
+            let ok = crate::db::resolve_media_path("018f0000-0000-7000-8000-0000000000aa")
+                .expect("bare-uuid path resolves");
+            assert!(
+                ok.starts_with(tmp.path()),
+                "resolved path stays under the media root"
+            );
+
+            // A traversal or absolute path is rejected, never joined.
+            for escaping in ["../escape", "../../etc/passwd", "/etc/passwd", "a/../../b"] {
+                assert!(
+                    crate::db::resolve_media_path(escaping).is_err(),
+                    "escaping storage_path {escaping:?} must be rejected"
+                );
+            }
+        })();
+
+        unsafe {
+            std::env::remove_var("INKSTONE_MEDIA_DIR");
+        }
+        result
     }
 }
