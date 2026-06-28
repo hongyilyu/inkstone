@@ -54,9 +54,9 @@ pub use message_fts::search_messages;
 // `db` until a real caller exists; `#252` adds the re-export with its consumer.
 pub(crate) use observations::{
     ObservationFilter, ObservationInsert, ObservationInsertError, ObservationRelationInsert,
-    ObservationRow, ObservationSourceFilter, ObservationSourceInsert, ObservationUpdate,
-    ObservationUpdateError, apply_record_observations_proposal, insert_observations,
-    query_observations, update_observation,
+    ObservationRevisionRow, ObservationRow, ObservationSourceFilter, ObservationSourceInsert,
+    ObservationUpdate, ObservationUpdateError, apply_record_observations_proposal,
+    insert_observations, observation_revisions, query_observations, update_observation,
 };
 
 /// Current wall-clock time as ms since UNIX_EPOCH (the `*_at` columns).

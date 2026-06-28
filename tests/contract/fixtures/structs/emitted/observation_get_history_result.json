@@ -1,0 +1,30 @@
+{
+  "revisions": [
+    {
+      "created_at": 1700000000000,
+      "ended_at": "2026-06-01T07:35:00",
+      "note": "after morning run",
+      "occurred_at": "2026-06-01T07:30:00",
+      "proposal_id": "0190d3c1-0000-7000-8000-000000000002",
+      "schema_key": "bodyweight",
+      "schema_version": 1,
+      "seq": 1,
+      "values": {
+        "kg": 72.4
+      }
+    },
+    {
+      "created_at": 1700000000001,
+      "ended_at": null,
+      "note": null,
+      "occurred_at": "2026-06-02T07:35:00",
+      "proposal_id": null,
+      "schema_key": "bodyweight",
+      "schema_version": 1,
+      "seq": 2,
+      "values": {
+        "kg": 71.8
+      }
+    }
+  ]
+}

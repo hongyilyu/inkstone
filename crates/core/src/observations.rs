@@ -83,6 +83,21 @@ pub(crate) enum ObservationSource {
     Message { id: String },
 }
 
+/// One correction-history revision of an Observation (`observation_revisions`),
+/// read by `observation/get_history`. `proposal_id` is `None` for user edits.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ObservationRevision {
+    pub(crate) seq: i64,
+    pub(crate) schema_key: String,
+    pub(crate) schema_version: i64,
+    pub(crate) occurred_at: String,
+    pub(crate) ended_at: Option<String>,
+    pub(crate) values: Value,
+    pub(crate) note: Option<String>,
+    pub(crate) proposal_id: Option<String>,
+    pub(crate) created_at: i64,
+}
+
 #[derive(Debug)]
 pub(crate) enum ObservationError {
     Invalid(String),
@@ -485,6 +500,18 @@ pub(crate) async fn query_observations(
     rows.into_iter().map(observation_from_row).collect()
 }
 
+pub(crate) async fn observation_revisions(
+    pool: &SqlitePool,
+    observation_id: &str,
+) -> Result<Vec<ObservationRevision>, ObservationError> {
+    let observation_id =
+        normalize_uuid(observation_id, "observation_id").map_err(ObservationError::Invalid)?;
+    let rows = db::observation_revisions(pool, &observation_id)
+        .await
+        .map_err(|e| ObservationError::Internal(e.into()))?;
+    rows.into_iter().map(observation_revision_from_row).collect()
+}
+
 struct ObservationSchema {
     key: &'static str,
     key_domain: &'static [&'static str],
@@ -829,6 +856,28 @@ fn observation_from_row(row: db::ObservationRow) -> Result<Observation, Observat
         source,
         created_at: row.created_at,
         updated_at: row.updated_at,
+    })
+}
+
+fn observation_revision_from_row(
+    row: db::ObservationRevisionRow,
+) -> Result<ObservationRevision, ObservationError> {
+    let values = serde_json::from_str(&row.values_json).map_err(|e| {
+        ObservationError::Internal(anyhow::anyhow!(
+            "observation revision {} values are malformed JSON: {e}",
+            row.seq
+        ))
+    })?;
+    Ok(ObservationRevision {
+        seq: row.seq,
+        schema_key: row.schema_key,
+        schema_version: row.schema_version,
+        occurred_at: row.occurred_at,
+        ended_at: row.ended_at,
+        values,
+        note: row.note,
+        proposal_id: row.proposal_id,
+        created_at: row.created_at,
     })
 }
 

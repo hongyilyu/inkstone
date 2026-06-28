@@ -238,6 +238,35 @@ export type ObservationQueryResult = S.Schema.Type<
 	typeof ObservationQueryResult
 >;
 
+export const ObservationGetHistoryParams = S.Struct({
+	observation_id: S.String,
+});
+export type ObservationGetHistoryParams = S.Schema.Type<
+	typeof ObservationGetHistoryParams
+>;
+
+export const ObservationRevisionView = S.Struct({
+	seq: S.Number,
+	schema_key: S.String,
+	schema_version: S.Number,
+	occurred_at: S.String,
+	ended_at: S.NullOr(S.String),
+	values: S.Unknown,
+	note: S.NullOr(S.String),
+	proposal_id: S.NullOr(S.String),
+	created_at: S.Number,
+});
+export type ObservationRevisionView = S.Schema.Type<
+	typeof ObservationRevisionView
+>;
+
+export const ObservationGetHistoryResult = S.Struct({
+	revisions: S.Array(ObservationRevisionView),
+});
+export type ObservationGetHistoryResult = S.Schema.Type<
+	typeof ObservationGetHistoryResult
+>;
+
 export const ThreadGetParams = S.Struct({ thread_id: S.String });
 export type ThreadGetParams = S.Schema.Type<typeof ThreadGetParams>;
 

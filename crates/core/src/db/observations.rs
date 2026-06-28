@@ -98,6 +98,21 @@ pub(crate) struct ObservationRow {
     pub source_message_id: Option<String>,
 }
 
+/// One `observation_revisions` row, the correction-history projection read by
+/// `observation/get_history`. Raw `values_json` is parsed by `crate::observations`,
+/// matching `ObservationRow`'s layering. `proposal_id` is NULL for user edits.
+pub(crate) struct ObservationRevisionRow {
+    pub seq: i64,
+    pub schema_key: String,
+    pub schema_version: i64,
+    pub occurred_at: String,
+    pub ended_at: Option<String>,
+    pub values_json: String,
+    pub note: Option<String>,
+    pub proposal_id: Option<String>,
+    pub created_at: i64,
+}
+
 #[derive(Debug)]
 pub(crate) enum ObservationInsertError {
     InvalidSource(String),
@@ -345,4 +360,13 @@ pub(crate) async fn query_observations(
     filter: ObservationFilter,
 ) -> sqlx::Result<Vec<ObservationRow>> {
     queries::query_observations(pool, &filter).await
+}
+
+/// Read an Observation's correction history (`observation_revisions`) ordered
+/// `seq ASC`. Raw JSON returned here and parsed by `crate::observations`.
+pub(crate) async fn observation_revisions(
+    pool: &SqlitePool,
+    observation_id: &str,
+) -> sqlx::Result<Vec<ObservationRevisionRow>> {
+    queries::observation_revisions(pool, observation_id).await
 }
