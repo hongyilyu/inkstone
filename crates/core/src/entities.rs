@@ -1700,6 +1700,23 @@ mod tests {
     }
 
     #[test]
+    fn rejects_completed_project_with_both_timestamps() {
+        // A completed Project requires completed_at and FORBIDS dropped_at
+        // (project_status_timestamp_invariant). Both present is rejected.
+        let reason = validate_project(&json!({
+            "name": "Roadmap",
+            "status": "completed",
+            "completed_at": "2026-06-10T10:00:00",
+            "dropped_at": "2026-06-11T10:00:00"
+        }))
+        .expect_err("completed project must not also carry dropped_at");
+        assert!(
+            reason.contains("dropped_at"),
+            "reason names dropped_at: {reason}"
+        );
+    }
+
+    #[test]
     fn rejects_missing_or_blank_project_name() {
         assert!(validate_project(&json!({ "status": "active" })).is_err());
         let reason =

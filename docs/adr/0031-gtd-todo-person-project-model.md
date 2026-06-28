@@ -373,3 +373,4 @@ Subtasks/action groups are deferred. V1 uses flat Todos under Projects. If a Tod
 - [ADR-0025](./0025-proposal-park-and-resume.md) - one Proposal is one decision; apply may touch multiple rows atomically.
 - [ADR-0030](./0030-journal-entry-anchored-capture.md) - journal-worthy events anchor on Journal Entry before extraction.
 - [OmniFocus 4 Reference Manual](https://support.omnigroup.com/documentation/omnifocus/universal/4.8.11/en/contents/) - reference product semantics for projects, defer/due dates, review, tags, and recurrence.
+- [ADR-0055](./0055-gtd-ownership-and-relation-model.md) - codifies the GTD ownership boundaries (identity tables vs `data` JSON) this model defines, and pins the lifecycle/relation invariants with tests.

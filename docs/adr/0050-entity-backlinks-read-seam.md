@@ -122,3 +122,6 @@ EntityBacklinksResult {
 - [ADR-0042](./0042-intent-graph-journal-extraction.md) — announced the
   backlink move and the graph-entity footer retirement this implements.
 - #216 — "close the entity read seam"; this read joins that surface.
+- [ADR-0055](./0055-gtd-ownership-and-relation-model.md) — codifies this backlinks
+  RPC as the Inspector reverse-read seam, explicitly NOT a competing canonical GTD
+  relation path (which is `entity/list` per ADR-0032).
