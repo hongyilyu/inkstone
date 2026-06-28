@@ -75,7 +75,14 @@ export const OBSERVATION_VIEWS: Record<string, ObservationView> = {
 /** JSON of the raw `values`, used as the graceful fallback for unknown schemas or
  * undecodable values. Mirrors `observationValueText` in ProposalCardObservations. */
 function valuesJson(values: unknown): string {
-	return JSON.stringify(values) ?? "null";
+	// Wire `values` is JSON-tree data, so `JSON.stringify` is total over it in
+	// practice — but the "never throws" contract is absolute, so guard against a
+	// non-wire caller passing a BigInt / circular / throwing-`toJSON` value.
+	try {
+		return JSON.stringify(values) ?? "null";
+	} catch {
+		return "[unserializable]";
+	}
 }
 
 function fallbackView(row: ObservationRow): ObservationItemView {

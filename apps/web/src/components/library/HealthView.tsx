@@ -20,18 +20,23 @@ const SCHEMA_LABELS: Record<NonNullable<HealthFilter>, string> = {
 	"habit.checkin": "Habits",
 };
 
-const KNOWN_SCHEMAS = Object.keys(SCHEMA_LABELS) as NonNullable<HealthFilter>[];
+/** The schemas that get a dedicated filter chip. Exported so the route validates
+ * `?schema=` against exactly the chip set this view renders (one source of truth). */
+export const KNOWN_SCHEMAS = Object.keys(
+	SCHEMA_LABELS,
+) as NonNullable<HealthFilter>[];
 
 /** A display-only "Captured from" line — text only, no link, no navigation. Shown
- * only when the observation carries a recorded source. */
+ * only when the observation carries a recorded source. Keyed purely on `relation`
+ * (Core pairs `evidenced_by` with a Message and `created_from` with a Journal
+ * Entry), so the label can't contradict the relation. */
 function capturedFromText(
 	source: ObservationItemView["source"],
 ): string | null {
 	if (source == null) return null;
-	if (source.relation === "evidenced_by" || source.source_message_id != null) {
-		return "Captured from a message";
-	}
-	return "Captured from a Journal Entry";
+	return source.relation === "evidenced_by"
+		? "Captured from a message"
+		: "Captured from a Journal Entry";
 }
 
 /**

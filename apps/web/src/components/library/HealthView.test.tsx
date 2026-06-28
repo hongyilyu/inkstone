@@ -147,6 +147,24 @@ describe("HealthView", () => {
 		).toBeInTheDocument();
 	});
 
+	it("labels an evidenced_by (message) source as 'Captured from a message'", () => {
+		mockData([
+			toObservationView(
+				row({
+					id: "msg",
+					schema_key: "bodyweight",
+					values: { kg: 70 },
+					source: { relation: "evidenced_by", source_message_id: "m-1" },
+				}),
+			),
+		]);
+		render(<Stateful />);
+		expect(screen.getByText(/captured from a message/i)).toBeInTheDocument();
+		expect(
+			screen.queryByText(/captured from a journal entry/i),
+		).not.toBeInTheDocument();
+	});
+
 	it("renders the plain empty state when there are no observations", () => {
 		mockData([]);
 		render(<Stateful />);
