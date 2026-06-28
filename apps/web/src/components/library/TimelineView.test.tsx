@@ -56,10 +56,19 @@ function makeRuntime(journalEntries: Rows) {
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 }
 
-/** Drives the controlled TimelineView; clicking a tab flips `filter` locally. */
+/** Drives the controlled TimelineView; clicking a tab flips `filter` locally and a
+ * chip sets the focus selection. */
 function StatefulTimeline() {
 	const [filter, setFilter] = useState<TimelineFilter>("all");
-	return <TimelineView filter={filter} onFilterChange={setFilter} />;
+	const [focus, setFocus] = useState<string | null>(null);
+	return (
+		<TimelineView
+			filter={filter}
+			onFilterChange={setFilter}
+			focusEntityId={focus}
+			onFocusChange={setFocus}
+		/>
+	);
 }
 
 /** Mount under a memory router so the chip `<Link>`s render as anchors. */
@@ -179,12 +188,10 @@ describe("TimelineView", () => {
 		]);
 		// Excerpt concatenates text + the chip title via journalEntryBodyText.
 		expect(await screen.findByText("Synced with Priya")).toBeInTheDocument();
-		// The person chip links to that person's collection detail.
-		const chip = screen.getByRole("link", { name: "Priya" });
-		expect(chip).toHaveAttribute(
-			"href",
-			expect.stringContaining("person_priya"),
-		);
+		// The person chip is a focus control (slice 5b): clicking it opens the
+		// entity's lens rail rather than jumping to its collection.
+		const chip = screen.getByRole("button", { name: "Priya" });
+		expect(chip).toBeInTheDocument();
 	});
 
 	it("the People tab hides a JE with no person reference", async () => {
@@ -225,16 +232,16 @@ describe("TimelineView", () => {
 		]);
 		// Under All the chip is present.
 		expect(
-			await screen.findByRole("link", { name: "Priya" }),
+			await screen.findByRole("button", { name: "Priya" }),
 		).toBeInTheDocument();
 
 		await userEvent.click(screen.getByRole("tab", { name: /journal/i }));
 
 		// The entry excerpt stays; chipsForFilter returns [] for "journal", so the
-		// chip text and its link are gone (a regression that kept chips would fail here).
+		// chip is gone (a regression that kept chips would fail here).
 		expect(screen.getByText("Synced with Priya")).toBeInTheDocument();
 		expect(
-			screen.queryByRole("link", { name: "Priya" }),
+			screen.queryByRole("button", { name: "Priya" }),
 		).not.toBeInTheDocument();
 	});
 
@@ -264,7 +271,7 @@ describe("TimelineView", () => {
 		// The project-touching entry stays (with its project chip); the person-only
 		// entry is filtered out (a regression that ignored kind would keep it).
 		expect(screen.getByText("Kicked off API v2")).toBeInTheDocument();
-		expect(screen.getByRole("link", { name: "API v2" })).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "API v2" })).toBeInTheDocument();
 		expect(screen.queryByText("Synced with Priya")).not.toBeInTheDocument();
 	});
 
