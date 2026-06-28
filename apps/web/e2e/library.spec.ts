@@ -16,9 +16,11 @@ test("opens the Library from the sidebar and shows Today", async ({ page }) => {
 	await expect(page.getByRole("heading", { name: "Today" })).toBeVisible();
 	// Shared WorkspaceShell carries a single `main` landmark, like the chat surface.
 	await expect(page.getByRole("main")).toBeVisible();
-	const nav = page.getByRole("navigation", { name: /library/i });
-	await expect(nav.getByRole("link", { name: /people/i })).toBeVisible();
-	await expect(nav.getByRole("link", { name: /projects/i })).toBeVisible();
+	// The topic nav (ADR-0054) replaces the flat entity-type rows with the Today hub
+	// + the four topic dives; assert the dives are present, not the old kind links.
+	const nav = page.getByRole("navigation", { name: /workspace/i });
+	await expect(nav.getByRole("link", { name: /gtd/i })).toBeVisible();
+	await expect(nav.getByRole("link", { name: /timeline/i })).toBeVisible();
 });
 
 test("browses People and opens the detail inspector", async ({ page }) => {
@@ -170,12 +172,12 @@ test("drops the bay when navigating away deselects", async ({ page }) => {
 	const toggle = page.getByRole("button", { name: /details panel/i });
 	await expect(toggle).toBeVisible();
 
-	// Navigating to another collection clears `?id` → nothing selected → bay + toggle disappear.
+	// Navigating to another topic via the nav drops `?id` → nothing selected → bay + toggle disappear.
 	await page
-		.getByRole("navigation", { name: /library/i })
-		.getByRole("link", { name: /people/i })
+		.getByRole("navigation", { name: /workspace/i })
+		.getByRole("link", { name: /gtd/i })
 		.click();
-	await expect(page).toHaveURL(/\/library\/people$/);
+	await expect(page).toHaveURL(/\/library\/gtd$/);
 	await expect(toggle).toHaveCount(0);
 
 	const box = await page.getByTestId("workspace-card").boundingBox();

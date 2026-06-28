@@ -1,36 +1,20 @@
-// Throwaway stopgap (#232): a flat list of future-deferred Todos. Superseded by the shared Forecast/calendar view (#236).
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { CalendarArrowUp } from "lucide-react";
-import { DerivedTodoView } from "@/components/library/DerivedTodoView";
-import { scheduledTodos } from "@/lib/libraryItems";
+import { createFileRoute, redirect } from "@tanstack/react-router";
 
-interface ScheduledSearch {
+// Retired flat-era workflow route (ADR-0054): the Scheduled view is now a GTD filter.
+// The redirect forwards any incoming `?id=` (a deep-linked/bookmarked selection) so
+// the selected entity's detail rail still opens on the GTD surface.
+interface RetiredSearch {
 	id?: string;
 }
 
-function ScheduledRoute() {
-	const { id } = Route.useSearch();
-	const navigate = useNavigate();
-
-	return (
-		<DerivedTodoView
-			title="Scheduled"
-			intro="Active todos you've deferred to a future date — they become available on the date shown."
-			icon={CalendarArrowUp}
-			select={scheduledTodos}
-			emptyTitle="Nothing scheduled"
-			emptyDescription="Todos you defer to a future date show up here until they become available."
-			selectedId={id ?? null}
-			onSelect={(next) =>
-				navigate({ to: "/library/scheduled", search: { id: next } })
-			}
-		/>
-	);
-}
-
 export const Route = createFileRoute("/library/scheduled")({
-	validateSearch: (search: Record<string, unknown>): ScheduledSearch => ({
-		id: typeof search.id === "string" ? search.id : undefined,
+	validateSearch: (search: Record<string, unknown>): RetiredSearch => ({
+		id: typeof search.id === "string" && search.id ? search.id : undefined,
 	}),
-	component: ScheduledRoute,
+	beforeLoad: ({ search }) => {
+		throw redirect({
+			to: "/library/gtd",
+			search: { filt: "scheduled", id: search.id },
+		});
+	},
 });

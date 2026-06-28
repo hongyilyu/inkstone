@@ -1,27 +1,20 @@
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { ProjectReviewView } from "@/components/library/ProjectReviewView";
+import { createFileRoute, redirect } from "@tanstack/react-router";
 
-interface ReviewSearch {
+// Retired flat-era workflow route (ADR-0054): the Review view is now a GTD filter.
+// The redirect forwards any incoming `?id=` (a deep-linked/bookmarked selection) so
+// the selected entity's detail rail still opens on the GTD surface.
+interface RetiredSearch {
 	id?: string;
 }
 
-function ReviewRoute() {
-	const { id } = Route.useSearch();
-	const navigate = useNavigate();
-
-	return (
-		<ProjectReviewView
-			selectedId={id ?? null}
-			onSelect={(next) =>
-				navigate({ to: "/library/review", search: { id: next } })
-			}
-		/>
-	);
-}
-
 export const Route = createFileRoute("/library/review")({
-	validateSearch: (search: Record<string, unknown>): ReviewSearch => ({
-		id: typeof search.id === "string" ? search.id : undefined,
+	validateSearch: (search: Record<string, unknown>): RetiredSearch => ({
+		id: typeof search.id === "string" && search.id ? search.id : undefined,
 	}),
-	component: ReviewRoute,
+	beforeLoad: ({ search }) => {
+		throw redirect({
+			to: "/library/gtd",
+			search: { filt: "review", id: search.id },
+		});
+	},
 });
