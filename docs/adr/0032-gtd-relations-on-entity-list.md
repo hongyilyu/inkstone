@@ -77,6 +77,24 @@ Concretely:
 - Project↔Person is never a stored or wire-level direct link — only a derivation,
   preserving ADR-0031's "no direct Project-Person references" decision.
 
+## Amendment: topic-grouped client presentation (ADR-0054, 2026-06-27)
+
+[ADR-0054](./0054-topic-navigation-browse-axis.md) (the v1 "Today home base"
+hub-and-spoke shell) replaces the flat Library sidebar with a Topic browse axis
+(Today / GTD / Timeline / Health / Media). This changes only how the client
+*presents* the derived relations this ADR delivers — the derived
+Project↔Person↔Todo views (Inbox, Waiting, Scheduled, Review) become in-view
+filters under the **GTD** topic rather than flat sidebar entries.
+
+The read contract is **unchanged**: GTD relations still ride on the single
+`entity/list` batch (`person_refs` on Todo rows, `project_id` in Todo `data`),
+and clients still derive the transitive relations locally per the Decision above —
+one load-all-derive read, no relation RPCs, no new storage. The topic grouping is
+a pure web view-model concern layered over the same rows.
+
+This annotation does **not** supersede this ADR; ADR-0054 is presentation-only and
+adds no contract delta. See ADR-0054 for the topic model.
+
 ## Considered and rejected
 
 - **Dedicated relation RPCs** (`person/todos`, `project/people`,

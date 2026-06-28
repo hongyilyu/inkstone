@@ -113,6 +113,25 @@ _Avoid_: log (too generic), run log (the tier-2 milestone record), audit log, te
 
 ### Domain
 
+**Topic**:
+The top-level browse axis of the Web Client — the way a user navigates their Workspace, replacing the earlier flat per-Entity-Type sidebar (the "Library"). The v1 Topics are **Today**, **GTD**, **Timeline**, **Health**, and **Media** (ADR-0054). A Topic is a presentation grouping over existing reads, not a stored concept and not an Entity Type: it carries no contract and adds no storage. The derived GTD processing views (Inbox, Waiting, Scheduled, Review) are in-view filters under the GTD Topic, not Topics themselves.
+_Avoid_: Library (the retired flat sidebar), tab, section, area, category.
+
+**Today**:
+The Web Client's global home Topic — a read-only aggregate over existing reads showing live Workspace stats, a cross-Topic glance, and the day's Todos. Adds no storage; purely a derived dashboard (ADR-0054).
+
+**GTD**:
+The Topic that gathers the Todo / Project / Person processing views — Inbox, Waiting, Scheduled, and Project Review — as in-view filters over the derived predicates this client already computes (ADR-0032). Not an Entity Type.
+
+**Timeline**:
+A derived chronological read projection over existing Entities — Journal Entries, People, and Projects ordered by time via the `entity/list` rows and their Entity Sources / Entity References. A read-only view with no new storage (ADR-0054).
+
+**Health**:
+A deferred Topic (issue #253) reserved for an Observation read surface (bodyweight, nutrition, sleep, etc.). Ships in v1 as an honest "coming soon" placeholder, not fake data.
+
+**Media**:
+A deferred Topic (issue #252) reserved to replace the first-model Bookmark surface. Ships in v1 as an honest "coming soon" placeholder, not fake data.
+
 **Entity**:
 A structured concept Inkstone tracks for query and reasoning — a Journal Entry, Person, Project, Todo, Bookmark, etc. An Entity enters tier 2 (becoming a **Canonical Entity**) one of two ways: the agent proposes it and the user accepts the Proposal, or the user creates or edits it directly from a Client. Before that, an agent-surfaced Entity exists only as an *extraction candidate* in tier 3. Threads, Runs, and Proposals are not Entities — they are application state.
 _Avoid_: object, record, item.
@@ -142,7 +161,7 @@ A descriptive Entity for a real person the user wants Inkstone to remember. Pers
 _Avoid_: contact record as CRM source of truth.
 
 **Bookmark**:
-A small descriptive Entity for an outward-pointing thing the user saved to return to — a link, an article, a reference. Bookmark data stays small: a required title, an optional url, an optional note, and optional tags. Like a Person, it is a user-curated standalone Entity that derives richness from references rather than embedding it; it is not a read-it-later queue, a clipping archive, or a document store. A Bookmark is created directly by the user from the Library (a direct user CRUD write, no Proposal and no Journal Entry anchor) — the agent does not author Bookmarks in the first model. Distinct from an Entity Reference (a Journal Entry's inline pointer at another Entity) and an Entity Source (the provenance relation explaining why an Entity exists): a Bookmark is itself a Canonical Entity the user owns, not a relationship between Entities.
+A small descriptive Entity for an outward-pointing thing the user saved to return to — a link, an article, a reference. Bookmark data stays small: a required title, an optional url, an optional note, and optional tags. Like a Person, it is a user-curated standalone Entity that derives richness from references rather than embedding it; it is not a read-it-later queue, a clipping archive, or a document store. A Bookmark is created directly by the user (a direct user CRUD write, no Proposal and no Journal Entry anchor) — the agent does not author Bookmarks in the first model. Distinct from an Entity Reference (a Journal Entry's inline pointer at another Entity) and an Entity Source (the provenance relation explaining why an Entity exists): a Bookmark is itself a Canonical Entity the user owns, not a relationship between Entities.
 _Avoid_: link, reference, source (all name other concepts), read-later, clipping, resource.
 
 **Todo Person Reference**:
@@ -169,7 +188,7 @@ _Avoid_: accepted entity (as the umbrella — that term is the proposal-born sub
 A **Canonical Entity** that entered tier 2 by the user accepting a Proposal — the proposal-born subset, carrying a `created_via_proposal_id`. A user-authored Entity is canonical but *not* "accepted": there was no Proposal and nothing to accept (`created_by='user'`). Where the system needs to name a referenceable or stored Entity regardless of origin, the umbrella term is **Canonical Entity**.
 
 **Observation**:
-A tier-2 timestamped tracker fact, such as bodyweight, nutrition intake, exercise session, sleep segment, mood rating, or habit check-in. Observations are not Entity Types by default: they do not automatically appear in Library, do not grow the closed Entity Type enum, and are queried through observation-specific time-range reads. Core validates each Observation through a Core-owned schema registry; unknown schema keys are rejected. A Journal Entry or Message may source an Observation as evidence, but Journal Entry is not the Observation's parent.
+A tier-2 timestamped tracker fact, such as bodyweight, nutrition intake, exercise session, sleep segment, mood rating, or habit check-in. Observations are not Entity Types by default: they do not automatically surface in the entity browse Topics, do not grow the closed Entity Type enum, and are queried through observation-specific time-range reads. Core validates each Observation through a Core-owned schema registry; unknown schema keys are rejected. A Journal Entry or Message may source an Observation as evidence, but Journal Entry is not the Observation's parent.
 _Avoid_: tracker entity, log entity, journal child, arbitrary JSON blob.
 
 **Entity Type**:
