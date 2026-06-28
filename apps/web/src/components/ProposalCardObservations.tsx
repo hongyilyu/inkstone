@@ -21,7 +21,7 @@ function unknownField(payload: unknown, key: string): unknown {
 	return undefined;
 }
 
-function observationValueText(value: unknown): string {
+export function observationValueText(value: unknown): string {
 	if (value === undefined) return "Unknown";
 	return JSON.stringify(value) ?? "Unknown";
 }
@@ -44,7 +44,13 @@ function observationEvidenceText(payload: unknown): string {
 	return "";
 }
 
-function ObservationField({ label, value }: { label: string; value: string }) {
+export function ObservationField({
+	label,
+	value,
+}: {
+	label: string;
+	value: string;
+}) {
 	return (
 		<div className="flex gap-2">
 			<dt className="w-20 shrink-0 text-xs font-medium text-muted-foreground">
