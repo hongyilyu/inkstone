@@ -231,7 +231,12 @@ fn validate_record_observations_input(input: &RecordObservationsInput) -> Result
         return Err("observations must have at least 1 item(s)".to_string());
     }
     for record in &input.observations {
-        validate_record(record)?;
+        validate_observation_fields(
+            &record.schema_key,
+            &record.occurred_at,
+            record.ended_at.as_deref(),
+            &record.values,
+        )?;
         if let Some(source) = &record.source {
             validated_source(source)?;
         }
@@ -256,7 +261,13 @@ pub(crate) fn prepare_observations(
     let mut observations = Vec::with_capacity(input.observations.len());
 
     for record in input.observations {
-        let schema = validate_record(&record).map_err(ObservationError::Invalid)?;
+        let schema = validate_observation_fields(
+            &record.schema_key,
+            &record.occurred_at,
+            record.ended_at.as_deref(),
+            &record.values,
+        )
+        .map_err(ObservationError::Invalid)?;
         let (values, relations) = relation_checks(schema.relation_fields, &record.values)
             .map_err(ObservationError::Invalid)?;
         let id = Uuid::now_v7().to_string();
@@ -310,7 +321,13 @@ fn prepare_observation_update(
     id: String,
     record: ObservationUpdateInput,
 ) -> Result<db::ObservationUpdate, ObservationError> {
-    let schema = validate_update(&record).map_err(ObservationError::Invalid)?;
+    let schema = validate_observation_fields(
+        &record.schema_key,
+        &record.occurred_at,
+        record.ended_at.as_deref(),
+        &record.values,
+    )
+    .map_err(ObservationError::Invalid)?;
     let (values, relations) = relation_checks(schema.relation_fields, &record.values)
         .map_err(ObservationError::Invalid)?;
     let values_json = serde_json::to_string(&values)
@@ -522,24 +539,6 @@ fn record_observation_payload_variant(schema: ObservationSchema) -> PayloadSpec 
             Field::required("values", FieldSpec::Object(schema.values)),
             Field::optional("note", FieldSpec::string()),
         ],
-    )
-}
-
-fn validate_record(record: &ObservationRecordInput) -> Result<ObservationSchema, String> {
-    validate_observation_fields(
-        &record.schema_key,
-        &record.occurred_at,
-        record.ended_at.as_deref(),
-        &record.values,
-    )
-}
-
-fn validate_update(record: &ObservationUpdateInput) -> Result<ObservationSchema, String> {
-    validate_observation_fields(
-        &record.schema_key,
-        &record.occurred_at,
-        record.ended_at.as_deref(),
-        &record.values,
     )
 }
 
