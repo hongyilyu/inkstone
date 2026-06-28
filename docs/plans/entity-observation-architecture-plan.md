@@ -162,8 +162,8 @@ Examples:
 - `mood.rating`
 
 Observations have their own storage, validation, source/evidence, and time-range
-query surface. Revision history is deferred until an edit/correction view proves
-that it is needed.
+query surface. Revision history shipped in #268: every record writes a seq-1
+revision and `observation/update` appends seq n+1.
 
 ### Observation Schema
 
@@ -435,20 +435,23 @@ Why separate tables:
 - Aggregation and Health views should query observations without pretending they
   are Library items.
 
-### Deferred Revision Schema
+### Revision Schema (shipped in #268)
 
-If/when observations gain a real edit surface, add observation revisions:
+Observation revisions shipped in #268 alongside the `observation/update` edit
+verb:
 
 ```sql
 CREATE TABLE observation_revisions (
-  observation_id TEXT NOT NULL REFERENCES observations(id) ON DELETE CASCADE,
-  seq            INTEGER NOT NULL,
-  values         TEXT NOT NULL,
-  note           TEXT,
-  occurred_at    TEXT NOT NULL,
-  ended_at       TEXT,
-  proposal_id    TEXT REFERENCES proposals(id),
-  created_at     INTEGER NOT NULL,
+  observation_id  TEXT NOT NULL REFERENCES observations(id) ON DELETE CASCADE,
+  seq             INTEGER NOT NULL CHECK (seq >= 1),
+  schema_key      TEXT NOT NULL,
+  schema_version  INTEGER NOT NULL,
+  occurred_at     TEXT NOT NULL,
+  ended_at        TEXT,
+  values_json     TEXT NOT NULL,
+  note            TEXT,
+  proposal_id     TEXT REFERENCES proposals(id),
+  created_at      INTEGER NOT NULL,
   PRIMARY KEY (observation_id, seq)
 );
 ```
@@ -1015,7 +1018,7 @@ Core:
 
 Validation:
 
-- create writes revision seq 1 only after revisions exist,
+- create writes revision seq 1 unconditionally,
 - update appends seq n+1,
 - failed update writes no revision,
 - query returns current observation state.
