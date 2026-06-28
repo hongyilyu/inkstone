@@ -28,6 +28,7 @@ function makeRuntime() {
 		threadListArchived: die,
 		listEntities: die,
 		getBacklinks: die,
+		observationQuery: die,
 		entityMutate: die,
 		subscribeRun: dieStream,
 		cancelRun: die,

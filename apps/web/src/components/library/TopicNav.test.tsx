@@ -43,6 +43,7 @@ function makeRuntime(todos: Rows, projects: Rows = [], failing = false) {
 			return Effect.succeed({ entities: [] });
 		},
 		getBacklinks: () => unused,
+		observationQuery: () => unused,
 		entityMutate: () => unused,
 		subscribeRun: () => unused,
 		cancelRun: () => unused,

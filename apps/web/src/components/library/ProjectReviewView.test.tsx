@@ -44,6 +44,7 @@ function makeRuntime(
 			return Effect.succeed({ entities: [] });
 		},
 		getBacklinks: () => unused,
+		observationQuery: () => unused,
 		entityMutate,
 		subscribeRun: () => unused,
 		cancelRun: () => unused,
@@ -311,6 +312,7 @@ describe("ProjectReviewView (focused queue)", () => {
 			threadListArchived: () => never,
 			listEntities: () => never,
 			getBacklinks: () => never,
+			observationQuery: () => never,
 			entityMutate: () => never,
 			subscribeRun: () => Effect.never as never,
 			cancelRun: () => never,

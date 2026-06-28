@@ -301,6 +301,65 @@ describe("WsClient", () => {
 		}
 	});
 
+	it("observationQuery(params) sends observation/query and round-trips ObservationQueryResult", async () => {
+		const expected = {
+			observations: [
+				{
+					id: "01999999-0000-7000-8000-000000000050",
+					schema_key: "bodyweight",
+					schema_version: 1,
+					occurred_at: "2026-06-10T07:00:00",
+					ended_at: null,
+					values: { kg: 72.4 },
+					note: null,
+					source: null,
+					created_at: 1717200000000,
+					updated_at: 1717200000000,
+				},
+				{
+					id: "01999999-0000-7000-8000-000000000051",
+					schema_key: "habit.checkin",
+					schema_version: 1,
+					occurred_at: "2026-06-10T08:00:00",
+					ended_at: null,
+					values: { done: true },
+					note: "morning run",
+					source: null,
+					created_at: 1717200001000,
+					updated_at: 1717200001000,
+				},
+			],
+		};
+
+		let observed: WireRequest | undefined;
+		const server = await makeServer((ws, req) => {
+			if (req.method === "observation/query") {
+				observed = req;
+				ws.send(
+					JSON.stringify({
+						jsonrpc: "2.0",
+						id: req.id,
+						result: expected,
+					}),
+				);
+			}
+		});
+
+		const program = Effect.gen(function* () {
+			const client = yield* WsClient;
+			return yield* client.observationQuery({ schema_keys: ["bodyweight"] });
+		});
+
+		try {
+			const result = await Effect.runPromise(provide(server.url)(program));
+			expect(result).toEqual(expected);
+			expect(observed?.method).toBe("observation/query");
+			expect(observed?.params).toEqual({ schema_keys: ["bodyweight"] });
+		} finally {
+			await server.close();
+		}
+	});
+
 	it("getBacklinks(entityId) sends entity/backlinks with { entity_id } and round-trips EntityBacklinksResult", async () => {
 		const expected = {
 			mentioned_in: [

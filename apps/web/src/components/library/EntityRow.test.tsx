@@ -58,6 +58,7 @@ function renderTodoRow(
 		threadListArchived: () => unused,
 		listEntities: () => Effect.succeed({ entities: [] as Rows }),
 		getBacklinks: () => unused,
+		observationQuery: () => unused,
 		entityMutate,
 		subscribeRun: () => unused,
 		cancelRun: () => unused,

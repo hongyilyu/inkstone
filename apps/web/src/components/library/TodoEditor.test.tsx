@@ -36,6 +36,7 @@ function makeRuntime(
 		threadListArchived: () => unused,
 		listEntities: () => unused,
 		getBacklinks: () => unused,
+		observationQuery: () => unused,
 		entityMutate,
 		subscribeRun: () => unused,
 		cancelRun: () => unused,

@@ -39,6 +39,7 @@ function makeStubRuntime(queue: Queue.Queue<RunEventValue>, runId: RunId) {
 		threadListArchived: () => unused,
 		listEntities: () => unused,
 		getBacklinks: () => unused,
+		observationQuery: () => unused,
 		entityMutate: () => unused,
 		subscribeRun: () => Stream.fromQueue(queue),
 		cancelRun: () => unused,
@@ -183,6 +184,7 @@ describe("chat store + stream bridge", () => {
 			threadListArchived: () => Effect.die("unused"),
 			listEntities: () => Effect.die("unused"),
 			getBacklinks: () => Effect.die("unused"),
+			observationQuery: () => Effect.die("unused"),
 			entityMutate: () => Effect.die("unused"),
 			// Emit one delta, then FAIL the stream like a dropped socket would.
 			subscribeRun: (): Stream.Stream<RunEventValue, WsError> =>

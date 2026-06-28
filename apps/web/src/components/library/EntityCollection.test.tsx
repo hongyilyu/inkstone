@@ -59,6 +59,7 @@ function makeRuntime(
 			return Effect.succeed({ entities: [] });
 		},
 		getBacklinks: () => unused,
+		observationQuery: () => unused,
 		entityMutate: () => unused,
 		subscribeRun: () => unused,
 		cancelRun: () => unused,
@@ -172,6 +173,7 @@ describe("EntityCollection", () => {
 						? Effect.succeed({ entities: livePeople })
 						: Effect.succeed({ entities: [] }),
 			getBacklinks: () => Effect.die("unused"),
+			observationQuery: () => Effect.die("unused"),
 			entityMutate: () => Effect.die("unused"),
 			subscribeRun: () => Effect.die("unused"),
 			cancelRun: () => Effect.die("unused"),
