@@ -18,15 +18,19 @@ import { openCommand } from "@/store/command";
 /**
  * The four browse topics (ADR-0054). A fixed, curated set — adding one is a
  * deliberate code change, never configuration. Each dives into its own signature
- * view; the routes land in later slices, so every `to` points at `/library`
- * temporarily and the row is inert until then (the proven behavior this slice is
- * nav structure + live counts, not navigation).
+ * view; GTD's route is live (`/library/gtd`). The remaining three land in later
+ * slices, so their `to` points at `/library` temporarily and the row is inert
+ * until then.
  */
-const TOPICS: { label: string; icon: LucideIcon }[] = [
-	{ label: "GTD", icon: ListTodo },
-	{ label: "Timeline", icon: History },
-	{ label: "Health", icon: HeartPulse },
-	{ label: "Media", icon: Film },
+const TOPICS: {
+	label: string;
+	icon: LucideIcon;
+	to: "/library" | "/library/gtd";
+}[] = [
+	{ label: "GTD", icon: ListTodo, to: "/library/gtd" },
+	{ label: "Timeline", icon: History, to: "/library" },
+	{ label: "Health", icon: HeartPulse, to: "/library" },
+	{ label: "Media", icon: Film, to: "/library" },
 ];
 
 /** Left nav for the topic-organized Workspace (ADR-0054): return-to-chat, search,
@@ -96,7 +100,7 @@ export function TopicNav() {
 					return (
 						<Link
 							key={topic.label}
-							to="/library"
+							to={topic.to}
 							className={navRow}
 							activeProps={{ className: cn(navRow, navRowActive) }}
 						>

@@ -19,6 +19,7 @@ import { Route as LibraryWaitingRouteImport } from './routes/library/waiting'
 import { Route as LibraryScheduledRouteImport } from './routes/library/scheduled'
 import { Route as LibraryReviewRouteImport } from './routes/library/review'
 import { Route as LibraryInboxRouteImport } from './routes/library/inbox'
+import { Route as LibraryGtdRouteImport } from './routes/library/gtd'
 import { Route as LibraryKindRouteImport } from './routes/library/$kind'
 import { Route as ChatArchivedRouteImport } from './routes/_chat/archived'
 import { Route as ChatThreadThreadIdRouteImport } from './routes/_chat/thread.$threadId'
@@ -72,6 +73,11 @@ const LibraryInboxRoute = LibraryInboxRouteImport.update({
   path: '/inbox',
   getParentRoute: () => LibraryRouteRoute,
 } as any)
+const LibraryGtdRoute = LibraryGtdRouteImport.update({
+  id: '/gtd',
+  path: '/gtd',
+  getParentRoute: () => LibraryRouteRoute,
+} as any)
 const LibraryKindRoute = LibraryKindRouteImport.update({
   id: '/$kind',
   path: '/$kind',
@@ -94,6 +100,7 @@ export interface FileRoutesByFullPath {
   '/': typeof ChatIndexRoute
   '/archived': typeof ChatArchivedRoute
   '/library/$kind': typeof LibraryKindRoute
+  '/library/gtd': typeof LibraryGtdRoute
   '/library/inbox': typeof LibraryInboxRoute
   '/library/review': typeof LibraryReviewRoute
   '/library/scheduled': typeof LibraryScheduledRoute
@@ -106,6 +113,7 @@ export interface FileRoutesByTo {
   '/settings': typeof SettingsRouteRouteWithChildren
   '/archived': typeof ChatArchivedRoute
   '/library/$kind': typeof LibraryKindRoute
+  '/library/gtd': typeof LibraryGtdRoute
   '/library/inbox': typeof LibraryInboxRoute
   '/library/review': typeof LibraryReviewRoute
   '/library/scheduled': typeof LibraryScheduledRoute
@@ -122,6 +130,7 @@ export interface FileRoutesById {
   '/_chat': typeof ChatRouteWithChildren
   '/_chat/archived': typeof ChatArchivedRoute
   '/library/$kind': typeof LibraryKindRoute
+  '/library/gtd': typeof LibraryGtdRoute
   '/library/inbox': typeof LibraryInboxRoute
   '/library/review': typeof LibraryReviewRoute
   '/library/scheduled': typeof LibraryScheduledRoute
@@ -139,6 +148,7 @@ export interface FileRouteTypes {
     | '/'
     | '/archived'
     | '/library/$kind'
+    | '/library/gtd'
     | '/library/inbox'
     | '/library/review'
     | '/library/scheduled'
@@ -151,6 +161,7 @@ export interface FileRouteTypes {
     | '/settings'
     | '/archived'
     | '/library/$kind'
+    | '/library/gtd'
     | '/library/inbox'
     | '/library/review'
     | '/library/scheduled'
@@ -166,6 +177,7 @@ export interface FileRouteTypes {
     | '/_chat'
     | '/_chat/archived'
     | '/library/$kind'
+    | '/library/gtd'
     | '/library/inbox'
     | '/library/review'
     | '/library/scheduled'
@@ -254,6 +266,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof LibraryInboxRouteImport
       parentRoute: typeof LibraryRouteRoute
     }
+    '/library/gtd': {
+      id: '/library/gtd'
+      path: '/gtd'
+      fullPath: '/library/gtd'
+      preLoaderRoute: typeof LibraryGtdRouteImport
+      parentRoute: typeof LibraryRouteRoute
+    }
     '/library/$kind': {
       id: '/library/$kind'
       path: '/$kind'
@@ -280,6 +299,7 @@ declare module '@tanstack/react-router' {
 
 interface LibraryRouteRouteChildren {
   LibraryKindRoute: typeof LibraryKindRoute
+  LibraryGtdRoute: typeof LibraryGtdRoute
   LibraryInboxRoute: typeof LibraryInboxRoute
   LibraryReviewRoute: typeof LibraryReviewRoute
   LibraryScheduledRoute: typeof LibraryScheduledRoute
@@ -289,6 +309,7 @@ interface LibraryRouteRouteChildren {
 
 const LibraryRouteRouteChildren: LibraryRouteRouteChildren = {
   LibraryKindRoute: LibraryKindRoute,
+  LibraryGtdRoute: LibraryGtdRoute,
   LibraryInboxRoute: LibraryInboxRoute,
   LibraryReviewRoute: LibraryReviewRoute,
   LibraryScheduledRoute: LibraryScheduledRoute,
