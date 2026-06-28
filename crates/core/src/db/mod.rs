@@ -26,6 +26,7 @@ use crate::workflow::Workflow;
 // for the one mutation kind that is a GRAPH, not a single entity. `decide` routes
 // `apply_intent_graph` here instead of `apply_proposal`.
 pub use intent_graph::{IntentGraphOutcome, apply_intent_graph_proposal, resolved_plan_for};
+pub(crate) use intent_graph::validate_intent_graph_payload;
 pub use lifecycle::Moved;
 // `RunStatus` is the read+write Interface for Run status: the write verbs live on
 // it (ADR-0028), and the read seam (`run_status`, `RunSnapshot.status`) now returns

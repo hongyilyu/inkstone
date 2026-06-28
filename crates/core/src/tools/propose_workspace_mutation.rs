@@ -4,7 +4,7 @@
 
 use serde_json::{Map, Value};
 
-use crate::mutation::ProposableMutation;
+use crate::mutation::{MutationKind, ProposableMutation};
 use crate::protocol::CoreToolDescriptor;
 
 pub const NAME: &str = "propose_workspace_mutation";
@@ -77,6 +77,10 @@ pub(crate) fn validate_request(params: &Value) -> Result<ProposableMutation, Str
         .get("payload")
         .ok_or_else(|| "payload is required".to_string())?;
     proposable.validate_before_park(payload)?;
+    if proposable == ProposableMutation::ApplyIntentGraph {
+        crate::entities::validate(MutationKind::ApplyIntentGraph, payload)?;
+        crate::db::validate_intent_graph_payload(payload)?;
+    }
     if let Some(rationale) = obj.get("rationale")
         && !rationale.is_string()
         && !rationale.is_null()
@@ -828,6 +832,54 @@ mod tests {
             }))
             .is_err(),
             "an entity node of an unknown type matches no variant and is rejected"
+        );
+    }
+
+    #[test]
+    fn apply_intent_graph_structural_errors_are_rejected_before_parking() {
+        let duplicate_handle = serde_json::json!({
+            "mutation_kind": "apply_intent_graph",
+            "payload": {
+                "journal_entry": {
+                    "handle": "@je",
+                    "occurred_at": "2026-06-10T10:30:00",
+                    "body": [{ "type": "text", "text": "Dup handles." }]
+                },
+                "entities": [
+                    { "handle": "@dup", "type": "person", "name": "Morris" },
+                    { "handle": "@dup", "type": "project", "name": "Lead Ads" }
+                ],
+                "links": []
+            }
+        });
+        let reason = validate_request(&duplicate_handle).expect_err("duplicate handle rejects");
+        assert!(
+            reason.contains("@dup") || reason.to_lowercase().contains("more than one"),
+            "the pre-park error names the duplicate handle: {reason}"
+        );
+
+        let body_ref_without_link = serde_json::json!({
+            "mutation_kind": "apply_intent_graph",
+            "payload": {
+                "journal_entry": {
+                    "handle": "@je",
+                    "occurred_at": "2026-06-10T10:30:00",
+                    "body": [
+                        { "type": "text", "text": "Talked with " },
+                        { "type": "entity_ref", "target": "@morris" }
+                    ]
+                },
+                "entities": [
+                    { "handle": "@morris", "type": "person", "name": "Morris" }
+                ],
+                "links": []
+            }
+        });
+        let reason =
+            validate_request(&body_ref_without_link).expect_err("dangling body ref rejects");
+        assert!(
+            reason.contains("no journal_ref link"),
+            "the pre-park error names the missing journal_ref link: {reason}"
         );
     }
 

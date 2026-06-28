@@ -1667,6 +1667,7 @@ mod tests {
             P::CreateTodo,
             P::UpdateTodo,
             P::DeleteTodo,
+            P::RecordObservations,
             P::ApplyIntentGraph,
         ] {
             assert!(

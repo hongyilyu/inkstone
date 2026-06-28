@@ -52,6 +52,29 @@ fn invalid_reason(err: ObservationError) -> String {
 }
 
 #[test]
+fn typed_record_params_reject_present_empty_evidence() {
+    let reason = record_observations_input_from_params(crate::protocol::ObservationRecordParams {
+        observations: vec![crate::protocol::ObservationRecordDraft {
+            schema_key: "bodyweight".to_string(),
+            occurred_at: "2026-06-04T07:30:00".to_string(),
+            ended_at: None,
+            values: json!({ "kg": 72.4 }),
+            note: None,
+        }],
+        evidence: Some(crate::protocol::ObservationEvidence {
+            journal_entry_id: None,
+            message_id: None,
+        }),
+    })
+    .expect_err("present empty evidence rejects");
+
+    assert_eq!(
+        reason,
+        "observation evidence must name one of journal_entry_id or message_id"
+    );
+}
+
+#[test]
 fn render_accept_uses_prepared_observation_rows() {
     let raw_habit_id = "0190D3C1-ABCD-7000-8000-ABCDEF000001";
     let expected_habit_id = "0190d3c1-abcd-7000-8000-abcdef000001";
@@ -467,7 +490,7 @@ async fn observations_record_habit_checkin_validates_relation_and_query_filter()
     assert_eq!(by_habit[0].id, recorded[0].id);
 
     let malformed = ObservationRecordInput {
-        values: json!({ "habit_id": "not-a-uuid", "state": "done" }),
+        values: json!({ "habit_id": "not-a-uuid", "state": "done", "quantity": 1 }),
         ..habit_checkin_at("2026-06-02T07:30:00", habit_id, "done")
     };
     let reason = record_observations(
@@ -481,7 +504,7 @@ async fn observations_record_habit_checkin_validates_relation_and_query_filter()
     assert_eq!(invalid_reason(reason), "habit_id must be a UUID");
 
     let missing_id = ObservationRecordInput {
-        values: json!({ "state": "done" }),
+        values: json!({ "state": "done", "quantity": 1 }),
         ..habit_checkin_at("2026-06-02T07:30:00", habit_id, "done")
     };
     let reason = record_observations(

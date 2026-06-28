@@ -123,7 +123,7 @@ interface ProposalBodyArgs {
 	reviewContext: ProposalReviewContext | undefined;
 }
 
-type ProposalEditPolicy = "journal" | "gtd" | "observation";
+type ProposalEditPolicy = "journal" | "gtd" | "observation" | "readonly";
 
 // Per-kind presentation for a Proposal — the review card's analogue of KIND_META
 // (lib/libraryItems): one entry concentrates the copy, labels, glyph,
@@ -163,7 +163,7 @@ interface ProposalView {
 	 */
 	canEdit: (bodyHasEntityRef: boolean) => boolean;
 	/** Which editor owns this kind when `canEdit` allows the Edit affordance. */
-	editPolicy?: ProposalEditPolicy;
+	editPolicy: ProposalEditPolicy;
 	/**
 	 * The card's detail body, read from the (unvalidated) payload — and, for
 	 * update/delete journal diffs, `reviewContext.current_journal_entry` — through
@@ -216,6 +216,7 @@ export const PROPOSAL_VIEWS: Record<ProposalKind, ProposalView> = {
 		rejectLabel: "Keep Journal Entry",
 		rejectBusyLabel: "Keeping...",
 		canEdit: () => false,
+		editPolicy: "readonly",
 		renderBody: (args) => renderJournalBody(args, "delete"),
 	},
 	reference_existing_entity_from_journal_entry: {
@@ -231,6 +232,7 @@ export const PROPOSAL_VIEWS: Record<ProposalKind, ProposalView> = {
 		rejectLabel: "Keep current entry",
 		rejectBusyLabel: "Keeping current entry...",
 		canEdit: () => false,
+		editPolicy: "readonly",
 		renderBody: renderNoBody,
 	},
 	create_person: {
@@ -344,6 +346,7 @@ export const PROPOSAL_VIEWS: Record<ProposalKind, ProposalView> = {
 		rejectLabel: "Dismiss",
 		rejectBusyLabel: "Dismissing...",
 		canEdit: () => false,
+		editPolicy: "readonly",
 		renderBody: renderNoBody,
 	},
 	record_observations: {
@@ -382,8 +385,13 @@ function fallbackView(kind: string): ProposalView {
 		rejectLabel: "Dismiss",
 		rejectBusyLabel: "Dismissing...",
 		canEdit: () => false,
+		editPolicy: "readonly",
 		renderBody: renderNoBody,
 	};
+}
+
+function assertNever(value: never): never {
+	throw new Error(`Unhandled proposal edit policy: ${value}`);
 }
 
 function proposalView(mutationKind: string): ProposalView {
@@ -743,7 +751,7 @@ function SingleEntityProposalCard({
 						onSave={saveStructuredEdit}
 						onCancel={() => setEditing(false)}
 					/>
-				) : (
+				) : view.editPolicy === "journal" ? (
 					<form
 						onSubmit={(event) => {
 							event.preventDefault();
@@ -803,6 +811,8 @@ function SingleEntityProposalCard({
 							</Button>
 						</footer>
 					</form>
+				) : view.editPolicy === "readonly" ? null : (
+					assertNever(view.editPolicy)
 				)
 			) : (
 				<>

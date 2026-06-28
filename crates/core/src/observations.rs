@@ -495,7 +495,9 @@ fn source_from_evidence(
     match (evidence.journal_entry_id, evidence.message_id) {
         (Some(id), None) => Ok(Some(ObservationSourceInput::JournalEntry { id })),
         (None, Some(id)) => Ok(Some(ObservationSourceInput::Message { id })),
-        (None, None) => Ok(None),
+        (None, None) => Err(
+            "observation evidence must name one of journal_entry_id or message_id".to_string(),
+        ),
         (Some(_), Some(_)) => Err(
             "observation evidence must name only one of journal_entry_id or message_id".to_string(),
         ),
