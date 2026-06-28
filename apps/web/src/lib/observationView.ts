@@ -19,6 +19,9 @@ export interface ObservationItemView {
 	summary: string;
 	/** Per-schema detail rows for display. */
 	fields: ObservationField[];
+	/** Provenance from the wire (`null` when the observation has no recorded
+	 * source); drives the display-only "Captured from" label. */
+	source: ObservationRow["source"];
 }
 
 /** A per-`schema_key` polish strategy. `summary`/`fields` only run on `values`
@@ -84,6 +87,7 @@ function fallbackView(row: ObservationRow): ObservationItemView {
 		note: row.note,
 		summary: row.schema_key,
 		fields: [{ label: "Values", value: valuesJson(row.values) }],
+		source: row.source,
 	};
 }
 
@@ -92,7 +96,8 @@ function fallbackView(row: ObservationRow): ObservationItemView {
  * OR a known key whose `values` fail to decode, returns the raw key + JSON
  * fallback. Never throws — read-side display resilience. */
 export function toObservationView(row: ObservationRow): ObservationItemView {
-	if (!Object.hasOwn(OBSERVATION_VIEWS, row.schema_key)) return fallbackView(row);
+	if (!Object.hasOwn(OBSERVATION_VIEWS, row.schema_key))
+		return fallbackView(row);
 	const view = OBSERVATION_VIEWS[row.schema_key];
 	if (!view) return fallbackView(row);
 	const decoded = view.decode(row.values);
@@ -106,6 +111,7 @@ export function toObservationView(row: ObservationRow): ObservationItemView {
 		note: row.note,
 		summary: view.summary(values),
 		fields: view.fields(values),
+		source: row.source,
 	};
 }
 

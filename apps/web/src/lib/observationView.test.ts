@@ -92,16 +92,42 @@ describe("toObservationView — graceful fallback (load-bearing)", () => {
 		expect(fieldsText(v)).toContain('{"kg":"heavy"}');
 	});
 
-	it.each(["constructor", "toString", "valueOf", "hasOwnProperty", "__proto__"])(
-		"a schema_key naming an Object.prototype member (%s) falls back without throwing",
-		(schemaKey) => {
-			const r = row({ schema_key: schemaKey, values: { hours: 7 } });
-			expect(() => toObservationView(r)).not.toThrow();
-			const v = toObservationView(r);
-			expect(v.summary).toBe(schemaKey);
-			expect(fieldsText(v)).toContain('{"hours":7}');
-		},
-	);
+	it.each([
+		"constructor",
+		"toString",
+		"valueOf",
+		"hasOwnProperty",
+		"__proto__",
+	])("a schema_key naming an Object.prototype member (%s) falls back without throwing", (schemaKey) => {
+		const r = row({ schema_key: schemaKey, values: { hours: 7 } });
+		expect(() => toObservationView(r)).not.toThrow();
+		const v = toObservationView(r);
+		expect(v.summary).toBe(schemaKey);
+		expect(fieldsText(v)).toContain('{"hours":7}');
+	});
+});
+
+describe("toObservationView — source threading", () => {
+	it("carries a present source through the polished branch", () => {
+		const v = toObservationView(
+			row({
+				schema_key: "bodyweight",
+				values: { kg: 70 },
+				source: { relation: "created_from", source_entity_id: "je-1" },
+			}),
+		);
+		expect(v.source).toEqual({
+			relation: "created_from",
+			source_entity_id: "je-1",
+		});
+	});
+
+	it("carries a null source through the fallback branch", () => {
+		const v = toObservationView(
+			row({ schema_key: "sleep.session", values: { hours: 7 }, source: null }),
+		);
+		expect(v.source).toBeNull();
+	});
 });
 
 describe("groupObservationsByDay", () => {
