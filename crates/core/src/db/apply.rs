@@ -894,9 +894,14 @@ pub(crate) async fn apply_entity_mutation(
         | MutationKind::DeleteTodo
         | MutationKind::DeleteBookmark
         | MutationKind::DeleteHabit => {
-            if kind == MutationKind::DeleteHabit
-                && !queries::entity_is_type(&mut **tx, &entity_id, entity_type.as_str()).await?
-            {
+            // Surface a gone/wrong-type target as TargetMissing BEFORE the
+            // descriptor-block below — otherwise a future `OBSERVATION_RELATIONS`
+            // entry targeting another entity type could report `InvalidMutation`
+            // for a missing target that only appears in observation history,
+            // which would also force re-touching this guard per new descriptor.
+            // (Other delete kinds otherwise get TargetMissing from `delete_entity`'s
+            // rowcount below; this just moves that check earlier, behavior-preserving.)
+            if !queries::entity_is_type(&mut **tx, &entity_id, entity_type.as_str()).await? {
                 return Err(ApplyError::TargetMissing);
             }
             // Descriptor-driven delete-block (ADR-0053): deleting an Entity is
