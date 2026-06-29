@@ -98,9 +98,10 @@ Two as-built nuances this ADR records (neither is a defect to fix in scope):
 ## Lifecycle: delete blocks, update full-replaces
 
 **Delete is block-not-cascade.** `delete_habit` rejects while *any* live
-observation **or** historical revision references the Habit
-(`apply.rs:894-905` → `habit_checkin_observations_exist`, which UNIONs
-`observations` and `observation_revisions`, `queries.rs:1197-1220`). History is
+observation **or** historical revision references the Habit (the delete-block →
+`entity_referenced_by_observation`, which UNIONs `observations` and
+`observation_revisions`; descriptor-driven over `mutation::OBSERVATION_RELATIONS`
+since #277). History is
 preserved, not destroyed. Because there is no FK, a delete absent the guard would
 *orphan* check-ins, not cascade them — so the guard makes deletion a **full
 reject**, by design. This realizes ADR-0053's write-time relation rule as a
@@ -155,10 +156,12 @@ the delete-block guard enforces.
 - **Does not freeze the observation machinery.** This ADR codifies the Habit
   identity/check-in model only. The schema registry and relation-field path remain
   open: [#258](https://github.com/hongyilyu/inkstone/issues/258) adds sibling
-  relation-bearing schemas (exercise, nutrition) via `record_observation_payload_variants`
-  + a per-schema `relation_fields` slice (`observations.rs:562-587`), with the sole
-  shared constraint that a relation target must be an existing `EntityType`. **This
-  ADR does not block #258.**
+  relation-bearing schemas (exercise, nutrition) via `record_observation_payload_variants`,
+  and [#277](https://github.com/hongyilyu/inkstone/issues/277) made the relation
+  descriptor a closed `mutation::OBSERVATION_RELATIONS` entry (`{schema_key, json_field,
+  target}`) that the write check, query filter, and delete-block all dispatch off — so a
+  new relation-bearing schema adds one descriptor entry, with the sole shared constraint
+  that a relation target must be an existing `EntityType`. **This ADR does not block #258.**
 
 ## Known gaps (deferred, not in scope)
 

@@ -278,6 +278,34 @@ impl EntityType {
     }
 }
 
+/// One relation-bearing observation schema's link to an Entity Type (ADR-0053).
+/// A relation-bearing observation stores a target Entity id in a `values_json`
+/// field (`json_field`); the write path checks the target exists and is `target`,
+/// and the read/lifecycle consumers (the `related_entity_id` query filter; the
+/// delete-block) dispatch off this same closed table. The single source of truth
+/// for relation descriptors — adding a relation-bearing schema is one entry here,
+/// not edits scattered across the write path, the query filter, and the
+/// delete-block. Sited beside [`EntityType`] (the `db`-read policy leaf) so `db`
+/// reads it without importing `crate::observations`.
+///
+/// Delete behavior is uniformly *block* today (deleting a `target` entity is
+/// rejected while any live or historical observation references it; ADR-0056). A
+/// descriptor here auto-inherits that block — there is no per-descriptor opt-out.
+/// If a future schema needs a different policy (cascade/allow), the seam is a
+/// `delete_behavior` field on this struct; don't add it speculatively (AGENTS.md §2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ObservationRelation {
+    pub schema_key: &'static str,
+    pub json_field: &'static str,
+    pub target: EntityType,
+}
+
+pub(crate) const OBSERVATION_RELATIONS: &[ObservationRelation] = &[ObservationRelation {
+    schema_key: "habit.checkin",
+    json_field: "habit_id",
+    target: EntityType::Habit,
+}];
+
 // ─── Field shapes (card 2) ──────────────────────────────────────────────────
 //
 // Each Entity Type owns its data-field shape once, as a `PayloadSpec` (the

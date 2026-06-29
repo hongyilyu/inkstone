@@ -989,7 +989,10 @@ mod tests {
         let Err(MutateError::Invalid(reason)) = result else {
             panic!("delete_habit with check-ins is Invalid: {result:?}");
         };
-        assert!(reason.contains("habit.checkin"), "{reason}");
+        assert!(
+            reason.contains("delete_habit is blocked while observations reference the habit"),
+            "{reason}"
+        );
 
         let row_count: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM entities WHERE id = ?1 AND type = 'habit'")
