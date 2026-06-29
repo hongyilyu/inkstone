@@ -14,9 +14,17 @@ vi.mock("@/lib/hooks/useObservations", () => ({
 	useObservations: () => useObservations(),
 }));
 
+// The correction surface drives `useObservationUpdate`; mock it so the test captures
+// the mutate params (proving the source-free draft) without a live runtime/cue.
+const mutate = vi.fn();
+vi.mock("@/lib/hooks/useObservationUpdate", () => ({
+	useObservationUpdate: () => ({ mutate, isPending: false, error: null }),
+}));
+
 afterEach(() => {
 	cleanup();
 	useObservations.mockReset();
+	mutate.mockReset();
 });
 
 const row = (
@@ -35,9 +43,12 @@ const row = (
 
 // Day A (06-10): a bodyweight row sourced from a Journal Entry + a habit.checkin
 // row (no source). Day B (06-09): an unknown-schema row (no source).
+// A real UUID id: the correction form validates the assembled draft against
+// `ObservationUpdateParams`, whose `observation_id` carries the canonical UUID pattern.
+const BODYWEIGHT_ID = "01900000-0000-7000-8000-0000000000ab";
 const bodyweight = toObservationView(
 	row({
-		id: "bw",
+		id: BODYWEIGHT_ID,
 		occurred_at: "2026-06-10T07:00:00",
 		schema_key: "bodyweight",
 		values: { kg: 72.4 },
@@ -191,5 +202,81 @@ describe("HealthView", () => {
 		});
 		render(<Stateful />);
 		expect(screen.getByText(/couldn't load health/i)).toBeInTheDocument();
+	});
+
+	describe("correction flow", () => {
+		it("opens a form pre-filled with the row's current occurred_at + values", async () => {
+			mockData(ALL);
+			render(<Stateful />);
+			// One Correct button per row; click the bodyweight row's.
+			const corrects = screen.getAllByRole("button", { name: /^correct$/i });
+			expect(corrects.length).toBe(ALL.length);
+			await userEvent.click(corrects[0] as HTMLElement);
+
+			// occurred_at seeded from the stored wall-clock string (with seconds).
+			expect(
+				screen.getByDisplayValue("2026-06-10T07:00:00"),
+			).toBeInTheDocument();
+			// values textarea pre-filled with the row's current values (pretty JSON).
+			const valuesField = screen.getByLabelText(/^values$/i);
+			expect((valuesField as HTMLTextAreaElement).value).toContain(
+				'"kg": 72.4',
+			);
+		});
+
+		it("submits a SOURCE-FREE full-replacement draft (no schema_key, no source)", async () => {
+			mockData(ALL);
+			render(<Stateful />);
+			await userEvent.click(
+				screen.getAllByRole("button", { name: /^correct$/i })[0] as HTMLElement,
+			);
+
+			// Edit the values (change kg) then save. `paste` sets the textarea verbatim
+			// — `type` would interpret JSON braces/brackets as userEvent key syntax.
+			const valuesField = screen.getByLabelText(
+				/^values$/i,
+			) as HTMLTextAreaElement;
+			await userEvent.clear(valuesField);
+			valuesField.focus();
+			await userEvent.paste('{"kg": 73.1}');
+			await userEvent.click(
+				screen.getByRole("button", { name: /save correction/i }),
+			);
+
+			expect(mutate).toHaveBeenCalledTimes(1);
+			const params = mutate.mock.calls[0]?.[0];
+			expect(params.observation_id).toBe(BODYWEIGHT_ID);
+			expect(params.observation.occurred_at).toBe("2026-06-10T07:00:00");
+			expect(params.observation.values).toEqual({ kg: 73.1 });
+			// Source-free full replacement: provenance fields never reach the wire.
+			expect("schema_key" in params.observation).toBe(false);
+			expect("source" in params.observation).toBe(false);
+		});
+
+		it("leaves the 'Captured from' provenance line unchanged while correcting", async () => {
+			mockData(ALL);
+			render(<Stateful />);
+			expect(
+				screen.getByText(/captured from a journal entry/i),
+			).toBeInTheDocument();
+			await userEvent.click(
+				screen.getAllByRole("button", { name: /^correct$/i })[0] as HTMLElement,
+			);
+			// Provenance is immutable + display-only — still present with the editor open.
+			expect(
+				screen.getByText(/captured from a journal entry/i),
+			).toBeInTheDocument();
+		});
+
+		it("keeps a single active editor — opening Correct on one row doesn't open another", async () => {
+			mockData(ALL);
+			render(<Stateful />);
+			const corrects = screen.getAllByRole("button", { name: /^correct$/i });
+			await userEvent.click(corrects[0] as HTMLElement);
+			expect(screen.getAllByLabelText(/^values$/i).length).toBe(1);
+			await userEvent.click(corrects[1] as HTMLElement);
+			// Still exactly one open editor (the second row's), not two.
+			expect(screen.getAllByLabelText(/^values$/i).length).toBe(1);
+		});
 	});
 });

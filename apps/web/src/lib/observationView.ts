@@ -15,6 +15,10 @@ export interface ObservationItemView {
 	occurredAt: string;
 	endedAt: string | null;
 	note: string | null;
+	/** The raw `values` JSON object from the wire, carried verbatim so the
+	 * correction editor can pre-fill its `values` textarea. Display projects to
+	 * `summary`/`fields`, which lose the raw shape. */
+	values: unknown;
 	/** Calm one-line headline (e.g. `"72.4 kg"`, `"Habit · abcd1234"`). */
 	summary: string;
 	/** Per-schema detail rows for display. */
@@ -92,6 +96,7 @@ function fallbackView(row: ObservationRow): ObservationItemView {
 		occurredAt: row.occurred_at,
 		endedAt: row.ended_at,
 		note: row.note,
+		values: row.values,
 		summary: row.schema_key,
 		fields: [{ label: "Values", value: valuesJson(row.values) }],
 		source: row.source,
@@ -116,6 +121,7 @@ export function toObservationView(row: ObservationRow): ObservationItemView {
 		occurredAt: row.occurred_at,
 		endedAt: row.ended_at,
 		note: row.note,
+		values: row.values,
 		summary: view.summary(values),
 		fields: view.fields(values),
 		source: row.source,

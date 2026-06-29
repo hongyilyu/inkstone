@@ -1,13 +1,16 @@
 import { HeartPulse } from "lucide-react";
+import { useState } from "react";
 import { ObservationField } from "@/components/ProposalCardObservations";
 import { EmptyState } from "@/components/ui/empty-state";
 import { useObservations } from "@/lib/hooks/useObservations";
+import { useObservationUpdate } from "@/lib/hooks/useObservationUpdate";
 import { formatDay } from "@/lib/libraryItems";
 import {
 	groupObservationsByDay,
 	type ObservationItemView,
 } from "@/lib/observationView";
 import { cn } from "@/lib/utils.js";
+import { ObservationCorrectionForm } from "./ObservationCorrectionForm.js";
 
 /** The active schema filter; `undefined` = All. Only the schemas we render a chip
  * for are selectable — the route validates `?schema=` against these. */
@@ -56,6 +59,18 @@ export function HealthView({
 }) {
 	const { data, isPending, isError } = useObservations();
 	const items = data ?? [];
+
+	// The single active inline correction editor, tracked by observation id (null =
+	// none open). One JSON-values + scalar-fields form drives `observation/update`;
+	// success refetches the stream and clears the editor.
+	const [editingId, setEditingId] = useState<string | null>(null);
+	const correction = useObservationUpdate();
+	const correctionError =
+		correction.error == null
+			? null
+			: correction.error instanceof Error && correction.error.message
+				? correction.error.message
+				: "Couldn't save the correction. Try again.";
 
 	// Chip set = All + one chip per KNOWN schema actually present in the data, so
 	// unknown-schema rows stay reachable under All without manufacturing a chip.
@@ -175,6 +190,27 @@ export function HealthView({
 															{captured}
 														</p>
 													) : null}
+													{editingId === item.id ? (
+														<ObservationCorrectionForm
+															item={item}
+															submitting={correction.isPending}
+															error={correctionError}
+															onCancel={() => setEditingId(null)}
+															onSubmit={(params) =>
+																correction.mutate(params, {
+																	onSuccess: () => setEditingId(null),
+																})
+															}
+														/>
+													) : (
+														<button
+															type="button"
+															onClick={() => setEditingId(item.id)}
+															className="mt-2 text-muted-foreground text-xs hover:text-foreground"
+														>
+															Correct
+														</button>
+													)}
 												</li>
 											);
 										})}
