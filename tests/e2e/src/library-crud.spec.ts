@@ -493,6 +493,12 @@ test("edit a seeded Media item via the rail editor → update_media persists acr
 			`SELECT json_extract(data,'$.medium') FROM entities WHERE id='${MEDIA}';`,
 		),
 	).toBe("book");
+	expect(
+		sqliteScalar(
+			dbPath,
+			`SELECT json_extract(data,'$.state') FROM entities WHERE id='${MEDIA}';`,
+		),
+	).toBe("backlog");
 
 	// Survives a reload (proves the write reached tier 2, not just the cache).
 	await page.reload();

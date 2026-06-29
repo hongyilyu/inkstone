@@ -57,7 +57,13 @@ describe("assembleLibraryItems — one malformed JE row no longer blanks the Lib
 		const items = assembleLibraryItems({
 			...empty,
 			todos: [{ id: "t1", data: { title: "A" }, created_at: 1 }],
-			media: [{ id: "b1", data: { title: "B" }, created_at: 2 }],
+			media: [
+				{
+					id: "b1",
+					data: { title: "B", medium: "link", state: "backlog" },
+					created_at: 2,
+				},
+			],
 		});
 		expect(items.map((i) => i.id).sort()).toEqual(["b1", "t1"]);
 		expect(warn).not.toHaveBeenCalled();

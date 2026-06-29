@@ -870,8 +870,20 @@ function buildMediaDoc(d: MediaDraft): Record<string, unknown> {
 		state: d.state,
 	};
 	if (isMediaTerminalState(d.state)) {
+		// Clamp to the ADR-0059 contract (integer 1–5) before emitting — the
+		// `<input min/max>` in MediaEditor doesn't block pasted/scripted values, and
+		// these ungated schemas are the codec's only round-trip guard, so an
+		// out-of-range rating would otherwise reach Core (which rejects it) instead
+		// of being dropped here.
 		const rating = Number(d.rating);
-		if (d.rating.trim() !== "" && Number.isFinite(rating)) doc.rating = rating;
+		if (
+			d.rating.trim() !== "" &&
+			Number.isInteger(rating) &&
+			rating >= 1 &&
+			rating <= 5
+		) {
+			doc.rating = rating;
+		}
 		if (d.finishedDay) doc.finished_at = dayToLocal(d.finishedDay);
 	}
 	if (d.url.trim()) doc.url = d.url.trim();
@@ -890,15 +902,12 @@ function buildMediaUpdate(
 	prev: MediaDraft,
 	next: MediaDraft,
 ): EntityMutateParams | null {
+	// Compare the BUILT docs, not the raw drafts: the doc trims title/url/note,
+	// canonicalizes tags, and clamps rating, while `prev` is seeded untrimmed from
+	// the stored item (mediaDraftFromVm). A raw-field compare would mark a stored
+	// " Dune " as changed the moment the editor opens, writing on a bare Save.
 	const changed =
-		next.title.trim() !== prev.title ||
-		next.medium !== prev.medium ||
-		next.state !== prev.state ||
-		next.rating.trim() !== prev.rating ||
-		next.finishedDay !== prev.finishedDay ||
-		next.url.trim() !== prev.url ||
-		next.note.trim() !== prev.note ||
-		next.tags.trim() !== prev.tags;
+		JSON.stringify(buildMediaDoc(next)) !== JSON.stringify(buildMediaDoc(prev));
 	if (!changed) return null;
 
 	return {
