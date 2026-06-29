@@ -62,7 +62,8 @@ export function HealthView({
 
 	// The single active inline correction editor, tracked by observation id (null =
 	// none open). One JSON-values + scalar-fields form drives `observation/update`;
-	// success refetches the stream and clears the editor.
+	// success refetches the stream and clears the submitted row's editor (only if it's
+	// still the active one — see the onSuccess guard below).
 	const [editingId, setEditingId] = useState<string | null>(null);
 	const correction = useObservationUpdate();
 	const correctionError =

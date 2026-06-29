@@ -19,7 +19,11 @@ vi.mock("@/lib/hooks/useObservations", () => ({
 // returned `error` is read from a mutable slot so a test can simulate a prior failed
 // save and assert the editor resets it on open/switch/cancel.
 const mutate = vi.fn();
-const reset = vi.fn();
+// `reset` clears the error slot, mirroring React Query's real `mutation.reset()`, so a
+// test can seed a prior failed save and assert the editor surfaces no stale error.
+const reset = vi.fn(() => {
+	mutationError = null;
+});
 let mutationError: unknown = null;
 vi.mock("@/lib/hooks/useObservationUpdate", () => ({
 	useObservationUpdate: () => ({
@@ -292,19 +296,22 @@ describe("HealthView", () => {
 			expect(screen.getAllByLabelText(/^values$/i).length).toBe(1);
 		});
 
-		it("resets the shared mutation when opening, switching, or cancelling an editor", async () => {
+		it("resets the shared mutation on open/switch/cancel so no stale error bleeds into a fresh editor", async () => {
+			// Simulate a prior failed save: the shared mutation is holding an error.
+			mutationError = new Error("server rejected the correction");
 			mockData(ALL);
 			render(<Stateful />);
 			const corrects = screen.getAllByRole("button", { name: /^correct$/i });
-			// Open row A → reset once (clears any prior row's error before it shows).
+			// Open row A → reset once; the freshly opened form shows NO stale error.
 			await userEvent.click(corrects[0] as HTMLElement);
 			expect(reset).toHaveBeenCalledTimes(1);
-			// Switch to row B (its Correct button) → reset again.
+			expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+			// Switch to another row (its Correct button) → reset again.
 			await userEvent.click(
 				screen.getAllByRole("button", { name: /^correct$/i })[0] as HTMLElement,
 			);
 			expect(reset).toHaveBeenCalledTimes(2);
-			// Cancel → reset again, so the next opened form starts error-clean.
+			// Cancel → reset again, so the next opened form also starts error-clean.
 			await userEvent.click(screen.getByRole("button", { name: /cancel/i }));
 			expect(reset).toHaveBeenCalledTimes(3);
 		});
@@ -312,7 +319,7 @@ describe("HealthView", () => {
 		it("a slow save resolving after the user switched rows does not close the new editor", async () => {
 			mockData(ALL);
 			render(<Stateful />);
-			// Open + submit row A, capturing its onSuccess (the save is still pending).
+			// Open + submit row A (bodyweight), capturing its onSuccess (save pending).
 			await userEvent.click(
 				screen.getAllByRole("button", { name: /^correct$/i })[0] as HTMLElement,
 			);
@@ -321,14 +328,19 @@ describe("HealthView", () => {
 			);
 			const onSuccess = mutate.mock.calls[0]?.[1]?.onSuccess as () => void;
 			// The user opens a different row before A's save returns (with A's form
-			// open, the remaining Correct buttons are the other rows).
+			// open, the remaining Correct buttons are the other rows). The next row in
+			// day order is the habit row — assert ITS editor is the one now open.
 			await userEvent.click(
-				screen.getAllByRole("button", { name: /^correct$/i })[1] as HTMLElement,
+				screen.getAllByRole("button", { name: /^correct$/i })[0] as HTMLElement,
 			);
-			expect(screen.getAllByLabelText(/^values$/i).length).toBe(1);
-			// Now A's save resolves — it must NOT close the (different) active editor.
+			const editor = screen.getByLabelText(/^values$/i) as HTMLTextAreaElement;
+			expect(editor.value).toContain("habit_id");
+			// Now A's save resolves — it must NOT close the switched-to (habit) editor.
 			act(() => onSuccess());
-			expect(screen.getAllByLabelText(/^values$/i).length).toBe(1);
+			const stillOpen = screen.getByLabelText(
+				/^values$/i,
+			) as HTMLTextAreaElement;
+			expect(stillOpen.value).toContain("habit_id");
 		});
 	});
 });
