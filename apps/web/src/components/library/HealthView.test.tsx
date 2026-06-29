@@ -1,5 +1,5 @@
 import type { ObservationRow } from "@inkstone/protocol";
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -14,9 +14,34 @@ vi.mock("@/lib/hooks/useObservations", () => ({
 	useObservations: () => useObservations(),
 }));
 
+// The correction surface drives `useObservationUpdate`; mock it so the test captures
+// the mutate params (proving the source-free draft) without a live runtime/cue. The
+// returned `error` is read from a mutable slot so a test can simulate a prior failed
+// save and assert the editor resets it on open/switch/cancel.
+const mutate = vi.fn();
+// `reset` clears the error slot, mirroring React Query's real `mutation.reset()`, so a
+// test can seed a prior failed save and assert the editor surfaces no stale error.
+const reset = vi.fn(() => {
+	mutationError = null;
+});
+let mutationError: unknown = null;
+vi.mock("@/lib/hooks/useObservationUpdate", () => ({
+	useObservationUpdate: () => ({
+		mutate,
+		reset,
+		isPending: false,
+		get error() {
+			return mutationError;
+		},
+	}),
+}));
+
 afterEach(() => {
 	cleanup();
 	useObservations.mockReset();
+	mutate.mockReset();
+	reset.mockReset();
+	mutationError = null;
 });
 
 const row = (
@@ -35,9 +60,15 @@ const row = (
 
 // Day A (06-10): a bodyweight row sourced from a Journal Entry + a habit.checkin
 // row (no source). Day B (06-09): an unknown-schema row (no source).
+// Real UUID ids: the correction form validates the assembled draft against
+// `ObservationUpdateParams`, whose `observation_id` carries the canonical UUID pattern
+// — a non-UUID id would make the form's own draft validation (not the row's content)
+// surface an alert, which the cross-row error tests must be able to rule out.
+const BODYWEIGHT_ID = "01900000-0000-7000-8000-0000000000ab";
+const HABIT_ID = "01900000-0000-7000-8000-0000000000cd";
 const bodyweight = toObservationView(
 	row({
-		id: "bw",
+		id: BODYWEIGHT_ID,
 		occurred_at: "2026-06-10T07:00:00",
 		schema_key: "bodyweight",
 		values: { kg: 72.4 },
@@ -46,7 +77,7 @@ const bodyweight = toObservationView(
 );
 const habit = toObservationView(
 	row({
-		id: "hb",
+		id: HABIT_ID,
 		occurred_at: "2026-06-10T08:00:00",
 		schema_key: "habit.checkin",
 		values: { habit_id: "abcd1234-5678-9012-3456-7890abcdef00", state: "done" },
@@ -191,5 +222,158 @@ describe("HealthView", () => {
 		});
 		render(<Stateful />);
 		expect(screen.getByText(/couldn't load health/i)).toBeInTheDocument();
+	});
+
+	describe("correction flow", () => {
+		it("opens a form pre-filled with the row's current occurred_at + values", async () => {
+			mockData(ALL);
+			render(<Stateful />);
+			// One Correct button per row; click the bodyweight row's.
+			const corrects = screen.getAllByRole("button", { name: /^correct$/i });
+			expect(corrects.length).toBe(ALL.length);
+			await userEvent.click(corrects[0] as HTMLElement);
+
+			// occurred_at seeded from the stored wall-clock string (with seconds).
+			expect(
+				screen.getByDisplayValue("2026-06-10T07:00:00"),
+			).toBeInTheDocument();
+			// values textarea pre-filled with the row's current values (pretty JSON).
+			const valuesField = screen.getByLabelText(/^values$/i);
+			expect((valuesField as HTMLTextAreaElement).value).toContain(
+				'"kg": 72.4',
+			);
+		});
+
+		it("submits a SOURCE-FREE full-replacement draft (no schema_key, no source)", async () => {
+			mockData(ALL);
+			render(<Stateful />);
+			await userEvent.click(
+				screen.getAllByRole("button", { name: /^correct$/i })[0] as HTMLElement,
+			);
+
+			// Edit the values (change kg) then save. `paste` sets the textarea verbatim
+			// — `type` would interpret JSON braces/brackets as userEvent key syntax.
+			const valuesField = screen.getByLabelText(
+				/^values$/i,
+			) as HTMLTextAreaElement;
+			await userEvent.clear(valuesField);
+			valuesField.focus();
+			await userEvent.paste('{"kg": 73.1}');
+			await userEvent.click(
+				screen.getByRole("button", { name: /save correction/i }),
+			);
+
+			expect(mutate).toHaveBeenCalledTimes(1);
+			const params = mutate.mock.calls[0]?.[0];
+			expect(params.observation_id).toBe(BODYWEIGHT_ID);
+			expect(params.observation.occurred_at).toBe("2026-06-10T07:00:00");
+			expect(params.observation.values).toEqual({ kg: 73.1 });
+			// Source-free full replacement: provenance fields never reach the wire.
+			expect("schema_key" in params.observation).toBe(false);
+			expect("source" in params.observation).toBe(false);
+		});
+
+		it("leaves the 'Captured from' provenance line unchanged while correcting", async () => {
+			mockData(ALL);
+			render(<Stateful />);
+			expect(
+				screen.getByText(/captured from a journal entry/i),
+			).toBeInTheDocument();
+			await userEvent.click(
+				screen.getAllByRole("button", { name: /^correct$/i })[0] as HTMLElement,
+			);
+			// Provenance is immutable + display-only — still present with the editor open.
+			expect(
+				screen.getByText(/captured from a journal entry/i),
+			).toBeInTheDocument();
+		});
+
+		it("keeps a single active editor — opening Correct on one row doesn't open another", async () => {
+			mockData(ALL);
+			render(<Stateful />);
+			const corrects = screen.getAllByRole("button", { name: /^correct$/i });
+			await userEvent.click(corrects[0] as HTMLElement);
+			expect(screen.getAllByLabelText(/^values$/i).length).toBe(1);
+			await userEvent.click(corrects[1] as HTMLElement);
+			// Still exactly one open editor (the second row's), not two.
+			expect(screen.getAllByLabelText(/^values$/i).length).toBe(1);
+		});
+
+		it("resets the shared mutation on open/switch/cancel so no stale error bleeds into a fresh editor", async () => {
+			// Simulate a prior failed save: the shared mutation is holding an error.
+			mutationError = new Error("server rejected the correction");
+			mockData(ALL);
+			render(<Stateful />);
+			const corrects = screen.getAllByRole("button", { name: /^correct$/i });
+			// Open row A → reset once; the freshly opened form shows NO stale error.
+			await userEvent.click(corrects[0] as HTMLElement);
+			expect(reset).toHaveBeenCalledTimes(1);
+			expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+			// Switch to another row (its Correct button) → reset again.
+			await userEvent.click(
+				screen.getAllByRole("button", { name: /^correct$/i })[0] as HTMLElement,
+			);
+			expect(reset).toHaveBeenCalledTimes(2);
+			// Cancel → reset again, so the next opened form also starts error-clean.
+			await userEvent.click(screen.getByRole("button", { name: /cancel/i }));
+			expect(reset).toHaveBeenCalledTimes(3);
+		});
+
+		it("a slow save resolving after the user switched rows does not close the new editor", async () => {
+			mockData(ALL);
+			render(<Stateful />);
+			// Open + submit row A (bodyweight), capturing its onSuccess (save pending).
+			await userEvent.click(
+				screen.getAllByRole("button", { name: /^correct$/i })[0] as HTMLElement,
+			);
+			await userEvent.click(
+				screen.getByRole("button", { name: /save correction/i }),
+			);
+			const onSuccess = mutate.mock.calls[0]?.[1]?.onSuccess as () => void;
+			// The user opens a different row before A's save returns (with A's form
+			// open, the remaining Correct buttons are the other rows). The next row in
+			// day order is the habit row — assert ITS editor is the one now open.
+			await userEvent.click(
+				screen.getAllByRole("button", { name: /^correct$/i })[0] as HTMLElement,
+			);
+			const editor = screen.getByLabelText(/^values$/i) as HTMLTextAreaElement;
+			expect(editor.value).toContain("habit_id");
+			// Now A's save resolves — it must NOT close the switched-to (habit) editor.
+			act(() => onSuccess());
+			const stillOpen = screen.getByLabelText(
+				/^values$/i,
+			) as HTMLTextAreaElement;
+			expect(stillOpen.value).toContain("habit_id");
+		});
+
+		it("a slow save FAILING after the user switched rows does not surface its error in the new editor", async () => {
+			mockData(ALL);
+			render(<Stateful />);
+			// Open + submit row A (bodyweight) — this stamps it as the correcting row.
+			await userEvent.click(
+				screen.getAllByRole("button", { name: /^correct$/i })[0] as HTMLElement,
+			);
+			await userEvent.click(
+				screen.getByRole("button", { name: /save correction/i }),
+			);
+			// Switch to the habit row before A's save settles.
+			await userEvent.click(
+				screen.getAllByRole("button", { name: /^correct$/i })[0] as HTMLElement,
+			);
+			expect(
+				(screen.getByLabelText(/^values$/i) as HTMLTextAreaElement).value,
+			).toContain("habit_id");
+			// A's save now FAILS: the shared mutation holds A's error. Force a parent
+			// re-render (a benign filter-chip click that keeps the habit editor open) so
+			// the editor re-reads the surfaced error.
+			mutationError = new Error("server rejected row A");
+			await userEvent.click(screen.getByRole("button", { name: /habits/i }));
+			// The habit editor is still open, but A's error must NOT bleed into it
+			// (it's scoped to the correcting row, not whichever editor is open).
+			expect(
+				(screen.getByLabelText(/^values$/i) as HTMLTextAreaElement).value,
+			).toContain("habit_id");
+			expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+		});
 	});
 });

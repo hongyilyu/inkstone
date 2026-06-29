@@ -57,6 +57,7 @@ function makeRuntime(observationQuery: WsClient["Type"]["observationQuery"]) {
 		listEntities: () => unused,
 		getBacklinks: () => unused,
 		observationQuery,
+		observationUpdate: () => unused,
 		entityMutate: () => unused,
 		subscribeRun: () => unused,
 		cancelRun: () => unused,

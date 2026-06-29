@@ -139,6 +139,22 @@ describe("toObservationView — source threading", () => {
 	});
 });
 
+describe("toObservationView — raw values threading (correction pre-fill)", () => {
+	it("carries the raw values object through the polished branch", () => {
+		const v = toObservationView(
+			row({ schema_key: "bodyweight", values: { kg: 72.4 } }),
+		);
+		expect(v.values).toEqual({ kg: 72.4 });
+	});
+
+	it("carries the raw values object through the fallback branch", () => {
+		const v = toObservationView(
+			row({ schema_key: "sleep.session", values: { hours: 7 } }),
+		);
+		expect(v.values).toEqual({ hours: 7 });
+	});
+});
+
 describe("groupObservationsByDay", () => {
 	it("buckets by occurred_at day, newest day first, ascending within a day", () => {
 		const items = [

@@ -34,6 +34,7 @@ function makeRuntime(todos: Rows, people: Rows = [], projects: Rows = []) {
 		},
 		getBacklinks: () => unused,
 		observationQuery: () => unused,
+		observationUpdate: () => unused,
 		entityMutate: () => unused,
 		subscribeRun: () => unused,
 		cancelRun: () => unused,

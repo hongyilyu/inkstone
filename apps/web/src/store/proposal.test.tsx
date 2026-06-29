@@ -70,6 +70,7 @@ function makeStubRuntime(opts: {
 		listEntities: () => unused,
 		getBacklinks: () => unused,
 		observationQuery: () => unused,
+		observationUpdate: () => unused,
 		entityMutate: () => unused,
 		rescanJournalEntry: () => unused,
 		subscribeRun: () => {

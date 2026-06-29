@@ -9,6 +9,8 @@ import {
 	ModelCatalogResult,
 	type ObservationQueryParams,
 	ObservationQueryResult,
+	type ObservationUpdateParams,
+	ObservationUpdateResult,
 	PostMessageResult,
 	ProposalChangedNotification,
 	type ProposalDecideParams,
@@ -237,6 +239,9 @@ export class WsClient extends Context.Tag("@inkstone/ui-sdk/WsClient")<
 		readonly observationQuery: (
 			params: ObservationQueryParams,
 		) => Effect.Effect<ObservationQueryResult, WsError>;
+		readonly observationUpdate: (
+			params: ObservationUpdateParams,
+		) => Effect.Effect<ObservationUpdateResult, WsError>;
 		readonly entityMutate: (
 			params: EntityMutateParams,
 		) => Effect.Effect<EntityMutateResult, WsError>;
@@ -621,6 +626,11 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 			): Effect.Effect<ObservationQueryResult, WsError> =>
 				request("observation/query", { ...params }, ObservationQueryResult);
 
+			const observationUpdate = (
+				params: ObservationUpdateParams,
+			): Effect.Effect<ObservationUpdateResult, WsError> =>
+				request("observation/update", { ...params }, ObservationUpdateResult);
+
 			// entity/mutate (ADR-0033): a user-initiated CRUD request — same
 			// {mutation_kind, payload} envelope as the Worker's propose tool.
 			const entityMutate = (
@@ -730,6 +740,7 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 				listEntities,
 				getBacklinks,
 				observationQuery,
+				observationUpdate,
 				entityMutate,
 				rescanJournalEntry,
 				messageSearch,

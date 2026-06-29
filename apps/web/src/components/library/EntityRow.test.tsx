@@ -59,6 +59,7 @@ function renderTodoRow(
 		listEntities: () => Effect.succeed({ entities: [] as Rows }),
 		getBacklinks: () => unused,
 		observationQuery: () => unused,
+		observationUpdate: () => unused,
 		entityMutate,
 		subscribeRun: () => unused,
 		cancelRun: () => unused,
