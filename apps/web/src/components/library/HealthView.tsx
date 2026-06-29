@@ -72,6 +72,14 @@ export function HealthView({
 				? correction.error.message
 				: "Couldn't save the correction. Try again.";
 
+	// One mutation instance backs every row's editor, so its error/pending state is
+	// shared. Reset it whenever the active editor changes (open, switch, or cancel)
+	// so a prior row's failed-save error never bleeds into a freshly opened form.
+	const openEditor = (id: string | null) => {
+		correction.reset();
+		setEditingId(id);
+	};
+
 	// Chip set = All + one chip per KNOWN schema actually present in the data, so
 	// unknown-schema rows stay reachable under All without manufacturing a chip.
 	// The active `filter` is always kept (it's route-controlled — e.g. a bookmarked
@@ -195,17 +203,24 @@ export function HealthView({
 															item={item}
 															submitting={correction.isPending}
 															error={correctionError}
-															onCancel={() => setEditingId(null)}
+															onCancel={() => openEditor(null)}
 															onSubmit={(params) =>
 																correction.mutate(params, {
-																	onSuccess: () => setEditingId(null),
+																	// Close only if THIS row is still the active editor —
+																	// guards against a slow save resolving after the user
+																	// has already opened a different row (which would
+																	// otherwise close that row and lose its draft).
+																	onSuccess: () =>
+																		setEditingId((current) =>
+																			current === item.id ? null : current,
+																		),
 																})
 															}
 														/>
 													) : (
 														<button
 															type="button"
-															onClick={() => setEditingId(item.id)}
+															onClick={() => openEditor(item.id)}
 															className="mt-2 text-muted-foreground text-xs hover:text-foreground"
 														>
 															Correct

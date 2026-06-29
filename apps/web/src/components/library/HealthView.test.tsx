@@ -1,5 +1,5 @@
 import type { ObservationRow } from "@inkstone/protocol";
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -15,16 +15,29 @@ vi.mock("@/lib/hooks/useObservations", () => ({
 }));
 
 // The correction surface drives `useObservationUpdate`; mock it so the test captures
-// the mutate params (proving the source-free draft) without a live runtime/cue.
+// the mutate params (proving the source-free draft) without a live runtime/cue. The
+// returned `error` is read from a mutable slot so a test can simulate a prior failed
+// save and assert the editor resets it on open/switch/cancel.
 const mutate = vi.fn();
+const reset = vi.fn();
+let mutationError: unknown = null;
 vi.mock("@/lib/hooks/useObservationUpdate", () => ({
-	useObservationUpdate: () => ({ mutate, isPending: false, error: null }),
+	useObservationUpdate: () => ({
+		mutate,
+		reset,
+		isPending: false,
+		get error() {
+			return mutationError;
+		},
+	}),
 }));
 
 afterEach(() => {
 	cleanup();
 	useObservations.mockReset();
 	mutate.mockReset();
+	reset.mockReset();
+	mutationError = null;
 });
 
 const row = (
@@ -276,6 +289,45 @@ describe("HealthView", () => {
 			expect(screen.getAllByLabelText(/^values$/i).length).toBe(1);
 			await userEvent.click(corrects[1] as HTMLElement);
 			// Still exactly one open editor (the second row's), not two.
+			expect(screen.getAllByLabelText(/^values$/i).length).toBe(1);
+		});
+
+		it("resets the shared mutation when opening, switching, or cancelling an editor", async () => {
+			mockData(ALL);
+			render(<Stateful />);
+			const corrects = screen.getAllByRole("button", { name: /^correct$/i });
+			// Open row A → reset once (clears any prior row's error before it shows).
+			await userEvent.click(corrects[0] as HTMLElement);
+			expect(reset).toHaveBeenCalledTimes(1);
+			// Switch to row B (its Correct button) → reset again.
+			await userEvent.click(
+				screen.getAllByRole("button", { name: /^correct$/i })[0] as HTMLElement,
+			);
+			expect(reset).toHaveBeenCalledTimes(2);
+			// Cancel → reset again, so the next opened form starts error-clean.
+			await userEvent.click(screen.getByRole("button", { name: /cancel/i }));
+			expect(reset).toHaveBeenCalledTimes(3);
+		});
+
+		it("a slow save resolving after the user switched rows does not close the new editor", async () => {
+			mockData(ALL);
+			render(<Stateful />);
+			// Open + submit row A, capturing its onSuccess (the save is still pending).
+			await userEvent.click(
+				screen.getAllByRole("button", { name: /^correct$/i })[0] as HTMLElement,
+			);
+			await userEvent.click(
+				screen.getByRole("button", { name: /save correction/i }),
+			);
+			const onSuccess = mutate.mock.calls[0]?.[1]?.onSuccess as () => void;
+			// The user opens a different row before A's save returns (with A's form
+			// open, the remaining Correct buttons are the other rows).
+			await userEvent.click(
+				screen.getAllByRole("button", { name: /^correct$/i })[1] as HTMLElement,
+			);
+			expect(screen.getAllByLabelText(/^values$/i).length).toBe(1);
+			// Now A's save resolves — it must NOT close the (different) active editor.
+			act(() => onSuccess());
 			expect(screen.getAllByLabelText(/^values$/i).length).toBe(1);
 		});
 	});
