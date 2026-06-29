@@ -14,7 +14,12 @@
 // compose honestly (a completed-yet-overdue todo is still "overdue").
 
 import { assertNever } from "./assertNever";
-import { PROJECT_STATUSES, TODO_STATUSES } from "./entityFields";
+import {
+	MEDIA_MEDIUMS,
+	MEDIA_STATES,
+	PROJECT_STATUSES,
+	TODO_STATUSES,
+} from "./entityFields";
 import {
 	type LibraryItem,
 	type LibraryItemKind,
@@ -22,20 +27,38 @@ import {
 	todosForProject,
 } from "./libraryItems";
 
-/** The three facet kinds this feature ships (GTD-core). */
-export type FacetKey = "status" | "date" | "person";
+/** The facet kinds the collections offer: the GTD-core status/date/person axes
+ * plus Media's medium/state axes (ADR-0059). */
+export type FacetKey = "status" | "date" | "person" | "medium" | "state";
 
 /** A Todo due-date preset. `no_date` = no due date; a dated-but-beyond-horizon
  * todo belongs to NO preset (its `dateBucket` is null). */
 export type DatePreset = "overdue" | "due_soon" | "no_date";
 
-/** The user's current facet selection. Status/person are multi-select (OR within);
- * date is single-select (or null = inactive). */
+/** The user's current facet selection. Status/person/medium/state are multi-select
+ * (OR within); date is single-select (or null = inactive). */
 export interface ActiveFacets {
 	statuses: ReadonlySet<string>;
 	date: DatePreset | null;
 	people: ReadonlySet<string>;
+	mediums: ReadonlySet<string>;
+	states: ReadonlySet<string>;
 }
+
+/** The multi-select facet keys (every axis except the single-select `date`) and the
+ * `ActiveFacets` Set field each toggles. A `Record` over this union makes the map
+ * exhaustive: a new multi-select `FacetKey` forces an entry here (and a typed field
+ * name keeps the Set updates honest). */
+type MultiSelectKey = Exclude<FacetKey, "date">;
+const MULTI_SELECT_FIELD: Record<
+	MultiSelectKey,
+	"statuses" | "people" | "mediums" | "states"
+> = {
+	status: "statuses",
+	person: "people",
+	medium: "mediums",
+	state: "states",
+};
 
 /** A facet value the UI renders as one chip. */
 export interface FacetValue {
@@ -56,6 +79,8 @@ export const EMPTY_FACETS: ActiveFacets = {
 	statuses: new Set(),
 	date: null,
 	people: new Set(),
+	mediums: new Set(),
+	states: new Set(),
 };
 
 /** Is `value` currently selected under facet `key`? (For rendering a chip's
@@ -68,13 +93,19 @@ export function isFacetActive(
 	if (key === "status") return active.statuses.has(value);
 	if (key === "date") return active.date === value;
 	if (key === "person") return active.people.has(value);
+	if (key === "medium") return active.mediums.has(value);
+	if (key === "state") return active.states.has(value);
 	return assertNever(key, "facet key");
 }
 
 /** Whether any facet at all is selected (drives the inline Clear affordance). */
 export function hasActiveFacets(active: ActiveFacets): boolean {
 	return (
-		active.statuses.size > 0 || active.date != null || active.people.size > 0
+		active.statuses.size > 0 ||
+		active.date != null ||
+		active.people.size > 0 ||
+		active.mediums.size > 0 ||
+		active.states.size > 0
 	);
 }
 
@@ -92,9 +123,8 @@ export function toggleFacet(
 			date: active.date === value ? null : (value as DatePreset),
 		};
 	}
-	if (key !== "status" && key !== "person")
-		return assertNever(key, "facet key");
-	const field = key === "status" ? "statuses" : "people";
+	// The remaining axes (status/person/medium/state) are all multi-select Sets.
+	const field = MULTI_SELECT_FIELD[key];
 	const next = new Set(active[field]);
 	if (next.has(value)) next.delete(value);
 	else next.add(value);
@@ -117,6 +147,8 @@ const GROUP_LABEL: Record<FacetKey, string> = {
 	status: "Status",
 	date: "Due",
 	person: "People",
+	medium: "Medium",
+	state: "State",
 };
 
 /** Which facets a kind offers at all (before checking whether the data can
@@ -125,6 +157,7 @@ const GROUP_LABEL: Record<FacetKey, string> = {
 export function facetsForKind(kind: LibraryItemKind): FacetKey[] {
 	if (kind === "todo") return ["status", "date", "person"];
 	if (kind === "project") return ["status", "person"];
+	if (kind === "media") return ["medium", "state"];
 	return [];
 }
 
@@ -152,6 +185,16 @@ function statusOf(item: LibraryItem): string | undefined {
 	return item.kind === "todo" || item.kind === "project"
 		? item.status
 		: undefined;
+}
+
+/** A Media row's medium, or undefined for any other kind. */
+function mediumOf(item: LibraryItem): string | undefined {
+	return item.kind === "media" ? item.medium : undefined;
+}
+
+/** A Media row's lifecycle state, or undefined for any other kind. */
+function stateOf(item: LibraryItem): string | undefined {
+	return item.kind === "media" ? item.state : undefined;
 }
 
 /** The Person ids a row is associated with, by kind:
@@ -184,6 +227,18 @@ function matchesStatus(item: LibraryItem, active: ActiveFacets): boolean {
 	if (active.statuses.size === 0) return true;
 	const s = statusOf(item);
 	return s != null && active.statuses.has(s);
+}
+
+function matchesMedium(item: LibraryItem, active: ActiveFacets): boolean {
+	if (active.mediums.size === 0) return true;
+	const m = mediumOf(item);
+	return m != null && active.mediums.has(m);
+}
+
+function matchesState(item: LibraryItem, active: ActiveFacets): boolean {
+	if (active.states.size === 0) return true;
+	const s = stateOf(item);
+	return s != null && active.states.has(s);
 }
 
 function matchesDate(
@@ -219,7 +274,9 @@ export function composeFacets(
 		(item) =>
 			matchesStatus(item, active) &&
 			matchesDate(item, active, now) &&
-			matchesPeople(item, active, allItems),
+			matchesPeople(item, active, allItems) &&
+			matchesMedium(item, active) &&
+			matchesState(item, active),
 	);
 }
 
@@ -229,6 +286,8 @@ function withoutOwn(active: ActiveFacets, key: FacetKey): ActiveFacets {
 	if (key === "status") return { ...active, statuses: new Set() };
 	if (key === "date") return { ...active, date: null };
 	if (key === "person") return { ...active, people: new Set() };
+	if (key === "medium") return { ...active, mediums: new Set() };
+	if (key === "state") return { ...active, states: new Set() };
 	return assertNever(key, "facet key");
 }
 
@@ -249,6 +308,14 @@ function valuesOf(
 		return b == null ? [] : [b];
 	}
 	if (key === "person") return associatedPersonIds(item, allItems);
+	if (key === "medium") {
+		const m = mediumOf(item);
+		return m == null ? [] : [m];
+	}
+	if (key === "state") {
+		const s = stateOf(item);
+		return s == null ? [] : [s];
+	}
 	return assertNever(key, "facet key");
 }
 
@@ -333,6 +400,32 @@ function presentPersonValues(
 		.map(({ value, label }) => ({ value, label }));
 }
 
+/** Medium values present in `ofKind`, in canonical `MEDIA_MEDIUMS` order, labelled. */
+function presentMediumValues(ofKind: readonly LibraryItem[]): FacetValue[] {
+	const present = new Set<string>();
+	for (const item of ofKind) {
+		const m = mediumOf(item);
+		if (m != null) present.add(m);
+	}
+	return MEDIA_MEDIUMS.filter((o) => present.has(o.value)).map((o) => ({
+		value: o.value,
+		label: o.label,
+	}));
+}
+
+/** State values present in `ofKind`, in canonical `MEDIA_STATES` order, labelled. */
+function presentStateValues(ofKind: readonly LibraryItem[]): FacetValue[] {
+	const present = new Set<string>();
+	for (const item of ofKind) {
+		const s = stateOf(item);
+		if (s != null) present.add(s);
+	}
+	return MEDIA_STATES.filter((o) => present.has(o.value)).map((o) => ({
+		value: o.value,
+		label: o.label,
+	}));
+}
+
 /** The facet groups to render for `ofKind`: a group appears only if the kind offers
  * it AND the UNFILTERED set holds ≥2 distinct values for it (so a facet that can't
  * partition the list never shows a dead single chip). Group/value membership is
@@ -353,7 +446,11 @@ export function deriveFacets(
 					? presentDateValues(ofKind, now)
 					: key === "person"
 						? presentPersonValues(ofKind, allItems)
-						: assertNever(key, "facet key");
+						: key === "medium"
+							? presentMediumValues(ofKind)
+							: key === "state"
+								? presentStateValues(ofKind)
+								: assertNever(key, "facet key");
 		if (values.length >= 2) {
 			groups.push({ key, label: GROUP_LABEL[key], values });
 		}

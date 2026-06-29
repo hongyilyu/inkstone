@@ -10,7 +10,7 @@ import {
 	isFacetActive,
 	toggleFacet,
 } from "./libraryFacets";
-import type { LibraryItem, Person, Project, Todo } from "./libraryItems";
+import type { LibraryItem, Media, Person, Project, Todo } from "./libraryItems";
 
 // A fixed "today" so the date-bucket math is deterministic: 2026-06-15.
 // Horizon for "Due soon" is +7 days → 2026-06-22.
@@ -52,6 +52,20 @@ function project(
 	};
 }
 
+function media(
+	id: string,
+	over: Partial<Media> & Pick<Media, "medium" | "state">,
+): Media {
+	return {
+		id,
+		kind: "media",
+		createdAt: "2026-06-01T00:00:00",
+		recency: 0,
+		title: id,
+		...over,
+	};
+}
+
 const ada = person("p1", "Ada");
 const grace = person("p2", "Grace");
 
@@ -83,12 +97,12 @@ const ALL: LibraryItem[] = [...TODOS, ada, grace];
 const ids = (items: LibraryItem[]) => items.map((i) => i.id).sort();
 
 describe("facetsForKind", () => {
-	it("offers status+date+person for todo, status+person for project, none else", () => {
+	it("offers status+date+person for todo, status+person for project, medium+state for media, none else", () => {
 		expect(facetsForKind("todo")).toEqual(["status", "date", "person"]);
 		expect(facetsForKind("project")).toEqual(["status", "person"]);
+		expect(facetsForKind("media")).toEqual(["medium", "state"]);
 		expect(facetsForKind("person")).toEqual([]);
 		expect(facetsForKind("journal_entry")).toEqual([]);
-		expect(facetsForKind("media")).toEqual([]);
 	});
 });
 
@@ -374,5 +388,143 @@ describe("deriveFacets", () => {
 		const all = [pr1, pr2, tp1, tp2, ada, grace];
 		const groups = deriveFacets("project", [pr1, pr2], all, NOW);
 		expect(groups.map((g) => g.key)).toEqual(["status", "person"]);
+	});
+});
+
+// Five media items spanning every medium and state bucket — the medium/state axes
+// are structurally identical to status/person (multi-select Set axes), just sourced
+// from `item.medium`/`item.state` and the MEDIA_MEDIUMS/MEDIA_STATES domains.
+const m1 = media("m1", { medium: "book", state: "backlog" });
+const m2 = media("m2", { medium: "book", state: "consuming" });
+const m3 = media("m3", { medium: "movie", state: "backlog" });
+const m4 = media("m4", { medium: "tv", state: "done" });
+const m5 = media("m5", { medium: "article", state: "abandoned" });
+const MEDIA: LibraryItem[] = [m1, m2, m3, m4, m5];
+
+describe("media medium/state facets", () => {
+	it("derives a medium group AND a state group in canonical domain order, labelled", () => {
+		const groups = deriveFacets("media", MEDIA, MEDIA, NOW);
+		const byKey = Object.fromEntries(groups.map((g) => [g.key, g]));
+		expect(groups.map((g) => g.key)).toEqual(["medium", "state"]);
+		expect(byKey.medium.label).toBe("Medium");
+		expect(byKey.state.label).toBe("State");
+		// Mediums follow MEDIA_MEDIUMS order ([link, article, book, tv, movie]),
+		// filtered to those present; "link" is absent so it drops out.
+		expect(byKey.medium.values.map((v) => v.value)).toEqual([
+			"article",
+			"book",
+			"tv",
+			"movie",
+		]);
+		expect(byKey.medium.values.map((v) => v.label)).toEqual([
+			"Article",
+			"Book",
+			"TV",
+			"Movie",
+		]);
+		// States follow MEDIA_STATES order ([backlog, consuming, done, abandoned]).
+		expect(byKey.state.values.map((v) => v.value)).toEqual([
+			"backlog",
+			"consuming",
+			"done",
+			"abandoned",
+		]);
+		expect(byKey.state.values.map((v) => v.label)).toEqual([
+			"Backlog",
+			"Consuming",
+			"Done",
+			"Abandoned",
+		]);
+	});
+
+	it("hides a media facet group that cannot partition (<2 distinct values)", () => {
+		// All books, all in distinct states → medium has a single value (no group),
+		// state still partitions.
+		const allBooks = [
+			media("b1", { medium: "book", state: "backlog" }),
+			media("b2", { medium: "book", state: "done" }),
+		];
+		const groups = deriveFacets("media", allBooks, allBooks, NOW);
+		expect(groups.map((g) => g.key)).toEqual(["state"]);
+	});
+
+	it("narrows by medium (book) only", () => {
+		const filtered = composeFacets(
+			MEDIA,
+			{ ...EMPTY_FACETS, mediums: new Set(["book"]) },
+			MEDIA,
+			NOW,
+		);
+		expect(ids(filtered)).toEqual(["m1", "m2"]);
+	});
+
+	it("ANDs across the medium and state axes (book AND backlog)", () => {
+		const filtered = composeFacets(
+			MEDIA,
+			{
+				...EMPTY_FACETS,
+				mediums: new Set(["book"]),
+				states: new Set(["backlog"]),
+			},
+			MEDIA,
+			NOW,
+		);
+		// m1 is book+backlog; m2 is book but consuming; m3 is backlog but movie.
+		expect(ids(filtered)).toEqual(["m1"]);
+	});
+
+	it("ORs within the medium axis (book OR movie)", () => {
+		const filtered = composeFacets(
+			MEDIA,
+			{ ...EMPTY_FACETS, mediums: new Set(["book", "movie"]) },
+			MEDIA,
+			NOW,
+		);
+		expect(ids(filtered)).toEqual(["m1", "m2", "m3"]);
+	});
+
+	it("ORs within the state axis (backlog OR done)", () => {
+		const filtered = composeFacets(
+			MEDIA,
+			{ ...EMPTY_FACETS, states: new Set(["backlog", "done"]) },
+			MEDIA,
+			NOW,
+		);
+		expect(ids(filtered)).toEqual(["m1", "m3", "m4"]);
+	});
+
+	it("counts mediums leave-one-out: ignores medium's own selection, honors state", () => {
+		// medium=book selected AND state=backlog. The medium chips ignore medium's
+		// own selection (so OR stays discoverable) but honor state=backlog.
+		const counts = facetCounts(
+			"medium",
+			MEDIA,
+			{
+				...EMPTY_FACETS,
+				mediums: new Set(["book"]),
+				states: new Set(["backlog"]),
+			},
+			MEDIA,
+			NOW,
+		);
+		// Backlog media: m1(book), m3(movie). Other mediums contribute nothing.
+		expect(counts.get("book")).toBe(1); // m1 — still counted despite medium=book
+		expect(counts.get("movie")).toBe(1); // m3 — the OR pivot stays visible
+		expect(counts.get("tv") ?? 0).toBe(0);
+		expect(counts.get("article") ?? 0).toBe(0);
+	});
+
+	it("toggles + reads the medium/state Set axes without mutating the input", () => {
+		const a0 = EMPTY_FACETS;
+		const a1 = toggleFacet(a0, "medium", "book");
+		expect(isFacetActive(a1, "medium", "book")).toBe(true);
+		expect(a0.mediums.size).toBe(0); // original untouched
+		expect(hasActiveFacets(a1)).toBe(true);
+		const a2 = toggleFacet(a1, "state", "backlog");
+		expect(isFacetActive(a2, "state", "backlog")).toBe(true);
+		// Re-toggling removes just that value.
+		const a3 = toggleFacet(a2, "medium", "book");
+		expect(isFacetActive(a3, "medium", "book")).toBe(false);
+		expect(isFacetActive(a3, "state", "backlog")).toBe(true);
 	});
 });
