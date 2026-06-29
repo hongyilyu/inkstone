@@ -18,7 +18,7 @@ export function dbPathFor(workspacePath: string): string {
 
 interface SeedEntity {
 	readonly id: string;
-	readonly type: "person" | "project" | "todo" | "journal_entry" | "bookmark";
+	readonly type: "person" | "project" | "todo" | "journal_entry" | "media";
 	readonly data: unknown;
 }
 

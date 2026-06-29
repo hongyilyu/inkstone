@@ -1,19 +1,19 @@
 // The promoted payload-schema registry (ADR-0009): the 15 agent-proposable wire
-// kinds moved here from `tests/contract`, plus the 3 ungated bookmark schemas
-// the Web codec consumes. This test pins the promotion (the registry is intact
-// and decodes) and guards the ungated boundary (bookmark is NOT in `schemas`,
-// so it stays out of the parity lock). The parity/completeness gates in
-// `tests/contract` — now sourcing the registry from here — remain the proof the
-// move is byte-for-byte behavior-preserving.
+// kinds moved here from `tests/contract`, plus the 3 ungated media schemas
+// (ADR-0059) the Web codec consumes. This test pins the promotion (the registry
+// is intact and decodes) and guards the ungated boundary (media is NOT in
+// `schemas`, so it stays out of the parity lock). The parity/completeness gates
+// in `tests/contract` — now sourcing the registry from here — remain the proof
+// the move is byte-for-byte behavior-preserving.
 
 import { Schema as S } from "effect";
 import { describe, expect, it } from "vitest";
 import {
 	applyIntentGraph,
-	createBookmark,
-	deleteBookmark,
+	createMedia,
+	deleteMedia,
 	schemas,
-	updateBookmark,
+	updateMedia,
 	type WireKind,
 } from "./index.js";
 
@@ -230,28 +230,63 @@ describe("apply_intent_graph payload (ADR-0042)", () => {
 	});
 });
 
-describe("ungated bookmark schemas (NOT in the proposable registry)", () => {
-	it("decodes a valid create_bookmark payload", () => {
-		const payload = { title: "Effect docs", url: "https://effect.website" };
-		expect(S.decodeUnknownSync(createBookmark)(payload)).toEqual(payload);
+describe("ungated media schemas (NOT in the proposable registry)", () => {
+	it("decodes a valid create_media payload", () => {
+		const payload = {
+			title: "Dune",
+			medium: "movie",
+			state: "done",
+			rating: 5,
+			url: "https://example.com/dune",
+		};
+		expect(S.decodeUnknownSync(createMedia)(payload)).toEqual(payload);
 	});
 
-	it("exports updateBookmark and deleteBookmark", () => {
+	it("exports updateMedia and deleteMedia", () => {
 		expect(
-			S.decodeUnknownSync(updateBookmark)({
-				entity_id: "b1",
+			S.decodeUnknownSync(updateMedia)({
+				entity_id: "m1",
 				title: "renamed",
+				medium: "book",
+				state: "backlog",
 			}),
-		).toEqual({ entity_id: "b1", title: "renamed" });
-		expect(S.decodeUnknownSync(deleteBookmark)({ entity_id: "b1" })).toEqual({
-			entity_id: "b1",
+		).toEqual({
+			entity_id: "m1",
+			title: "renamed",
+			medium: "book",
+			state: "backlog",
+		});
+		expect(S.decodeUnknownSync(deleteMedia)({ entity_id: "m1" })).toEqual({
+			entity_id: "m1",
 		});
 	});
 
-	it("keeps the bookmark kinds OUT of `schemas` (the ungated boundary)", () => {
+	it("validates the medium/state enums (rejects out-of-domain values)", () => {
+		// A valid Media object (in-domain medium + state) decodes.
+		const valid = { title: "1984", medium: "book", state: "consuming" };
+		expect(S.decodeUnknownSync(createMedia)(valid)).toEqual(valid);
+		// An out-of-domain `medium` is rejected by the S.Literal enum.
+		expect(() =>
+			S.decodeUnknownSync(createMedia)({
+				title: "x",
+				medium: "podcast",
+				state: "backlog",
+			}),
+		).toThrow();
+		// An out-of-domain `state` is rejected by the S.Literal enum.
+		expect(() =>
+			S.decodeUnknownSync(createMedia)({
+				title: "x",
+				medium: "book",
+				state: "reading",
+			}),
+		).toThrow();
+	});
+
+	it("keeps the media kinds OUT of `schemas` (the ungated boundary)", () => {
 		const keys = Object.keys(schemas) as WireKind[];
-		expect(keys).not.toContain("create_bookmark");
-		expect(keys).not.toContain("update_bookmark");
-		expect(keys).not.toContain("delete_bookmark");
+		expect(keys).not.toContain("create_media");
+		expect(keys).not.toContain("update_media");
+		expect(keys).not.toContain("delete_media");
 	});
 });

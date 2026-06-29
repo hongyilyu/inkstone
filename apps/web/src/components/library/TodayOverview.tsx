@@ -66,7 +66,7 @@ export function TodayOverview() {
 					tone="brand"
 					size="lg"
 					title="Your library is empty"
-					description="Library items show up here as you chat. Inkstone drafts the people, projects and todos it notices, and they land here once you accept the Proposal; bookmarks you save in the Library appear here right away."
+					description="Library items show up here as you chat. Inkstone drafts the people, projects and todos it notices, and they land here once you accept the Proposal; media you save in the Library appear here right away."
 					action={
 						<Button
 							variant="primary-icon"
@@ -203,8 +203,8 @@ export function TodayOverview() {
 			</Section>
 
 			{/* Cross-topic digest: calm entry points into the other topics so Today is
-			    a real hub, not just the GTD core. Health and Media are stub surfaces
-			    (ADR-0054 dec.5), so the cards link in WITHOUT fabricating any counts. */}
+			    a real hub, not just the GTD core. The cards link in WITHOUT fabricating
+			    any counts (ADR-0054 dec.5). */}
 			<Section title="Browse topics" delay={300}>
 				<div className="-mx-1 grid gap-2 sm:grid-cols-2">
 					<TopicDigest
@@ -217,7 +217,7 @@ export function TodayOverview() {
 						to="/library/media"
 						icon={Film}
 						label="Media"
-						blurb="Reading & watching — coming soon"
+						blurb="Your read & watch queue"
 					/>
 				</div>
 			</Section>
@@ -226,8 +226,8 @@ export function TodayOverview() {
 }
 
 /** One entry card in the cross-topic digest strip: a labelled link into a topic.
- * Honest copy only — Health/Media are stubs, so `blurb` names what the topic WILL
- * hold without inventing any stats (ADR-0054 dec.5). */
+ * Honest copy only — `blurb` names what the topic holds (or, for the Health stub,
+ * what it WILL hold) without inventing any stats (ADR-0054 dec.5). */
 function TopicDigest({
 	to,
 	icon: Icon,

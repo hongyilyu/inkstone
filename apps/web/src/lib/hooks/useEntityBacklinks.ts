@@ -12,7 +12,7 @@ import { useRuntime } from "@/runtime";
 
 /** The Entity kinds that can be an `entity_ref`/link target (ADR-0050) — the only
  * three that fire the backlinks read. Journal Entry is the SOURCE of mentions and
- * Bookmark is a read-only leaf, so neither needs it. */
+ * Media is a read-only leaf, so neither needs it. */
 function targetsBacklinks(kind: LibraryItemKind): boolean {
 	return kind === "person" || kind === "project" || kind === "todo";
 }
@@ -43,7 +43,7 @@ export function assembleBacklinks(result: EntityBacklinksResult): {
  * by Core's `entity/backlinks` read on detail-open: the distinct Journal Entries
  * that mention it (`mentionedIn`) and the Todos linked to it (`linkedTodos`). Only
  * Person/Project/Todo are link targets, so the query is `enabled` only for those —
- * a JE/Bookmark body never calls this (it passes no work to the runtime).
+ * a JE/Media body never calls this (it passes no work to the runtime).
  *
  * A Core-unreachable read REJECTS (surfacing as `isError`) rather than collapsing
  * to empty — the same discipline as `useLibraryItems`. The inspector decides the

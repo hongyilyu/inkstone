@@ -1,16 +1,20 @@
 import {
 	type EntityMutateParams,
 	type RecurrencePreviewParams,
-	readBookmarkData,
 	readJournalEntryData,
+	readMediaData,
 	readPersonData,
 	readProjectData,
 	readTodoData,
 } from "@inkstone/protocol";
 import { Schema as S } from "effect";
 import {
+	asMediaMedium,
+	asMediaState,
 	asProjectStatus,
 	asTodoStatus,
+	type MediaMedium,
+	type MediaState,
 	type ProjectStatus,
 	parseAliases,
 	RECURRENCE_UNITS,
@@ -19,11 +23,11 @@ import {
 	type TodoStatus,
 } from "@/lib/entityFields";
 import {
-	type Bookmark,
 	type EntitySource,
 	type JournalEntry,
 	type JournalEntryBodyNode,
 	localNowString,
+	type Media,
 	type Person,
 	type Project,
 	type RecurrenceRule,
@@ -42,7 +46,7 @@ import {
 const decodeTodoData = S.decodeUnknownSync(readTodoData);
 const decodePersonData = S.decodeUnknownSync(readPersonData);
 const decodeProjectData = S.decodeUnknownSync(readProjectData);
-const decodeBookmarkData = S.decodeUnknownSync(readBookmarkData);
+const decodeMediaData = S.decodeUnknownSync(readMediaData);
 const decodeJournalEntryData = S.decodeUnknownSync(readJournalEntryData);
 
 // The per-Entity-Type wire codec. THIS module owns each kind's row-input shape
@@ -304,26 +308,32 @@ function parseProject(row: LiveEntityRow): Project {
 }
 
 /**
- * Map a live `entity/list` row to the Library `Bookmark` view model (ADR-0036).
- * Every field is defensively defaulted so a sparse `data` cannot crash the
- * inspector — the trap the old non-optional `recipe.ingredients` array masked.
+ * Map a live `entity/list` row to the Library `Media` view model (ADR-0059).
+ * DEFAULT-TOLERANT: `medium`/`state` degrade to the migration's bookmark→media
+ * defaults (`link`/`done`) via the coercers, and every other field is defensively
+ * defaulted, so a sparse / pre-migration row cannot crash the inspector. `rating`
+ * is kept only when a number; `finished_at` only when a string.
  */
-function parseBookmark(row: LiveEntityRow): Bookmark {
-	const data = decodeBookmarkData(asRecord(row.data));
+function parseMedia(row: LiveEntityRow): Media {
+	const data = decodeMediaData(asRecord(row.data));
 	const tags = Array.isArray(data.tags)
 		? data.tags.filter((t): t is string => typeof t === "string")
 		: undefined;
 	return {
 		id: row.id,
-		kind: "bookmark",
+		kind: "media",
 		title: asString(data.title) ?? "Untitled",
+		medium: asMediaMedium(data.medium),
+		state: asMediaState(data.state),
+		rating: typeof data.rating === "number" ? data.rating : undefined,
+		finishedAt: asString(data.finished_at),
 		url: asString(data.url),
 		note: asString(data.note),
 		tags: tags && tags.length > 0 ? tags : undefined,
 		source: parseSource(row.source),
 		recency: row.created_at,
 		createdAt: new Date(row.created_at).toLocaleDateString(),
-	} satisfies Bookmark;
+	} satisfies Media;
 }
 
 /**
@@ -656,7 +666,7 @@ function buildUpdateParams(
 	// (todoDraftFromVm), so a trimmed-vs-untrimmed compare would emit a spurious
 	// title/note on an edit that never touched them — e.g. a quick-defer of a Todo
 	// whose stored title carries surrounding whitespace (silent re-title + note clear).
-	// (The Person/Project/Bookmark builders below carry the same untrimmed-prev
+	// (The Person/Project/Media builders below carry the same untrimmed-prev
 	// compare, but they full-REPLACE rather than partial-merge, so a false diff only
 	// re-sends the already-correct value — harmless. Trimmed here only where it bites.)
 	if (next.title.trim() !== prev.title.trim())
@@ -794,19 +804,33 @@ function buildPerson(
 }
 
 // ---------------------------------------------------------------------------
-// BOOKMARK build (full-document replace) — uses the promoted/ungated schema
-// (slice 1). Same full-replace shape as person: title always (the validator
-// requires it), url/note/tags when non-empty, cleared optional OMITTED (omit ≡
-// null under replace — never sentinel-null, so the built payload conforms to
-// `createBookmark`/`updateBookmark`). Returns null when nothing changed.
+// MEDIA build (full-document replace) — uses the ungated media schema (ADR-0059).
+// Same full-replace shape as person: title/medium/state always (the validator
+// requires them), url/note/tags/rating/finished_at when non-empty, a cleared
+// optional OMITTED (omit ≡ null under replace — never sentinel-null, so the built
+// payload conforms to `createMedia`/`updateMedia`). CRITICAL: `rating` +
+// `finished_at` are emitted ONLY in a terminal state (done/abandoned) — Core
+// rejects them otherwise — so a non-terminal state drops them even if the draft
+// still holds stale values. Returns null when nothing changed.
 // ---------------------------------------------------------------------------
 
-/** The editable shape of a Bookmark's scalar fields; `""` means absent/cleared. */
-export interface BookmarkDraft {
+/** The states in which `rating`/`finished_at` are meaningful (ADR-0059). */
+function isTerminalState(state: MediaState): boolean {
+	return state === "done" || state === "abandoned";
+}
+
+/** The editable shape of a Media item's scalar fields; `""` means absent/cleared. */
+export interface MediaDraft {
 	title: string;
+	medium: MediaMedium;
+	state: MediaState;
+	/** Rating as text, coerced to a number on build; only used in a terminal state. */
+	rating: string;
+	/** Finished date as a `YYYY-MM-DD` UI date; only used in a terminal state. */
+	finishedDay: string;
 	url: string;
 	note: string;
-	/** Tags as a comma-separated string; split on save (ADR-0036). */
+	/** Tags as a comma-separated string; split on save (ADR-0059). */
 	tags: string;
 }
 
@@ -822,64 +846,85 @@ function parseTags(raw: string): string[] {
 	];
 }
 
-/** The editable draft for a Bookmark (or a fresh blank draft when absent). */
-function bookmarkDraftFromVm(bookmark: Bookmark | undefined): BookmarkDraft {
+/** The editable draft for a Media item (or a fresh blank draft when absent). */
+function mediaDraftFromVm(media: Media | undefined): MediaDraft {
 	return {
-		title: bookmark?.title ?? "",
-		url: bookmark?.url ?? "",
-		note: bookmark?.note ?? "",
-		tags: bookmark?.tags?.join(", ") ?? "",
+		title: media?.title ?? "",
+		medium: media?.medium ?? "link",
+		state: media?.state ?? "backlog",
+		rating: media?.rating != null ? String(media.rating) : "",
+		finishedDay: media?.finishedAt ? media.finishedAt.slice(0, 10) : "",
+		url: media?.url ?? "",
+		note: media?.note ?? "",
+		tags: media?.tags?.join(", ") ?? "",
 	};
 }
 
-function buildBookmarkCreate(d: BookmarkDraft): EntityMutateParams {
-	const payload: Record<string, unknown> = { title: d.title.trim() };
-	if (d.url.trim()) payload.url = d.url.trim();
-	if (d.note.trim()) payload.note = d.note.trim();
+/**
+ * The shared full-document body for create/update: title/medium/state always,
+ * url/note/tags when non-empty, and rating/finished_at ONLY in a terminal state.
+ * `rating` is coerced to a number (dropped when not a finite number); a draft's
+ * `finishedDay` folds to a `T00:00:00` wall-clock string. Off-terminal, both are
+ * omitted regardless of the draft — Core rejects them in a non-terminal state.
+ */
+function buildMediaDoc(d: MediaDraft): Record<string, unknown> {
+	const doc: Record<string, unknown> = {
+		title: d.title.trim(),
+		medium: d.medium,
+		state: d.state,
+	};
+	if (isTerminalState(d.state)) {
+		const rating = Number(d.rating);
+		if (d.rating.trim() !== "" && Number.isFinite(rating)) doc.rating = rating;
+		if (d.finishedDay) doc.finished_at = dayToLocal(d.finishedDay);
+	}
+	if (d.url.trim()) doc.url = d.url.trim();
+	if (d.note.trim()) doc.note = d.note.trim();
 	const tags = parseTags(d.tags);
-	if (tags.length > 0) payload.tags = tags;
-	return { mutation_kind: "create_bookmark", payload };
+	if (tags.length > 0) doc.tags = tags;
+	return doc;
 }
 
-function buildBookmarkUpdate(
-	bookmark: Bookmark,
-	prev: BookmarkDraft,
-	next: BookmarkDraft,
+function buildMediaCreate(d: MediaDraft): EntityMutateParams {
+	return { mutation_kind: "create_media", payload: buildMediaDoc(d) };
+}
+
+function buildMediaUpdate(
+	media: Media,
+	prev: MediaDraft,
+	next: MediaDraft,
 ): EntityMutateParams | null {
 	const changed =
 		next.title.trim() !== prev.title ||
+		next.medium !== prev.medium ||
+		next.state !== prev.state ||
+		next.rating.trim() !== prev.rating ||
+		next.finishedDay !== prev.finishedDay ||
 		next.url.trim() !== prev.url ||
 		next.note.trim() !== prev.note ||
 		next.tags.trim() !== prev.tags;
 	if (!changed) return null;
 
-	const payload: Record<string, unknown> = {
-		entity_id: bookmark.id,
-		title: next.title.trim(),
+	return {
+		mutation_kind: "update_media",
+		payload: { entity_id: media.id, ...buildMediaDoc(next) },
 	};
-	const url = next.url.trim();
-	if (url) payload.url = url;
-	const note = next.note.trim();
-	if (note) payload.note = note;
-	const tags = parseTags(next.tags);
-	if (tags.length > 0) payload.tags = tags;
-	return { mutation_kind: "update_bookmark", payload };
 }
 
-/** The single BOOKMARK build entry the editor calls: dispatches on `mode`. */
-function buildBookmark(
+/** The single MEDIA build entry the editor calls: dispatches on `mode`. */
+function buildMedia(
 	input:
-		| { mode: "create"; draft: BookmarkDraft }
+		| { mode: "create"; draft: MediaDraft }
 		| {
 				mode: "update";
-				existing: Bookmark;
-				baseline: BookmarkDraft;
-				draft: BookmarkDraft;
+				existing: Media;
+				baseline: MediaDraft;
+				draft: MediaDraft;
 		  },
 ): EntityMutateParams | null {
 	return input.mode === "create"
-		? buildBookmarkCreate(input.draft)
-		: buildBookmarkUpdate(input.existing, input.baseline, input.draft);
+		? buildMediaCreate(input.draft)
+		: buildMediaUpdate(input.existing, input.baseline, input.draft);
 }
 
 // ---------------------------------------------------------------------------
@@ -1216,19 +1261,19 @@ function buildJournalReference(
 }
 
 export {
-	bookmarkDraftFromVm,
 	buildBody,
-	buildBookmark,
 	buildJournalEntry,
 	buildJournalReference,
+	buildMedia,
 	buildPerson,
 	buildProject,
 	buildRecurrencePreviewParams,
 	buildTodo,
 	journalDraftFromVm,
 	journalScalarsDiffer,
-	parseBookmark,
+	mediaDraftFromVm,
 	parseJournalEntry,
+	parseMedia,
 	parsePerson,
 	parseProject,
 	parseTodo,

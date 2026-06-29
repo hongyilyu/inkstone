@@ -171,16 +171,14 @@ describe("TodayOverview", () => {
 		).toContain("/library/media");
 	});
 
-	it("renders honest stub copy in the digest cards (no fabricated stats)", async () => {
+	it("renders honest digest copy (no fabricated stats)", async () => {
 		renderToday([todo("t_due", "Pay rent", { due_at: PAST })]);
 		await screen.findByRole("link", { name: /health/i });
-		// Both stub cards name what the topic WILL hold via a "coming soon" blurb,
-		// with no invented counts (ADR-0054 dec.5).
-		expect(screen.getAllByText(/coming soon/i).length).toBe(2);
+		// Health is still a stub ("coming soon"); Media is now live (ADR-0059), so its
+		// card names what the topic holds. Neither invents a count (ADR-0054 dec.5).
+		expect(screen.getAllByText(/coming soon/i).length).toBe(1);
 		expect(screen.getByText(/tracking — coming soon/i)).toBeInTheDocument();
-		expect(
-			screen.getByText(/reading & watching — coming soon/i),
-		).toBeInTheDocument();
+		expect(screen.getByText(/your read & watch queue/i)).toBeInTheDocument();
 	});
 
 	it("keeps the In-focus and Recently-captured sections on a populated landing", async () => {

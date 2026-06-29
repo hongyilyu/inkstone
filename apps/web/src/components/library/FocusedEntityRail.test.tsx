@@ -90,7 +90,7 @@ function seedItems() {
 		people: SEED.filter((r) => r.type === "person"),
 		projects: [],
 		todos: [],
-		bookmarks: [],
+		media: [],
 	});
 }
 

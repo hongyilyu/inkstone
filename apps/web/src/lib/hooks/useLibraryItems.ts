@@ -3,8 +3,8 @@ import { useQuery } from "@tanstack/react-query";
 import { Effect } from "effect";
 import {
 	type LiveEntityRow,
-	parseBookmark,
 	parseJournalEntry,
+	parseMedia,
 	parsePerson,
 	parseProject,
 	parseRowsDroppingMalformed,
@@ -19,7 +19,7 @@ export interface LibraryRows {
 	todos: readonly LiveEntityRow[];
 	people: readonly LiveEntityRow[];
 	projects: readonly LiveEntityRow[];
-	bookmarks: readonly LiveEntityRow[];
+	media: readonly LiveEntityRow[];
 }
 
 /** Map the five live row sets into one flat Library list, dropping any row that
@@ -36,11 +36,11 @@ export function assembleLibraryItems(rows: LibraryRows): LibraryItem[] {
 		...parseRowsDroppingMalformed("todo", rows.todos, parseTodo),
 		...parseRowsDroppingMalformed("person", rows.people, parsePerson),
 		...parseRowsDroppingMalformed("project", rows.projects, parseProject),
-		...parseRowsDroppingMalformed("bookmark", rows.bookmarks, parseBookmark),
+		...parseRowsDroppingMalformed("media", rows.media, parseMedia),
 	];
 }
 
-/** The Library's displayed items — live Journal/Todo/Person/Project/Bookmark rows
+/** The Library's displayed items — live Journal/Todo/Person/Project/Media rows
  * from Core. A Core-unreachable read REJECTS (surfacing as the query's `isError`)
  * rather than being swallowed to `[]`: an empty list and a failed read are
  * different states, and collapsing them showed every collection's first-run empty
@@ -55,14 +55,14 @@ export function useLibraryItems() {
 			const program = Effect.gen(function* () {
 				const client = yield* WsClient;
 				// Effect.all is sequential by default — set concurrency to fetch these reads concurrently.
-				const [journalEntries, todos, people, projects, bookmarks] =
+				const [journalEntries, todos, people, projects, media] =
 					yield* Effect.all(
 						[
 							client.listEntities("journal_entry"),
 							client.listEntities("todo"),
 							client.listEntities("person"),
 							client.listEntities("project"),
-							client.listEntities("bookmark"),
+							client.listEntities("media"),
 						],
 						{ concurrency: 2 },
 					);
@@ -71,7 +71,7 @@ export function useLibraryItems() {
 					todos: todos.entities,
 					people: people.entities,
 					projects: projects.entities,
-					bookmarks: bookmarks.entities,
+					media: media.entities,
 				};
 			});
 			// Let a Core-unreachable read reject — the query surfaces it as `isError`

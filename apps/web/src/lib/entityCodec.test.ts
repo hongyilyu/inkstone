@@ -1,19 +1,17 @@
-import { createBookmark, updateBookmark } from "@inkstone/protocol";
+import { createMedia, updateMedia } from "@inkstone/protocol";
 import { Schema as S } from "effect";
 import { describe, expect, it } from "vitest";
 import type {
-	Bookmark,
 	JournalEntry,
+	Media,
 	Person,
 	Project,
 	Todo,
 } from "@/lib/libraryItems";
 import {
-	type BookmarkDraft,
-	bookmarkDraftFromVm,
-	buildBookmark,
 	buildJournalEntry,
 	buildJournalReference,
+	buildMedia,
 	buildPerson,
 	buildProject,
 	buildRecurrencePreviewParams,
@@ -22,10 +20,12 @@ import {
 	journalDraftFromVm,
 	journalScalarsDiffer,
 	type LiveEntityRow,
+	type MediaDraft,
+	mediaDraftFromVm,
 	type PersonDraft,
 	type ProjectDraft,
-	parseBookmark,
 	parseJournalEntry,
+	parseMedia,
 	parsePerson,
 	parseProject,
 	parseTodo,
@@ -555,7 +555,7 @@ describe("entityCodec parse — fail-soft decode never throws (slice-2 contract)
 		{ name: "todo", parse: parseTodo, titleKey: "title" as const },
 		{ name: "person", parse: parsePerson, titleKey: "name" as const },
 		{ name: "project", parse: parseProject, titleKey: "name" as const },
-		{ name: "bookmark", parse: parseBookmark, titleKey: "title" as const },
+		{ name: "media", parse: parseMedia, titleKey: "title" as const },
 	];
 
 	for (const { name, parse } of failSoft) {
@@ -581,45 +581,72 @@ describe("entityCodec parse — fail-soft decode never throws (slice-2 contract)
 	}
 });
 
-describe("entityCodec parse — bookmark", () => {
+describe("entityCodec parse — media", () => {
 	const row = (data: unknown): LiveEntityRow => ({
-		id: "b_1",
+		id: "m_1",
 		data,
 		created_at: 5000,
 	});
 
 	it("parses a full row", () => {
-		const vm = parseBookmark(
+		const vm = parseMedia(
 			row({
-				title: "Effect docs",
-				url: "https://effect.website",
-				note: "schemas",
-				tags: ["ts", "effect"],
+				title: "Dune",
+				medium: "book",
+				state: "done",
+				rating: 5,
+				finished_at: "2026-06-20T00:00:00",
+				url: "https://example.com/dune",
+				note: "reread",
+				tags: ["scifi", "classic"],
 			}),
 		);
-		expect(vm.id).toBe("b_1");
-		expect(vm.kind).toBe("bookmark");
-		expect(vm.title).toBe("Effect docs");
-		expect(vm.url).toBe("https://effect.website");
-		expect(vm.note).toBe("schemas");
-		expect(vm.tags).toEqual(["ts", "effect"]);
+		expect(vm.id).toBe("m_1");
+		expect(vm.kind).toBe("media");
+		expect(vm.title).toBe("Dune");
+		expect(vm.medium).toBe("book");
+		expect(vm.state).toBe("done");
+		expect(vm.rating).toBe(5);
+		expect(vm.finishedAt).toBe("2026-06-20T00:00:00");
+		expect(vm.url).toBe("https://example.com/dune");
+		expect(vm.note).toBe("reread");
+		expect(vm.tags).toEqual(["scifi", "classic"]);
 		expect(vm.recency).toBe(5000);
 	});
 
-	it("defaults the title to Untitled on a sparse row", () => {
-		const vm = parseBookmark(row({}));
+	// DEFAULT-TOLERANT (ADR-0059): a sparse / pre-migration row missing medium/state
+	// must never crash the inspector — it degrades to medium='link', state='done'
+	// (the migration's bookmark→media defaults), like asTodoStatus degrades.
+	it("default-tolerates a sparse row missing medium/state (degrade, never crash)", () => {
+		const vm = parseMedia(row({ title: "A saved link" }));
+		expect(vm.title).toBe("A saved link");
+		expect(vm.medium).toBe("link");
+		expect(vm.state).toBe("done");
+		expect(vm.rating).toBeUndefined();
+		expect(vm.finishedAt).toBeUndefined();
+	});
+
+	it("degrades an out-of-domain medium/state to the default", () => {
+		const vm = parseMedia(row({ title: "x", medium: "podcast", state: "reading" }));
+		expect(vm.medium).toBe("link");
+		expect(vm.state).toBe("done");
+	});
+
+	it("defaults the title to Untitled on an empty row", () => {
+		const vm = parseMedia(row({}));
 		expect(vm.title).toBe("Untitled");
-		expect(vm.url).toBeUndefined();
-		expect(vm.tags).toBeUndefined();
+		expect(vm.medium).toBe("link");
+		expect(vm.state).toBe("done");
 	});
 
 	it("filters non-string tags and yields undefined when none remain", () => {
-		expect(parseBookmark(row({ tags: ["a", 1, "b"] })).tags).toEqual([
-			"a",
-			"b",
-		]);
-		expect(parseBookmark(row({ tags: [1, 2] })).tags).toBeUndefined();
-		expect(parseBookmark(row({ tags: [] })).tags).toBeUndefined();
+		expect(parseMedia(row({ tags: ["a", 1, "b"] })).tags).toEqual(["a", "b"]);
+		expect(parseMedia(row({ tags: [1, 2] })).tags).toBeUndefined();
+		expect(parseMedia(row({ tags: [] })).tags).toBeUndefined();
+	});
+
+	it("drops a non-number rating", () => {
+		expect(parseMedia(row({ state: "done", rating: "5" })).rating).toBeUndefined();
 	});
 });
 
@@ -1409,99 +1436,127 @@ describe("entityCodec build — person update", () => {
 	});
 });
 
-describe("entityCodec build — bookmark create", () => {
-	const draft = (over: Partial<BookmarkDraft> = {}): BookmarkDraft => ({
-		...bookmarkDraftFromVm(undefined),
+describe("entityCodec build — media create", () => {
+	const draft = (over: Partial<MediaDraft> = {}): MediaDraft => ({
+		...mediaDraftFromVm(undefined),
 		...over,
 	});
 
-	it("emits create_bookmark with only the filled fields (title-only)", () => {
+	it("emits create_media with the required title/medium/state (non-terminal omits rating/finished)", () => {
 		expect(
-			buildBookmark({ mode: "create", draft: draft({ title: "Effect docs" }) }),
+			buildMedia({
+				mode: "create",
+				draft: draft({ title: "Dune", medium: "book", state: "consuming" }),
+			}),
 		).toEqual({
-			mutation_kind: "create_bookmark",
-			payload: { title: "Effect docs" },
+			mutation_kind: "create_media",
+			payload: { title: "Dune", medium: "book", state: "consuming" },
 		});
 	});
 
-	it("includes url/note and dedups tags as a plain string[] when given", () => {
+	it("includes rating/finished_at on a terminal state, and url/note/dedup tags", () => {
 		expect(
-			buildBookmark({
+			buildMedia({
 				mode: "create",
 				draft: draft({
-					title: "Effect docs",
-					url: "https://effect.website",
-					note: "Great reference",
-					tags: "effect, ts, effect",
+					title: "The Matrix",
+					medium: "movie",
+					state: "done",
+					rating: "5",
+					finishedDay: "2026-06-20",
+					url: "https://example.com",
+					note: "rewatch",
+					tags: "scifi, action, scifi",
 				}),
 			}),
 		).toEqual({
-			mutation_kind: "create_bookmark",
+			mutation_kind: "create_media",
 			payload: {
-				title: "Effect docs",
-				url: "https://effect.website",
-				note: "Great reference",
-				tags: ["effect", "ts"],
+				title: "The Matrix",
+				medium: "movie",
+				state: "done",
+				rating: 5,
+				finished_at: "2026-06-20T00:00:00",
+				url: "https://example.com",
+				note: "rewatch",
+				tags: ["scifi", "action"],
 			},
 		});
 	});
 
-	// The bookmark round-trip is the ONLY guard on the promoted (ungated) bookmark
-	// schemas (no Rust fixture) — so prove the built payload decodes against the
-	// shipped @inkstone/protocol schema. Create/update have NO sentinel-null, so a
+	it("omits rating/finished_at when the state is non-terminal even if the draft holds them", () => {
+		// Core REJECTS rating/finished on a non-terminal state — the build must drop
+		// the stale values rather than emit a payload Core would reject.
+		expect(
+			buildMedia({
+				mode: "create",
+				draft: draft({
+					title: "Inception",
+					medium: "movie",
+					state: "backlog",
+					rating: "4",
+					finishedDay: "2026-06-20",
+				}),
+			}),
+		).toEqual({
+			mutation_kind: "create_media",
+			payload: { title: "Inception", medium: "movie", state: "backlog" },
+		});
+	});
+
+	// The media round-trip is the ONLY guard on the ungated media schemas (no Rust
+	// fixture) — so prove the built payload decodes against the shipped
+	// @inkstone/protocol schema. Create/update have NO sentinel-null, so a
 	// schema-decode is valid here (unlike todo's update).
-	it("the built create payload decodes against createBookmark", () => {
-		const params = buildBookmark({
+	it("the built create payload decodes against createMedia", () => {
+		const params = buildMedia({
 			mode: "create",
 			draft: draft({
-				title: "Effect docs",
-				url: "https://effect.website",
-				note: "Great reference",
-				tags: "effect, ts",
+				title: "Dune",
+				medium: "book",
+				state: "done",
+				rating: "5",
+				finishedDay: "2026-06-20",
+				url: "https://example.com",
+				note: "reread",
+				tags: "scifi",
 			}),
 		});
 		expect(params).not.toBeNull();
 		expect(
-			S.decodeUnknownSync(createBookmark)(
-				(params as { payload: unknown }).payload,
-			),
+			S.decodeUnknownSync(createMedia)((params as { payload: unknown }).payload),
 		).toEqual((params as { payload: unknown }).payload);
 	});
 });
 
-describe("entityCodec build — bookmark update", () => {
-	const existing: Bookmark = {
-		id: "b_e1",
-		kind: "bookmark",
-		title: "Effect docs",
+describe("entityCodec build — media update", () => {
+	const existing: Media = {
+		id: "m_e1",
+		kind: "media",
+		title: "Dune",
+		medium: "book",
+		state: "backlog",
 		recency: 1,
 		createdAt: "fixture",
 	};
-	const edit = (bookmark: Bookmark, over: Partial<BookmarkDraft>) => {
-		const baseline = bookmarkDraftFromVm(bookmark);
-		return buildBookmark({
+	const edit = (media: Media, over: Partial<MediaDraft>) => {
+		const baseline = mediaDraftFromVm(media);
+		return buildMedia({
 			mode: "update",
-			existing: bookmark,
+			existing: media,
 			baseline,
 			draft: { ...baseline, ...over },
 		});
 	};
 
-	it("replays url + note + tags when only the title changes (full-replace)", () => {
-		const withOptionals: Bookmark = {
-			...existing,
-			url: "https://effect.website",
-			note: "Great reference",
-			tags: ["effect", "ts"],
-		};
-		expect(edit(withOptionals, { title: "Effect — docs" })).toEqual({
-			mutation_kind: "update_bookmark",
+	it("replays medium + state when only the title changes (full-replace)", () => {
+		expect(edit(existing, { title: "Dune (Messiah)" })).toEqual({
+			mutation_kind: "update_media",
 			payload: {
-				entity_id: "b_e1",
-				title: "Effect — docs",
-				url: "https://effect.website",
-				note: "Great reference",
-				tags: ["effect", "ts"],
+				entity_id: "m_e1",
+				title: "Dune (Messiah)",
+				medium: "book",
+				state: "backlog",
 			},
 		});
 	});
@@ -1510,32 +1565,48 @@ describe("entityCodec build — bookmark update", () => {
 		expect(edit(existing, {})).toBeNull();
 	});
 
-	it("omits cleared optionals from the full doc (omit ≡ null), title still present", () => {
-		const withOptionals: Bookmark = {
+	it("omits a cleared rating from the full doc (omit ≡ null), terminal state present", () => {
+		const done: Media = {
 			...existing,
-			url: "https://effect.website",
-			note: "Old note",
-			tags: ["effect"],
+			state: "done",
+			rating: 5,
+			finishedAt: "2026-06-20T00:00:00",
 		};
-		expect(edit(withOptionals, { url: "", note: "", tags: "" })).toEqual({
-			mutation_kind: "update_bookmark",
-			payload: { entity_id: "b_e1", title: "Effect docs" },
+		expect(edit(done, { rating: "" })).toEqual({
+			mutation_kind: "update_media",
+			payload: {
+				entity_id: "m_e1",
+				title: "Dune",
+				medium: "book",
+				state: "done",
+				finished_at: "2026-06-20T00:00:00",
+			},
 		});
 	});
 
-	it("the built update payload decodes against updateBookmark", () => {
-		const withOptionals: Bookmark = {
+	it("drops rating/finished when the state moves off terminal", () => {
+		const done: Media = {
 			...existing,
-			url: "https://effect.website",
-			note: "Great reference",
-			tags: ["effect", "ts"],
+			state: "done",
+			rating: 5,
+			finishedAt: "2026-06-20T00:00:00",
 		};
-		const params = edit(withOptionals, { title: "Effect — docs" });
+		expect(edit(done, { state: "consuming" })).toEqual({
+			mutation_kind: "update_media",
+			payload: {
+				entity_id: "m_e1",
+				title: "Dune",
+				medium: "book",
+				state: "consuming",
+			},
+		});
+	});
+
+	it("the built update payload decodes against updateMedia", () => {
+		const params = edit(existing, { title: "Dune (Messiah)" });
 		expect(params).not.toBeNull();
 		expect(
-			S.decodeUnknownSync(updateBookmark)(
-				(params as { payload: unknown }).payload,
-			),
+			S.decodeUnknownSync(updateMedia)((params as { payload: unknown }).payload),
 		).toEqual((params as { payload: unknown }).payload);
 	});
 });

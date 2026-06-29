@@ -63,7 +63,7 @@ function compareForKind(
 				const db = tb.dueAt ?? "￿";
 				return da.localeCompare(db) || b.recency - a.recency;
 			};
-		case "bookmark":
+		case "media":
 			return (a, b) => b.recency - a.recency;
 	}
 }

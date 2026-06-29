@@ -3,12 +3,13 @@ import {
 	Outlet,
 	useNavigate,
 	useParams,
+	useRouterState,
 	useSearch,
 } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
-import { BookmarkEditor } from "@/components/library/BookmarkEditor";
 import { EntityDetail } from "@/components/library/EntityDetail";
 import { JournalEntryEditor } from "@/components/library/JournalEntryEditor";
+import { MediaEditor } from "@/components/library/MediaEditor";
 import { PersonEditor } from "@/components/library/PersonEditor";
 import { ProjectEditor } from "@/components/library/ProjectEditor";
 import { TodoEditor } from "@/components/library/TodoEditor";
@@ -35,13 +36,24 @@ function LibraryLayout() {
 	const navigate = useNavigate();
 	const { data } = useLibraryItems();
 
+	const pathname = useRouterState({ select: (s) => s.location.pathname });
 	const slug = typeof params.kind === "string" ? params.kind : undefined;
 	const id =
 		"id" in search && typeof search.id === "string" ? search.id : undefined;
 	const creating = "new" in search && search.new === true;
+	// The Media topic is a STATIC route (`/library/media`), not `$kind`, so it
+	// carries no `params.kind`. Its slug ("media") collides with the `$kind` route,
+	// so the collection lives behind the static route and selection/create ride the
+	// search on it (ADR-0059). Resolve the kind from the slug, else from the media
+	// pathname, so the rail can mount the Media create editor + detail there.
+	const onMediaRoute = pathname === "/library/media";
 	// On a collection the selection is constrained to that kind; on Today there's
 	// no kind, so resolve by id across every item.
-	const kind = slug ? libraryItemKindForSlug(slug) : undefined;
+	const kind = slug
+		? libraryItemKindForSlug(slug)
+		: onMediaRoute
+			? ("media" as const)
+			: undefined;
 	const selected = id
 		? (data?.find((e) => e.id === id && (kind ? e.kind === kind : true)) ??
 			null)
@@ -55,17 +67,27 @@ function LibraryLayout() {
 		setManualCollapsed(null);
 	}, [selected?.id, creating]);
 
-	// `?new=1` closes the editor back to the bare collection.
-	const closeCreate = () =>
-		slug &&
-		navigate({ to: "/library/$kind", params: { kind: slug }, search: {} });
-	const openCreated = (newId: string) =>
-		slug &&
-		navigate({
-			to: "/library/$kind",
-			params: { kind: slug },
-			search: { id: newId },
-		});
+	// `?new=1` closes the editor back to the bare collection. On the static Media
+	// route there's no `$kind` slug, so route in-place (`to: "."`) — the create
+	// flow's search rides the current `/library/media` path (ADR-0059).
+	const closeCreate = () => {
+		if (slug) {
+			navigate({ to: "/library/$kind", params: { kind: slug }, search: {} });
+		} else if (onMediaRoute) {
+			navigate({ to: ".", search: {} });
+		}
+	};
+	const openCreated = (newId: string) => {
+		if (slug) {
+			navigate({
+				to: "/library/$kind",
+				params: { kind: slug },
+				search: { id: newId },
+			});
+		} else if (onMediaRoute) {
+			navigate({ to: ".", search: { id: newId } });
+		}
+	};
 
 	// The Journal Entry editor (create or edit) needs a wider rail for its body
 	// editor; everything else uses the default width.
@@ -140,8 +162,8 @@ function CreateEditor({
 			<JournalEntryEditor mode="create" onDone={onDone} onCancel={onCancel} />
 		);
 	}
-	if (kind === "bookmark") {
-		return <BookmarkEditor mode="create" onDone={onDone} onCancel={onCancel} />;
+	if (kind === "media") {
+		return <MediaEditor mode="create" onDone={onDone} onCancel={onCancel} />;
 	}
 	return (
 		<TodoEditor

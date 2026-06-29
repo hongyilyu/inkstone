@@ -88,7 +88,7 @@ describe("facetsForKind", () => {
 		expect(facetsForKind("project")).toEqual(["status", "person"]);
 		expect(facetsForKind("person")).toEqual([]);
 		expect(facetsForKind("journal_entry")).toEqual([]);
-		expect(facetsForKind("bookmark")).toEqual([]);
+		expect(facetsForKind("media")).toEqual([]);
 	});
 });
 
@@ -355,7 +355,7 @@ describe("deriveFacets", () => {
 
 	it("offers no facets for kinds without them", () => {
 		expect(deriveFacets("person", [ada, grace], ALL, NOW)).toEqual([]);
-		expect(deriveFacets("bookmark", [], ALL, NOW)).toEqual([]);
+		expect(deriveFacets("media", [], ALL, NOW)).toEqual([]);
 	});
 
 	it("derives status + person (no date) for a project collection", () => {

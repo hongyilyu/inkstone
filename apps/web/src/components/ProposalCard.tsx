@@ -95,8 +95,8 @@ import { Badge, type BadgeProps } from "./ui/badge.js";
 import { Button } from "./ui/button.js";
 import { Card } from "./ui/card.js";
 
-// The mutation kinds the Worker proposes (ADR-0025). Bookmarks and direct
-// entity-edits are user-CRUD-only (ADR-0033/0036) — never proposed — so the card
+// The mutation kinds the Worker proposes (ADR-0025). Media and direct
+// entity-edits are user-CRUD-only (ADR-0033/0059) — never proposed — so the card
 // has never rendered them; an unrecognized kind degrades through `fallbackView`.
 type ProposalKind =
 	| "create_journal_entry"
