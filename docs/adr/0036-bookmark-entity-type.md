@@ -1,5 +1,7 @@
 # Bookmark: a small user-curated Entity Type, replacing the `recipe` placeholder
 
+/ superseded by [ADR-0059 (media-entity-type)](./0059-media-entity-type.md) — Bookmark is replaced outright by the richer Media queue+log type (#252). The decisions below (user-CRUD-only, ungated parity, full-document replace, not journal-referenceable, the dispatch-table fan-out) carry forward to Media verbatim; only the field shape and the lifecycle state machine are new.
+
 The Library's `recipe` kind was visual-only scaffolding — a mock fixture with no
 Core schema, validator, or `mutation_kind`, and the one Library kind never read
 live (`useLibraryItems` fetches `journal_entry`/`todo`/`person`/`project` only),
