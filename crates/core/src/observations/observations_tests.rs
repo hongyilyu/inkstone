@@ -615,6 +615,20 @@ async fn observations_record_bodyweight_validate_and_query_filters() {
     assert_eq!(by_time[0].note.as_deref(), Some("morning"));
     assert_eq!(by_time[0].updated_at, by_time[0].created_at);
 
+    // bodyweight is relation-free (no entry in OBSERVATION_RELATIONS), so a
+    // related_entity_id query never matches it — proven here on the production
+    // descriptor path (unfiltered schema_keys), not just the synthetic-slice unit test.
+    let by_relation = query_observations(
+        &pool,
+        ObservationQuery {
+            related_entity_id: Some(recorded[0].id.clone()),
+            ..ObservationQuery::default()
+        },
+    )
+    .await
+    .expect("query bodyweight by related_entity_id");
+    assert!(by_relation.is_empty());
+
     let message_id_upper = "018f0000-0000-7000-8000-000000000001".to_ascii_uppercase();
     let journal_entry_id_upper = "018f0000-0000-7000-8000-000000000002".to_ascii_uppercase();
     let mut from_message = bodyweight_at("2026-06-02T07:30:00", json!(72.1));

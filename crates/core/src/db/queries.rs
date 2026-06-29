@@ -8,6 +8,7 @@ use uuid::Uuid;
 use super::observations::{
     ObservationFilter, ObservationRevisionRow, ObservationRow, ObservationSourceFilter,
 };
+use crate::mutation::{OBSERVATION_RELATIONS, ObservationRelation};
 
 // ─── threads ──────────────────────────────────────────────────────────
 
@@ -1250,6 +1251,20 @@ pub(super) async fn query_observations<'e, E>(
 where
     E: Executor<'e, Database = Sqlite>,
 {
+    query_observations_with_relations(executor, filter, OBSERVATION_RELATIONS).await
+}
+
+/// `query_observations` with the relation-descriptor table injected so a test can
+/// drive the `related_entity_id` filter with a synthetic slice. Production calls
+/// the public face above with [`OBSERVATION_RELATIONS`].
+async fn query_observations_with_relations<'e, E>(
+    executor: E,
+    filter: &ObservationFilter,
+    relations: &[ObservationRelation],
+) -> sqlx::Result<Vec<ObservationRow>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
     let mut query = QueryBuilder::<Sqlite>::new(
         "SELECT o.id, o.schema_key, o.schema_version, o.occurred_at, o.ended_at, \
                 o.values_json, o.note, o.created_at, o.updated_at, \
@@ -1300,11 +1315,12 @@ where
         }
     }
     if let Some(related_entity_id) = &filter.related_entity_id {
-        query.push(
-            " AND o.schema_key = 'habit.checkin' \
-              AND json_extract(o.values_json, '$.habit_id') = ",
+        push_related_entity_id_predicate(
+            &mut query,
+            relations,
+            &filter.schema_keys,
+            related_entity_id,
         );
-        query.push_bind(related_entity_id);
     }
 
     query.push(" ORDER BY o.occurred_at DESC, o.created_at DESC, o.id DESC");
@@ -1363,6 +1379,48 @@ where
                 )
                 .collect()
         })
+}
+
+/// Build the `related_entity_id` predicate as a descriptor-driven disjunction
+/// over `relations`. The candidate set is the descriptors whose `schema_key` is in
+/// `schema_keys` (when that filter is non-empty), else all descriptors. An EMPTY
+/// candidate set pushes `" AND 0"` so the `related_entity_id` filter matches zero
+/// rows — dropping the predicate would instead return everything. Each candidate
+/// contributes `(o.schema_key = ? AND json_extract(o.values_json, '$.<field>') = ?)`,
+/// OR-joined; `<field>` is the descriptor's `&'static` `json_field` (from the
+/// closed [`OBSERVATION_RELATIONS`] set, never user input — safe to interpolate).
+fn push_related_entity_id_predicate(
+    query: &mut QueryBuilder<'_, Sqlite>,
+    relations: &[ObservationRelation],
+    schema_keys: &[String],
+    related_entity_id: &str,
+) {
+    let candidates: Vec<&ObservationRelation> = relations
+        .iter()
+        .filter(|relation| {
+            schema_keys.is_empty()
+                || schema_keys
+                    .iter()
+                    .any(|key| key == relation.schema_key)
+        })
+        .collect();
+    if candidates.is_empty() {
+        query.push(" AND 0");
+        return;
+    }
+    query.push(" AND (");
+    let mut separated = query.separated(" OR ");
+    for relation in candidates {
+        separated.push("(o.schema_key = ");
+        separated.push_bind_unseparated(relation.schema_key);
+        separated.push_unseparated(format!(
+            " AND json_extract(o.values_json, '$.{}') = ",
+            relation.json_field
+        ));
+        separated.push_bind_unseparated(related_entity_id.to_string());
+        separated.push_unseparated(")");
+    }
+    query.push(")");
 }
 
 pub(super) async fn observation_revisions<'e, E>(
@@ -3056,4 +3114,212 @@ where
         .bind(SNIPPET_PAD)
         .fetch_all(executor)
         .await
+}
+
+#[cfg(test)]
+mod related_entity_id_filter_tests {
+    use super::*;
+    use crate::mutation::EntityType;
+    use sqlx::SqlitePool;
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+
+    const HABIT_DESCRIPTOR: ObservationRelation = ObservationRelation {
+        schema_key: "habit.checkin",
+        json_field: "habit_id",
+        target: EntityType::Habit,
+    };
+    const SYNTHETIC_DESCRIPTOR: ObservationRelation = ObservationRelation {
+        schema_key: "test.synthetic",
+        json_field: "person_id",
+        target: EntityType::Person,
+    };
+
+    fn predicate_sql(relations: &[ObservationRelation], schema_keys: &[String]) -> String {
+        let mut query = QueryBuilder::<Sqlite>::new("");
+        push_related_entity_id_predicate(&mut query, relations, schema_keys, "id");
+        query.sql().to_string()
+    }
+
+    #[test]
+    fn two_descriptor_slice_builds_or_disjunction() {
+        let sql = predicate_sql(&[HABIT_DESCRIPTOR, SYNTHETIC_DESCRIPTOR], &[]);
+        assert_eq!(
+            sql,
+            " AND ((o.schema_key = ? \
+             AND json_extract(o.values_json, '$.habit_id') = ?) \
+             OR (o.schema_key = ? \
+             AND json_extract(o.values_json, '$.person_id') = ?))"
+        );
+        // Four binds: (schema_key, related_entity_id) per descriptor.
+        assert_eq!(sql.matches('?').count(), 4);
+    }
+
+    #[test]
+    fn single_descriptor_slice_builds_single_clause() {
+        let sql = predicate_sql(&[HABIT_DESCRIPTOR], &[]);
+        assert_eq!(
+            sql,
+            " AND ((o.schema_key = ? \
+             AND json_extract(o.values_json, '$.habit_id') = ?))"
+        );
+        assert_eq!(sql.matches('?').count(), 2);
+    }
+
+    #[test]
+    fn schema_keys_filter_narrows_candidate_descriptors() {
+        let sql = predicate_sql(
+            &[HABIT_DESCRIPTOR, SYNTHETIC_DESCRIPTOR],
+            &["test.synthetic".to_string()],
+        );
+        assert_eq!(
+            sql,
+            " AND ((o.schema_key = ? \
+             AND json_extract(o.values_json, '$.person_id') = ?))"
+        );
+    }
+
+    #[test]
+    fn empty_candidate_set_pushes_and_zero() {
+        // schema_keys names only a relation-free schema → no candidate descriptor.
+        let sql = predicate_sql(
+            &[HABIT_DESCRIPTOR, SYNTHETIC_DESCRIPTOR],
+            &["bodyweight".to_string()],
+        );
+        assert_eq!(sql, " AND 0");
+        assert_eq!(sql.matches('?').count(), 0);
+    }
+
+    #[test]
+    fn empty_descriptor_slice_pushes_and_zero() {
+        let sql = predicate_sql(&[], &[]);
+        assert_eq!(sql, " AND 0");
+    }
+
+    async fn memory_pool() -> SqlitePool {
+        let options = SqliteConnectOptions::new()
+            .filename(":memory:")
+            .foreign_keys(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .expect("open in-memory sqlite");
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .expect("run migrations");
+        pool
+    }
+
+    async fn seed_entity(pool: &SqlitePool, id: &str, ty: &str) {
+        sqlx::query(
+            "INSERT INTO entities \
+             (id, type, schema_version, data, created_by, created_at, updated_at) \
+             VALUES (?1, ?2, 1, '{}', 'user', 1, 1)",
+        )
+        .bind(id)
+        .bind(ty)
+        .execute(pool)
+        .await
+        .expect("seed entity");
+    }
+
+    async fn seed_observation(
+        pool: &SqlitePool,
+        id: &str,
+        schema_key: &str,
+        occurred_at: &str,
+        values_json: &str,
+    ) {
+        sqlx::query(
+            "INSERT INTO observations \
+             (id, schema_key, schema_version, occurred_at, values_json, created_by, \
+              created_at, updated_at) \
+             VALUES (?1, ?2, 1, ?3, ?4, 'user', 1, 1)",
+        )
+        .bind(id)
+        .bind(schema_key)
+        .bind(occurred_at)
+        .bind(values_json)
+        .execute(pool)
+        .await
+        .expect("seed observation");
+    }
+
+    fn filter_by_related(id: &str) -> ObservationFilter {
+        ObservationFilter {
+            schema_keys: Vec::new(),
+            from: None,
+            to: None,
+            source: None,
+            related_entity_id: Some(id.to_string()),
+            limit: None,
+        }
+    }
+
+    /// Descriptor-driven `related_entity_id`: a SYNTHETIC second relation schema is
+    /// queryable purely by supplying its descriptor, habit.checkin is unchanged, and
+    /// a relation-free schema never matches.
+    #[tokio::test]
+    async fn descriptor_driven_related_entity_id_filter() {
+        let pool = memory_pool().await;
+        let habit_id = "018f0000-0000-7000-8000-0000000000a1";
+        let person_id = "018f0000-0000-7000-8000-0000000000a2";
+        seed_entity(&pool, habit_id, "habit").await;
+        seed_entity(&pool, person_id, "person").await;
+        seed_observation(
+            &pool,
+            "018f0000-0000-7000-8000-0000000000b1",
+            "habit.checkin",
+            "2026-06-01T07:30:00",
+            &format!("{{\"habit_id\":\"{habit_id}\",\"state\":\"done\"}}"),
+        )
+        .await;
+        seed_observation(
+            &pool,
+            "018f0000-0000-7000-8000-0000000000b2",
+            "test.synthetic",
+            "2026-06-01T08:30:00",
+            &format!("{{\"person_id\":\"{person_id}\"}}"),
+        )
+        .await;
+        seed_observation(
+            &pool,
+            "018f0000-0000-7000-8000-0000000000b3",
+            "bodyweight",
+            "2026-06-01T09:30:00",
+            "{\"kg\":72.4}",
+        )
+        .await;
+
+        let synthetic_slice = [HABIT_DESCRIPTOR, SYNTHETIC_DESCRIPTOR];
+
+        let by_person =
+            query_observations_with_relations(&pool, &filter_by_related(person_id), &synthetic_slice)
+                .await
+                .expect("query by person");
+        assert_eq!(by_person.len(), 1);
+        assert_eq!(by_person[0].schema_key, "test.synthetic");
+
+        let by_habit =
+            query_observations_with_relations(&pool, &filter_by_related(habit_id), &synthetic_slice)
+                .await
+                .expect("query by habit");
+        assert_eq!(by_habit.len(), 1);
+        assert_eq!(by_habit[0].schema_key, "habit.checkin");
+
+        // A relation-free schema's target id (here reuse the habit id) never matches
+        // when only the bodyweight schema is in scope: empty candidate set → no rows.
+        let bodyweight_scoped = query_observations_with_relations(
+            &pool,
+            &ObservationFilter {
+                schema_keys: vec!["bodyweight".to_string()],
+                ..filter_by_related(habit_id)
+            },
+            &synthetic_slice,
+        )
+        .await
+        .expect("query bodyweight scope");
+        assert!(bodyweight_scoped.is_empty());
+    }
 }

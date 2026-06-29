@@ -5,7 +5,7 @@ use uuid::Uuid;
 use crate::db;
 use crate::entities::parse_local_datetime;
 use crate::field_spec::{Field, FieldSpec, ObjErr, PayloadSpec};
-use crate::mutation::EntityType;
+use crate::mutation::{OBSERVATION_RELATIONS, ObservationRelation};
 
 const BODYWEIGHT_SCHEMA_KEY: &str = "bodyweight";
 const BODYWEIGHT_SCHEMA_VERSION: i64 = 1;
@@ -403,8 +403,8 @@ fn prepare_observation_snapshot(
         &values,
     )
     .map_err(ObservationError::Invalid)?;
-    let (values, relations) = relation_checks(schema.relation_fields, &values)
-        .map_err(ObservationError::Invalid)?;
+    let (values, relations) =
+        relation_checks(schema.key, &values).map_err(ObservationError::Invalid)?;
     let values_json = serde_json::to_string(&values)
         .map_err(|e| ObservationError::Internal(anyhow::Error::new(e)))?;
 
@@ -525,12 +525,6 @@ struct ObservationSchema {
     key_error: &'static str,
     version: i64,
     values: PayloadSpec,
-    relation_fields: &'static [ObservationRelationField],
-}
-
-struct ObservationRelationField {
-    name: &'static str,
-    target_entity_type: EntityType,
 }
 
 fn schema_for(schema_key: &str) -> Option<ObservationSchema> {
@@ -559,7 +553,6 @@ fn bodyweight_schema() -> ObservationSchema {
                 },
             )],
         ),
-        relation_fields: &[],
     }
 }
 
@@ -590,10 +583,6 @@ fn habit_checkin_schema() -> ObservationSchema {
                 ),
             ],
         ),
-        relation_fields: &[ObservationRelationField {
-            name: "habit_id",
-            target_entity_type: EntityType::Habit,
-        }],
     }
 }
 
@@ -641,7 +630,6 @@ fn nutrition_intake_schema() -> ObservationSchema {
                 Field::optional("label", FieldSpec::string()),
             ],
         ),
-        relation_fields: &[],
     }
 }
 
@@ -760,27 +748,37 @@ fn source_from_evidence(
     }
 }
 
+/// Normalize and validate a schema's relation fields, keyed off the closed
+/// [`OBSERVATION_RELATIONS`] descriptor table (the single source of truth shared
+/// with the `related_entity_id` query filter and the delete-block). Each
+/// descriptor whose `schema_key` matches contributes a [`db::ObservationRelationInsert`]
+/// carrying the canonicalized target id; the `db` write checks the target exists
+/// and is `target`.
 fn relation_checks(
-    fields: &'static [ObservationRelationField],
+    schema_key: &str,
     values: &Value,
 ) -> Result<(Value, Vec<db::ObservationRelationInsert>), String> {
+    let descriptors: Vec<&ObservationRelation> = OBSERVATION_RELATIONS
+        .iter()
+        .filter(|relation| relation.schema_key == schema_key)
+        .collect();
     let mut normalized_values = values.clone();
-    let mut relations = Vec::with_capacity(fields.len());
-    for field in fields {
-        let Some(entity_id) = values.get(field.name).and_then(Value::as_str) else {
-            return Err(format!("{} must be a UUID", field.name));
+    let mut relations = Vec::with_capacity(descriptors.len());
+    for relation in descriptors {
+        let Some(entity_id) = values.get(relation.json_field).and_then(Value::as_str) else {
+            return Err(format!("{} must be a UUID", relation.json_field));
         };
-        let canonical_entity_id = normalize_uuid(entity_id, field.name)?;
+        let canonical_entity_id = normalize_uuid(entity_id, relation.json_field)?;
         if let Some(object) = normalized_values.as_object_mut() {
             object.insert(
-                field.name.to_string(),
+                relation.json_field.to_string(),
                 Value::String(canonical_entity_id.clone()),
             );
         }
         relations.push(db::ObservationRelationInsert {
-            field_name: field.name,
+            field_name: relation.json_field,
             entity_id: canonical_entity_id,
-            target_entity_type: field.target_entity_type,
+            target_entity_type: relation.target,
         });
     }
     Ok((normalized_values, relations))
