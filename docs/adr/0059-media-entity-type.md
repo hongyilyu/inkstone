@@ -74,6 +74,20 @@ to preserve, so Bookmark is removed outright rather than bridged.
   `libraryFacets` gains **medium** and **state** facet axes (Bookmark offered
   none); the bespoke "queue+log signature view" is deferred to a follow-up.
 
+  - **Slug-collision routing.** `KIND_META.media.slug` is `"media"`, which collides
+    with the **static** `/library/media` topic route (ADR-0054) — every other kind
+    is browsed via the dynamic `/library/$kind` route. The static route wins
+    resolution (the desired browse home), so Media uniquely departs from the
+    uniform `/library/$kind` selection pattern: an entity selection rides `?id`
+    **in place** on the current route (`navigate({to: ".", search: {id}})`,
+    Today-style) rather than navigating to `/library/$kind`, and the shared rail in
+    `route.tsx` resolves `kind = "media"` from the `/library/media` pathname (no
+    `params.kind`) to mount the detail/editor. ⌘K activation still targets
+    `/library/$kind` with `kind="media"`; TanStack interpolates that to the path
+    `/library/media`, which the static route serves with `?id` intact — a
+    regression-tested path (`CommandPalette.test.tsx`), since it is the one slug
+    that shadows `$kind`.
+
 - **Gate-free, like Bookmark** (ADR-0009): because Media is user-CRUD-only, it has
   no Rust `PayloadSpec` in `ProposableMutation`, no `schemas` registry entry, no
   `fixtures/<kind>.json`, and is absent from the 15-kind `WIRE_KINDS` parity list.
