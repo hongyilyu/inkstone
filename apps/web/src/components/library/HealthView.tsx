@@ -65,6 +65,12 @@ export function HealthView({
 	// success refetches the stream and clears the submitted row's editor (only if it's
 	// still the active one — see the onSuccess guard below).
 	const [editingId, setEditingId] = useState<string | null>(null);
+	// The observation whose correction is in flight / last settled. One mutation
+	// instance is shared across all rows, so its `error`/`isPending` must be scoped to
+	// the row that started it: a save that FAILS after the user switched rows would
+	// otherwise surface its error in the now-open (different) editor. Pairs with the
+	// onSuccess guard below, which is the symmetric success-path scope.
+	const [correctingId, setCorrectingId] = useState<string | null>(null);
 	const correction = useObservationUpdate();
 	const correctionError =
 		correction.error == null
@@ -73,9 +79,9 @@ export function HealthView({
 				? correction.error.message
 				: "Couldn't save the correction. Try again.";
 
-	// One mutation instance backs every row's editor, so its error/pending state is
-	// shared. Reset it whenever the active editor changes (open, switch, or cancel)
-	// so a prior row's failed-save error never bleeds into a freshly opened form.
+	// Reset the shared mutation whenever the active editor changes (open, switch, or
+	// cancel) so a prior row's state never lingers; the `correctingId` scope above is
+	// what actually guarantees an out-of-order failure can't bleed across rows.
 	const openEditor = (id: string | null) => {
 		correction.reset();
 		setEditingId(id);
@@ -202,10 +208,20 @@ export function HealthView({
 													{editingId === item.id ? (
 														<ObservationCorrectionForm
 															item={item}
-															submitting={correction.isPending}
-															error={correctionError}
+															// Scope the shared mutation's pending/error to the row
+															// that started it: a save settling for another row must
+															// not show its spinner or error in this editor.
+															submitting={
+																correction.isPending && correctingId === item.id
+															}
+															error={
+																correctingId === item.id
+																	? correctionError
+																	: null
+															}
 															onCancel={() => openEditor(null)}
-															onSubmit={(params) =>
+															onSubmit={(params) => {
+																setCorrectingId(item.id);
 																correction.mutate(params, {
 																	// Close only if THIS row is still the active editor —
 																	// guards against a slow save resolving after the user
@@ -215,8 +231,8 @@ export function HealthView({
 																		setEditingId((current) =>
 																			current === item.id ? null : current,
 																		),
-																})
-															}
+																});
+															}}
 														/>
 													) : (
 														<button

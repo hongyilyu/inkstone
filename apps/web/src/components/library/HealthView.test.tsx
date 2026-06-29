@@ -60,9 +60,12 @@ const row = (
 
 // Day A (06-10): a bodyweight row sourced from a Journal Entry + a habit.checkin
 // row (no source). Day B (06-09): an unknown-schema row (no source).
-// A real UUID id: the correction form validates the assembled draft against
-// `ObservationUpdateParams`, whose `observation_id` carries the canonical UUID pattern.
+// Real UUID ids: the correction form validates the assembled draft against
+// `ObservationUpdateParams`, whose `observation_id` carries the canonical UUID pattern
+// — a non-UUID id would make the form's own draft validation (not the row's content)
+// surface an alert, which the cross-row error tests must be able to rule out.
 const BODYWEIGHT_ID = "01900000-0000-7000-8000-0000000000ab";
+const HABIT_ID = "01900000-0000-7000-8000-0000000000cd";
 const bodyweight = toObservationView(
 	row({
 		id: BODYWEIGHT_ID,
@@ -74,7 +77,7 @@ const bodyweight = toObservationView(
 );
 const habit = toObservationView(
 	row({
-		id: "hb",
+		id: HABIT_ID,
 		occurred_at: "2026-06-10T08:00:00",
 		schema_key: "habit.checkin",
 		values: { habit_id: "abcd1234-5678-9012-3456-7890abcdef00", state: "done" },
@@ -341,6 +344,36 @@ describe("HealthView", () => {
 				/^values$/i,
 			) as HTMLTextAreaElement;
 			expect(stillOpen.value).toContain("habit_id");
+		});
+
+		it("a slow save FAILING after the user switched rows does not surface its error in the new editor", async () => {
+			mockData(ALL);
+			render(<Stateful />);
+			// Open + submit row A (bodyweight) — this stamps it as the correcting row.
+			await userEvent.click(
+				screen.getAllByRole("button", { name: /^correct$/i })[0] as HTMLElement,
+			);
+			await userEvent.click(
+				screen.getByRole("button", { name: /save correction/i }),
+			);
+			// Switch to the habit row before A's save settles.
+			await userEvent.click(
+				screen.getAllByRole("button", { name: /^correct$/i })[0] as HTMLElement,
+			);
+			expect(
+				(screen.getByLabelText(/^values$/i) as HTMLTextAreaElement).value,
+			).toContain("habit_id");
+			// A's save now FAILS: the shared mutation holds A's error. Force a parent
+			// re-render (a benign filter-chip click that keeps the habit editor open) so
+			// the editor re-reads the surfaced error.
+			mutationError = new Error("server rejected row A");
+			await userEvent.click(screen.getByRole("button", { name: /habits/i }));
+			// The habit editor is still open, but A's error must NOT bleed into it
+			// (it's scoped to the correcting row, not whichever editor is open).
+			expect(
+				(screen.getByLabelText(/^values$/i) as HTMLTextAreaElement).value,
+			).toContain("habit_id");
+			expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 		});
 	});
 });
