@@ -78,6 +78,7 @@ const stub = WsClient.of({
 	},
 	getBacklinks: die,
 	observationQuery: die,
+	observationUpdate: die,
 	entityMutate: die,
 	messageSearch: (query) =>
 		query.trim().toLowerCase().includes("daycare")

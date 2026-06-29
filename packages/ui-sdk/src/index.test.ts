@@ -360,6 +360,40 @@ describe("WsClient", () => {
 		}
 	});
 
+	it("observationUpdate(params) sends observation/update and round-trips ObservationUpdateResult", async () => {
+		const expected = { observation_id: "01999999-0000-7000-8000-000000000050" };
+		const params = {
+			observation_id: "01999999-0000-7000-8000-000000000050",
+			observation: {
+				occurred_at: "2026-06-10T07:00:00",
+				ended_at: "2026-06-10T07:30:00",
+				values: { kg: 71.8 },
+				note: "corrected",
+			},
+		};
+		let observed: WireRequest | undefined;
+		const server = await makeServer((ws, req) => {
+			if (req.method === "observation/update") {
+				observed = req;
+				ws.send(
+					JSON.stringify({ jsonrpc: "2.0", id: req.id, result: expected }),
+				);
+			}
+		});
+		const program = Effect.gen(function* () {
+			const client = yield* WsClient;
+			return yield* client.observationUpdate(params);
+		});
+		try {
+			const result = await Effect.runPromise(provide(server.url)(program));
+			expect(result).toEqual(expected);
+			expect(observed?.method).toBe("observation/update");
+			expect(observed?.params).toEqual(params); // verbatim — proves { ...params } spread, no mangling
+		} finally {
+			await server.close();
+		}
+	});
+
 	it("getBacklinks(entityId) sends entity/backlinks with { entity_id } and round-trips EntityBacklinksResult", async () => {
 		const expected = {
 			mentioned_in: [

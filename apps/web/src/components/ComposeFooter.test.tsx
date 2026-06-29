@@ -29,6 +29,7 @@ function makeRuntime() {
 		listEntities: die,
 		getBacklinks: die,
 		observationQuery: die,
+		observationUpdate: die,
 		entityMutate: die,
 		subscribeRun: dieStream,
 		cancelRun: die,

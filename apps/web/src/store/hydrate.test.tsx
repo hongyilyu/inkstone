@@ -62,6 +62,7 @@ describe("refresh-durable hydration", () => {
 			listEntities: () => Effect.die("unused"),
 			getBacklinks: () => Effect.die("unused"),
 			observationQuery: () => Effect.die("unused"),
+			observationUpdate: () => Effect.die("unused"),
 			entityMutate: () => Effect.die("unused"),
 			threadGet: (id) =>
 				id === "tA" ? Effect.succeed(result) : Effect.die("unknown thread"),
@@ -149,6 +150,7 @@ describe("refresh-durable hydration", () => {
 			listEntities: () => Effect.die("unused"),
 			getBacklinks: () => Effect.die("unused"),
 			observationQuery: () => Effect.die("unused"),
+			observationUpdate: () => Effect.die("unused"),
 			entityMutate: () => Effect.die("unused"),
 			threadGet: (id) =>
 				id === "tTools" ? Effect.succeed(result) : Effect.die("unknown thread"),
@@ -226,6 +228,7 @@ describe("refresh-durable hydration", () => {
 			listEntities: () => Effect.die("unused"),
 			getBacklinks: () => Effect.die("unused"),
 			observationQuery: () => Effect.die("unused"),
+			observationUpdate: () => Effect.die("unused"),
 			entityMutate: () => Effect.die("unused"),
 			threadGet: (id) =>
 				id === "tReason"
@@ -304,6 +307,7 @@ describe("refresh-durable hydration", () => {
 			listEntities: () => Effect.die("unused"),
 			getBacklinks: () => Effect.die("unused"),
 			observationQuery: () => Effect.die("unused"),
+			observationUpdate: () => Effect.die("unused"),
 			entityMutate: () => Effect.die("unused"),
 			threadGet: (id) =>
 				id === "tProp" ? Effect.succeed(result) : Effect.die("unknown thread"),
@@ -381,6 +385,7 @@ describe("refresh-durable hydration", () => {
 			listEntities: () => Effect.die("unused"),
 			getBacklinks: () => Effect.die("unused"),
 			observationQuery: () => Effect.die("unused"),
+			observationUpdate: () => Effect.die("unused"),
 			entityMutate: () => Effect.die("unused"),
 			threadGet: (id) =>
 				id === "tSeg" ? Effect.succeed(result) : Effect.die("unknown thread"),
@@ -451,6 +456,7 @@ describe("refresh-durable hydration", () => {
 			listEntities: () => Effect.die("unused"),
 			getBacklinks: () => Effect.die("unused"),
 			observationQuery: () => Effect.die("unused"),
+			observationUpdate: () => Effect.die("unused"),
 			entityMutate: () => Effect.die("unused"),
 			threadGet: (id) =>
 				id === "tRej" ? Effect.succeed(result) : Effect.die("unknown thread"),
@@ -515,6 +521,7 @@ describe("refresh-durable hydration", () => {
 			listEntities: () => Effect.die("unused"),
 			getBacklinks: () => Effect.die("unused"),
 			observationQuery: () => Effect.die("unused"),
+			observationUpdate: () => Effect.die("unused"),
 			entityMutate: () => Effect.die("unused"),
 			threadGet: (id) =>
 				id === "tBad" ? Effect.succeed(result) : Effect.die("unknown thread"),
@@ -588,6 +595,7 @@ describe("refresh-durable hydration", () => {
 			listEntities: () => Effect.die("unused"),
 			getBacklinks: () => Effect.die("unused"),
 			observationQuery: () => Effect.die("unused"),
+			observationUpdate: () => Effect.die("unused"),
 			entityMutate: () => Effect.die("unused"),
 			threadGet: (id) =>
 				id === "tProp2" ? Effect.succeed(result) : Effect.die("unknown thread"),
@@ -656,6 +664,7 @@ describe("refresh-durable hydration", () => {
 			listEntities: () => Effect.die("unused"),
 			getBacklinks: () => Effect.die("unused"),
 			observationQuery: () => Effect.die("unused"),
+			observationUpdate: () => Effect.die("unused"),
 			entityMutate: () => Effect.die("unused"),
 			threadGet: (id) =>
 				id === "tB" ? Effect.succeed(result) : Effect.die("unknown thread"),
@@ -742,6 +751,7 @@ describe("refresh-durable hydration", () => {
 			listEntities: () => Effect.die("unused"),
 			getBacklinks: () => Effect.die("unused"),
 			observationQuery: () => Effect.die("unused"),
+			observationUpdate: () => Effect.die("unused"),
 			entityMutate: () => Effect.die("unused"),
 			threadGet: (id) =>
 				id === "tC" ? Deferred.await(gate) : Effect.die("unknown thread"),
@@ -819,6 +829,7 @@ describe("refresh-durable hydration", () => {
 			listEntities: () => Effect.die("unused"),
 			getBacklinks: () => Effect.die("unused"),
 			observationQuery: () => Effect.die("unused"),
+			observationUpdate: () => Effect.die("unused"),
 			entityMutate: () => Effect.die("unused"),
 			threadGet: (id) =>
 				id === "tD" ? Deferred.await(gate) : Effect.die("unknown thread"),
@@ -893,6 +904,7 @@ describe("refresh-durable hydration", () => {
 			listEntities: () => Effect.die("unused"),
 			getBacklinks: () => Effect.die("unused"),
 			observationQuery: () => Effect.die("unused"),
+			observationUpdate: () => Effect.die("unused"),
 			entityMutate: () => Effect.die("unused"),
 			threadGet: () =>
 				Effect.fail(new UnknownThreadError({ message: "no such thread" })),
@@ -939,6 +951,7 @@ describe("refresh-durable hydration", () => {
 			listEntities: () => Effect.die("unused"),
 			getBacklinks: () => Effect.die("unused"),
 			observationQuery: () => Effect.die("unused"),
+			observationUpdate: () => Effect.die("unused"),
 			entityMutate: () => Effect.die("unused"),
 			threadGet: () =>
 				Effect.fail(
@@ -985,6 +998,7 @@ describe("refresh-durable hydration", () => {
 			listEntities: () => Effect.die("unused"),
 			getBacklinks: () => Effect.die("unused"),
 			observationQuery: () => Effect.die("unused"),
+			observationUpdate: () => Effect.die("unused"),
 			entityMutate: () => Effect.die("unused"),
 			threadGet: (id) =>
 				id === "tRace" ? Deferred.await(gate) : Effect.die("unknown thread"),
@@ -1046,6 +1060,7 @@ describe("refresh-durable hydration", () => {
 			listEntities: () => Effect.die("unused"),
 			getBacklinks: () => Effect.die("unused"),
 			observationQuery: () => Effect.die("unused"),
+			observationUpdate: () => Effect.die("unused"),
 			entityMutate: () => Effect.die("unused"),
 			threadGet: () => Effect.fail(new WsRequestError({ reason: "boom" })),
 			threadRename: () => Effect.die("unused"),
@@ -1097,6 +1112,7 @@ describe("refresh-durable hydration", () => {
 			listEntities: () => Effect.die("unused"),
 			getBacklinks: () => Effect.die("unused"),
 			observationQuery: () => Effect.die("unused"),
+			observationUpdate: () => Effect.die("unused"),
 			entityMutate: () => Effect.die("unused"),
 			threadGet: () => Effect.succeed(ok),
 			threadRename: () => Effect.die("unused"),

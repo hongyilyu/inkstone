@@ -31,6 +31,7 @@ function makeRuntime(recurrencePreview: WsClient["Type"]["recurrencePreview"]) {
 		listEntities: () => unused,
 		getBacklinks: () => unused,
 		observationQuery: () => unused,
+		observationUpdate: () => unused,
 		entityMutate: () => unused,
 		subscribeRun: () => unused,
 		cancelRun: () => unused,

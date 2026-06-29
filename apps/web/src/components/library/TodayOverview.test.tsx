@@ -37,6 +37,7 @@ function makeRuntime(todos: Rows, projects: Rows = []) {
 		},
 		getBacklinks: () => unused,
 		observationQuery: () => unused,
+		observationUpdate: () => unused,
 		entityMutate: () => unused,
 		subscribeRun: () => Stream.empty,
 		cancelRun: () => unused,

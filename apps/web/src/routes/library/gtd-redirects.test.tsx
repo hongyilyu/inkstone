@@ -32,6 +32,7 @@ function emptyRuntime() {
 		listEntities: () => Effect.succeed({ entities: [] }),
 		getBacklinks: () => unused,
 		observationQuery: () => unused,
+		observationUpdate: () => unused,
 		entityMutate: () => unused,
 		subscribeRun: () => Stream.empty,
 		cancelRun: () => unused,

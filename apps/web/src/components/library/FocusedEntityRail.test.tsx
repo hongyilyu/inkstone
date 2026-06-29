@@ -111,6 +111,7 @@ function makeRuntime(rows: Rows) {
 			Effect.succeed({ entities: rows.filter((r) => r.type === type) }),
 		getBacklinks: () => unused,
 		observationQuery: () => unused,
+		observationUpdate: () => unused,
 		entityMutate: () => unused,
 		subscribeRun: () => unused,
 		cancelRun: () => unused,
