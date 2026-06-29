@@ -156,10 +156,12 @@ the delete-block guard enforces.
 - **Does not freeze the observation machinery.** This ADR codifies the Habit
   identity/check-in model only. The schema registry and relation-field path remain
   open: [#258](https://github.com/hongyilyu/inkstone/issues/258) adds sibling
-  relation-bearing schemas (exercise, nutrition) via `record_observation_payload_variants`
-  + a per-schema `relation_fields` slice (`observations.rs:562-587`), with the sole
-  shared constraint that a relation target must be an existing `EntityType`. **This
-  ADR does not block #258.**
+  relation-bearing schemas (exercise, nutrition) via `record_observation_payload_variants`,
+  and [#277](https://github.com/hongyilyu/inkstone/issues/277) made the relation
+  descriptor a closed `mutation::OBSERVATION_RELATIONS` entry (`{schema_key, json_field,
+  target}`) that the write check, query filter, and delete-block all dispatch off — so a
+  new relation-bearing schema adds one descriptor entry, with the sole shared constraint
+  that a relation target must be an existing `EntityType`. **This ADR does not block #258.**
 
 ## Known gaps (deferred, not in scope)
 
