@@ -287,6 +287,12 @@ impl EntityType {
 /// not edits scattered across the write path, the query filter, and the
 /// delete-block. Sited beside [`EntityType`] (the `db`-read policy leaf) so `db`
 /// reads it without importing `crate::observations`.
+///
+/// Delete behavior is uniformly *block* today (deleting a `target` entity is
+/// rejected while any live or historical observation references it; ADR-0056). A
+/// descriptor here auto-inherits that block — there is no per-descriptor opt-out.
+/// If a future schema needs a different policy (cascade/allow), the seam is a
+/// `delete_behavior` field on this struct; don't add it speculatively (AGENTS.md §2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct ObservationRelation {
     pub schema_key: &'static str,

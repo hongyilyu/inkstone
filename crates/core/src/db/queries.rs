@@ -1482,28 +1482,49 @@ where
     })
 }
 
-pub(super) async fn habit_checkin_observations_exist<'e, E>(
+/// True when `entity_id` is referenced by any relation-bearing observation in
+/// `relations` — searching BOTH current `observations` and historical
+/// `observation_revisions`, so a delete stays blocked while either holds a
+/// reference (ADR-0053). Each descriptor contributes
+/// `(schema_key = ? AND json_extract(values_json, '$.<field>') = ?)` to a per-table
+/// OR-disjunction; the two tables are `UNION ALL`-ed and capped at `LIMIT 1`.
+/// `<field>` is the descriptor's `&'static` `json_field` (from the closed
+/// [`OBSERVATION_RELATIONS`] set, never user input — safe to interpolate). An EMPTY
+/// `relations` subset references nothing → `Ok(false)` without any SQL.
+pub(super) async fn entity_referenced_by_observation<'e, E>(
     executor: E,
-    habit_id: &str,
+    entity_id: &str,
+    relations: &[ObservationRelation],
 ) -> sqlx::Result<bool>
 where
     E: Executor<'e, Database = Sqlite>,
 {
-    let row: Option<i64> = sqlx::query_scalar(
-        "SELECT 1 \
-         FROM observations \
-         WHERE schema_key = 'habit.checkin' \
-           AND json_extract(values_json, '$.habit_id') = ?1 \
-         UNION ALL \
-         SELECT 1 \
-         FROM observation_revisions \
-         WHERE schema_key = 'habit.checkin' \
-           AND json_extract(values_json, '$.habit_id') = ?1 \
-         LIMIT 1",
-    )
-    .bind(habit_id)
-    .fetch_optional(executor)
-    .await?;
+    if relations.is_empty() {
+        return Ok(false);
+    }
+    let mut query = QueryBuilder::<Sqlite>::new("");
+    for (table_index, table) in ["observations", "observation_revisions"].iter().enumerate() {
+        if table_index > 0 {
+            query.push(" UNION ALL ");
+        }
+        query.push("SELECT 1 FROM ");
+        query.push(table);
+        query.push(" WHERE (");
+        let mut separated = query.separated(" OR ");
+        for relation in relations {
+            separated.push("(schema_key = ");
+            separated.push_bind_unseparated(relation.schema_key);
+            separated.push_unseparated(format!(
+                " AND json_extract(values_json, '$.{}') = ",
+                relation.json_field
+            ));
+            separated.push_bind_unseparated(entity_id.to_string());
+            separated.push_unseparated(")");
+        }
+        query.push(")");
+    }
+    query.push(" LIMIT 1");
+    let row: Option<i64> = query.build_query_scalar().fetch_optional(executor).await?;
     Ok(row.is_some())
 }
 
@@ -3321,5 +3342,144 @@ mod related_entity_id_filter_tests {
         .await
         .expect("query bodyweight scope");
         assert!(bodyweight_scoped.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod observation_delete_block_tests {
+    use super::*;
+    use crate::mutation::EntityType;
+    use sqlx::SqlitePool;
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+
+    const SYNTHETIC_DESCRIPTOR: ObservationRelation = ObservationRelation {
+        schema_key: "test.synthetic",
+        json_field: "person_id",
+        target: EntityType::Person,
+    };
+
+    async fn memory_pool() -> SqlitePool {
+        let options = SqliteConnectOptions::new()
+            .filename(":memory:")
+            .foreign_keys(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .expect("open in-memory sqlite");
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .expect("run migrations");
+        pool
+    }
+
+    async fn seed_current_observation(
+        pool: &SqlitePool,
+        id: &str,
+        schema_key: &str,
+        person_id: &str,
+    ) {
+        sqlx::query(
+            "INSERT INTO observations \
+             (id, schema_key, schema_version, occurred_at, values_json, created_by, \
+              created_at, updated_at) \
+             VALUES (?1, ?2, 1, '2026-06-01T07:30:00', ?3, 'user', 1, 1)",
+        )
+        .bind(id)
+        .bind(schema_key)
+        .bind(format!("{{\"person_id\":\"{person_id}\"}}"))
+        .execute(pool)
+        .await
+        .expect("seed current observation");
+    }
+
+    async fn seed_historical_revision(
+        pool: &SqlitePool,
+        observation_id: &str,
+        schema_key: &str,
+        current_person_id: &str,
+        revision_person_id: &str,
+    ) {
+        // The CURRENT observation references `current_person_id`; only the historical
+        // revision references `revision_person_id`. A delete of `revision_person_id`
+        // must still be blocked (revisions are searched too). The parent row is
+        // required by the `observation_revisions.observation_id` foreign key.
+        seed_current_observation(pool, observation_id, schema_key, current_person_id).await;
+        sqlx::query(
+            "INSERT INTO observation_revisions \
+             (observation_id, seq, schema_key, schema_version, occurred_at, values_json, created_at) \
+             VALUES (?1, 1, ?2, 1, '2026-06-01T07:30:00', ?3, 1)",
+        )
+        .bind(observation_id)
+        .bind(schema_key)
+        .bind(format!("{{\"person_id\":\"{revision_person_id}\"}}"))
+        .execute(pool)
+        .await
+        .expect("seed historical revision");
+    }
+
+    /// Descriptor-driven delete-block: a relation-bearing observation referencing an
+    /// Entity blocks its delete — proven for a SYNTHETIC schema's target, in BOTH the
+    /// current `observations` table and historical `observation_revisions`.
+    #[tokio::test]
+    async fn entity_referenced_by_observation_checks_both_tables_and_empty_subset() {
+        let relations = [SYNTHETIC_DESCRIPTOR];
+        let person_id = "018f0000-0000-7000-8000-0000000000c1";
+
+        // Current row → referenced.
+        let current_pool = memory_pool().await;
+        seed_current_observation(
+            &current_pool,
+            "018f0000-0000-7000-8000-0000000000d1",
+            "test.synthetic",
+            person_id,
+        )
+        .await;
+        assert!(
+            entity_referenced_by_observation(&current_pool, person_id, &relations)
+                .await
+                .expect("query current"),
+            "a current test.synthetic observation references the Person"
+        );
+
+        // Historical revision ONLY (the current row points elsewhere) → still
+        // referenced, proving the revision table is searched.
+        let revision_pool = memory_pool().await;
+        let revision_person_id = "018f0000-0000-7000-8000-0000000000c3";
+        seed_historical_revision(
+            &revision_pool,
+            "018f0000-0000-7000-8000-0000000000d2",
+            "test.synthetic",
+            person_id,
+            revision_person_id,
+        )
+        .await;
+        assert!(
+            entity_referenced_by_observation(&revision_pool, revision_person_id, &relations)
+                .await
+                .expect("query revision"),
+            "a historical test.synthetic revision still references the Person"
+        );
+
+        // Empty descriptor subset → false, with no SQL.
+        assert!(
+            !entity_referenced_by_observation(&current_pool, person_id, &[])
+                .await
+                .expect("query empty subset"),
+            "an empty descriptor subset references nothing"
+        );
+
+        // A different entity id → not referenced.
+        assert!(
+            !entity_referenced_by_observation(
+                &current_pool,
+                "018f0000-0000-7000-8000-0000000000c2",
+                &relations,
+            )
+            .await
+            .expect("query other id"),
+            "an unreferenced id is not blocked"
+        );
     }
 }

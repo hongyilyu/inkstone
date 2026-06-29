@@ -10,7 +10,9 @@ use uuid::Uuid;
 
 use super::ApplyError;
 use super::queries;
-use crate::mutation::{EntityType, MutationKind, WriteOp};
+use crate::mutation::{
+    EntityType, MutationKind, OBSERVATION_RELATIONS, ObservationRelation, WriteOp,
+};
 
 /// An already-resolved Entity Source row to write for this mutation (ADR-0030,
 /// ADR-0033). The caller resolves the run-coupled bits (the user Message id from
@@ -892,16 +894,30 @@ pub(crate) async fn apply_entity_mutation(
         | MutationKind::DeleteTodo
         | MutationKind::DeleteBookmark
         | MutationKind::DeleteHabit => {
-            if kind == MutationKind::DeleteHabit {
-                if !queries::entity_is_type(&mut **tx, &entity_id, entity_type.as_str()).await? {
-                    return Err(ApplyError::TargetMissing);
-                }
-                if queries::habit_checkin_observations_exist(&mut **tx, &entity_id).await? {
-                    return Err(ApplyError::InvalidMutation(
-                        "delete_habit is blocked while habit.checkin observations reference the Habit"
-                            .to_string(),
-                    ));
-                }
+            if kind == MutationKind::DeleteHabit
+                && !queries::entity_is_type(&mut **tx, &entity_id, entity_type.as_str()).await?
+            {
+                return Err(ApplyError::TargetMissing);
+            }
+            // Descriptor-driven delete-block (ADR-0053): deleting an Entity is
+            // blocked while any relation-bearing observation — current row OR
+            // historical revision — still references it. The blocking schemas are
+            // the `OBSERVATION_RELATIONS` whose `target` is this `entity_type`;
+            // today only habit.checkin→Habit exists, so only DeleteHabit is
+            // affected (every other delete kind gets an empty subset → skipped).
+            let relations: Vec<ObservationRelation> = OBSERVATION_RELATIONS
+                .iter()
+                .filter(|relation| relation.target == entity_type)
+                .copied()
+                .collect();
+            if !relations.is_empty()
+                && queries::entity_referenced_by_observation(&mut **tx, &entity_id, &relations)
+                    .await?
+            {
+                return Err(ApplyError::InvalidMutation(format!(
+                    "delete_{0} is blocked while observations reference the {0}",
+                    entity_type.as_str()
+                )));
             }
             if matches!(
                 kind,
