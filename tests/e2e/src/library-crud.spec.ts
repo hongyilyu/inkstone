@@ -431,9 +431,9 @@ test("create a Media item via the rail editor → entity/mutate writes it and th
 
 	// The new Media lands in the live collection.
 	const collection = page.getByRole("region", { name: /media/i });
-	await expect(
-		collection.getByText("The Pragmatic Programmer"),
-	).toBeVisible({ timeout: 15_000 });
+	await expect(collection.getByText("The Pragmatic Programmer")).toBeVisible({
+		timeout: 15_000,
+	});
 
 	// DB ground truth: exactly one Media row with that title, created_by the user,
 	// carrying the chosen medium/state.

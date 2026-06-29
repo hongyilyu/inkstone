@@ -627,7 +627,9 @@ describe("entityCodec parse — media", () => {
 	});
 
 	it("degrades an out-of-domain medium/state to the default", () => {
-		const vm = parseMedia(row({ title: "x", medium: "podcast", state: "reading" }));
+		const vm = parseMedia(
+			row({ title: "x", medium: "podcast", state: "reading" }),
+		);
 		expect(vm.medium).toBe("link");
 		expect(vm.state).toBe("done");
 	});
@@ -646,7 +648,9 @@ describe("entityCodec parse — media", () => {
 	});
 
 	it("drops a non-number rating", () => {
-		expect(parseMedia(row({ state: "done", rating: "5" })).rating).toBeUndefined();
+		expect(
+			parseMedia(row({ state: "done", rating: "5" })).rating,
+		).toBeUndefined();
 	});
 });
 
@@ -1524,7 +1528,9 @@ describe("entityCodec build — media create", () => {
 		});
 		expect(params).not.toBeNull();
 		expect(
-			S.decodeUnknownSync(createMedia)((params as { payload: unknown }).payload),
+			S.decodeUnknownSync(createMedia)(
+				(params as { payload: unknown }).payload,
+			),
 		).toEqual((params as { payload: unknown }).payload);
 	});
 });
@@ -1606,7 +1612,9 @@ describe("entityCodec build — media update", () => {
 		const params = edit(existing, { title: "Dune (Messiah)" });
 		expect(params).not.toBeNull();
 		expect(
-			S.decodeUnknownSync(updateMedia)((params as { payload: unknown }).payload),
+			S.decodeUnknownSync(updateMedia)(
+				(params as { payload: unknown }).payload,
+			),
 		).toEqual((params as { payload: unknown }).payload);
 	});
 });

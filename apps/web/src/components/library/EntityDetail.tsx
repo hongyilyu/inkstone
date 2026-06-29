@@ -42,9 +42,9 @@ import {
 	todosForProject,
 } from "@/lib/libraryItems";
 import { cn } from "@/lib/utils.js";
-import { MediaEditor } from "./MediaEditor.js";
 import { EntityGlyph } from "./EntityGlyph.js";
 import { JournalEntryEditor } from "./JournalEntryEditor.js";
+import { MediaEditor } from "./MediaEditor.js";
 import { PersonEditor } from "./PersonEditor.js";
 import { ProjectEditor } from "./ProjectEditor.js";
 import { TodoEditor } from "./TodoEditor.js";

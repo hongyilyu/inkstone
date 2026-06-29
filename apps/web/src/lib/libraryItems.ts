@@ -7,10 +7,10 @@ import {
 	User,
 } from "lucide-react";
 import {
-	type MediaMedium,
 	MEDIA_MEDIUMS,
-	type MediaState,
 	MEDIA_STATES,
+	type MediaMedium,
+	type MediaState,
 	PROJECT_STATUSES,
 	type ProjectStatus,
 	type RecurAnchor,
