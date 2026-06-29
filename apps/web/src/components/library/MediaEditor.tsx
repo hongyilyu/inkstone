@@ -5,6 +5,7 @@ import {
 	mediaDraftFromVm,
 } from "@/lib/entityCodec.js";
 import {
+	isMediaTerminalState,
 	MEDIA_MEDIUM_OPTIONS,
 	MEDIA_STATE_OPTIONS,
 	type MediaState,
@@ -27,11 +28,6 @@ type Props = (
 	onDone: (id: string) => void;
 	onCancel: () => void;
 };
-
-/** The states in which a finish rating/date is meaningful (ADR-0059). */
-function isTerminalState(state: MediaState): boolean {
-	return state === "done" || state === "abandoned";
-}
 
 /** Create / edit a Media item inline in the Library rail (ADR-0059). */
 export function MediaEditor({ onDone, onCancel, ...m }: Props) {
@@ -58,13 +54,13 @@ export function MediaEditor({ onDone, onCancel, ...m }: Props) {
 	// stale value isn't carried (Core rejects them off-terminal — ADR-0059).
 	const setState = (state: MediaState) =>
 		setDraft((d) =>
-			isTerminalState(state)
+			isMediaTerminalState(state)
 				? { ...d, state }
 				: { ...d, state, rating: "", finishedDay: "" },
 		);
 
 	const titleEmpty = draft.title.trim() === "";
-	const terminal = isTerminalState(draft.state);
+	const terminal = isMediaTerminalState(draft.state);
 
 	const submit = () => {
 		if (titleEmpty) return;

@@ -120,3 +120,14 @@ export function asMediaState(value: unknown): MediaState {
 		? (value as MediaState)
 		: "done";
 }
+
+/**
+ * The terminal states in which a finish `rating`/`finished_at` is meaningful
+ * (ADR-0059). The single source for this rule on the web side — the editor gates
+ * its rating/finished inputs on it and the codec drops finish data off-terminal,
+ * mirroring Core's `media_state_finish_invariant`. Keep co-located with the
+ * `MediaState` domain so the two can't drift.
+ */
+export function isMediaTerminalState(state: MediaState): boolean {
+	return state === "done" || state === "abandoned";
+}

@@ -13,6 +13,7 @@ import {
 	asMediaState,
 	asProjectStatus,
 	asTodoStatus,
+	isMediaTerminalState,
 	type MediaMedium,
 	type MediaState,
 	type ProjectStatus,
@@ -814,11 +815,6 @@ function buildPerson(
 // still holds stale values. Returns null when nothing changed.
 // ---------------------------------------------------------------------------
 
-/** The states in which `rating`/`finished_at` are meaningful (ADR-0059). */
-function isTerminalState(state: MediaState): boolean {
-	return state === "done" || state === "abandoned";
-}
-
 /** The editable shape of a Media item's scalar fields; `""` means absent/cleared. */
 export interface MediaDraft {
 	title: string;
@@ -873,7 +869,7 @@ function buildMediaDoc(d: MediaDraft): Record<string, unknown> {
 		medium: d.medium,
 		state: d.state,
 	};
-	if (isTerminalState(d.state)) {
+	if (isMediaTerminalState(d.state)) {
 		const rating = Number(d.rating);
 		if (d.rating.trim() !== "" && Number.isFinite(rating)) doc.rating = rating;
 		if (d.finishedDay) doc.finished_at = dayToLocal(d.finishedDay);
