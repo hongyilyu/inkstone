@@ -685,24 +685,29 @@ mod tests {
         );
     }
 
-    // A user Bookmark rides the same Entity path People/Projects use (ADR-0036):
-    // `create_bookmark` lands a created_by='user' Canonical Entity
-    // (type='bookmark', schema_version=1); `list_by_type` returns it;
-    // `update_bookmark` FULL-DOCUMENT-replaces `data` (the omitted `url` is
-    // dropped); `delete_bookmark` removes the row. Mirrors
+    // A user Media rides the same Entity path People/Projects use (ADR-0059):
+    // `create_media` lands a created_by='user' Canonical Entity
+    // (type='media', schema_version=1); `list_by_type` returns it;
+    // `update_media` FULL-DOCUMENT-replaces `data` (the omitted `url` is
+    // dropped); `delete_media` removes the row. Mirrors
     // `create_person_lands_user_authored_canonical_entity`.
     #[tokio::test]
-    async fn bookmark_crud_via_entity_path() {
+    async fn media_crud_via_entity_path() {
         let pool = memory_pool().await;
 
-        // create → a user-authored, schema-versioned bookmark Entity.
+        // create → a user-authored, schema-versioned media Entity.
         let entity_id = apply(
             &pool,
-            "create_bookmark",
-            &serde_json::json!({ "title": "Effect docs", "url": "https://effect.website" }),
+            "create_media",
+            &serde_json::json!({
+                "title": "Dune",
+                "medium": "book",
+                "state": "backlog",
+                "url": "https://x"
+            }),
         )
         .await
-        .expect("user create_bookmark succeeds")
+        .expect("user create_media succeeds")
         .entity_id
         .expect("create yields an entity id");
 
@@ -714,51 +719,57 @@ mod tests {
             .fetch_one(&pool)
             .await
             .expect("entity row");
-        assert_eq!(entity_type, "bookmark");
+        assert_eq!(entity_type, "media");
         assert_eq!(created_by, "user");
         assert_eq!(schema_version, 1);
         let data: serde_json::Value = serde_json::from_str(&data).expect("data is JSON");
         assert_eq!(
             data.get("title").and_then(serde_json::Value::as_str),
-            Some("Effect docs")
+            Some("Dune")
         );
         assert_eq!(
             data.get("url").and_then(serde_json::Value::as_str),
-            Some("https://effect.website")
+            Some("https://x")
         );
 
-        // list → the bookmark is returned by its type.
-        let rows = crate::db::list_by_type(&pool, "bookmark")
+        // list → the media is returned by its type.
+        let rows = crate::db::list_by_type(&pool, "media")
             .await
-            .expect("list bookmarks");
-        assert_eq!(rows.len(), 1, "exactly one bookmark lists");
+            .expect("list media");
+        assert_eq!(rows.len(), 1, "exactly one media lists");
         assert_eq!(rows[0].id, entity_id);
-        assert_eq!(rows[0].r#type, "bookmark");
+        assert_eq!(rows[0].r#type, "media");
 
-        // update → FULL-document replace: the omitted `url` is dropped, `note` set.
+        // update → FULL-document replace: the omitted `url` is dropped, finish data set.
         apply(
             &pool,
-            "update_bookmark",
-            &serde_json::json!({ "entity_id": entity_id, "title": "Effect", "note": "read later" }),
+            "update_media",
+            &serde_json::json!({
+                "entity_id": entity_id,
+                "title": "Dune",
+                "medium": "book",
+                "state": "done",
+                "rating": 5
+            }),
         )
         .await
-        .expect("user update_bookmark succeeds");
+        .expect("user update_media succeeds");
 
         let stored: String = sqlx::query_scalar("SELECT data FROM entities WHERE id = ?1")
             .bind(&entity_id)
             .fetch_one(&pool)
             .await
-            .expect("stored bookmark data");
+            .expect("stored media data");
         let stored: serde_json::Value = serde_json::from_str(&stored).expect("data is JSON");
         assert_eq!(
-            stored.get("title").and_then(serde_json::Value::as_str),
-            Some("Effect"),
-            "title replaced: {stored}"
+            stored.get("state").and_then(serde_json::Value::as_str),
+            Some("done"),
+            "state replaced: {stored}"
         );
         assert_eq!(
-            stored.get("note").and_then(serde_json::Value::as_str),
-            Some("read later"),
-            "note set: {stored}"
+            stored.get("rating").and_then(serde_json::Value::as_u64),
+            Some(5),
+            "rating set: {stored}"
         );
         assert!(
             stored.get("url").is_none(),
@@ -768,11 +779,11 @@ mod tests {
         // delete → the row is gone.
         let outcome = apply(
             &pool,
-            "delete_bookmark",
+            "delete_media",
             &serde_json::json!({ "entity_id": entity_id }),
         )
         .await
-        .expect("user delete_bookmark succeeds");
+        .expect("user delete_media succeeds");
         assert!(outcome.entity_id.is_none(), "a delete leaves no entity id");
 
         let row_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM entities WHERE id = ?1")
@@ -780,7 +791,7 @@ mod tests {
             .fetch_one(&pool)
             .await
             .expect("count entity rows");
-        assert_eq!(row_count, 0, "the bookmark row is gone");
+        assert_eq!(row_count, 0, "the media row is gone");
     }
 
     // mark_project_reviewed against a non-Project entity_id is Invalid (the
@@ -806,13 +817,15 @@ mod tests {
         );
     }
 
-    // update_bookmark / delete_bookmark against a non-Bookmark entity_id is
-    // Invalid: the target-ref check rejects a wrong-type target before any write,
-    // so a regression dropping the `Some("bookmark")` arm (which would let these
-    // mutate an unrelated Person) is caught. Mirrors
-    // `mark_project_reviewed_wrong_type_is_invalid`.
+    // update_media / delete_media against a wrong-type or missing entity_id is
+    // rejected by the run-independent target-ref probe BEFORE any write. The probe
+    // names the target type ("Accepted media") in its message — distinct from the
+    // generic apply-time "target entity no longer exists" fallback — so these
+    // assertions prove `update_media`/`delete_media` are still in the
+    // `generic_type_check` `matches!` set after the rename (the non-total match the
+    // compiler can't flag). Mirrors `mark_project_reviewed_wrong_type_is_invalid`.
     #[tokio::test]
-    async fn bookmark_mutations_against_wrong_type_are_invalid() {
+    async fn media_mutations_against_wrong_type_or_missing_target_are_rejected() {
         let pool = memory_pool().await;
         let person_id = apply(&pool, "create_person", &serde_json::json!({ "name": "Al" }))
             .await
@@ -820,26 +833,76 @@ mod tests {
             .entity_id
             .expect("entity id");
 
+        // WRONG-TYPE target: a Person id resolves to a row of the wrong type, so the
+        // probe rejects it as Invalid, naming the expected Media target type.
         let update = apply(
             &pool,
-            "update_bookmark",
-            &serde_json::json!({ "entity_id": person_id, "title": "Hijacked" }),
+            "update_media",
+            &serde_json::json!({
+                "entity_id": person_id,
+                "title": "Hijacked",
+                "medium": "book",
+                "state": "backlog"
+            }),
         )
         .await;
+        let Err(MutateError::Invalid(reason)) = &update else {
+            panic!("update_media against a Person is Invalid: {update:?}");
+        };
         assert!(
-            matches!(update, Err(MutateError::Invalid(_))),
-            "update_bookmark against a Person is Invalid: {update:?}"
+            reason.contains("Accepted media"),
+            "the probe names the Media target type: {reason}"
         );
 
         let delete = apply(
             &pool,
-            "delete_bookmark",
+            "delete_media",
             &serde_json::json!({ "entity_id": person_id }),
         )
         .await;
+        let Err(MutateError::Invalid(reason)) = &delete else {
+            panic!("delete_media against a Person is Invalid: {delete:?}");
+        };
         assert!(
-            matches!(delete, Err(MutateError::Invalid(_))),
-            "delete_bookmark against a Person is Invalid: {delete:?}"
+            reason.contains("Accepted media"),
+            "the probe names the Media target type: {reason}"
+        );
+
+        // MISSING target: an unknown id resolves to no row. The probe surfaces this
+        // as a target-miss (TargetMissing), naming the Media target type — proving
+        // the probe ran (a stale `matches!` would skip it and let the bare
+        // apply-time "target entity no longer exists" message through instead).
+        let missing_id = uuid::Uuid::now_v7().to_string();
+        let missing_update = apply(
+            &pool,
+            "update_media",
+            &serde_json::json!({
+                "entity_id": missing_id,
+                "title": "Ghost",
+                "medium": "book",
+                "state": "backlog"
+            }),
+        )
+        .await;
+        let Err(MutateError::Invalid(reason)) = &missing_update else {
+            panic!("update_media against a missing target is Invalid: {missing_update:?}");
+        };
+        assert!(
+            reason.contains("no longer references an Accepted media"),
+            "the probe reports a Media target miss: {reason}"
+        );
+        let missing_delete = apply(
+            &pool,
+            "delete_media",
+            &serde_json::json!({ "entity_id": missing_id }),
+        )
+        .await;
+        let Err(MutateError::Invalid(reason)) = &missing_delete else {
+            panic!("delete_media against a missing target is Invalid: {missing_delete:?}");
+        };
+        assert!(
+            reason.contains("no longer references an Accepted media"),
+            "the probe reports a Media target miss: {reason}"
         );
 
         // The Person is untouched (neither mutation wrote or deleted it).

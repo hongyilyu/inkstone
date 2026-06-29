@@ -14,7 +14,7 @@ const LABEL: &str = "Propose Workspace mutation";
 /// The agent tool descriptor (ADR-0018): a top-level `oneOf` over the closed
 /// agent-proposable mutation kinds, each variant binding its `mutation_kind`
 /// discriminant to the payload schema its [`ProposableMutation`] emits. The
-/// user-only kind families (bookmarks, habits, and `mark_project_reviewed`) are
+/// user-only kind families (media, habits, and `mark_project_reviewed`) are
 /// validated but deliberately absent from this surface. Inlined Draft-07 (no
 /// `$ref`/`definitions`): ADR-0018 wants inlined schemas because Anthropic
 /// rejects `$ref`.
@@ -824,14 +824,15 @@ mod tests {
                 .is_err(),
             "a non-array entities is rejected"
         );
-        // an entity node with an unknown `type` → check_one_of no-variant-match.
+        // an entity node with a non-graph `type` (media is user-CRUD-only, never a
+        // graph entity variant) → check_one_of no-variant-match.
         assert!(
             spec.check(&serde_json::json!({
-                "entities": [{ "handle": "@x", "type": "bookmark", "title": "x" }],
+                "entities": [{ "handle": "@x", "type": "media", "title": "x" }],
                 "links": []
             }))
             .is_err(),
-            "an entity node of an unknown type matches no variant and is rejected"
+            "an entity node of a non-graph type matches no variant and is rejected"
         );
     }
 

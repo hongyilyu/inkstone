@@ -30,7 +30,7 @@ pub(crate) fn validate(kind: MutationKind, payload: &Value) -> Result<(), String
         | MutationKind::DeletePerson
         | MutationKind::DeleteProject
         | MutationKind::DeleteTodo
-        | MutationKind::DeleteBookmark
+        | MutationKind::DeleteMedia
         | MutationKind::DeleteHabit
         // A user-path-only review touch (ADR-0034): `{entity_id}` only — Core reads
         // the Project and recomputes the review fields, so the client sends no data.
@@ -49,8 +49,8 @@ pub(crate) fn validate(kind: MutationKind, payload: &Value) -> Result<(), String
         MutationKind::UpdateProject => validate_update_project(payload),
         MutationKind::CreateTodo => validate_todo(payload),
         MutationKind::UpdateTodo => validate_update_todo(payload),
-        MutationKind::CreateBookmark => validate_bookmark(payload),
-        MutationKind::UpdateBookmark => validate_update_bookmark(payload),
+        MutationKind::CreateMedia => validate_media(payload),
+        MutationKind::UpdateMedia => validate_update_media(payload),
         MutationKind::CreateHabit => validate_habit(payload),
         MutationKind::UpdateHabit => validate_update_habit(payload),
         // The intent graph (ADR-0042) validates its STRUCTURE via the single-source
@@ -222,9 +222,9 @@ pub(crate) fn render_accept(
                 "Accepted. Applied intent graph{je_note} (anchor entity_id={anchor}, up to {proposed_count} entities; some may have been declined)."
             )
         }
-        M::CreateBookmark
-        | M::UpdateBookmark
-        | M::DeleteBookmark
+        M::CreateMedia
+        | M::UpdateMedia
+        | M::DeleteMedia
         | M::CreateHabit
         | M::UpdateHabit
         | M::DeleteHabit
@@ -518,24 +518,52 @@ fn validate_update_person(payload: &Value) -> Result<(), String> {
     MutationKind::UpdatePerson.payload_spec().check(payload)
 }
 
-/// Validate a `BookmarkData` object (ADR-0036): a required non-empty `title`;
-/// clearable string `url`/`note`; clearable `tags` (an array of non-empty strings).
-/// BookmarkData has no cross-field invariant — the spec walk is the whole
-/// validator. Each optional field is CLEARABLE: a `null` value is the ADR-0033
-/// sentinel-clear directive (accepted; the apply path drops null keys).
-fn validate_bookmark(payload: &Value) -> Result<(), String> {
-    MutationKind::CreateBookmark
-        .payload_data_spec()
-        .check(payload)
+/// Validate a `MediaData` object (ADR-0059): a required non-empty `title`; a
+/// required `medium`/`state` enum; clearable `rating`/`finished_at`; clearable
+/// string `url`/`note`; clearable `tags` (an array of non-empty strings). The
+/// flat spec walk validates everything but the cross-field finish-data rule (the
+/// `media_state_finish_invariant` hook). Each optional field is CLEARABLE: a
+/// `null` value is the ADR-0033 sentinel-clear directive (accepted; the apply
+/// path drops null keys).
+fn validate_media(payload: &Value) -> Result<(), String> {
+    MutationKind::CreateMedia.payload_data_spec().check(payload)?;
+    media_state_finish_invariant(payload.as_object().expect("check accepted an object"))
 }
 
-/// Validate an `update_bookmark` payload against the kind's full spec: the
-/// `entity_id` target prepended to the `BookmarkData` core (the single source).
-/// Update is a full-document replace (like person/project), so the data is a
-/// complete BookmarkData (ADR-0036); it has no cross-field invariant, so the
-/// spec walk is the whole validator.
-fn validate_update_bookmark(payload: &Value) -> Result<(), String> {
-    MutationKind::UpdateBookmark.payload_spec().check(payload)
+/// Validate an `update_media` payload against the kind's full spec: the
+/// `entity_id` target prepended to the `MediaData` core (the single source), then
+/// the finish-data invariant over the whole merged doc. Update is a full-document
+/// replace (like person/project), so the data is a complete MediaData
+/// (ADR-0059); the same cross-field rule applies.
+fn validate_update_media(payload: &Value) -> Result<(), String> {
+    MutationKind::UpdateMedia.payload_spec().check(payload)?;
+    media_state_finish_invariant(payload.as_object().expect("check accepted an object"))
+}
+
+/// The Media state↔finish-data invariant (ADR-0059): `rating` and `finished_at`
+/// are meaningful ONLY when `state ∈ {done, abandoned}` (the terminal states), and
+/// are rejected otherwise — a `backlog`/`consuming` Media has no finish data. Also
+/// range-checks a present `rating` to `1..=5` (the `PositiveInt` spec only gates
+/// `>= 1`; the upper bound is not a `FieldSpec`). A `null` value is the ADR-0033
+/// clear directive, so it counts as ABSENT here ([`present_non_null`]) — clearing
+/// finish data is always allowed.
+fn media_state_finish_invariant(obj: &serde_json::Map<String, Value>) -> Result<(), String> {
+    let state = obj.get("state").and_then(Value::as_str).unwrap_or("");
+    let terminal = matches!(state, "done" | "abandoned");
+    if present_non_null(obj, "rating") && !terminal {
+        return Err("rating is only valid when state is done or abandoned".to_string());
+    }
+    if present_non_null(obj, "finished_at") && !terminal {
+        return Err("finished_at is only valid when state is done or abandoned".to_string());
+    }
+    // The 1..=5 cap (the spec already rejected a non-positive or non-integer
+    // rating; a `null` rating is the clear directive and counts as absent).
+    if let Some(rating) = obj.get("rating").and_then(Value::as_u64)
+        && rating > 5
+    {
+        return Err("rating must be between 1 and 5".to_string());
+    }
+    Ok(())
 }
 
 /// Validate a `HabitData` object: required `name`, required cadence
@@ -1076,7 +1104,7 @@ pub(crate) fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
 mod tests {
     use super::*;
     use crate::mutation::{
-        BOOKMARK_SCHEMA_VERSION, HABIT_SCHEMA_VERSION, JOURNAL_ENTRY_SCHEMA_VERSION,
+        HABIT_SCHEMA_VERSION, JOURNAL_ENTRY_SCHEMA_VERSION, MEDIA_SCHEMA_VERSION,
     };
     use serde_json::json;
 
@@ -2363,39 +2391,113 @@ mod tests {
         assert_eq!(days_from_civil(1970, 1, 1), 0, "epoch is day 0");
     }
 
-    // ─── Bookmark (ADR-0036) ───────────────────────────────────────────────
+    // ─── Media (ADR-0059) ──────────────────────────────────────────────────
 
     #[test]
-    fn accepts_minimal_bookmark() {
-        assert!(validate_bookmark(&json!({ "title": "Effect docs" })).is_ok());
+    fn accepts_minimal_media() {
+        // The minimal queue entry: a title, a medium, and a backlog state — no
+        // finish data (rating/finished_at are forbidden off a terminal state).
+        assert!(validate_media(&json!({ "title": "Dune", "medium": "book", "state": "backlog" })).is_ok());
     }
 
     #[test]
-    fn accepts_bookmark_with_url_note_and_tags() {
-        assert!(validate_bookmark(&json!({
-            "title": "Effect docs",
-            "url": "https://effect.website",
-            "note": "read later",
-            "tags": ["fp", "ts"]
+    fn accepts_done_media_with_full_log_fields() {
+        assert!(validate_media(&json!({
+            "title": "Dune",
+            "medium": "book",
+            "state": "done",
+            "rating": 4,
+            "finished_at": "2026-01-01T00:00:00",
+            "url": "https://x",
+            "note": "loved it",
+            "tags": ["sci-fi"]
         }))
         .is_ok());
     }
 
     #[test]
-    fn rejects_missing_or_blank_bookmark_title() {
-        assert!(validate_bookmark(&json!({ "url": "https://x" })).is_err());
-        let reason =
-            validate_bookmark(&json!({ "title": "   " })).expect_err("blank title is not a title");
+    fn media_rejects_finish_data_without_terminal_state() {
+        // The one new behavioral rule (ADR-0059): rating + finished_at are valid
+        // ONLY when state ∈ {done, abandoned}; a backlog/consuming Media carrying
+        // either is rejected.
+        let reason = validate_media(&json!({
+            "title": "Dune",
+            "medium": "book",
+            "state": "backlog",
+            "rating": 4
+        }))
+        .expect_err("a backlog Media has no finish data");
+        assert!(reason.contains("rating"), "reason names rating: {reason}");
+
+        let reason = validate_media(&json!({
+            "title": "Dune",
+            "medium": "movie",
+            "state": "consuming",
+            "finished_at": "2026-01-01T00:00:00"
+        }))
+        .expect_err("a consuming Media has not finished");
         assert!(
-            reason.contains("title"),
-            "reason names the title field: {reason}"
+            reason.contains("finished_at"),
+            "reason names finished_at: {reason}"
         );
     }
 
     #[test]
-    fn rejects_unsupported_bookmark_field() {
-        let reason = validate_bookmark(&json!({ "title": "x", "servings": 4 }))
-            .expect_err("bookmark has no servings field");
+    fn media_accepts_finish_data_on_abandoned_state() {
+        // `abandoned` is terminal too, so finish data is allowed.
+        assert!(validate_media(&json!({
+            "title": "Dune",
+            "medium": "book",
+            "state": "abandoned",
+            "rating": 2,
+            "finished_at": "2026-01-01T00:00:00"
+        }))
+        .is_ok());
+    }
+
+    #[test]
+    fn media_rejects_rating_out_of_one_to_five() {
+        // The 1..=5 cap is enforced in the invariant hook (PositiveInt only gates
+        // `>= 1`). A done Media may carry a rating, but only 1–5.
+        let reason = validate_media(&json!({
+            "title": "Dune",
+            "medium": "book",
+            "state": "done",
+            "rating": 6
+        }))
+        .expect_err("a rating above 5 is rejected");
+        assert!(reason.contains("rating"), "reason names rating: {reason}");
+    }
+
+    #[test]
+    fn media_rejects_out_of_domain_medium() {
+        let reason = validate_media(&json!({ "title": "x", "medium": "podcast", "state": "backlog" }))
+            .expect_err("podcast is not a known medium");
+        assert!(reason.contains("medium"), "reason names medium: {reason}");
+    }
+
+    #[test]
+    fn media_rejects_out_of_domain_state() {
+        let reason = validate_media(&json!({ "title": "x", "medium": "link", "state": "queued" }))
+            .expect_err("queued is not a known state");
+        assert!(reason.contains("state"), "reason names state: {reason}");
+    }
+
+    #[test]
+    fn media_rejects_missing_required_fields() {
+        assert!(validate_media(&json!({ "medium": "link", "state": "backlog" })).is_err());
+        assert!(validate_media(&json!({ "title": "x", "state": "backlog" })).is_err());
+        assert!(validate_media(&json!({ "title": "x", "medium": "link" })).is_err());
+        let reason = validate_media(&json!({ "title": "   ", "medium": "link", "state": "backlog" }))
+            .expect_err("blank title is not a title");
+        assert!(reason.contains("title"), "reason names title: {reason}");
+    }
+
+    #[test]
+    fn media_rejects_unsupported_field() {
+        let reason =
+            validate_media(&json!({ "title": "x", "medium": "link", "state": "backlog", "servings": 4 }))
+                .expect_err("media has no servings field");
         assert!(
             reason.contains("servings"),
             "reason names the unsupported field: {reason}"
@@ -2403,10 +2505,14 @@ mod tests {
     }
 
     #[test]
-    fn accepts_null_clear_on_bookmark_optional_fields() {
+    fn accepts_null_clear_on_media_optional_fields() {
         // `null` is the ADR-0033 sentinel-clear directive on every optional field.
-        assert!(validate_bookmark(&json!({
+        assert!(validate_media(&json!({
             "title": "x",
+            "medium": "link",
+            "state": "done",
+            "rating": null,
+            "finished_at": null,
             "url": null,
             "note": null,
             "tags": null
@@ -2415,56 +2521,56 @@ mod tests {
     }
 
     #[test]
-    fn rejects_non_string_bookmark_url_or_note() {
-        let reason = validate_bookmark(&json!({ "title": "x", "url": 42 }))
+    fn media_rejects_non_string_url_or_note_and_bad_tags() {
+        let reason = validate_media(&json!({ "title": "x", "medium": "link", "state": "backlog", "url": 42 }))
             .expect_err("url must be a string");
         assert!(reason.contains("url"), "reason names url: {reason}");
-        let reason = validate_bookmark(&json!({ "title": "x", "note": 42 }))
-            .expect_err("note must be a string");
-        assert!(reason.contains("note"), "reason names note: {reason}");
-    }
-
-    #[test]
-    fn rejects_non_array_or_blank_bookmark_tags() {
-        let reason = validate_bookmark(&json!({ "title": "x", "tags": "fp" }))
+        let reason = validate_media(&json!({ "title": "x", "medium": "link", "state": "backlog", "tags": "fp" }))
             .expect_err("tags must be an array");
         assert!(reason.contains("tags"), "reason names tags: {reason}");
-        let reason = validate_bookmark(&json!({ "title": "x", "tags": ["fp", "  "] }))
+        let reason = validate_media(&json!({ "title": "x", "medium": "link", "state": "backlog", "tags": ["ok", "  "] }))
             .expect_err("blank tags are not allowed");
         assert!(reason.contains("tag"), "reason names the tag: {reason}");
     }
 
     #[test]
-    fn update_bookmark_validates_payload_minus_entity_id() {
-        // entity_id + a valid BookmarkData body is ok.
+    fn update_media_validates_payload_minus_entity_id_and_invariant() {
+        // entity_id + a valid MediaData body is ok.
         assert!(validate(
-            "update_bookmark",
-            &json!({ "entity_id": Uuid::now_v7().to_string(), "title": "x", "note": "n" })
+            "update_media",
+            &json!({ "entity_id": Uuid::now_v7().to_string(), "title": "x", "medium": "tv", "state": "consuming" })
         )
         .is_ok());
-        // The BookmarkData rules still apply to the rest (no unknown field).
+        // The MediaData rules still apply to the rest (no unknown field).
         let reason = validate(
-            "update_bookmark",
-            &json!({ "entity_id": Uuid::now_v7().to_string(), "servings": 4 }),
+            "update_media",
+            &json!({ "entity_id": Uuid::now_v7().to_string(), "title": "x", "medium": "tv", "state": "consuming", "servings": 4 }),
         )
-        .expect_err("bookmark has no servings field");
+        .expect_err("media has no servings field");
         assert!(
             reason.contains("servings"),
-            "reason names the unsupported bookmark field: {reason}"
+            "reason names the unsupported media field: {reason}"
         );
+        // The state↔finish-data invariant fires over the whole merged doc on update too.
+        let reason = validate(
+            "update_media",
+            &json!({ "entity_id": Uuid::now_v7().to_string(), "title": "x", "medium": "tv", "state": "consuming", "rating": 5 }),
+        )
+        .expect_err("finish data is forbidden off a terminal state on update too");
+        assert!(reason.contains("rating"), "reason names rating: {reason}");
     }
 
     #[test]
-    fn update_bookmark_requires_a_uuid_entity_id() {
-        let reason = validate("update_bookmark", &json!({ "title": "x" }))
+    fn update_media_requires_a_uuid_entity_id() {
+        let reason = validate("update_media", &json!({ "title": "x", "medium": "link", "state": "backlog" }))
             .expect_err("update requires a target entity_id");
         assert!(
             reason.contains("entity_id"),
             "reason names the missing entity_id: {reason}"
         );
         let reason = validate(
-            "update_bookmark",
-            &json!({ "entity_id": "nope", "title": "x" }),
+            "update_media",
+            &json!({ "entity_id": "nope", "title": "x", "medium": "link", "state": "backlog" }),
         )
         .expect_err("entity_id must be a UUID");
         assert!(
@@ -2474,29 +2580,29 @@ mod tests {
     }
 
     #[test]
-    fn validate_delete_bookmark_accepts_uuid_and_rejects_extras() {
+    fn validate_delete_media_accepts_uuid_and_rejects_extras() {
         assert!(validate(
-            "delete_bookmark",
+            "delete_media",
             &json!({ "entity_id": Uuid::now_v7().to_string() })
         )
         .is_ok());
         let reason = validate(
-            "delete_bookmark",
+            "delete_media",
             &json!({ "entity_id": Uuid::now_v7().to_string(), "title": "x" }),
         )
         .expect_err("an extra field on a delete payload is unsupported");
         assert!(
-            reason.contains("delete_bookmark") && reason.contains("title"),
+            reason.contains("delete_media") && reason.contains("title"),
             "reason names the unsupported field: {reason}"
         );
     }
 
     #[test]
-    fn schema_version_bookmark_is_one() {
-        assert_eq!(schema_version("create_bookmark"), BOOKMARK_SCHEMA_VERSION);
-        assert_eq!(schema_version("update_bookmark"), BOOKMARK_SCHEMA_VERSION);
-        assert_eq!(schema_version("delete_bookmark"), BOOKMARK_SCHEMA_VERSION);
-        assert_eq!(schema_version("create_bookmark"), 1);
+    fn schema_version_media_is_one() {
+        assert_eq!(schema_version("create_media"), MEDIA_SCHEMA_VERSION);
+        assert_eq!(schema_version("update_media"), MEDIA_SCHEMA_VERSION);
+        assert_eq!(schema_version("delete_media"), MEDIA_SCHEMA_VERSION);
+        assert_eq!(schema_version("create_media"), 1);
     }
 
     // ─── Habit (Phase 2b) ─────────────────────────────────────────────────

@@ -55,7 +55,7 @@ pub(crate) enum Presence {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum ObjErr {
     /// `"{noun} payload must be a JSON object"` — the top-level person/project/
-    /// bookmark/create_todo/update_todo payloads.
+    /// media/create_todo/update_todo payloads.
     Payload,
     /// `"{noun} must be an object"` — review_every and the recurrence sub-objects.
     Object,

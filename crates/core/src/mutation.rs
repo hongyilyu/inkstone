@@ -35,9 +35,9 @@ pub const PROJECT_SCHEMA_VERSION: i64 = 1;
 /// The schema version stamped onto a freshly-created Todo + its first revision.
 pub const TODO_SCHEMA_VERSION: i64 = 1;
 
-/// The schema version stamped onto a freshly-created Bookmark + its first
-/// revision (ADR-0036).
-pub const BOOKMARK_SCHEMA_VERSION: i64 = 1;
+/// The schema version stamped onto a freshly-created Media + its first
+/// revision (ADR-0059).
+pub const MEDIA_SCHEMA_VERSION: i64 = 1;
 
 /// The schema version stamped onto a freshly-created Habit + its first revision.
 pub const HABIT_SCHEMA_VERSION: i64 = 1;
@@ -166,7 +166,7 @@ pub(crate) enum EntityType {
     Person,
     Project,
     Todo,
-    Bookmark,
+    Media,
     Habit,
 }
 
@@ -176,7 +176,7 @@ impl EntityType {
         EntityType::Person,
         EntityType::Project,
         EntityType::Todo,
-        EntityType::Bookmark,
+        EntityType::Media,
         EntityType::Habit,
     ];
 
@@ -215,10 +215,10 @@ impl EntityType {
                     aliases_field: None,
                 }),
             },
-            EntityType::Bookmark => EntityTypeSpec {
+            EntityType::Media => EntityTypeSpec {
                 entity_type: self,
-                stored_type: "bookmark",
-                schema_version: BOOKMARK_SCHEMA_VERSION,
+                stored_type: "media",
+                schema_version: MEDIA_SCHEMA_VERSION,
                 projection: EntityProjectionPolicy::None,
             },
             EntityType::Habit => EntityTypeSpec {
@@ -254,7 +254,7 @@ impl EntityType {
             "person" => Some(EntityType::Person),
             "project" => Some(EntityType::Project),
             "todo" => Some(EntityType::Todo),
-            "bookmark" => Some(EntityType::Bookmark),
+            "media" => Some(EntityType::Media),
             "habit" => Some(EntityType::Habit),
             _ => None,
         }
@@ -262,7 +262,7 @@ impl EntityType {
 
     /// Whether a Journal Entry body may reference this Entity Type (ADR-0030):
     /// People, Projects, and Todos are referenceable; Journal Entries,
-    /// Bookmarks, and Habits are not. A new Entity Type must declare its
+    /// Media, and Habits are not. A new Entity Type must declare its
     /// referenceability in its spec row.
     pub(crate) fn is_referenceable(self) -> bool {
         self.spec().is_referenceable()
@@ -336,12 +336,19 @@ impl EntityType {
         ]
     }
 
-    /// The Bookmark data-field core (ADR-0036): a required `title`, clearable
-    /// string `url`/`note`, and a clearable `tags` array. The single source
-    /// `validate_bookmark` and the user-CRUD path both derive from.
-    fn bookmark_core() -> Vec<Field> {
+    /// The Media data-field core (ADR-0059): a required `title`, a required
+    /// `medium` and lifecycle `state` enum, a clearable `rating`/`finished_at`
+    /// log pair, clearable string `url`/`note`, and a clearable `tags` array. The
+    /// single source `validate_media` and the user-CRUD path both derive from.
+    /// The `rating` 1..=5 cap and the state↔finish-data cross-field rule are the
+    /// `media_state_finish_invariant` hook's job, not the spec's.
+    fn media_core() -> Vec<Field> {
         vec![
             Field::required("title", FieldSpec::non_empty_string()),
+            Field::required("medium", media_medium_enum()),
+            Field::required("state", media_state_enum()),
+            Field::optional("rating", FieldSpec::PositiveInt).clearable(),
+            clearable_datetime("finished_at"),
             Field::optional("url", FieldSpec::string()).clearable(),
             Field::optional("note", FieldSpec::string()).clearable(),
             Field::optional("tags", FieldSpec::non_empty_string_array()).clearable(),
@@ -458,6 +465,24 @@ fn habit_status_enum() -> FieldSpec {
     FieldSpec::EnumStr {
         domain: &["active", "paused", "archived"],
         err: "status must be one of active, paused, archived",
+    }
+}
+
+/// The Media `medium` enum (ADR-0059): what kind of thing the queue entry is.
+fn media_medium_enum() -> FieldSpec {
+    FieldSpec::EnumStr {
+        domain: &["link", "article", "book", "tv", "movie"],
+        err: "medium must be one of link, article, book, tv, movie",
+    }
+}
+
+/// The Media `state` enum (ADR-0059): the queue→log lifecycle. `done`/`abandoned`
+/// are the terminal states the finish-data invariant gates `rating`/`finished_at`
+/// on.
+fn media_state_enum() -> FieldSpec {
+    FieldSpec::EnumStr {
+        domain: &["backlog", "consuming", "done", "abandoned"],
+        err: "state must be one of backlog, consuming, done, abandoned",
     }
 }
 
@@ -609,9 +634,9 @@ impl MutationKind {
                 PayloadSpec::payload("project", fields)
             }
             M::UpdateProject => update_payload("project", EntityType::project_core()),
-            // ── Bookmark (user-CRUD only) ──
-            M::CreateBookmark => PayloadSpec::payload("bookmark", EntityType::bookmark_core()),
-            M::UpdateBookmark => update_payload("bookmark", EntityType::bookmark_core()),
+            // ── Media (user-CRUD only) ──
+            M::CreateMedia => PayloadSpec::payload("media", EntityType::media_core()),
+            M::UpdateMedia => update_payload("media", EntityType::media_core()),
             // ── Habit (user-CRUD only) ──
             M::CreateHabit => PayloadSpec::payload("habit", EntityType::habit_core()),
             M::UpdateHabit => update_payload("habit", EntityType::habit_core()),
@@ -671,7 +696,7 @@ impl MutationKind {
             M::DeletePerson => entity_id_only("delete_person"),
             M::DeleteProject => entity_id_only("delete_project"),
             M::DeleteTodo => entity_id_only("delete_todo"),
-            M::DeleteBookmark => entity_id_only("delete_bookmark"),
+            M::DeleteMedia => entity_id_only("delete_media"),
             M::DeleteHabit => entity_id_only("delete_habit"),
             M::MarkProjectReviewed => entity_id_only("mark_project_reviewed"),
             // ── intent graph (ADR-0042) ──
@@ -691,8 +716,8 @@ impl MutationKind {
             M::CreateProject | M::UpdateProject => {
                 PayloadSpec::payload("project", EntityType::project_core())
             }
-            M::CreateBookmark | M::UpdateBookmark => {
-                PayloadSpec::payload("bookmark", EntityType::bookmark_core())
+            M::CreateMedia | M::UpdateMedia => {
+                PayloadSpec::payload("media", EntityType::media_core())
             }
             M::CreateHabit | M::UpdateHabit => {
                 PayloadSpec::payload("habit", EntityType::habit_core())
@@ -993,9 +1018,9 @@ pub(crate) enum MutationKind {
     CreateTodo,
     UpdateTodo,
     DeleteTodo,
-    CreateBookmark,
-    UpdateBookmark,
-    DeleteBookmark,
+    CreateMedia,
+    UpdateMedia,
+    DeleteMedia,
     CreateHabit,
     UpdateHabit,
     DeleteHabit,
@@ -1028,9 +1053,9 @@ impl MutationKind {
             "create_todo" => MutationKind::CreateTodo,
             "update_todo" => MutationKind::UpdateTodo,
             "delete_todo" => MutationKind::DeleteTodo,
-            "create_bookmark" => MutationKind::CreateBookmark,
-            "update_bookmark" => MutationKind::UpdateBookmark,
-            "delete_bookmark" => MutationKind::DeleteBookmark,
+            "create_media" => MutationKind::CreateMedia,
+            "update_media" => MutationKind::UpdateMedia,
+            "delete_media" => MutationKind::DeleteMedia,
             "create_habit" => MutationKind::CreateHabit,
             "update_habit" => MutationKind::UpdateHabit,
             "delete_habit" => MutationKind::DeleteHabit,
@@ -1059,9 +1084,9 @@ impl MutationKind {
             MutationKind::CreateTodo => "create_todo",
             MutationKind::UpdateTodo => "update_todo",
             MutationKind::DeleteTodo => "delete_todo",
-            MutationKind::CreateBookmark => "create_bookmark",
-            MutationKind::UpdateBookmark => "update_bookmark",
-            MutationKind::DeleteBookmark => "delete_bookmark",
+            MutationKind::CreateMedia => "create_media",
+            MutationKind::UpdateMedia => "update_media",
+            MutationKind::DeleteMedia => "delete_media",
             MutationKind::CreateHabit => "create_habit",
             MutationKind::UpdateHabit => "update_habit",
             MutationKind::DeleteHabit => "delete_habit",
@@ -1154,19 +1179,19 @@ impl MutationKind {
                 entity_type: E::Todo,
                 target_key: Some(K::EntityId),
             },
-            M::CreateBookmark => Descriptor {
+            M::CreateMedia => Descriptor {
                 write_op: W::Create,
-                entity_type: E::Bookmark,
+                entity_type: E::Media,
                 target_key: None,
             },
-            M::UpdateBookmark => Descriptor {
+            M::UpdateMedia => Descriptor {
                 write_op: W::Update,
-                entity_type: E::Bookmark,
+                entity_type: E::Media,
                 target_key: Some(K::EntityId),
             },
-            M::DeleteBookmark => Descriptor {
+            M::DeleteMedia => Descriptor {
                 write_op: W::Delete,
-                entity_type: E::Bookmark,
+                entity_type: E::Media,
                 target_key: Some(K::EntityId),
             },
             M::CreateHabit => Descriptor {
@@ -1202,7 +1227,7 @@ impl MutationKind {
 /// The agent-proposable subset (ADR-0018, ADR-0053): the 15 kinds the Worker may emit via
 /// `propose_workspace_mutation`. Carries the agent-path-only policy facets so each is
 /// total over exactly the kinds that can reach the accept path — the user-only
-/// kind families (`mark_project_reviewed`, bookmarks, habits) are simply not in
+/// kind families (`mark_project_reviewed`, media, habits) are simply not in
 /// the type.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum ProposableMutation {
@@ -1446,9 +1471,9 @@ impl TryFrom<MutationKind> for ProposableMutation {
             MutationKind::DeleteTodo => ProposableMutation::DeleteTodo,
             MutationKind::ApplyIntentGraph => ProposableMutation::ApplyIntentGraph,
             MutationKind::MarkProjectReviewed
-            | MutationKind::CreateBookmark
-            | MutationKind::UpdateBookmark
-            | MutationKind::DeleteBookmark
+            | MutationKind::CreateMedia
+            | MutationKind::UpdateMedia
+            | MutationKind::DeleteMedia
             | MutationKind::CreateHabit
             | MutationKind::UpdateHabit
             | MutationKind::DeleteHabit => return Err(NotProposable),
@@ -1488,9 +1513,9 @@ mod tests {
             MutationKind::CreateTodo,
             MutationKind::UpdateTodo,
             MutationKind::DeleteTodo,
-            MutationKind::CreateBookmark,
-            MutationKind::UpdateBookmark,
-            MutationKind::DeleteBookmark,
+            MutationKind::CreateMedia,
+            MutationKind::UpdateMedia,
+            MutationKind::DeleteMedia,
             MutationKind::CreateHabit,
             MutationKind::UpdateHabit,
             MutationKind::DeleteHabit,
@@ -1544,9 +1569,9 @@ mod tests {
         }
         for user_only in [
             MutationKind::MarkProjectReviewed,
-            MutationKind::CreateBookmark,
-            MutationKind::UpdateBookmark,
-            MutationKind::DeleteBookmark,
+            MutationKind::CreateMedia,
+            MutationKind::UpdateMedia,
+            MutationKind::DeleteMedia,
             MutationKind::CreateHabit,
             MutationKind::UpdateHabit,
             MutationKind::DeleteHabit,
@@ -1579,8 +1604,8 @@ mod tests {
             MutationKind::DeleteProject,
             MutationKind::MarkProjectReviewed,
             MutationKind::DeleteTodo,
-            MutationKind::UpdateBookmark,
-            MutationKind::DeleteBookmark,
+            MutationKind::UpdateMedia,
+            MutationKind::DeleteMedia,
             MutationKind::UpdateHabit,
             MutationKind::DeleteHabit,
         ] {
@@ -1603,7 +1628,7 @@ mod tests {
         assert!(EntityType::Project.is_referenceable());
         assert!(EntityType::Todo.is_referenceable());
         assert!(!EntityType::JournalEntry.is_referenceable());
-        assert!(!EntityType::Bookmark.is_referenceable());
+        assert!(!EntityType::Media.is_referenceable());
         assert!(!EntityType::Habit.is_referenceable());
     }
 
@@ -1649,8 +1674,8 @@ mod tests {
         );
         assert_eq!(EntityType::Todo.spec().schema_version, TODO_SCHEMA_VERSION);
         assert_eq!(
-            EntityType::Bookmark.spec().schema_version,
-            BOOKMARK_SCHEMA_VERSION
+            EntityType::Media.spec().schema_version,
+            MEDIA_SCHEMA_VERSION
         );
         assert_eq!(
             EntityType::Habit.spec().schema_version,

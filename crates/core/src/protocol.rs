@@ -2396,8 +2396,8 @@ mod parity_fixtures {
                 EntityListResult {
                     entities: vec![EntityRow {
                         id: UUID_A.to_string(),
-                        r#type: "bookmark".to_string(),
-                        data: serde_json::json!({ "title": "Docs", "url": "https://x" }),
+                        r#type: "media".to_string(),
+                        data: serde_json::json!({ "title": "Docs", "medium": "link", "state": "backlog" }),
                         created_at: 1_700_000_000_000,
                         updated_at: 1_700_000_000_000,
                         refs: vec![],

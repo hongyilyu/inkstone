@@ -139,6 +139,17 @@ CREATE TABLE entities (
 );
 CREATE INDEX idx_entities_type ON entities(type);
 
+-- Bookmark → Media (ADR-0059): Bookmark is replaced outright by the richer Media
+-- queue+log type. `entities.type` is free TEXT (no enum CHECK), so the type-string
+-- change needs no DDL — re-tag any existing bookmark row to `media` with the
+-- issue-mandated defaults (`medium='link'`, `state='done'`). A fresh DB has no
+-- such rows (this is a no-op there); the statement documents the pre-release
+-- migrate intent per CLAUDE.md §5.
+UPDATE entities
+SET type = 'media',
+    data = json_set(json_set(data, '$.medium', 'link'), '$.state', 'done')
+WHERE type = 'bookmark';
+
 CREATE TABLE entity_revisions (
   entity_id    TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
   seq          INTEGER NOT NULL,
