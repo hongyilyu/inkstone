@@ -1858,7 +1858,7 @@ describe("ProposalCard", () => {
 					proposal={{
 						proposal_id: "prop-unknown",
 						run_id: "run-unknown",
-						mutation_kind: "create_bookmark",
+						mutation_kind: "create_widget",
 						payload: null,
 						rationale: null,
 						status: "pending",
@@ -1867,7 +1867,7 @@ describe("ProposalCard", () => {
 				/>,
 			);
 			expect(
-				screen.getByText("Inkstone wants to create a create_bookmark."),
+				screen.getByText("Inkstone wants to create a create_widget."),
 			).toBeInTheDocument();
 			expect(
 				screen.getByRole("button", { name: /add journal entry/i }),

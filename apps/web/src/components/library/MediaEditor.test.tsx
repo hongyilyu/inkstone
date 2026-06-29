@@ -9,9 +9,9 @@ import userEvent from "@testing-library/user-event";
 import { Effect, Layer, ManagedRuntime, Stream } from "effect";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { Bookmark } from "@/lib/libraryItems";
+import type { Media } from "@/lib/libraryItems";
 import { RuntimeProvider } from "@/runtime";
-import { BookmarkEditor } from "./BookmarkEditor";
+import { MediaEditor } from "./MediaEditor";
 
 // Stub WsClient whose `entityMutate` records params and succeeds; unused methods die.
 function makeRuntime(
@@ -54,7 +54,7 @@ function makeRuntime(
 }
 
 function renderEditor(
-	props: Parameters<typeof BookmarkEditor>[0],
+	props: Parameters<typeof MediaEditor>[0],
 	entityMutate: (
 		params: EntityMutateParams,
 	) => Effect.Effect<EntityMutateResult, WsError> = () =>
@@ -72,21 +72,23 @@ function renderEditor(
 			<RuntimeProvider runtime={runtime}>{children}</RuntimeProvider>
 		</QueryClientProvider>
 	);
-	return render(<BookmarkEditor {...props} />, { wrapper: Wrapper });
+	return render(<MediaEditor {...props} />, { wrapper: Wrapper });
 }
 
-const existing: Bookmark = {
+const existing: Media = {
 	id: "01900000-0000-7000-8000-0000000000b1",
-	kind: "bookmark",
-	title: "Effect docs",
+	kind: "media",
+	title: "The Pragmatic Programmer",
+	medium: "book",
+	state: "backlog",
 	recency: 1,
 	createdAt: "fixture",
 };
 
 afterEach(cleanup);
 
-describe("BookmarkEditor create", () => {
-	it("emits create_bookmark with only the filled fields", async () => {
+describe("MediaEditor create", () => {
+	it("emits create_media with the title, medium, and state (a non-terminal state omits rating/finished)", async () => {
 		const user = userEvent.setup();
 		const seen: EntityMutateParams[] = [];
 		const onDone = vi.fn();
@@ -97,14 +99,15 @@ describe("BookmarkEditor create", () => {
 			});
 		});
 
-		await user.type(screen.getByLabelText(/title/i), "Effect docs");
-		await user.type(screen.getByLabelText(/url/i), "https://effect.website");
+		await user.type(screen.getByLabelText(/title/i), "Dune");
+		await user.selectOptions(screen.getByLabelText(/medium/i), "book");
+		await user.selectOptions(screen.getByLabelText(/state/i), "consuming");
 		await user.click(screen.getByRole("button", { name: /^save$/i }));
 
 		await waitFor(() => expect(seen).toHaveLength(1));
 		expect(seen[0]).toEqual({
-			mutation_kind: "create_bookmark",
-			payload: { title: "Effect docs", url: "https://effect.website" },
+			mutation_kind: "create_media",
+			payload: { title: "Dune", medium: "book", state: "consuming" },
 		});
 		await waitFor(() =>
 			expect(onDone).toHaveBeenCalledWith(
@@ -113,7 +116,7 @@ describe("BookmarkEditor create", () => {
 		);
 	});
 
-	it("includes note and tags as a plain string[] when given", async () => {
+	it("blocks Save when the title is empty (medium/state alone do not save)", async () => {
 		const user = userEvent.setup();
 		const seen: EntityMutateParams[] = [];
 		renderEditor(
@@ -126,23 +129,27 @@ describe("BookmarkEditor create", () => {
 			},
 		);
 
-		await user.type(screen.getByLabelText(/title/i), "Effect docs");
-		await user.type(screen.getByLabelText(/note/i), "Great reference");
-		await user.type(screen.getByLabelText(/tags/i), "effect, ts");
+		await user.selectOptions(screen.getByLabelText(/medium/i), "movie");
 		await user.click(screen.getByRole("button", { name: /^save$/i }));
 
-		await waitFor(() => expect(seen).toHaveLength(1));
-		expect(seen[0]).toEqual({
-			mutation_kind: "create_bookmark",
-			payload: {
-				title: "Effect docs",
-				note: "Great reference",
-				tags: ["effect", "ts"],
-			},
-		});
+		expect(seen).toHaveLength(0);
 	});
 
-	it("dedups repeated tags before sending", async () => {
+	it("hides rating + finished inputs while the state is non-terminal, reveals them on a terminal state", async () => {
+		const user = userEvent.setup();
+		renderEditor({ mode: "create", onDone: () => {}, onCancel: () => {} });
+
+		// Default state is backlog (non-terminal) → no rating/finished fields.
+		expect(screen.queryByLabelText(/rating/i)).not.toBeInTheDocument();
+		expect(screen.queryByLabelText(/finished/i)).not.toBeInTheDocument();
+
+		// Flip to a terminal state → both appear.
+		await user.selectOptions(screen.getByLabelText(/state/i), "done");
+		expect(screen.getByLabelText(/rating/i)).toBeInTheDocument();
+		expect(screen.getByLabelText(/finished/i)).toBeInTheDocument();
+	});
+
+	it("emits rating + finished_at on a terminal state", async () => {
 		const user = userEvent.setup();
 		const seen: EntityMutateParams[] = [];
 		renderEditor(
@@ -155,18 +162,27 @@ describe("BookmarkEditor create", () => {
 			},
 		);
 
-		await user.type(screen.getByLabelText(/title/i), "Effect docs");
-		await user.type(screen.getByLabelText(/tags/i), "effect, ts, effect");
+		await user.type(screen.getByLabelText(/title/i), "The Matrix");
+		await user.selectOptions(screen.getByLabelText(/medium/i), "movie");
+		await user.selectOptions(screen.getByLabelText(/state/i), "done");
+		await user.type(screen.getByLabelText(/rating/i), "5");
+		await user.type(screen.getByLabelText(/finished/i), "2026-06-20");
 		await user.click(screen.getByRole("button", { name: /^save$/i }));
 
 		await waitFor(() => expect(seen).toHaveLength(1));
-		expect(seen[0].payload).toEqual({
-			title: "Effect docs",
-			tags: ["effect", "ts"],
+		expect(seen[0]).toEqual({
+			mutation_kind: "create_media",
+			payload: {
+				title: "The Matrix",
+				medium: "movie",
+				state: "done",
+				rating: 5,
+				finished_at: "2026-06-20T00:00:00",
+			},
 		});
 	});
 
-	it("blocks Save when the title is empty", async () => {
+	it("never emits rating/finished_at once the state leaves terminal (cleared on the flip)", async () => {
 		const user = userEvent.setup();
 		const seen: EntityMutateParams[] = [];
 		renderEditor(
@@ -174,56 +190,59 @@ describe("BookmarkEditor create", () => {
 			(params) => {
 				seen.push(params);
 				return Effect.succeed({
-					entity_id: "01900000-0000-7000-8000-000000000099",
+					entity_id: "01900000-0000-7000-8000-0000000000a2",
 				});
 			},
 		);
 
-		await user.type(screen.getByLabelText(/url/i), "https://effect.website");
+		await user.type(screen.getByLabelText(/title/i), "Inception");
+		await user.selectOptions(screen.getByLabelText(/medium/i), "movie");
+		// Enter terminal, fill rating, then flip back to non-terminal.
+		await user.selectOptions(screen.getByLabelText(/state/i), "done");
+		await user.type(screen.getByLabelText(/rating/i), "4");
+		await user.selectOptions(screen.getByLabelText(/state/i), "consuming");
 		await user.click(screen.getByRole("button", { name: /^save$/i }));
 
-		expect(seen).toHaveLength(0);
+		await waitFor(() => expect(seen).toHaveLength(1));
+		// Core rejects rating/finished on a non-terminal state; the editor must omit them.
+		expect(seen[0]).toEqual({
+			mutation_kind: "create_media",
+			payload: { title: "Inception", medium: "movie", state: "consuming" },
+		});
 	});
 });
 
-describe("BookmarkEditor edit", () => {
-	// Core's update_bookmark is a full-document REPLACE, not a merge: editing only
-	// the title must still carry url + note + tags, or those fields are WIPED.
-	it("replays url, note + tags when only the title changes", async () => {
-		const withOptionals: Bookmark = {
-			...existing,
-			url: "https://effect.website",
-			note: "Great reference",
-			tags: ["effect", "ts"],
-		};
+describe("MediaEditor edit", () => {
+	// Core's update_media is a full-document REPLACE, not a merge: editing only the
+	// title must still carry medium + state, or those required fields are lost.
+	it("replays medium + state when only the title changes", async () => {
 		const user = userEvent.setup();
 		const seen: EntityMutateParams[] = [];
 		const onDone = vi.fn();
 		renderEditor(
-			{ mode: "edit", bookmark: withOptionals, onDone, onCancel: () => {} },
+			{ mode: "edit", media: existing, onDone, onCancel: () => {} },
 			(params) => {
 				seen.push(params);
-				return Effect.succeed({ entity_id: withOptionals.id });
+				return Effect.succeed({ entity_id: existing.id });
 			},
 		);
 
 		const title = screen.getByLabelText(/title/i);
 		await user.clear(title);
-		await user.type(title, "Effect — docs");
+		await user.type(title, "The Pragmatic Programmer (2nd ed)");
 		await user.click(screen.getByRole("button", { name: /^save$/i }));
 
 		await waitFor(() => expect(seen).toHaveLength(1));
 		expect(seen[0]).toEqual({
-			mutation_kind: "update_bookmark",
+			mutation_kind: "update_media",
 			payload: {
-				entity_id: withOptionals.id,
-				title: "Effect — docs",
-				url: "https://effect.website",
-				note: "Great reference",
-				tags: ["effect", "ts"],
+				entity_id: existing.id,
+				title: "The Pragmatic Programmer (2nd ed)",
+				medium: "book",
+				state: "backlog",
 			},
 		});
-		await waitFor(() => expect(onDone).toHaveBeenCalledWith(withOptionals.id));
+		await waitFor(() => expect(onDone).toHaveBeenCalledWith(existing.id));
 	});
 
 	// A WsRequestError is an Error but its `.message` is "" (its text lives in
@@ -232,13 +251,13 @@ describe("BookmarkEditor edit", () => {
 		const user = userEvent.setup();
 		const onDone = vi.fn();
 		renderEditor(
-			{ mode: "edit", bookmark: existing, onDone, onCancel: () => {} },
+			{ mode: "edit", media: existing, onDone, onCancel: () => {} },
 			() => Effect.fail(new WsRequestError({ reason: "connection_lost" })),
 		);
 
 		const title = screen.getByLabelText(/title/i);
 		await user.clear(title);
-		await user.type(title, "Effect — docs");
+		await user.type(title, "Renamed");
 		await user.click(screen.getByRole("button", { name: /^save$/i }));
 
 		const alert = await screen.findByRole("alert");
@@ -252,7 +271,7 @@ describe("BookmarkEditor edit", () => {
 		const seen: EntityMutateParams[] = [];
 		const onDone = vi.fn();
 		renderEditor(
-			{ mode: "edit", bookmark: existing, onDone, onCancel: () => {} },
+			{ mode: "edit", media: existing, onDone, onCancel: () => {} },
 			(params) => {
 				seen.push(params);
 				return Effect.succeed({ entity_id: existing.id });
@@ -265,40 +284,38 @@ describe("BookmarkEditor edit", () => {
 		expect(seen).toHaveLength(0);
 	});
 
-	// Under full-replace, clearing an optional means it's simply absent from the
-	// replaced document (omit ≡ null). `title` always rides along because Core's
-	// update_bookmark validator requires it.
-	it("omits url, note and tags from the full doc when cleared, title still present", async () => {
-		const withOptionals: Bookmark = {
+	// Clearing the rating on a terminal-state Media drops it from the full doc (omit
+	// ≡ null), while medium/state/title ride along.
+	it("omits a cleared rating from the full doc, terminal state still present", async () => {
+		const done: Media = {
 			...existing,
-			url: "https://effect.website",
-			note: "Old note",
-			tags: ["effect"],
+			state: "done",
+			rating: 5,
+			finishedAt: "2026-06-20T00:00:00",
 		};
 		const user = userEvent.setup();
 		const seen: EntityMutateParams[] = [];
 		renderEditor(
-			{
-				mode: "edit",
-				bookmark: withOptionals,
-				onDone: () => {},
-				onCancel: () => {},
-			},
+			{ mode: "edit", media: done, onDone: () => {}, onCancel: () => {} },
 			(params) => {
 				seen.push(params);
-				return Effect.succeed({ entity_id: withOptionals.id });
+				return Effect.succeed({ entity_id: done.id });
 			},
 		);
 
-		await user.clear(screen.getByLabelText(/url/i));
-		await user.clear(screen.getByLabelText(/note/i));
-		await user.clear(screen.getByLabelText(/tags/i));
+		await user.clear(screen.getByLabelText(/rating/i));
 		await user.click(screen.getByRole("button", { name: /^save$/i }));
 
 		await waitFor(() => expect(seen).toHaveLength(1));
 		expect(seen[0]).toEqual({
-			mutation_kind: "update_bookmark",
-			payload: { entity_id: withOptionals.id, title: "Effect docs" },
+			mutation_kind: "update_media",
+			payload: {
+				entity_id: done.id,
+				title: "The Pragmatic Programmer",
+				medium: "book",
+				state: "done",
+				finished_at: "2026-06-20T00:00:00",
+			},
 		});
 	});
 });

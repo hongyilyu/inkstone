@@ -13,22 +13,24 @@ import { useEntityBacklinks } from "@/lib/hooks/useEntityBacklinks";
 import { useEntityMutation } from "@/lib/hooks/useEntityMutation";
 import { useRescanJournalEntry } from "@/lib/hooks/useRescanJournalEntry";
 import type {
-	Bookmark,
 	JournalEntry,
 	JournalEntryBodyEntityRefNode,
 	LibraryItem,
 	LibraryItemKind,
+	Media,
 	Person,
 	Project,
 	Todo,
 } from "@/lib/libraryItems";
 import {
-	bookmarkHref,
 	formatDateTime,
 	formatDay,
 	KIND_META,
 	libraryItemSubtitle,
 	libraryItemTitle,
+	MEDIA_MEDIUM_LABEL,
+	MEDIA_STATE_LABEL,
+	mediaHref,
 	PROJECT_STATUS_LABEL,
 	projectForTodo,
 	projectsForPerson,
@@ -40,9 +42,9 @@ import {
 	todosForProject,
 } from "@/lib/libraryItems";
 import { cn } from "@/lib/utils.js";
-import { BookmarkEditor } from "./BookmarkEditor.js";
 import { EntityGlyph } from "./EntityGlyph.js";
 import { JournalEntryEditor } from "./JournalEntryEditor.js";
+import { MediaEditor } from "./MediaEditor.js";
 import { PersonEditor } from "./PersonEditor.js";
 import { ProjectEditor } from "./ProjectEditor.js";
 import { TodoEditor } from "./TodoEditor.js";
@@ -71,7 +73,7 @@ export function EntityDetail({
 			<JournalEntryDetail journalEntry={entity} allEntities={allEntities} />
 		);
 	}
-	return <BookmarkDetail bookmark={entity} />;
+	return <MediaDetail media={entity} />;
 }
 
 /**
@@ -86,7 +88,7 @@ const DELETE_KIND: Record<LibraryItemKind, string> = {
 	person: "delete_person",
 	project: "delete_project",
 	journal_entry: "delete_journal_entry",
-	bookmark: "delete_bookmark",
+	media: "delete_media",
 };
 
 /**
@@ -119,11 +121,18 @@ function InspectorShell({
 	const meta = KIND_META[entity.kind];
 
 	const goToEntity = (e: LibraryItem) =>
-		navigate({
-			to: "/library/$kind",
-			params: { kind: KIND_META[e.kind].slug },
-			search: { id: e.id },
-		});
+		// The Media slug ("media") collides with the static /library/media topic
+		// route, so navigating to /library/$kind would resolve to the topic view and
+		// LOSE the ?id selection. Route Media in-place instead (`to: "."`), so the
+		// selection rides ?id on the current route and the shared rail opens it
+		// (ADR-0059 slug-collision fix). Every other kind keeps its $kind collection.
+		e.kind === "media"
+			? navigate({ to: ".", search: { id: e.id } })
+			: navigate({
+					to: "/library/$kind",
+					params: { kind: KIND_META[e.kind].slug },
+					search: { id: e.id },
+				});
 
 	if (editing) {
 		const done = () => setEditing(false);
@@ -408,22 +417,21 @@ function JournalEntryDetail({
 }
 
 /**
- * The Bookmark inspector (ADR-0033/ADR-0036): a read-only body (no relations),
- * edited via `BookmarkEditor`. Intentionally passes no `allEntities` — a Bookmark
- * is always a direct user create (the agent never authors one, CONTEXT.md), so it
- * carries no Entity Source and renders no "Captured from" footer, needing no
- * entity lookup.
+ * The Media inspector (ADR-0033/ADR-0059): a read-only body (no relations), edited
+ * via `MediaEditor`. Intentionally passes no `allEntities` — a Media item is always
+ * a direct user create (the agent never authors one, ADR-0059), so it carries no
+ * Entity Source and renders no "Captured from" footer, needing no entity lookup.
  */
-function BookmarkDetail({ bookmark }: { bookmark: Bookmark }) {
+function MediaDetail({ media }: { media: Media }) {
 	return (
 		<InspectorShell
-			entity={bookmark}
-			confirmCopy="Delete this Bookmark?"
-			renderBody={() => <BookmarkBody bookmark={bookmark} />}
+			entity={media}
+			confirmCopy="Delete this Media item?"
+			renderBody={() => <MediaBody media={media} />}
 			renderEditor={(onDone, onCancel) => (
-				<BookmarkEditor
+				<MediaEditor
 					mode="edit"
-					bookmark={bookmark}
+					media={media}
 					onDone={onDone}
 					onCancel={onCancel}
 				/>
@@ -1006,15 +1014,28 @@ function TodoBody({
 	);
 }
 
-/** Read-only Bookmark inspector body (ADR-0036): url as an external link, note as prose, tags as badges. */
-function BookmarkBody({ bookmark }: { bookmark: Bookmark }) {
+/** Read-only Media inspector body (ADR-0059): the medium/state signature, an
+ * optional finish rating/date, url as an external link, note as prose, tags as badges. */
+function MediaBody({ media }: { media: Media }) {
 	// Core stores `url` opaque, so only render a clickable link for a safe
 	// http/https/mailto url; an unsafe (javascript:/data:) or scheme-less url
 	// shows as plain text — never a dangerous or broken-relative link.
-	const href = bookmarkHref(bookmark.url);
+	const href = mediaHref(media.url);
 	return (
 		<>
-			{bookmark.url ? (
+			<div className="flex flex-wrap gap-2">
+				<Badge variant="secondary">{MEDIA_MEDIUM_LABEL[media.medium]}</Badge>
+				<Badge>{MEDIA_STATE_LABEL[media.state]}</Badge>
+				{media.rating != null ? (
+					<Badge variant="secondary">{"★".repeat(media.rating)}</Badge>
+				) : null}
+				{media.finishedAt ? (
+					<Badge variant="secondary">
+						Finished {formatDay(media.finishedAt)}
+					</Badge>
+				) : null}
+			</div>
+			{media.url ? (
 				<Field label="URL">
 					{href ? (
 						<a
@@ -1023,25 +1044,23 @@ function BookmarkBody({ bookmark }: { bookmark: Bookmark }) {
 							rel="noopener noreferrer"
 							className="flex items-center gap-1 text-primary hover:underline"
 						>
-							<span className="min-w-0 truncate">{bookmark.url}</span>
+							<span className="min-w-0 truncate">{media.url}</span>
 							<ArrowUpRight className="size-3.5 shrink-0" aria-hidden />
 						</a>
 					) : (
-						<span className="block truncate text-foreground">
-							{bookmark.url}
-						</span>
+						<span className="block truncate text-foreground">{media.url}</span>
 					)}
 				</Field>
 			) : null}
-			{bookmark.note ? (
+			{media.note ? (
 				<Field label="Note">
-					<p className="text-pretty">{bookmark.note}</p>
+					<p className="text-pretty">{media.note}</p>
 				</Field>
 			) : null}
-			{bookmark.tags && bookmark.tags.length > 0 ? (
+			{media.tags && media.tags.length > 0 ? (
 				<Field label="Tags">
 					<div className="flex flex-wrap gap-2">
-						{bookmark.tags.map((t) => (
+						{media.tags.map((t) => (
 							<Badge key={t}>{t}</Badge>
 						))}
 					</div>

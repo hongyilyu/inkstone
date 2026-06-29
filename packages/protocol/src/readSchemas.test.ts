@@ -10,8 +10,8 @@
 //
 // The asymmetry — lenient ingest, strict emit — is therefore machine-checked, not
 // reviewer-trusted (the discipline openai/codex's app-server enforces in CI for
-// its Rust↔TS protocol). JournalEntry and Bookmark have no gated write-DATA core
-// (JE's payload models write-only body/target; Bookmark is ungated per ADR-0036),
+// its Rust↔TS protocol). JournalEntry and Media have no gated write-DATA core
+// (JE's payload models write-only body/target; Media is ungated per ADR-0059),
 // so their read schemas are hand-authored and deliberately out of this gate.
 
 import { Schema as S } from "effect";

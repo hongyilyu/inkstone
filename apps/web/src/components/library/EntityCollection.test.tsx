@@ -34,7 +34,7 @@ function makeRuntime(
 	todos: EntityListResult["entities"],
 	journalEntries: EntityListResult["entities"],
 	projects: EntityListResult["entities"] = [],
-	bookmarks: EntityListResult["entities"] = [],
+	media: EntityListResult["entities"] = [],
 ) {
 	const unused = Effect.die("not exercised in this test");
 	const stub = WsClient.of({
@@ -55,7 +55,7 @@ function makeRuntime(
 				return Effect.succeed({ entities: journalEntries });
 			}
 			if (type === "project") return Effect.succeed({ entities: projects });
-			if (type === "bookmark") return Effect.succeed({ entities: bookmarks });
+			if (type === "media") return Effect.succeed({ entities: media });
 			return Effect.succeed({ entities: [] });
 		},
 		getBacklinks: () => unused,
@@ -86,7 +86,7 @@ function renderCollection(
 		people?: EntityListResult["entities"];
 		todos?: EntityListResult["entities"];
 		projects?: EntityListResult["entities"];
-		bookmarks?: EntityListResult["entities"];
+		media?: EntityListResult["entities"];
 	},
 	overrides?: {
 		selectedId?: string | null;
@@ -99,7 +99,7 @@ function renderCollection(
 		rows.todos ?? [],
 		rows.journalEntries ?? [],
 		rows.projects ?? [],
-		rows.bookmarks ?? [],
+		rows.media ?? [],
 	);
 	const client = new QueryClient({
 		defaultOptions: {
@@ -125,13 +125,18 @@ function renderCollection(
 afterEach(cleanup);
 
 describe("EntityCollection", () => {
-	it("lists live Bookmarks read from entity/list", async () => {
-		renderCollection("bookmark", {
-			bookmarks: [
+	it("lists live Media read from entity/list", async () => {
+		renderCollection("media", {
+			media: [
 				{
 					id: "01900000-0000-7000-8000-0000000000e1",
-					type: "bookmark",
-					data: { title: "Effect docs", url: "https://effect.website" },
+					type: "media",
+					data: {
+						title: "Effect docs",
+						medium: "link",
+						state: "done",
+						url: "https://effect.website",
+					},
 					created_at: 1_700_000_000_000,
 					updated_at: 1_700_000_000_000,
 				},

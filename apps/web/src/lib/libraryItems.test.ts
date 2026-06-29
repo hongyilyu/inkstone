@@ -99,7 +99,7 @@ describe("library item helpers", () => {
 		expect(libraryItemKindForSlug("people")).toBe("person");
 		expect(libraryItemKindForSlug("projects")).toBe("project");
 		expect(libraryItemKindForSlug("todos")).toBe("todo");
-		expect(libraryItemKindForSlug("bookmarks")).toBe("bookmark");
+		expect(libraryItemKindForSlug("media")).toBe("media");
 		expect(libraryItemKindForSlug("nope")).toBeUndefined();
 	});
 

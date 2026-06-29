@@ -340,7 +340,7 @@ async fn apply_or_reject(
 
     // Accept or edit: this is the agent ACCEPT path, so the kind must be
     // agent-proposable. A stored kind that is not (mark_project_reviewed /
-    // bookmark / habit — the propose schema cannot emit them) is a graceful
+    // media / habit — the propose schema cannot emit them) is a graceful
     // `Invalid`, replacing the former render_accept panic. Done AFTER the reject
     // branch so a corrupt proposal can still be rejected.
     let proposable = kind.proposable()?;
@@ -668,7 +668,7 @@ fn preserve_update_target_entity_id(
 ) -> Result<serde_json::Value, DecideError> {
     // Only the editable update kinds carry a target id to preserve. This gate is
     // the editable-UPDATE set (not merely `target_key.is_some()`, which would also
-    // catch deletes, the reference weave, mark_project_reviewed, bookmarks, and
+    // catch deletes, the reference weave, mark_project_reviewed, media, and
     // habits — none of which take an edit). Reference/deletes were already
     // rejected by the edit-guard upstream; this stays explicit so the set cannot
     // silently widen.

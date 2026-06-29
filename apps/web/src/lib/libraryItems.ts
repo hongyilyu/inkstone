@@ -1,12 +1,16 @@
 import {
-	Bookmark as BookmarkIcon,
 	BookOpenText,
+	Film,
 	FolderKanban,
 	ListTodo,
 	type LucideIcon,
 	User,
 } from "lucide-react";
 import {
+	MEDIA_MEDIUMS,
+	MEDIA_STATES,
+	type MediaMedium,
+	type MediaState,
 	PROJECT_STATUSES,
 	type ProjectStatus,
 	type RecurAnchor,
@@ -20,7 +24,7 @@ export type LibraryItemKind =
 	| "person"
 	| "project"
 	| "todo"
-	| "bookmark";
+	| "media";
 
 /**
  * Where an Entity came from ("Captured from", ADR-0030), resolved from its
@@ -146,15 +150,27 @@ export interface Todo extends LibraryItemBase {
 	personRefs: TodoPersonRef[];
 }
 
-export interface Bookmark extends LibraryItemBase {
-	kind: "bookmark";
+/**
+ * A Media item — the queue+log Entity Type (ADR-0059, replacing Bookmark): a
+ * thing to read/watch, carrying a `medium`, a lifecycle `state`, and (only in a
+ * terminal state) an optional finish `rating`/`finishedAt`. The view model
+ * camelCases the stored snake_case `finished_at`; the codec maps between them.
+ */
+export interface Media extends LibraryItemBase {
+	kind: "media";
 	title: string;
+	medium: MediaMedium;
+	state: MediaState;
+	/** A 1–5 finish rating; meaningful only in a terminal state (ADR-0059). */
+	rating?: number;
+	/** The local-datetime finish timestamp; meaningful only in a terminal state. */
+	finishedAt?: string;
 	url?: string;
 	note?: string;
 	tags?: string[];
 }
 
-export type LibraryItem = JournalEntry | Person | Project | Todo | Bookmark;
+export type LibraryItem = JournalEntry | Person | Project | Todo | Media;
 
 export interface JournalEntryDay {
 	day: string;
@@ -177,7 +193,7 @@ export const KIND_ORDER: LibraryItemKind[] = [
 	"person",
 	"project",
 	"todo",
-	"bookmark",
+	"media",
 ];
 
 /**
@@ -191,7 +207,7 @@ export const CREATABLE_KINDS: ReadonlySet<LibraryItemKind> = new Set([
 	"person",
 	"project",
 	"journal_entry",
-	"bookmark",
+	"media",
 ]);
 
 export const KIND_META: Record<LibraryItemKind, KindMeta> = {
@@ -209,11 +225,11 @@ export const KIND_META: Record<LibraryItemKind, KindMeta> = {
 		icon: FolderKanban,
 	},
 	todo: { label: "Todo", plural: "Todos", slug: "todos", icon: ListTodo },
-	bookmark: {
-		label: "Bookmark",
-		plural: "Bookmarks",
-		slug: "bookmarks",
-		icon: BookmarkIcon,
+	media: {
+		label: "Media",
+		plural: "Media",
+		slug: "media",
+		icon: Film,
 	},
 };
 
@@ -222,7 +238,7 @@ const SLUG_TO_KIND: Record<string, LibraryItemKind> = {
 	people: "person",
 	projects: "project",
 	todos: "todo",
-	bookmarks: "bookmark",
+	media: "media",
 };
 
 export function libraryItemKindForSlug(
@@ -260,13 +276,18 @@ export function libraryItemSubtitle(e: LibraryItem): string {
 			return e.dueAt
 				? `Due ${e.dueAt.slice(0, 10)}`
 				: (e.note ?? TODO_STATUS_LABEL[e.status]);
-		case "bookmark":
-			return bookmarkHost(e.url) ?? "Bookmark";
+		case "media":
+			// A link shows its host (its most identifying detail); everything else
+			// reads as "<Medium> · <State>" (the queue+log signature).
+			return (
+				(e.medium === "link" ? mediaHost(e.url) : null) ??
+				`${MEDIA_MEDIUM_LABEL[e.medium]} · ${MEDIA_STATE_LABEL[e.state]}`
+			);
 	}
 }
 
-/** A Bookmark's URL host for its subtitle, or null when the url is absent or unparseable. */
-function bookmarkHost(url: string | undefined): string | null {
+/** A Media item's URL host for its subtitle, or null when the url is absent or unparseable. */
+function mediaHost(url: string | undefined): string | null {
 	if (!url) return null;
 	try {
 		return new URL(url).host || null;
@@ -276,14 +297,14 @@ function bookmarkHost(url: string | undefined): string | null {
 }
 
 /**
- * A Bookmark's url as a safe, clickable href — or null when it must not be a
- * link. Core stores `url` opaque (no scheme validation, ADR-0036), so the
+ * A Media item's url as a safe, clickable href — or null when it must not be a
+ * link. Core stores `url` opaque (no scheme validation, ADR-0059/0036), so the
  * inspector guards the href itself: only http/https/mailto pass. A `javascript:`
  * or `data:` url (a stored-XSS sink) and a scheme-less string like `acme.dev`
  * (which would resolve relative to the app origin) both return null, so the
  * caller renders plain text instead of a dangerous or broken link.
  */
-export function bookmarkHref(url: string | undefined): string | null {
+export function mediaHref(url: string | undefined): string | null {
 	if (!url) return null;
 	try {
 		const { protocol } = new URL(url);
@@ -305,6 +326,14 @@ export const TODO_STATUS_LABEL = Object.fromEntries(
 	TODO_STATUSES.map((o) => [o.value, o.label]),
 ) as Record<TodoStatus, string>;
 
+export const MEDIA_MEDIUM_LABEL = Object.fromEntries(
+	MEDIA_MEDIUMS.map((o) => [o.value, o.label]),
+) as Record<MediaMedium, string>;
+
+export const MEDIA_STATE_LABEL = Object.fromEntries(
+	MEDIA_STATES.map((o) => [o.value, o.label]),
+) as Record<MediaState, string>;
+
 export function libraryItemKindCounts(
 	all: LibraryItem[],
 ): Record<LibraryItemKind, number> {
@@ -313,7 +342,7 @@ export function libraryItemKindCounts(
 		person: 0,
 		project: 0,
 		todo: 0,
-		bookmark: 0,
+		media: 0,
 	};
 	for (const e of all) counts[e.kind] += 1;
 	return counts;

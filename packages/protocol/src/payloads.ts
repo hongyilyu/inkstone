@@ -524,41 +524,50 @@ export const schemas = {
 
 export type WireKind = keyof typeof schemas;
 
-// ── bookmark payloads (UNGATED — ADR-0036) ──
+// ── media payloads (UNGATED — ADR-0059, supersedes ADR-0036) ──
 //
-// Bookmark is user-CRUD-only (no agent proposal, no Rust `PayloadSpec`, no
-// parity fixture), so its three schemas are NOT registered in `schemas` (that
-// would break the proposable-kind completeness lock and the parity iteration). They are
+// Media (the queue+log Entity Type, ADR-0059, replacing Bookmark) is
+// user-CRUD-only (no agent proposal, no Rust `PayloadSpec`, no parity fixture),
+// so its three write schemas are NOT registered in `schemas` (that would break
+// the proposable-kind completeness lock and the parity iteration). They are
 // authored here for the Web codec to import directly; the codec's own round-trip
-// test is their only guard. Modeled on Person: `title` required non-empty; the
-// rest optional bare strings; `tags` an array of BARE strings (the Person
-// `aliases` dialect). No `source_journal_entry_id` — bookmarks have no journal
-// provenance. `update_bookmark` prepends the required bare `entity_id`;
-// `delete_bookmark` reuses the shared `deleteByEntityId` factory.
+// test is their only guard. `title` required non-empty; `medium`/`state` are
+// required fixed-domain enums (`S.Literal(...)`, the Todo `status` dialect);
+// `rating`/`finished_at`/`url`/`note` optional; `tags` an array of BARE strings
+// (the Person `aliases` dialect). The cross-field rule that `rating`/
+// `finished_at` are meaningful only in a terminal `state` lives in Core's
+// validator hook, not this schema. No `source_journal_entry_id` — Media has no
+// journal provenance. `update_media` prepends the required bare `entity_id`;
+// `delete_media` reuses the shared `deleteByEntityId` factory.
 
-/** The Bookmark core: `title` required (non-empty), `url`/`note` optional bare
- * strings, `tags` optional array of BARE strings. Spread into create/update so
- * neither duplicates it. */
-const bookmarkCore = {
+/** The Media core: `title` required (non-empty); `medium`/`state` required enums;
+ * `rating` optional number; `finished_at`/`url`/`note` optional bare strings;
+ * `tags` optional array of BARE strings. Spread into create/update so neither
+ * duplicates it. */
+const mediaCore = {
 	title: nonEmptyString,
+	medium: S.Literal("link", "article", "book", "tv", "movie"),
+	state: S.Literal("backlog", "consuming", "done", "abandoned"),
+	rating: S.optional(S.Number),
+	finished_at: S.optional(S.String),
 	url: S.optional(S.String),
 	note: S.optional(S.String),
 	tags: S.optional(S.Array(S.String)),
 };
 
-/** `create_bookmark`: Bookmark core (no provenance id). */
-export const createBookmark = S.Struct({
-	...bookmarkCore,
+/** `create_media`: Media core (no provenance id). */
+export const createMedia = S.Struct({
+	...mediaCore,
 });
 
-/** `update_bookmark`: required `entity_id` (bare) + Bookmark core. */
-export const updateBookmark = S.Struct({
+/** `update_media`: required `entity_id` (bare) + Media core. */
+export const updateMedia = S.Struct({
 	entity_id: S.String,
-	...bookmarkCore,
+	...mediaCore,
 });
 
-/** `delete_bookmark`: the shared single-`entity_id` delete payload. */
-export const deleteBookmark = deleteByEntityId;
+/** `delete_media`: the shared single-`entity_id` delete payload. */
+export const deleteMedia = deleteByEntityId;
 
 // ── read-data schemas (ADR-0009 as-built: read-data schema coverage) ──
 //
@@ -624,11 +633,16 @@ export const readProjectData = S.Struct({
 	review_every: readField,
 });
 
-/** Relaxed read schema for a stored Bookmark's `data` (ADR-0036). Hand-authored
- * and OUTSIDE the superset gate: bookmark is user-CRUD-only, so Core advertises
- * no `PayloadSpec` and there is no write fixture to pin against. */
-export const readBookmarkData = S.Struct({
+/** Relaxed read schema for a stored Media's `data` (ADR-0059). Hand-authored and
+ * OUTSIDE the superset gate: media is user-CRUD-only, so Core advertises no
+ * `PayloadSpec` and there is no write fixture to pin against. The codec
+ * default-tolerates a sparse row missing `medium`/`state`. */
+export const readMediaData = S.Struct({
 	title: readField,
+	medium: readField,
+	state: readField,
+	rating: readField,
+	finished_at: readField,
 	url: readField,
 	note: readField,
 	tags: readField,

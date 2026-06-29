@@ -61,6 +61,19 @@ const stub = WsClient.of({
 				],
 			});
 		}
+		if (type === "media") {
+			return Effect.succeed({
+				entities: [
+					{
+						id: "media_dune",
+						type: "media",
+						data: { title: "Dune", medium: "book", state: "backlog" },
+						created_at: 1_700_000_000_000,
+						updated_at: 1_700_000_000_000,
+					},
+				],
+			});
+		}
 		return Effect.succeed({ entities: [] });
 	},
 	getBacklinks: die,
@@ -146,6 +159,24 @@ describe("CommandPalette (⌘K)", () => {
 		await waitFor(() => {
 			expect(router.state.location.pathname).toBe("/library/people");
 			expect(router.state.location.search).toEqual({ id: "person_alice" });
+		});
+	});
+
+	// Media's KIND_META slug ("media") collides with the STATIC /library/media topic
+	// route, unlike every other kind which rides /library/$kind. Activating a Media
+	// hit must still land on /library/media with `?id` intact (the static route reads
+	// it; route.tsx mounts the detail rail) — a regression guard for the one slug that
+	// shadows $kind (ADR-0059 web-surface routing).
+	it("navigates to a Media item on the static topic route, preserving the id", async () => {
+		const router = renderApp();
+		openPalette();
+		const input = await screen.findByPlaceholderText(PLACEHOLDER);
+
+		await userEvent.type(input, "dune{Enter}");
+
+		await waitFor(() => {
+			expect(router.state.location.pathname).toBe("/library/media");
+			expect(router.state.location.search).toEqual({ id: "media_dune" });
 		});
 	});
 

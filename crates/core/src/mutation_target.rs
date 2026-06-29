@@ -201,8 +201,8 @@ pub(crate) async fn validate_mutation_target_refs(
             | MutationKind::DeleteProject
             | MutationKind::MarkProjectReviewed
             | MutationKind::DeleteTodo
-            | MutationKind::UpdateBookmark
-            | MutationKind::DeleteBookmark
+            | MutationKind::UpdateMedia
+            | MutationKind::DeleteMedia
             | MutationKind::UpdateHabit
             | MutationKind::DeleteHabit
     );

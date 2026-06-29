@@ -22,6 +22,23 @@ export const PROJECT_STATUSES = [
 	{ value: "dropped", label: "Dropped" },
 ] as const;
 
+/** The Media medium domain, value + display label (ADR-0059). */
+export const MEDIA_MEDIUMS = [
+	{ value: "link", label: "Link" },
+	{ value: "article", label: "Article" },
+	{ value: "book", label: "Book" },
+	{ value: "tv", label: "TV" },
+	{ value: "movie", label: "Movie" },
+] as const;
+
+/** The Media lifecycle-state domain — the queue→log states (ADR-0059). */
+export const MEDIA_STATES = [
+	{ value: "backlog", label: "Backlog" },
+	{ value: "consuming", label: "Consuming" },
+	{ value: "done", label: "Done" },
+	{ value: "abandoned", label: "Abandoned" },
+] as const;
+
 /** The recurrence unit domain, value + display label (ADR-0037/0039). */
 export const RECURRENCE_UNITS = [
 	{ value: "minute", label: "Minutes" },
@@ -52,6 +69,8 @@ export const TODO_PERSON_ROLES = [
 
 export type TodoStatus = (typeof TODO_STATUSES)[number]["value"];
 export type ProjectStatus = (typeof PROJECT_STATUSES)[number]["value"];
+export type MediaMedium = (typeof MEDIA_MEDIUMS)[number]["value"];
+export type MediaState = (typeof MEDIA_STATES)[number]["value"];
 export type RecurrenceUnit = (typeof RECURRENCE_UNITS)[number]["value"];
 export type RecurAnchor = (typeof RECUR_ANCHORS)[number]["value"];
 
@@ -60,6 +79,8 @@ export type RecurAnchor = (typeof RECUR_ANCHORS)[number]["value"];
 // canonical arrays under the names the call sites use.
 export const TODO_STATUS_OPTIONS = TODO_STATUSES;
 export const PROJECT_STATUS_OPTIONS = PROJECT_STATUSES;
+export const MEDIA_MEDIUM_OPTIONS = MEDIA_MEDIUMS;
+export const MEDIA_STATE_OPTIONS = MEDIA_STATES;
 export const RECURRENCE_UNIT_OPTIONS = RECURRENCE_UNITS;
 export const RECUR_ANCHOR_OPTIONS = RECUR_ANCHORS;
 export const TODO_PERSON_ROLE_OPTIONS = TODO_PERSON_ROLES;
@@ -82,4 +103,31 @@ export function asProjectStatus(value: unknown): ProjectStatus {
 	return value === "on_hold" || value === "completed" || value === "dropped"
 		? value
 		: "active";
+}
+
+/** Coerce an unknown to a Media medium, degrading anything unrecognized to "link"
+ * (the migration's bookmark→media default — a sparse/legacy row never crashes). */
+export function asMediaMedium(value: unknown): MediaMedium {
+	return MEDIA_MEDIUMS.some((m) => m.value === value)
+		? (value as MediaMedium)
+		: "link";
+}
+
+/** Coerce an unknown to a Media state, degrading anything unrecognized to "done"
+ * (the migration's bookmark→media default — a sparse/legacy row never crashes). */
+export function asMediaState(value: unknown): MediaState {
+	return MEDIA_STATES.some((s) => s.value === value)
+		? (value as MediaState)
+		: "done";
+}
+
+/**
+ * The terminal states in which a finish `rating`/`finished_at` is meaningful
+ * (ADR-0059). The single source for this rule on the web side — the editor gates
+ * its rating/finished inputs on it and the codec drops finish data off-terminal,
+ * mirroring Core's `media_state_finish_invariant`. Keep co-located with the
+ * `MediaState` domain so the two can't drift.
+ */
+export function isMediaTerminalState(state: MediaState): boolean {
+	return state === "done" || state === "abandoned";
 }

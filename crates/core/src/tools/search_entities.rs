@@ -443,8 +443,10 @@ mod tests {
             display_arg(&json!({ "type": "journal_entry", "query": "x" })),
             None
         );
+        // media is a real Entity Type but not searchable (projection None), so it
+        // also has no display label.
         assert_eq!(
-            display_arg(&json!({ "type": "bookmark", "query": "x" })),
+            display_arg(&json!({ "type": "media", "query": "x" })),
             None
         );
     }

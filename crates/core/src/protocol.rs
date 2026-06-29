@@ -2396,8 +2396,11 @@ mod parity_fixtures {
                 EntityListResult {
                     entities: vec![EntityRow {
                         id: UUID_A.to_string(),
-                        r#type: "bookmark".to_string(),
-                        data: serde_json::json!({ "title": "Docs", "url": "https://x" }),
+                        r#type: "media".to_string(),
+                        // Mirror a migrated bookmark (0001_initial.sql backfills
+                        // medium='link', state='done') so the bare-row sample matches
+                        // the documented migration shape (ADR-0059).
+                        data: serde_json::json!({ "title": "Docs", "medium": "link", "state": "done" }),
                         created_at: 1_700_000_000_000,
                         updated_at: 1_700_000_000_000,
                         refs: vec![],
