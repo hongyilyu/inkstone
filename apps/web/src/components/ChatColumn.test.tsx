@@ -37,6 +37,13 @@ function makeStubRuntime(opts: {
 	// (`threadCreate`) fail in the SDK's E channel with this WsError — so the real
 	// bridge `send`/`sendNewThread` squash path surfaces it (slice 4).
 	readonly sendFailure?: WsError;
+	// ChatColumn now reads `provider/status` (slice 2) to gate the first-run connect
+	// welcome. Default CONNECTED so the existing behaviour tests keep showing the
+	// ordinary chat surface; the disconnected-welcome test opts out with `false`.
+	readonly providerConnected?: boolean;
+	// Override the whole provider/status read (e.g. `Effect.never` to hold it
+	// pending) — wins over `providerConnected` when set.
+	readonly providerStatus?: WsClient["Type"]["providerStatus"];
 }) {
 	const unused = Effect.die("not exercised in this test");
 	const stub = WsClient.of({
@@ -73,7 +80,14 @@ function makeStubRuntime(opts: {
 		// opt in via `opts.retryRun`; an accidental retry in an unrelated test dies
 		// rather than silently passing on a default "accepted" (CodeRabbit #244).
 		retryRun: opts.retryRun ?? (() => unused),
-		providerStatus: () => unused,
+		providerStatus:
+			opts.providerStatus ??
+			(() =>
+				Effect.succeed({
+					providers: [
+						{ id: "openai-codex", connected: opts.providerConnected ?? true },
+					],
+				})),
 		providerLoginStart: () => unused,
 		modelCatalog: () => unused,
 		settingsGet: () => unused,
@@ -202,14 +216,71 @@ describe("ChatColumn", () => {
 	});
 
 	it("welcomes the user on the / route (no thread focused) with no messages", async () => {
+		// Default-connected (a provider is wired) → the ordinary "Start a chat"
+		// welcome, NOT the first-run connect screen (slice 2 gate is satisfied).
 		const runtime = makeStubRuntime({ runId: "run-welcome", events: [] });
+
+		await renderChatRoute(<ChatColumn />, { runtime, path: "/" });
+
+		// No flash: the connect welcome is gated on a KNOWN-disconnected status, so
+		// the in-flight read shows the ordinary "Start a chat" welcome immediately
+		// (never the connect screen) for a connected install.
+		expect(
+			screen.getByRole("heading", { name: /start a chat/i }),
+		).toBeInTheDocument();
+		expect(screen.getByText(/land in your library/i)).toBeInTheDocument();
+		// The connected welcome is NOT the first-run connect screen.
+		expect(
+			screen.queryByRole("heading", { name: /welcome to inkstone/i }),
+		).toBeNull();
+
+		await runtime.dispose();
+	});
+
+	it("shows the first-run connect welcome on / when NO provider is connected (deep-links to /settings/models)", async () => {
+		// No provider wired yet → the branded connect screen replaces "Start a chat"
+		// and its CTA deep-links to the Models settings page (slice 2).
+		const runtime = makeStubRuntime({
+			runId: "run-disconnected",
+			events: [],
+			providerConnected: false,
+		});
+
+		await renderChatRoute(<ChatColumn />, { runtime, path: "/" });
+
+		// The branded connect heading shows…
+		expect(
+			await screen.findByRole("heading", { name: /welcome to inkstone/i }),
+		).toBeInTheDocument();
+		// …and the ordinary "Start a chat" welcome is gone.
+		expect(screen.queryByRole("heading", { name: /start a chat/i })).toBeNull();
+
+		// The CTA is a real navigable link pointing at the Models settings page.
+		const cta = screen.getByRole("link", { name: /connect a provider/i });
+		expect(cta.getAttribute("href")).toContain("/settings/models");
+
+		await runtime.dispose();
+	});
+
+	it("does NOT flash the connect welcome while provider status is still loading", async () => {
+		// The connect screen is gated on a KNOWN status: until `provider/status`
+		// resolves we show the neutral "Start a chat" welcome, never the connect
+		// screen. With the read held pending forever, the connect heading must never
+		// appear (it would, on every remount, if the gate read the bare anyConnected).
+		const runtime = makeStubRuntime({
+			runId: "run-pending",
+			events: [],
+			providerStatus: () => Effect.never,
+		});
 
 		await renderChatRoute(<ChatColumn />, { runtime, path: "/" });
 
 		expect(
 			screen.getByRole("heading", { name: /start a chat/i }),
 		).toBeInTheDocument();
-		expect(screen.getByText(/land in your library/i)).toBeInTheDocument();
+		expect(
+			screen.queryByRole("heading", { name: /welcome to inkstone/i }),
+		).toBeNull();
 
 		await runtime.dispose();
 	});
@@ -269,7 +340,12 @@ describe("ChatColumn", () => {
 			subscribeRun: () => Stream.empty,
 			cancelRun: () => unused,
 			retryRun: () => unused,
-			providerStatus: () => unused,
+			// Default these full-stub behaviour tests to a CONNECTED provider so the
+			// ordinary chat surface renders (slice 2's connect gate is off here).
+			providerStatus: () =>
+				Effect.succeed({
+					providers: [{ id: "openai-codex", connected: true }],
+				}),
 			providerLoginStart: () => unused,
 			modelCatalog: () => unused,
 			settingsGet: () => unused,
@@ -324,7 +400,12 @@ describe("ChatColumn", () => {
 			subscribeRun: () => Stream.empty,
 			cancelRun: () => unused,
 			retryRun: () => unused,
-			providerStatus: () => unused,
+			// Default these full-stub behaviour tests to a CONNECTED provider so the
+			// ordinary chat surface renders (slice 2's connect gate is off here).
+			providerStatus: () =>
+				Effect.succeed({
+					providers: [{ id: "openai-codex", connected: true }],
+				}),
 			providerLoginStart: () => unused,
 			modelCatalog: () => unused,
 			settingsGet: () => unused,
@@ -1033,7 +1114,12 @@ describe("ChatColumn", () => {
 			subscribeRun: () => Stream.empty,
 			cancelRun: () => unused,
 			retryRun: () => unused,
-			providerStatus: () => unused,
+			// Default these full-stub behaviour tests to a CONNECTED provider so the
+			// ordinary chat surface renders (slice 2's connect gate is off here).
+			providerStatus: () =>
+				Effect.succeed({
+					providers: [{ id: "openai-codex", connected: true }],
+				}),
 			providerLoginStart: () => unused,
 			modelCatalog: () => unused,
 			settingsGet: () => unused,
