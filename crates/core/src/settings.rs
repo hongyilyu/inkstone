@@ -20,7 +20,8 @@ const EFFORT_KEY: &str = "effort";
 
 /// The global key holding the user's curated set of enabled chat models
 /// (ADR-0024), stored as a JSON-encoded array of catalog model ids. Unset until
-/// the user curates a set; callers default it to the full catalog.
+/// the user curates a set; callers default `None` to the empty "uncurated = all
+/// enabled" sentinel (`[]`), never the materialized catalog.
 const ENABLED_MODELS_KEY: &str = "enabled_models";
 
 /// The minutes east of UTC for the Workspace review anchor (ADR-0031). Seeds the
@@ -66,8 +67,9 @@ pub async fn set_preferred_model(
 }
 
 /// The stored set of enabled chat model ids, or `None` until the user curates
-/// one (ADR-0024). Callers default `None` to the full catalog. A malformed
-/// stored value (not a JSON array) surfaces as a decode error.
+/// one (ADR-0024). Callers default `None` to the empty "uncurated = all enabled"
+/// sentinel (`[]`), never the materialized catalog. A malformed stored value
+/// (not a JSON array) surfaces as a decode error.
 pub async fn enabled_models(pool: &SqlitePool) -> sqlx::Result<Option<Vec<String>>> {
     let raw = crate::db::get_setting(pool, ENABLED_MODELS_KEY).await?;
     raw.map(|json| {

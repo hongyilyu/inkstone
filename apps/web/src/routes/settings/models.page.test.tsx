@@ -455,13 +455,20 @@ describe("Models settings page (ADR-0024)", () => {
 			}),
 		);
 
-		// Now make GPT-5.4 Mini the default. With Mini re-enabled (it must be enabled to
-		// be the default) and chosen as preferred, GPT-5.5's toggle unlocks.
+		// Re-enable GPT-5.4 Mini. That makes EVERY model enabled again, so the set
+		// normalizes back to the `[]` uncurated sentinel rather than persisting the
+		// full materialized catalog (which would re-freeze against future growth).
 		await user.click(
 			within(
 				await screen.findByRole("row", { name: /GPT-5\.4 Mini/ }),
 			).getByRole("checkbox", { name: /enabled for chat/i }),
 		);
+		await waitFor(() =>
+			expect(settingsSet).toHaveBeenCalledWith({ enabled_models: [] }),
+		);
+
+		// Now make GPT-5.4 Mini the default. With Mini enabled and chosen as
+		// preferred, GPT-5.5's toggle unlocks.
 		await user.click(
 			within(
 				await screen.findByRole("row", { name: /GPT-5\.4 Mini/ }),

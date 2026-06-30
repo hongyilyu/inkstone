@@ -58,13 +58,16 @@ function ModelsSettings() {
 			[runtime],
 		),
 	);
-	// The curated enabled set. Empty = "no curation → all enabled" (ADR-0024);
-	// the same optimistic/latest-write-wins/rollback machinery as model + effort.
-	const enabledModels = useOptimisticSetting<readonly string[]>(
-		[],
+	// The curated enabled set. `null` until settings/get seeds it — so the detail
+	// can distinguish "not loaded yet" from "uncurated = all enabled" ([]) and never
+	// flashes wrong toggle/lock state or writes off the sentinel before load. Once
+	// loaded, empty = "no curation → all enabled" (ADR-0024). Same
+	// optimistic/latest-write-wins/rollback machinery as model + effort.
+	const enabledModels = useOptimisticSetting<readonly string[] | null>(
+		null,
 		useCallback(
 			(next) =>
-				saveSettings(runtime, { enabled_models: next }).then(
+				saveSettings(runtime, { enabled_models: next ?? [] }).then(
 					(s) => s.enabled_models,
 				),
 			[runtime],
@@ -206,21 +209,33 @@ function ModelsSettings() {
 
 	// Toggle a model's chat-enabled membership. The empty stored set means "all
 	// enabled", so toggling OFF first materializes the full catalog, then drops the
-	// id — never persisting []. The current default can't be disabled (mirrors
-	// Core's slice-2 invariant; the disabled toggle already blocks the click, this
-	// is defense-in-depth so we never send a set excluding it).
+	// id — never persisting []. Symmetrically, if a toggle leaves EVERY model
+	// enabled we normalize back to [] (the uncurated sentinel) rather than persist
+	// the full materialized catalog, which would re-freeze the set against future
+	// catalog growth. The current default can't be disabled (mirrors Core's slice-2
+	// invariant; the disabled toggle already blocks the click, this is
+	// defense-in-depth so we never send a set excluding it). No-op until settings
+	// load (`enabledModels.value === null`) — the toggle reads off a real set, not
+	// the pre-load sentinel.
 	const setModelEnabled = enabledModels.set;
 	const currentDefault = model.value;
 	const onToggleEnabled = useCallback(
 		(id: string, next: boolean) => {
-			if (!next && id === currentDefault) return;
 			const stored = enabledModels.value;
+			if (stored === null) return;
+			if (!next && id === currentDefault) return;
 			const baseline = stored.length === 0 ? allModelIds : stored;
-			const nextSet = next
+			const expanded = next
 				? baseline.includes(id)
 					? baseline
 					: [...baseline, id]
 				: baseline.filter((x) => x !== id);
+			// Collapse "every model enabled" back to the uncurated sentinel.
+			const nextSet =
+				expanded.length === allModelIds.length &&
+				allModelIds.every((m) => expanded.includes(m))
+					? []
+					: expanded;
 			setModelEnabled(nextSet);
 		},
 		[enabledModels.value, allModelIds, currentDefault, setModelEnabled],
@@ -272,7 +287,12 @@ function ModelsSettings() {
 					models={focused.models}
 					selectedId={model.value}
 					onSelect={model.set}
-					enabledIds={enabledModels.value}
+					// Pre-load (`null`) presents as uncurated (all enabled); the detail
+					// is only reachable after a provider-row click, by which point
+					// settings/get (fired on mount) has long since seeded the real set,
+					// and onToggleEnabled no-ops while value is null — so a toggle can't
+					// write off the sentinel.
+					enabledIds={enabledModels.value ?? []}
 					onToggleEnabled={onToggleEnabled}
 					onBack={() => setSelectedProvider(null)}
 				/>

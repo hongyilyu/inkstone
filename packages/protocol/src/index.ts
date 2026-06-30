@@ -812,8 +812,9 @@ export type ModelCatalogResult = S.Schema.Type<typeof ModelCatalogResult>;
 /**
  * `settings/get` / `settings/set` result: the effective model selection and global effort for the default Workflow.
  *
- * `enabled_models` is the set of catalog model ids the user has made available for chat; when the user has not
- * curated a set, Core defaults it to the full catalog.
+ * `enabled_models` is the set of catalog model ids the user has made available for chat; it is `[]` (the empty
+ * "uncurated = all enabled" sentinel) when the user has not curated — Core returns `[]`, never the materialized
+ * catalog, so the client expands empty→all and models added later are not frozen out for an uncurated user.
  */
 export const SettingsResult = S.Struct({
 	provider: S.String,

@@ -1027,8 +1027,10 @@ pub struct ModelCatalogResult {
 /// selection and global effort for the default Workflow. `model` falls back to
 /// the per-provider default when the user has not picked one (`null` only when
 /// the provider has no default); `effort` defaults to `off`. `enabled_models`
-/// is the user's curated set of available chat models, defaulting to the full
-/// catalog when uncurated.
+/// is the user's curated set of available chat models; it is `[]` (the empty
+/// "uncurated = all enabled" sentinel) when the user has not curated — Core never
+/// materializes today's catalog into the response, so the client expands empty→all
+/// and a future catalog growth is not frozen out for an uncurated user.
 #[derive(Debug, Serialize)]
 pub struct SettingsResult {
     pub provider: String,
