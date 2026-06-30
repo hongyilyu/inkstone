@@ -11,14 +11,6 @@ use tokio_tungstenite::tungstenite::Message;
 mod common;
 use common::{Workspace, Ws, next_text};
 
-/// The full set of catalog model ids, mirroring `models::catalog()` flattened.
-/// Hand-listed so the test pins the catalog shape rather than re-deriving it.
-// The user-facing chat catalog (ADR-0024). pi-ai 0.80.2 (#292) curates
-// openai-codex down to a single selectable chat model; gpt-5.4-mini is
-// title-only and not in the user catalog. Keep this in lockstep with
-// crates/core/src/models/openai-codex.json.
-const ALL_CATALOG_IDS: &[&str] = &["gpt-5.5"];
-
 /// Open a migrated pool against the Workspace DB so a test can seed a setting
 /// row directly before Core spawns (mirrors `current_thread_journal_entries`).
 async fn migrated_pool(workspace: &Workspace) -> SqlitePool {
@@ -124,9 +116,12 @@ fn settings_get_set_round_trips_and_validates() {
 }
 
 #[test]
-fn settings_get_enabled_models_defaults_to_full_catalog() {
-    // A fresh Workspace has no `enabled_models` set, so `settings/get` reports
-    // every catalog model id as enabled (the default-fill branch).
+fn settings_get_enabled_models_defaults_to_uncurated_empty() {
+    // A fresh Workspace has no `enabled_models` set, so `settings/get` returns the
+    // empty "uncurated" sentinel (ADR-0024) — meaning "all models enabled". Core
+    // does NOT materialize today's catalog into the response, so an uncurated user
+    // is never frozen to the catalog as it was at read time; the client expands
+    // empty → all itself (the composer ModelPicker).
     let workspace = Workspace::new();
     let core = workspace.core().spawn();
 
@@ -139,19 +134,10 @@ fn settings_get_enabled_models_defaults_to_full_catalog() {
         let mut ws = core.connect().await;
 
         let got = request(&mut ws, 1, "settings/get", serde_json::json!({})).await;
-        let enabled = got["result"]["enabled_models"]
-            .as_array()
-            .expect("enabled_models is an array")
-            .iter()
-            .map(|v| v.as_str().expect("model id is a string").to_string())
-            .collect::<Vec<_>>();
-        let expected = ALL_CATALOG_IDS
-            .iter()
-            .map(|s| s.to_string())
-            .collect::<Vec<_>>();
         assert_eq!(
-            enabled, expected,
-            "fresh DB reports the full catalog as enabled: {got}"
+            got["result"]["enabled_models"],
+            serde_json::json!([]),
+            "fresh DB reports the uncurated empty set: {got}"
         );
 
         ws.close(None).await.ok();
@@ -213,17 +199,18 @@ fn settings_set_enabled_models_persists_and_enforces_default_membership() {
         let mut ws = core.connect().await;
 
         // The pi-ai 0.80.2 (#292) openai-codex chat catalog ships a single
-        // selectable model (gpt-5.5), which is also the per-provider default. The
-        // membership invariant is exercised here with the cases that are provable
-        // against a one-model catalog: an enabled set containing the default, the
-        // empty set (which excludes the default), and an unknown member id. The
-        // "set a KNOWN non-default model outside the enabled set" case needs a
-        // second known catalog id and is unprovable until a second model/provider
-        // exists; the invariant's `effective_model ∈ effective_enabled` check
-        // covers it by construction (see crates/core/src/runs/settings.rs).
+        // selectable model (gpt-5.5), which is also the per-provider default. An
+        // EMPTY enabled set is the "uncurated = all enabled" sentinel (ADR-0024),
+        // never "enable nothing", so it imposes no membership constraint. The cases
+        // provable against a one-model catalog: a curated set containing the
+        // default, a reset to the empty/uncurated set, and an unknown member id.
+        // The "curate a set EXCLUDING the default" rejection needs a second known
+        // catalog id and is unprovable until a second model/provider exists; the
+        // invariant's non-empty `effective_model ∈ effective_enabled` check covers
+        // it by construction (see crates/core/src/runs/settings.rs).
 
-        // (a) A set INCLUDING the current default (gpt-5.5) succeeds; the effective
-        // model stays a member of the new enabled set. Round-trips via settings/get.
+        // (a) A curated set INCLUDING the current default (gpt-5.5) succeeds and
+        // round-trips verbatim via settings/get.
         let set = request(
             &mut ws,
             1,
@@ -243,9 +230,10 @@ fn settings_set_enabled_models_persists_and_enforces_default_membership() {
             "enabled_models round-trips via settings/get: {got}"
         );
 
-        // (b) The EMPTY set excludes the current default (gpt-5.5) → invalid_params,
-        // and the prior enabled_models stands (nothing persisted).
-        let bad = request(
+        // (b) The EMPTY set is accepted as "reset to uncurated" (all enabled), NOT
+        // rejected — empty never means "exclude the default". It persists as [] and
+        // round-trips as the uncurated sentinel.
+        let reset = request(
             &mut ws,
             3,
             "settings/set",
@@ -253,18 +241,19 @@ fn settings_set_enabled_models_persists_and_enforces_default_membership() {
         )
         .await;
         assert_eq!(
-            bad["error"]["code"],
-            serde_json::json!(-32602),
-            "an enabled set excluding the default model is rejected: {bad}"
+            reset["result"]["enabled_models"],
+            serde_json::json!([]),
+            "the empty (uncurated) set is accepted and persists as []: {reset}"
         );
         let got2 = request(&mut ws, 4, "settings/get", serde_json::json!({})).await;
         assert_eq!(
             got2["result"]["enabled_models"],
-            serde_json::json!(["gpt-5.5"]),
-            "rejected enabled_models persisted nothing: {got2}"
+            serde_json::json!([]),
+            "uncurated enabled_models round-trips as []: {got2}"
         );
 
-        // (c) An enabled_models member that is not a known catalog id → invalid_params.
+        // (c) An enabled_models member that is not a known catalog id → invalid_params,
+        // and nothing persists (the prior uncurated [] stands).
         let bad_id = request(
             &mut ws,
             5,
@@ -276,6 +265,12 @@ fn settings_set_enabled_models_persists_and_enforces_default_membership() {
             bad_id["error"]["code"],
             serde_json::json!(-32602),
             "unknown enabled_models member is rejected: {bad_id}"
+        );
+        let got3 = request(&mut ws, 6, "settings/get", serde_json::json!({})).await;
+        assert_eq!(
+            got3["result"]["enabled_models"],
+            serde_json::json!([]),
+            "rejected enabled_models persisted nothing: {got3}"
         );
 
         ws.close(None).await.ok();

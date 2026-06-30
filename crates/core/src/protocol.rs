@@ -2632,11 +2632,11 @@ mod parity_fixtures {
                     provider: "openai-codex".to_string(),
                     model: None,
                     effort: "off".to_string(),
-                    enabled_models: crate::models::catalog()
-                        .providers
-                        .iter()
-                        .flat_map(|p| p.models.iter().map(|m| m.id.clone()))
-                        .collect(),
+                    // The unset/uncurated default: an empty enabled set (ADR-0024),
+                    // NOT the materialized catalog — Core never bakes today's catalog
+                    // into the response, so an uncurated user is not frozen out of
+                    // models added later.
+                    enabled_models: vec![],
                 }
             ),
             // ── slice 4: worker↔core protocol (the surface ADR-0009 was written

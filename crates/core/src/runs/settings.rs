@@ -24,25 +24,18 @@ async fn current(pool: &SqlitePool) -> sqlx::Result<SettingsResult> {
     let effort = settings::effort_setting(pool)
         .await?
         .unwrap_or_else(|| settings::DEFAULT_EFFORT.to_string());
-    let enabled_models = settings::enabled_models(pool)
-        .await?
-        .unwrap_or_else(all_catalog_model_ids);
+    // The stored curation verbatim, or the empty "uncurated" sentinel when the
+    // user has not curated (ADR-0024). Empty means "all models enabled" — the
+    // client materializes the full catalog itself (composer ModelPicker), and we
+    // do NOT bake today's catalog into the response, so a future catalog growth
+    // is not frozen out for an uncurated user.
+    let enabled_models = settings::enabled_models(pool).await?.unwrap_or_default();
     Ok(SettingsResult {
         provider: wf.provider.clone(),
         model,
         effort,
         enabled_models,
     })
-}
-
-/// Every model id in the catalog, flattened across providers — the default
-/// enabled set when the user has not curated one (ADR-0024).
-fn all_catalog_model_ids() -> Vec<String> {
-    models::catalog()
-        .providers
-        .iter()
-        .flat_map(|p| p.models.iter().map(|m| m.id.clone()))
-        .collect()
 }
 
 pub(super) async fn handle_get(
@@ -88,13 +81,15 @@ pub(super) async fn handle_set(
         let wf = workflow::default_workflow();
 
         // The effective post-merge enabled set: a submitted set replaces the stored
-        // curation, else the stored-or-full-catalog default holds.
+        // curation, else the stored set holds. An EMPTY set is the "uncurated"
+        // sentinel meaning "all models enabled" (ADR-0024) — never "enable
+        // nothing" — so it imposes no membership constraint below.
         let effective_enabled = match params.enabled_models.clone() {
             Some(enabled) => enabled,
             None => settings::enabled_models(pool)
                 .await
                 .map_err(|e| HandlerError::Internal(e.into()))?
-                .unwrap_or_else(all_catalog_model_ids),
+                .unwrap_or_default(),
         };
 
         // The effective preferred model: a submitted model wins, else the stored
@@ -107,9 +102,11 @@ pub(super) async fn handle_set(
                 .or_else(|| models::default_model(&wf.provider).map(str::to_string)),
         };
 
-        // The default must stay a member of the enabled set (ADR-0024). A provider
-        // with no effective default has nothing to enforce.
-        if let Some(ref model) = effective_model {
+        // The default must stay a member of a CURATED (non-empty) enabled set
+        // (ADR-0024). An empty effective set is uncurated (= all enabled), so the
+        // default is trivially available and nothing is enforced. A provider with
+        // no effective default likewise has nothing to enforce.
+        if let (Some(model), false) = (&effective_model, effective_enabled.is_empty()) {
             if !effective_enabled.iter().any(|m| m == model) {
                 return Err(HandlerError::InvalidParams(format!(
                     "effective model {model:?} is not in the enabled set"
