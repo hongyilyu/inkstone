@@ -3,7 +3,6 @@
 import { readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
-	createModels,
 	fauxAssistantMessage,
 	fauxProvider,
 	fauxText,
@@ -19,6 +18,7 @@ import {
 	acceptedVerb,
 	decisionOutcome,
 } from "./faux-decisions.js";
+import { fauxInterpreterDeps } from "./faux-deps.js";
 
 /** Flatten a pi message `content` (string | content blocks) to plain text. */
 function textOf(content: unknown): string {
@@ -1198,19 +1198,7 @@ export function fauxDepsFor(manifest: WorkerManifest): InterpreterDeps {
 			textTurn(process.env.INKSTONE_FAUX_RESPONSE ?? "faux reply"),
 		]);
 	}
-	// pi-ai 0.80.2's `fauxProvider` does NOT register into a process-global
-	// api-registry the way the retired `registerFauxProvider` did, so the old
-	// top-level `streamSimple` (which dispatched through that global registry) has
-	// nothing to find. Register the faux provider on a `Models` collection and use
-	// the collection's `streamSimple` as the stream fn — it dispatches to the
-	// provider that owns the model.
-	const models = createModels();
-	models.setProvider(faux.provider);
-	return {
-		resolveModel: () => faux.getModel(),
-		streamFn: (model, context, options) =>
-			models.streamSimple(model, context, options),
-	};
+	return fauxInterpreterDeps(faux);
 }
 
 // Run only when this file is the process entry, not when imported — see docs/design/worker.md.

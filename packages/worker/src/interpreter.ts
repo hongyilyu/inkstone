@@ -43,8 +43,17 @@ export interface InterpreterDeps {
 export const defaultInterpreterDeps = (): InterpreterDeps => {
 	const models = builtinModels();
 	return {
-		resolveModel: (workflow) =>
-			models.getModel(workflow.provider, workflow.model) as Model<string>,
+		resolveModel: (workflow) => {
+			// `getModel` returns undefined on a catalog miss (the 0.80.2 collection is
+			// nullable where the retired top-level `getModel` was not). Fail loud with
+			// the offending id rather than letting undefined surface as an opaque error
+			// deep in the agent loop.
+			const model = models.getModel(workflow.provider, workflow.model);
+			if (model === undefined) {
+				throw new Error(`unknown model ${workflow.provider}/${workflow.model}`);
+			}
+			return model as Model<string>;
+		},
 		streamFn: (model, context, options) =>
 			// access_token is injected per-call by the manifest closure in runInterpreter.
 			models.streamSimple(model, context, options),

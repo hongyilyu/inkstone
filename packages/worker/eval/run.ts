@@ -289,6 +289,29 @@ function buildManifest(fixture: Fixture): WorkerManifest {
 	};
 }
 
+/** The real-provider deps: the openai-codex `MODEL` from the built-in catalog +
+ * a temperature-0 `streamSimple` wrapper, both backed by one `Models` collection
+ * (pi-ai 0.80.2). `getModel` returns `undefined` on a catalog miss; fail loud with
+ * the offending id rather than letting `undefined` surface as an opaque error deep
+ * in pi-ai. */
+function defaultRealDeps(): InterpreterDeps {
+	const models = builtinModels();
+	return {
+		resolveModel: () => {
+			const model = models.getModel(PROVIDER, MODEL);
+			if (model === undefined) {
+				throw new Error(`eval: unknown model ${PROVIDER}/${MODEL}`);
+			}
+			return model;
+		},
+		streamFn: ((model, context, options) =>
+			models.streamSimple(model, context, {
+				...options,
+				temperature: 0,
+			})) as StreamFn,
+	};
+}
+
 /** Drive the REAL interpreter over `fixture` and return the proposal the model
  * emitted, or `null` if it proposed nothing.
  *
@@ -305,17 +328,12 @@ export async function runFixture(
 	fixture: Fixture,
 	deps?: InterpreterDeps,
 ): Promise<PredictedProposal | null> {
-	// One built-in `Models` collection shared by both deps (pi-ai 0.80.2 retired
-	// the top-level getModel/streamSimple — see interpreter.ts defaultInterpreterDeps).
-	const models = builtinModels();
-	const resolved: InterpreterDeps = deps ?? {
-		resolveModel: () => models.getModel(PROVIDER, MODEL) as never,
-		streamFn: ((model, context, options) =>
-			models.streamSimple(model, context, {
-				...options,
-				temperature: 0,
-			})) as StreamFn,
-	};
+	// Default (real-provider) deps: one built-in `Models` collection backs both
+	// hooks (pi-ai 0.80.2 retired the top-level getModel/streamSimple — see
+	// interpreter.ts defaultInterpreterDeps). Built only when no deps are injected,
+	// so the faux test path (which passes its own deps) doesn't construct an unused
+	// collection.
+	const resolved: InterpreterDeps = deps ?? defaultRealDeps();
 
 	const manifest = buildManifest(fixture);
 	const events: RunEvent[] = [];

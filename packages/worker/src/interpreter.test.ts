@@ -1,5 +1,4 @@
 import {
-	createModels,
 	fauxAssistantMessage,
 	fauxProvider,
 	fauxText,
@@ -8,6 +7,7 @@ import {
 import type { RunEvent, WorkerManifest } from "@inkstone/protocol";
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
+import { fauxInterpreterDeps } from "./faux/faux-deps.js";
 import { type InterpreterDeps, runInterpreter } from "./interpreter.js";
 import {
 	type CapturedToolRequest,
@@ -16,16 +16,8 @@ import {
 
 // Each test builds a fresh faux provider on its own `Models` collection (pi-ai
 // 0.80.2's `fauxProvider` is instance-scoped — no process-global registry — so
-// there is nothing to unregister between tests).
-function fauxDeps(faux: ReturnType<typeof fauxProvider>): InterpreterDeps {
-	const models = createModels();
-	models.setProvider(faux.provider);
-	return {
-		resolveModel: () => faux.getModel(),
-		streamFn: (model, context, options) =>
-			models.streamSimple(model, context, options),
-	};
-}
+// there is nothing to unregister between tests). See `faux/faux-deps.ts`.
+const fauxDeps = fauxInterpreterDeps;
 
 function fauxManifest(overrides: Partial<WorkerManifest> = {}): WorkerManifest {
 	return {

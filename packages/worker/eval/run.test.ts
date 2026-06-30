@@ -1,10 +1,10 @@
 import {
-	createModels,
 	fauxAssistantMessage,
 	fauxProvider,
 	fauxToolCall,
 } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
+import { fauxInterpreterDeps } from "../src/faux/faux-deps.js";
 import type { InterpreterDeps } from "../src/interpreter.js";
 import { runFixture } from "./run.js";
 import type { Fixture } from "./types.js";
@@ -37,7 +37,8 @@ describe.skipIf(!LIVE)("eval runner (real model)", () => {
 // `evalTransport` / world-search / the propose-capture branch with NO real key
 // by scripting the model through pi-ai's faux provider (mirrors
 // `src/interpreter.test.ts`). `runFixture(fixture, deps)` takes optional deps;
-// we inject `{ resolveModel: () => faux.getModel(), streamFn: streamSimple }`.
+// we inject the shared `fauxInterpreterDeps` wiring (faux model + a `Models`
+// collection's `streamSimple`).
 describe("eval runner (faux provider, keyless)", () => {
 	function fauxDeps(): {
 		faux: ReturnType<typeof fauxProvider>;
@@ -45,18 +46,9 @@ describe("eval runner (faux provider, keyless)", () => {
 	} {
 		// The runner pins provider "openai-codex"; build the faux under that name
 		// for fidelity, though tests inject `resolveModel` directly so the model
-		// comes straight from the faux provider. pi-ai 0.80.2's `fauxProvider` is
-		// instance-scoped (no process-global registry to tear down), so the stream
-		// fn must route through a `Models` collection that owns the faux provider.
+		// comes straight from the faux provider.
 		const faux = fauxProvider({ provider: "openai-codex" });
-		const models = createModels();
-		models.setProvider(faux.provider);
-		const deps: InterpreterDeps = {
-			resolveModel: () => faux.getModel(),
-			streamFn: (model, context, options) =>
-				models.streamSimple(model, context, options),
-		};
-		return { faux, deps };
+		return { faux, deps: fauxInterpreterDeps(faux) };
 	}
 
 	it("captures the proposal the model emits via propose_workspace_mutation", async () => {

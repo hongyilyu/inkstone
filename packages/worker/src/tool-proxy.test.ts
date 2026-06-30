@@ -2,7 +2,6 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
-	createModels,
 	fauxAssistantMessage,
 	fauxProvider,
 	fauxToolCall,
@@ -10,7 +9,8 @@ import {
 import type { RunEvent, WorkerManifest } from "@inkstone/protocol";
 import { Effect } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
-import { type InterpreterDeps, runInterpreter } from "./interpreter.js";
+import { fauxInterpreterDeps } from "./faux/faux-deps.js";
+import { runInterpreter } from "./interpreter.js";
 import {
 	type CapturedToolRequest,
 	InMemoryTransport,
@@ -22,16 +22,8 @@ afterEach(() => {
 
 // Each test builds a fresh faux provider on its own `Models` collection (pi-ai
 // 0.80.2's `fauxProvider` is instance-scoped — no process-global registry to
-// tear down between tests).
-function fauxDeps(faux: ReturnType<typeof fauxProvider>): InterpreterDeps {
-	const models = createModels();
-	models.setProvider(faux.provider);
-	return {
-		resolveModel: () => faux.getModel(),
-		streamFn: (model, context, options) =>
-			models.streamSimple(model, context, options),
-	};
-}
+// tear down between tests). See `faux/faux-deps.ts`.
+const fauxDeps = fauxInterpreterDeps;
 
 function manifestWithReadThread(): WorkerManifest {
 	return {
