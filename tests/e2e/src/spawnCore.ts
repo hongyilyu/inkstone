@@ -137,6 +137,17 @@ export interface SpawnCoreOptions {
 	/** Gate-fixture chunk count: `chunks` > 1 splits `echo: <prompt>` into deltas and pauses after chunk 1 until the gate file exists. */
 	readonly chunks?: number;
 	readonly gatePath?: string;
+	/**
+	 * Whether the Workspace boots with a provider already connected (ADR-0023):
+	 * seeds a credential file so `provider/status` reports Connected and the chat
+	 * surface is past the first-run connect gate (the welcome shows "Start a chat"
+	 * and the composer can send). Defaults to `true` — a usable Core HAS a
+	 * provider, which is the precondition almost every spec assumes. The
+	 * connect-flow specs (which click Connect and assert the card flips) set this
+	 * `false` (or, equivalently, set `providerLoginCmd`/`siblingBinaries.providerHelper`,
+	 * which force a disconnected start) so they begin at "Not connected".
+	 */
+	readonly connectedProvider?: boolean;
 	/** Provider-login helper Core runs for `provider/login_start` (ADR-0023); maps to `INKSTONE_PROVIDER_LOGIN_CMD`. */
 	readonly providerLoginCmd?: string;
 	/** Canned faux-provider response (`INKSTONE_FAUX_RESPONSE`); with `FAUX_WORKER_CMD` drives a real offline interpreter completion. */
@@ -259,6 +270,10 @@ export async function spawnCore(
 	// and a test can pre-seed it. Per-opt override still wins below.
 	const skillsDir = opts.skillsDir ?? path.join(workspaceDir, "skills");
 
+	// Pin the Credential Store (ADR-0023) into the tempdir so seeding/connection
+	// state stays hermetic (never the dev/CI OS data dir).
+	const credentialsDir = path.join(workspaceDir, "credentials");
+
 	const env: NodeJS.ProcessEnv = {
 		...process.env,
 		INKSTONE_DB_PATH: dbPath,
@@ -266,7 +281,34 @@ export async function spawnCore(
 		INKSTONE_WEB_DIR: opts.webDir ?? WEB_DIST,
 		INKSTONE_LOG_DIR: logDir,
 		INKSTONE_SKILLS_DIR: skillsDir,
+		INKSTONE_CREDENTIALS_DIR: credentialsDir,
 	};
+
+	// Seed a connected provider by default: the chat surface gates the welcome +
+	// composer on `provider/status` (a usable Core has a provider connected), so
+	// without a credential every send-driven spec would land on the first-run
+	// connect screen with a disabled composer. The connect-flow specs start
+	// disconnected — they drive Connect themselves — which is any of: an explicit
+	// `connectedProvider: false`, a `providerLoginCmd`, or a sibling provider-helper.
+	const startDisconnected =
+		opts.connectedProvider === false ||
+		opts.providerLoginCmd !== undefined ||
+		opts.siblingBinaries?.providerHelper !== undefined;
+	if (!startDisconnected) {
+		mkdirSync(credentialsDir, { recursive: true });
+		// Shape mirrors crates/core/src/credentials.rs `Credentials`. `expires` is
+		// far in the future so the access token never looks expired (no refresh
+		// path); the faux/echo worker ignores the token value entirely.
+		writeFileSync(
+			path.join(credentialsDir, "openai-codex.json"),
+			JSON.stringify({
+				access: "e2e-faux-access-token",
+				refresh: "e2e-faux-refresh-token",
+				expires: 4_102_444_800_000,
+				account_id: "e2e-faux-account",
+			}),
+		);
+	}
 
 	// Strip inherited INKSTONE_FAUX_* so an ambient value can't leak one test's mode into another.
 	for (const key of [

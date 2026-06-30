@@ -1,12 +1,19 @@
-import type { ModelInfo } from "@inkstone/protocol";
+import type { ModelInfo, ProviderStatusResult } from "@inkstone/protocol";
 import * as sdk from "@inkstone/ui-sdk";
 import { WsClient, type WsError } from "@inkstone/ui-sdk";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
 	createMemoryHistory,
 	createRouter,
 	RouterProvider,
 } from "@tanstack/react-router";
-import { cleanup, screen, waitFor, within } from "@testing-library/react";
+import {
+	cleanup,
+	render,
+	screen,
+	waitFor,
+	within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Effect, Layer, ManagedRuntime, Stream } from "effect";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -492,6 +499,176 @@ describe("Models settings page — provider/connected live push (ADR-0049)", () 
 		} finally {
 			spy.mockRestore();
 			window.removeEventListener("focus", focusSpy);
+		}
+	});
+
+	// renderPage builds its own internal QueryClient (renderWithQuery, no
+	// injection seam), so wrap with a test-owned client here to read/spy the
+	// ["provider-status"] cache — the chat gate (connect welcome + composer
+	// soft-disable) reads it via useProviderStatus.
+	function renderPageWithClient(
+		runtime: ReturnType<typeof makeFlippingRuntime>,
+		client: QueryClient,
+	) {
+		const router = createRouter({
+			routeTree,
+			history: createMemoryHistory({ initialEntries: ["/settings/models"] }),
+		});
+		render(
+			<QueryClientProvider client={client}>
+				<RuntimeProvider runtime={runtime}>
+					<RouterProvider router={router} />
+				</RuntimeProvider>
+			</QueryClientProvider>,
+		);
+	}
+
+	it("writes connected into the ['provider-status'] cache on the live push, so a remounting chat gate reads the truth (no stale-cache flash)", async () => {
+		// Capture the page's "provider/connected" closure via the SDK seam.
+		let pushed: ((params: unknown) => void) | undefined;
+		const spy = vi
+			.spyOn(sdk, "setNotificationHandler")
+			.mockImplementation((method, handler) => {
+				if (method === "provider/connected") pushed = handler;
+			});
+
+		try {
+			const client = new QueryClient({
+				defaultOptions: { queries: { retry: false } },
+			});
+			// Pre-seed the cache as a prior disconnected `/` visit would have: the
+			// chat query is now INACTIVE (the user navigated here to /settings), so
+			// invalidateQueries (type:"active" by default) would NOT refetch it — only
+			// setQueryData keeps it truthful for the chat column's remount. This is the
+			// regression guard for the cross-engine-caught stale-cache flash.
+			client.setQueryData<ProviderStatusResult>(["provider-status"], {
+				providers: [{ id: "openai-codex", connected: false }],
+			});
+
+			const runtime = makeFlippingRuntime();
+			renderPageWithClient(runtime, client);
+
+			// Let mount settle: the card first reports Not connected.
+			await waitFor(() =>
+				expect(screen.getByTestId("provider-status")).toHaveTextContent(
+					/not connected/i,
+				),
+			);
+
+			if (pushed === undefined) {
+				throw new Error(
+					'ModelsSettings did not register a "provider/connected" handler',
+				);
+			}
+
+			// Fire the push: the flipping runtime now reports connected, so the page
+			// must write connected:true into the shared cache (not just mark it stale).
+			pushed({ provider: "openai-codex" });
+
+			await waitFor(() => {
+				const cached = client.getQueryData<ProviderStatusResult>([
+					"provider-status",
+				]);
+				expect(cached?.providers.some((p) => p.connected)).toBe(true);
+			});
+		} finally {
+			spy.mockRestore();
+		}
+	});
+
+	it("writes the FULL provider/status payload, not a single-provider snapshot (preserves other providers)", async () => {
+		// CodeRabbit caught this: useProviderStatus derives anyConnected across ALL
+		// providers[], so refreshConnected must cache the whole provider/status
+		// result — not a synthesized openai-codex-only row that would drop other
+		// providers from the shared cache. The runtime reports TWO providers; the
+		// write must keep both.
+		let pushed: ((params: unknown) => void) | undefined;
+		const spy = vi
+			.spyOn(sdk, "setNotificationHandler")
+			.mockImplementation((method, handler) => {
+				if (method === "provider/connected") pushed = handler;
+			});
+
+		try {
+			const twoProviderStatus: ProviderStatusResult = {
+				providers: [
+					{ id: "openai-codex", connected: true },
+					{ id: "anthropic", connected: true },
+				],
+			};
+			const stub = WsClient.of({
+				threadCreate: die,
+				postMessage: die,
+				threadList: die,
+				getRunHistory: die,
+				recurrencePreview: () => Effect.die("not exercised in this test"),
+				threadGet: die,
+				threadRename: die,
+				threadArchive: die,
+				threadUnarchive: die,
+				threadListArchived: die,
+				listEntities: die,
+				getBacklinks: die,
+				observationQuery: die,
+				observationUpdate: die,
+				entityMutate: die,
+				subscribeRun: dieStream,
+				cancelRun: die,
+				retryRun: die,
+				providerStatus: () => Effect.succeed(twoProviderStatus),
+				providerLoginStart: () =>
+					Effect.succeed({ authorize_url: "https://auth.example/x" }),
+				modelCatalog: () =>
+					Effect.succeed({
+						providers: [{ id: "openai-codex", label: "OpenAI", models: [] }],
+					}),
+				settingsGet: () =>
+					Effect.succeed({
+						provider: "openai-codex",
+						model: null,
+						effort: "off",
+					}),
+				settingsSet: () =>
+					Effect.succeed({
+						provider: "openai-codex",
+						model: null,
+						effort: "off",
+					}),
+				proposalGet: die,
+				rescanJournalEntry: die,
+				proposalDecide: die,
+				messageSearch: die,
+				proposalNotifications: () => Stream.empty,
+				connectionStatus: () => Stream.empty,
+			});
+			const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
+			const client = new QueryClient({
+				defaultOptions: { queries: { retry: false } },
+			});
+			renderPageWithClient(
+				runtime as unknown as ReturnType<typeof makeFlippingRuntime>,
+				client,
+			);
+
+			if (pushed === undefined) {
+				await waitFor(() => expect(pushed).toBeDefined());
+			}
+			pushed?.({ provider: "openai-codex" });
+
+			await waitFor(() => {
+				const cached = client.getQueryData<ProviderStatusResult>([
+					"provider-status",
+				]);
+				// BOTH providers survive — not clobbered down to the openai-codex row.
+				expect(cached?.providers.map((p) => p.id).sort()).toEqual([
+					"anthropic",
+					"openai-codex",
+				]);
+			});
+
+			await runtime.dispose();
+		} finally {
+			spy.mockRestore();
 		}
 	});
 

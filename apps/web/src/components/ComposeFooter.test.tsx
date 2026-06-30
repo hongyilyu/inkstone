@@ -140,6 +140,33 @@ describe("ComposeFooter", () => {
 		await runtime.dispose();
 	});
 
+	it("does not send when disabled, but keeps the textarea editable", async () => {
+		const user = userEvent.setup();
+		const onSend = vi.fn();
+		const runtime = makeRuntime();
+		renderWithQuery(
+			<RuntimeProvider runtime={runtime}>
+				<ComposeFooter onSend={onSend} disabled />
+			</RuntimeProvider>,
+		);
+
+		// The textarea STAYS editable so the user can draft a message before
+		// connecting a provider — only the Send affordance is gated.
+		const textbox = screen.getByRole("textbox");
+		expect(textbox).not.toBeDisabled();
+		await user.type(textbox, "drafted while disconnected");
+		expect(textbox).toHaveValue("drafted while disconnected");
+
+		// Send is gated: the button is disabled and neither click nor Enter fires.
+		const send = screen.getByRole("button", { name: /send/i });
+		expect(send).toBeDisabled();
+		await user.click(send);
+		await user.type(textbox, "{Enter}");
+		expect(onSend).not.toHaveBeenCalled();
+
+		await runtime.dispose();
+	});
+
 	it("swaps Send for a Stop control while a Run is active and routes clicks to onStop", async () => {
 		const user = userEvent.setup();
 		const onSend = vi.fn();

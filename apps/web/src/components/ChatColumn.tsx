@@ -1,5 +1,10 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
+import {
+	Link,
+	useNavigate,
+	useParams,
+	useSearch,
+} from "@tanstack/react-router";
 import {
 	MessageSquareDashed,
 	RotateCcw,
@@ -12,6 +17,7 @@ import {
 	connectionFailureCopy,
 	GENERIC_SEND_FAILURE,
 } from "@/lib/connectionFailureCopy";
+import { useProviderStatus } from "@/lib/hooks/useProviderStatus";
 import { cn } from "@/lib/utils";
 import { useRuntime } from "@/runtime";
 import {
@@ -45,6 +51,23 @@ export function ChatColumn() {
 	const runtime = useRuntime();
 	const queryClient = useQueryClient();
 	const navigate = useNavigate();
+	// Is any LLM provider wired up? Drives the first-run connect welcome (slice 2):
+	// a brand-new install with nothing connected gets a "connect a provider" screen
+	// instead of the ordinary "Start a chat" prompt that goes nowhere without one.
+	// Gate on `isSuccess` (status KNOWN) — not the bare `anyConnected` — so we never
+	// flash the connect screen at a connected user during the in-flight read: the
+	// query refetches on every mount (staleTime:0/refetchOnMount), but TanStack
+	// serves cached data on remount so `isSuccess` is already true and the ordinary
+	// welcome shows with no flicker. Only a truly-uninitialized first load shows the
+	// neutral "Start a chat" briefly before the read settles.
+	const { anyConnected, isSuccess: providerStatusKnown } = useProviderStatus();
+	const showConnectWelcome = providerStatusKnown && !anyConnected;
+	// Same KNOWN-disconnected gate as the welcome, applied to the composer (slice 3):
+	// with no provider wired, Send is soft-disabled (the textarea stays editable) and,
+	// inside an existing thread, a slim "connect a provider" hint sits above it. Gated
+	// on the KNOWN status so a connected user never sees a flash of a disabled composer
+	// during the in-flight read.
+	const composerGated = providerStatusKnown && !anyConnected;
 	// The focused Thread is the route (ADR-0061): `/thread/$threadId` carries the
 	// id, `/` (welcome) has none. `strict: false` lets one component serve both —
 	// the Library reads its `$kind` the same way (routes/library/route.tsx).
@@ -249,7 +272,11 @@ export function ChatColumn() {
 		<main className="flex h-full flex-col overflow-hidden bg-chat-bg">
 			<div ref={scrollerRef} className="flex-1 overflow-y-auto px-6 pt-14 pb-6">
 				{showWelcome ? (
-					<ChatWelcome />
+					showConnectWelcome ? (
+						<ChatConnectWelcome />
+					) : (
+						<ChatWelcome />
+					)
 				) : threadNotFound ? (
 					<ChatThreadNotFound onNewChat={() => navigate({ to: "/" })} />
 				) : hydrationFailed ? (
@@ -301,7 +328,23 @@ export function ChatColumn() {
 					{sendError}
 				</p>
 			)}
+			{composerGated && focusedThreadId !== null && (
+				// A slim, quiet in-thread reminder that chatting needs a connected
+				// provider — distinct from the full first-run welcome (which only shows
+				// on `/`, where focusedThreadId is null). Muted line + a Link to the
+				// Models settings page; the composer below is soft-disabled to match.
+				<p className="mx-auto max-w-3xl px-6 text-muted-foreground text-sm">
+					<Link
+						to="/settings/models"
+						className="font-medium text-foreground/80 underline-offset-4 transition-colors hover:text-foreground hover:underline focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+					>
+						Connect a provider
+					</Link>{" "}
+					to start chatting.
+				</p>
+			)}
 			<ComposeFooter
+				disabled={composerGated}
 				isRunning={activeRunId !== null}
 				onStop={() => {
 					if (activeRunId !== null) void cancelRun(runtime, activeRunId);
@@ -353,6 +396,34 @@ function ChatWelcome() {
 				size="lg"
 				title="Start a chat"
 				description="Type below to begin. Inkstone drafts journal entries and the structured items it notices, and they land in your Library once you approve them."
+			/>
+		</div>
+	);
+}
+
+/** First-run welcome when NO provider is connected (slice 2): chatting goes
+ * nowhere without one, so the CTA deep-links to /settings/models to wire one up.
+ * Provider-neutral copy — Inkstone never assumes which provider you'll connect. */
+function ChatConnectWelcome() {
+	return (
+		<div className="mx-auto flex min-h-full max-w-3xl flex-col items-center justify-center motion-safe:animate-rise">
+			<EmptyState
+				icon={Sparkles}
+				tone="brand"
+				size="lg"
+				title="Welcome to Inkstone"
+				description="Connect a provider to start chatting. Inkstone runs on your own account, and your entries and knowledge stay on your device."
+				action={
+					// Styled to match the sibling empties' `<Button variant="chip"
+					// size="pill">` CTAs, but a real navigable Link (TanStack Router) since
+					// it routes to the Models settings page rather than firing a handler.
+					<Link
+						to="/settings/models"
+						className="inline-flex cursor-pointer items-center gap-2 whitespace-nowrap rounded-full border border-input bg-transparent px-3.5 py-1.5 font-medium text-foreground/80 text-sm transition-colors hover:bg-secondary/50 hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+					>
+						Connect a provider
+					</Link>
+				}
 			/>
 		</div>
 	);

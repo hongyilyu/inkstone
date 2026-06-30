@@ -1,10 +1,11 @@
-import type { ModelInfo } from "@inkstone/protocol";
+import type { ModelInfo, ProviderStatusResult } from "@inkstone/protocol";
 import {
 	clearNotificationHandler,
 	setNotificationHandler,
 } from "@inkstone/ui-sdk";
+import { useQueryClient } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { EffortControl } from "@/components/EffortControl";
 import { ModelCatalogTable } from "@/components/ModelCatalogTable";
 import { ProviderConnectionCard } from "@/components/ProviderConnectionCard";
@@ -14,7 +15,7 @@ import {
 } from "@/lib/hooks/useOptimisticSetting";
 import { useRuntime } from "@/runtime";
 import {
-	fetchConnected,
+	fetchProviderStatus,
 	PROVIDER_OPENAI_CODEX,
 	startLogin,
 } from "@/store/providers";
@@ -23,7 +24,11 @@ import { fetchCatalog, fetchSettings, saveSettings } from "@/store/settings";
 /** `/settings/models` (ADR-0024): provider connection, global effort control, and the catalog table with one Preferred model — persisted via `settings/*`, read from `model/catalog`. */
 function ModelsSettings() {
 	const runtime = useRuntime();
+	const queryClient = useQueryClient();
 	const [connected, setConnected] = useState<boolean | null>(null);
+	// Latest in-flight provider/status request — guards refreshConnected's writes
+	// against out-of-order resolution (see the useCallback below).
+	const latestStatusRequest = useRef(0);
 	const [busy, setBusy] = useState(false);
 	const [models, setModels] = useState<readonly ModelInfo[]>([]);
 	// Whether a provider login failed to start (surfaced in the shared status line).
@@ -59,10 +64,48 @@ function ModelsSettings() {
 				: "idle";
 
 	const refreshConnected = useCallback(() => {
-		fetchConnected(runtime, PROVIDER_OPENAI_CODEX)
-			.then(setConnected)
-			.catch(() => setConnected(false));
-	}, [runtime]);
+		// Monotonic request id: mount, focus, AND the `provider/connected` push all
+		// call this, so two provider/status round-trips can be in flight at once and
+		// resolve out of order. Without a guard a stale earlier resolution could land
+		// last and overwrite the shared ["provider-status"] cache (below) back to a
+		// wrong value — recreating the very flash this write exists to prevent. Only
+		// the latest request commits its result.
+		const requestId = ++latestStatusRequest.current;
+		// Read the FULL provider/status payload (not just this provider's bool): the
+		// shared cache is the chat gate's source of truth and useProviderStatus
+		// derives `anyConnected` across ALL providers[], so writing a synthesized
+		// single-row snapshot would drop any other connected provider. Derive this
+		// card's flag from the same payload — one round-trip, no resynthesis.
+		fetchProviderStatus(runtime)
+			.then((status) => {
+				if (requestId !== latestStatusRequest.current) return;
+				setConnected(
+					status.providers.find((p) => p.id === PROVIDER_OPENAI_CODEX)
+						?.connected ?? false,
+				);
+				// Write the freshly-read truth into the shared ["provider-status"] cache
+				// the chat gate (connect welcome + composer soft-disable) reads via
+				// useProviderStatus. This is the single chokepoint — mount, focus, and the
+				// `provider/connected` push all route through refreshConnected.
+				//
+				// setQueryData, NOT invalidateQueries: invalidate defaults to
+				// type:"active", so while the chat column is unmounted (the user is over
+				// here in /settings), the inactive chat query is only marked stale, not
+				// refetched — it would still hold the OLD disconnected value. On returning
+				// to chat, refetchOnMount serves that stale `success` data synchronously
+				// before the refetch lands, flashing the connect screen at a now-connected
+				// user. Writing the value keeps the cache truthful for that remount AND
+				// notifies a still-mounted chat observer immediately (no refetch needed).
+				queryClient.setQueryData<ProviderStatusResult>(
+					["provider-status"],
+					status,
+				);
+			})
+			.catch(() => {
+				if (requestId !== latestStatusRequest.current) return;
+				setConnected(false);
+			});
+	}, [runtime, queryClient]);
 
 	// Clear the transient acknowledgement after a beat (both hooks + the connect flag).
 	const { clearStatus: clearEffortStatus } = effort;

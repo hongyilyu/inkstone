@@ -15,12 +15,19 @@ export function ComposeFooter({
 	onSend,
 	isRunning = false,
 	onStop,
+	disabled = false,
 }: {
 	onSend: (text: string) => void;
 	/** A Run is streaming or parked → swap Send for a Stop control. */
 	isRunning?: boolean;
 	/** Cancel the active Run (ADR-0014); required when `isRunning`. */
 	onStop?: () => void;
+	/**
+	 * No LLM provider is connected → Send is gated (button disabled, Enter no-ops).
+	 * The textarea stays editable so the user can still draft a message; the gate
+	 * lifts the moment a provider is wired up (slice 3).
+	 */
+	disabled?: boolean;
 }) {
 	const [value, setValue] = useState("");
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -43,6 +50,9 @@ export function ComposeFooter({
 		// While a Run is active, Send is replaced by Stop — Enter/form-submit must
 		// not fire a second turn over the live one. Stop is an explicit click only.
 		if (isRunning) return;
+		// No provider connected → Send is gated (covers both Enter via handleKey and
+		// the form submit); the textarea stays editable so a draft isn't lost.
+		if (disabled) return;
 		const trimmed = value.trim();
 		if (!trimmed) return;
 		onSend(trimmed);
@@ -127,6 +137,7 @@ export function ComposeFooter({
 							aria-label="Send"
 							variant="primary-icon"
 							size="icon-lg"
+							disabled={disabled}
 						>
 							<ArrowUp className="h-5 w-5" aria-hidden />
 						</Button>
