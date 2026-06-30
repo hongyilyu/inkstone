@@ -272,6 +272,27 @@ describe("scoreProposal — schema gate", () => {
 		expect(r.fieldF1).toBe(0);
 		expect(r.detail.reason).toBe("unknown_kind");
 	});
+
+	it("preserves kindMatch:true on the CORRECT kind with an INVALID payload", () => {
+		// FIX 11 pin: right mutation_kind (create_todo == expected.kind) but a body
+		// that fails decode (`todo` is required). The invalid return must report
+		// schemaValid:false AND kindMatch:true — "right kind, bad shape" is NOT a kind
+		// mismatch, so it must not be conflated with one (which would undercount
+		// kind_match_rate). reason "invalid" still disambiguates it from
+		// "kind_mismatch".
+		const predicted: PredictedProposal = {
+			mutation_kind: "create_todo",
+			payload: {}, // missing required `todo` → decode fails
+		};
+		const expected: ExpectedProposal = {
+			kind: "create_todo",
+			fields: { title: "Buy milk" },
+		};
+		const r = scoreProposal(predicted, expected);
+		expect(r.schemaValid).toBe(false);
+		expect(r.kindMatch).toBe(true);
+		expect(r.detail.reason).toBe("invalid");
+	});
 });
 
 describe("scoreProposal — none handling", () => {
@@ -293,6 +314,33 @@ describe("scoreProposal — none handling", () => {
 		expect(r.entityF1).toBe(0);
 		expect(r.detail.reason).toBe("none_expected_but_proposed");
 		expect(r.detail.entities.precision).toBe(0);
+		// A VALID (but unwanted) proposal still decodes → schemaValid stays true; the
+		// over-extraction is what zeroes the score, not a schema failure.
+		expect(r.schemaValid).toBe(true);
+	});
+
+	it("reports schemaValid:false for expected none + an INVALID proposal", () => {
+		// FIX 10 pin: when expected is none, a non-null prediction must still run the
+		// real decode for schemaValid — a malformed (or bogus-kind) payload must NOT be
+		// falsely reported schemaValid:true just because the answer was "propose
+		// nothing". kindMatch stays false (expected none).
+		const invalidPayload: PredictedProposal = {
+			mutation_kind: "create_todo",
+			payload: {}, // missing required `todo` → decode fails
+		};
+		const rInvalid = scoreProposal(invalidPayload, { kind: "none" });
+		expect(rInvalid.schemaValid).toBe(false);
+		expect(rInvalid.kindMatch).toBe(false);
+		expect(rInvalid.detail.reason).toBe("none_expected_but_proposed");
+
+		const bogusKind: PredictedProposal = {
+			mutation_kind: "create_widget", // unregistered kind
+			payload: { name: "anything" },
+		};
+		const rBogus = scoreProposal(bogusKind, { kind: "none" });
+		expect(rBogus.schemaValid).toBe(false);
+		expect(rBogus.kindMatch).toBe(false);
+		expect(rBogus.detail.reason).toBe("none_expected_but_proposed");
 	});
 
 	it("scores expected non-none + predicted null as a miss", () => {

@@ -85,36 +85,27 @@ export function loadSystemPrompt(): string {
 	return cachedPrompt;
 }
 
-// The four default-Workflow tools (crates/core/workflows/default.toml). The
-// runner carries each tool's REAL name/description/label (verbatim from
-// crates/core/src/tools/<tool>.rs); the JSON schemas are deliberately permissive
-// envelopes, NOT the schemars-derived Draft-07 schemas Core ships at runtime.
-// Two reasons the rich schemas are not mirrored here:
+// The default-Workflow tools the eval transport can actually answer
+// (crates/core/workflows/default.toml). The runner carries each tool's REAL
+// name/description/label (verbatim from crates/core/src/tools/<tool>.rs); the JSON
+// schemas are deliberately permissive envelopes, NOT the schemars-derived Draft-07
+// schemas Core ships at runtime. Two reasons the rich schemas are not mirrored here:
 //   1. They are generated in Rust (schemars / payload_spec) and would silently
 //      drift from a hand-copy.
 //   2. The capture behavior is taught by SYSTEM_PROMPT, not the schema — the
 //      schema only needs to let the model CALL the tool. Slice 3's scorer
 //      validates the emitted payload against the @inkstone/protocol schemas, so
 //      schema-validity is measured downstream, not enforced at call time.
+//
+// The two thread-reading tools the product exposes (`read_thread`,
+// `read_current_thread_journal_entries`) are DELIBERATELY OMITTED: the eval
+// transport has no thread DB and would answer them with an empty world regardless
+// of params. Advertising them invites the model down a re-scan path the empty
+// answer then contradicts (mis-scoring the rescan fixture against a world its
+// premise denies). Until the transport can serve real thread state, the manifest
+// exposes only the two tools it can faithfully answer; the rescan fixture is marked
+// `holdout` (a known-v1-gap) so it's out of the default scored run.
 const TOOL_DESCRIPTORS: Record<string, CoreToolDescriptor> = {
-	read_thread: {
-		name: "read_thread",
-		description:
-			"Read the messages of another thread by its id. Returns the thread's title and its messages in order.",
-		label: "Read thread",
-		json_schema: {
-			type: "object",
-			required: ["thread_id"],
-			properties: { thread_id: { type: "string" } },
-		},
-	},
-	read_current_thread_journal_entries: {
-		name: "read_current_thread_journal_entries",
-		description:
-			"Read accepted Journal Entries originally created from the current thread, newest revision first.",
-		label: "Read current thread journal entries",
-		json_schema: { type: "object", properties: {} },
-	},
 	search_entities: {
 		name: "search_entities",
 		description:
@@ -150,10 +141,10 @@ const TOOL_DESCRIPTORS: Record<string, CoreToolDescriptor> = {
 	},
 };
 
-/** The default Workflow's tool allowlist, in order (default.toml `tools`). */
+/** The tool allowlist the eval advertises, in order — the subset of the default
+ * Workflow's `tools` (default.toml) that the eval transport can faithfully answer.
+ * The two thread-reading tools are omitted (see TOOL_DESCRIPTORS note). */
 const TOOL_ALLOWLIST = [
-	"read_thread",
-	"read_current_thread_journal_entries",
 	"propose_workspace_mutation",
 	"search_entities",
 ] as const;
@@ -186,9 +177,9 @@ function searchWorld(
 	world: ExistingEntity[],
 	params: unknown,
 ): ToolCallResponse {
-	const { type, query } =
+	const { type, query, limit } =
 		typeof params === "object" && params !== null
-			? (params as { type?: string; query?: string })
+			? (params as { type?: string; query?: string; limit?: number })
 			: {};
 	const needle = (query ?? "").toLowerCase();
 	const results: SearchResultRow[] = world
@@ -198,7 +189,12 @@ function searchWorld(
 				(needle === "" || e.name.toLowerCase().includes(needle)),
 		)
 		.map((e) => ({ id: e.id, type: e.type, label: e.name }));
-	return okResult({ results });
+	// The advertised schema includes `limit`; honor it (the real tool defaults 20 /
+	// caps 50, but a present-limit slice is the in-scope fidelity fix — the corpus is
+	// small so this is defense-in-depth).
+	return okResult({
+		results: typeof limit === "number" ? results.slice(0, limit) : results,
+	});
 }
 
 /** The eval transport for one fixture. Dispatches `callTool` by NAME (pi assigns
@@ -219,12 +215,6 @@ function evalTransport(
 			switch (name) {
 				case "search_entities":
 					return Promise.resolve(searchWorld(fixture.world, params));
-				case "read_current_thread_journal_entries":
-					// The runner has no thread DB; re-scan fixtures would script
-					// declared JEs here, but the base case is an empty list.
-					return Promise.resolve(okResult({ entries: [] }));
-				case "read_thread":
-					return Promise.resolve(okResult({ messages: [] }));
 				case "propose_workspace_mutation": {
 					// CAPTURE the proposal, then return a synthetic accepted result so
 					// the model's turn completes without error (a Decision is normally
@@ -258,8 +248,8 @@ function evalTransport(
 }
 
 /** Build the spawn manifest for a fixture: the REAL default-Workflow system
- * prompt + provider/model, the four tool descriptors, the fixture message as a
- * fresh prompt, and the env access token. */
+ * prompt + provider/model, the allowlisted tool descriptors, the fixture message
+ * as a fresh prompt, and the env access token. */
 function buildManifest(fixture: Fixture): WorkerManifest {
 	const accessToken = process.env[CODEX_ACCESS_TOKEN_ENV];
 	return {

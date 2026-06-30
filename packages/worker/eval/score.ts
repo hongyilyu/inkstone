@@ -378,7 +378,7 @@ function zeroed(reason: string, opts?: Partial<ScoreResult>): ScoreResult {
 function isRegisteredKind(
 	mutationKind: string,
 ): mutationKind is keyof typeof schemas {
-	return mutationKind in schemas;
+	return Object.hasOwn(schemas, mutationKind);
 }
 
 /** Decode a predicted payload against its registered `@inkstone/protocol` schema.
@@ -399,9 +399,14 @@ export function scoreProposal(
 	// 1. none-handling first.
 	if (expected.kind === "none") {
 		if (predicted === null) return perfect();
-		// A hallucinated proposal: entity precision 0 (over-extraction), F1 0.
+		// A hallucinated proposal: entity precision 0 (over-extraction), F1 0. Decode
+		// the predicted payload so schemaValid reports the truth — a bogus kind or a
+		// malformed payload must not be falsely reported schemaValid:true here.
+		const valid =
+			isRegisteredKind(predicted.mutation_kind) &&
+			schemaDecodes(predicted.mutation_kind, predicted.payload);
 		const r = zeroed("none_expected_but_proposed", {
-			schemaValid: true,
+			schemaValid: valid,
 			kindMatch: false,
 		});
 		r.detail.entities.precision = 0;
@@ -417,17 +422,18 @@ export function scoreProposal(
 		return r;
 	}
 
+	// kindMatch is computed BEFORE the schema gate so an invalid-payload return can
+	// still report the right kind (right kind + bad shape ≠ a real kind mismatch).
+	const kindMatch = predicted.mutation_kind === (expected.kind as ExpectedKind);
+
 	// 2. Schema gate. An unregistered/hallucinated kind fails outright; a
 	// registered kind whose payload doesn't decode fails as "invalid".
 	if (!isRegisteredKind(predicted.mutation_kind)) {
 		return zeroed("unknown_kind", { schemaValid: false, kindMatch: false });
 	}
 	if (!schemaDecodes(predicted.mutation_kind, predicted.payload)) {
-		return zeroed("invalid", { schemaValid: false, kindMatch: false });
+		return zeroed("invalid", { schemaValid: false, kindMatch });
 	}
-
-	// 3. kindMatch.
-	const kindMatch = predicted.mutation_kind === (expected.kind as ExpectedKind);
 
 	const payload = isRecord(predicted.payload) ? predicted.payload : {};
 

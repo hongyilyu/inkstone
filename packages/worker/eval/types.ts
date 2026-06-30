@@ -66,7 +66,9 @@ export interface ExpectedProposal {
 	 * values. */
 	observations?: Array<Record<string, unknown> & { schema_key: string }>;
 	/** For `apply_intent_graph`: the links (todo_project / todo_person /
-	 * journal_ref). */
+	 * journal_ref). NOT scored in v1: the scorer extracts only entity + observation
+	 * pools; link-edge scoring is deferred. These rows are the forward fixture
+	 * contract for that scorer, not graded today. */
 	links?: Array<Record<string, unknown> & { kind: string }>;
 	/** For single-entity `create_*`: the entity fields directly. */
 	fields?: Record<string, unknown>;

@@ -62,10 +62,13 @@ export function aggregate(results: ScoreResult[]): Aggregate {
 
 /** One appended row in `results.jsonl`: the aggregate metrics + a wall-clock
  * timestamp + a short hash of the system prompt the run drove (so a row is
- * attributable to a specific prompt revision). */
+ * attributable to a specific prompt revision) + the fixture cohort the run
+ * covered (`split`: "holdout" / "no-holdout" / "all"), so a row is unambiguously
+ * attributable to the cohort it measured. */
 export interface ResultsRow extends Aggregate {
 	date: string;
 	prompt_hash: string;
+	split: string;
 }
 
 /** A short, stable hash of the system prompt — sha256 hex, first 12 chars — used
@@ -74,12 +77,17 @@ export function promptHash(prompt: string): string {
 	return createHash("sha256").update(prompt).digest("hex").slice(0, 12);
 }
 
-/** Build the results row from an aggregate + the prompt hash. `date` is real
- * wall-clock time (tooling code — a fixed clock buys nothing here). */
-export function resultsRow(agg: Aggregate, promptHashHex: string): ResultsRow {
+/** Build the results row from an aggregate + the prompt hash + the cohort split.
+ * `date` is real wall-clock time (tooling code — a fixed clock buys nothing here). */
+export function resultsRow(
+	agg: Aggregate,
+	promptHashHex: string,
+	split: string,
+): ResultsRow {
 	return {
 		date: new Date().toISOString(),
 		prompt_hash: promptHashHex,
+		split,
 		entity_f1: agg.entity_f1,
 		obs_f1: agg.obs_f1,
 		field_f1: agg.field_f1,
@@ -98,5 +106,5 @@ export function appendResultRow(path: string, row: ResultsRow): void {
  * fails for want of a key (so CI stays green). */
 export function hasApiKey(): boolean {
 	const token = process.env[CODEX_ACCESS_TOKEN_ENV];
-	return token !== undefined && token.length > 0;
+	return token !== undefined && token.trim().length > 0;
 }

@@ -134,10 +134,11 @@ describe("aggregate + append", () => {
 		});
 	});
 
-	it("resultsRow has the 7-field shape + types", () => {
-		const row = resultsRow(aggregate([score(1, 1, 1)]), "abc123def456");
+	it("resultsRow has the 8-field shape + types", () => {
+		const row = resultsRow(aggregate([score(1, 1, 1)]), "abc123def456", "all");
 		expect(typeof row.date).toBe("string");
 		expect(typeof row.prompt_hash).toBe("string");
+		expect(row.split).toBe("all");
 		expect(typeof row.entity_f1).toBe("number");
 		expect(typeof row.obs_f1).toBe("number");
 		expect(typeof row.field_f1).toBe("number");
@@ -152,26 +153,33 @@ describe("aggregate + append", () => {
 				"n",
 				"obs_f1",
 				"prompt_hash",
+				"split",
 			].sort(),
 		);
 	});
 
-	it("appendResultRow writes ONE JSON line that parses back with all 7 fields", () => {
+	it("appendResultRow writes ONE JSON line that parses back with all 8 fields", () => {
 		const dir = mkdtempSync(join(tmpdir(), "eval-results-"));
 		const file = join(dir, "results.jsonl");
 		// Two fixtures, ONE kind mismatch → kind_match_rate 0.5 (distinct from the F1s).
 		const row = resultsRow(
 			aggregate([score(0.8, 0.6, 0.9, true), score(0.8, 0.6, 0.9, false)]),
 			"deadbeef0000",
+			"holdout",
 		);
 		appendResultRow(file, row);
 		const lines = readFileSync(file, "utf8").trim().split("\n");
 		expect(lines).toHaveLength(1);
 		const parsed = JSON.parse(lines[0]);
-		expect(parsed).toMatchObject({ prompt_hash: "deadbeef0000", n: 2 });
+		expect(parsed).toMatchObject({
+			prompt_hash: "deadbeef0000",
+			n: 2,
+			split: "holdout",
+		});
 		for (const k of [
 			"date",
 			"prompt_hash",
+			"split",
 			"entity_f1",
 			"obs_f1",
 			"field_f1",

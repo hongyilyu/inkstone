@@ -11,24 +11,27 @@ import type { Fixture } from "./types.js";
 import { CODEX_ACCESS_TOKEN_ENV } from "./types.js";
 
 // The runner drives the REAL model, so it needs a real provider credential
-// (openai-codex OAuth access token, ADR-0023). This describe is `skipIf`-gated
-// on that token: with no token set, this describe is SKIPPED (a keyless
+// (openai-codex OAuth access token, ADR-0023). But the token alone is NOT enough
+// to opt in: it's the SAME token real chat uses, so a dev/CI that merely has it set
+// would otherwise hit the provider and spend tokens on a bare `pnpm test`. This
+// describe is gated behind a SECOND, explicit flag — INKSTONE_EVAL_LIVE=1 — AND the
+// token: with either missing, this describe is SKIPPED (a keyless / non-opted-in
 // `pnpm -C packages/worker test` / CI stays green by skipping, not failing). The
 // scorer tests (`score.test.ts`) run regardless.
-describe.skipIf(!process.env[CODEX_ACCESS_TOKEN_ENV])(
-	"eval runner (real model)",
-	() => {
-		it("greets and proposes nothing for a bare hello", async () => {
-			const fixture: Fixture = {
-				message: "hi there",
-				world: [],
-				expected: { kind: "none" },
-			};
-			const predicted = await runFixture(fixture);
-			expect(predicted).toBeNull();
-		}, 60_000);
-	},
-);
+const LIVE =
+	process.env.INKSTONE_EVAL_LIVE === "1" &&
+	!!process.env[CODEX_ACCESS_TOKEN_ENV];
+describe.skipIf(!LIVE)("eval runner (real model)", () => {
+	it("greets and proposes nothing for a bare hello", async () => {
+		const fixture: Fixture = {
+			message: "hi there",
+			world: [],
+			expected: { kind: "none" },
+		};
+		const predicted = await runFixture(fixture);
+		expect(predicted).toBeNull();
+	}, 60_000);
+});
 
 // UNGATED faux-provider coverage for the runner's capture plumbing — exercises
 // `evalTransport` / world-search / the propose-capture branch with NO real key
