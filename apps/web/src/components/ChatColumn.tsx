@@ -62,6 +62,12 @@ export function ChatColumn() {
 	// neutral "Start a chat" briefly before the read settles.
 	const { anyConnected, isSuccess: providerStatusKnown } = useProviderStatus();
 	const showConnectWelcome = providerStatusKnown && !anyConnected;
+	// Same KNOWN-disconnected gate as the welcome, applied to the composer (slice 3):
+	// with no provider wired, Send is soft-disabled (the textarea stays editable) and,
+	// inside an existing thread, a slim "connect a provider" hint sits above it. Gated
+	// on the KNOWN status so a connected user never sees a flash of a disabled composer
+	// during the in-flight read.
+	const composerGated = providerStatusKnown && !anyConnected;
 	// The focused Thread is the route (ADR-0061): `/thread/$threadId` carries the
 	// id, `/` (welcome) has none. `strict: false` lets one component serve both —
 	// the Library reads its `$kind` the same way (routes/library/route.tsx).
@@ -322,7 +328,23 @@ export function ChatColumn() {
 					{sendError}
 				</p>
 			)}
+			{composerGated && focusedThreadId !== null && (
+				// A slim, quiet in-thread reminder that chatting needs a connected
+				// provider — distinct from the full first-run welcome (which only shows
+				// on `/`, where focusedThreadId is null). Muted line + a Link to the
+				// Models settings page; the composer below is soft-disabled to match.
+				<p className="mx-auto max-w-3xl px-6 text-muted-foreground text-sm">
+					<Link
+						to="/settings/models"
+						className="font-medium text-foreground/80 underline-offset-4 transition-colors hover:text-foreground hover:underline focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+					>
+						Connect a provider
+					</Link>{" "}
+					to start chatting.
+				</p>
+			)}
 			<ComposeFooter
+				disabled={composerGated}
 				isRunning={activeRunId !== null}
 				onStop={() => {
 					if (activeRunId !== null) void cancelRun(runtime, activeRunId);

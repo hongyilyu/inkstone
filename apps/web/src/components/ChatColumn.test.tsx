@@ -255,9 +255,72 @@ describe("ChatColumn", () => {
 		// …and the ordinary "Start a chat" welcome is gone.
 		expect(screen.queryByRole("heading", { name: /start a chat/i })).toBeNull();
 
-		// The CTA is a real navigable link pointing at the Models settings page.
-		const cta = screen.getByRole("link", { name: /connect a provider/i });
-		expect(cta.getAttribute("href")).toContain("/settings/models");
+		// Exactly ONE "Connect a provider" link on `/`: the welcome CTA. The slice-3
+		// in-thread hint (gated on `focusedThreadId !== null`) must NOT also render
+		// here, so there is no second such link. This pins the hint's in-thread-only
+		// gate directly, independent of the shared accessible name.
+		const ctas = screen.getAllByRole("link", { name: /connect a provider/i });
+		expect(ctas).toHaveLength(1);
+		expect(ctas[0].getAttribute("href")).toContain("/settings/models");
+
+		await runtime.dispose();
+	});
+
+	it("shows an in-thread connect hint and disables Send when no provider is connected", async () => {
+		// A FOCUSED thread with a message already rendered (so the composer shows,
+		// not the hydrating skeleton) but NO provider wired: the composer's Send is
+		// soft-disabled and a slim in-thread "Connect a provider" hint sits above it,
+		// deep-linking to the Models settings page (slice 3).
+		const runtime = makeStubRuntime({
+			runId: "run-gated",
+			events: [],
+			providerConnected: false,
+		});
+		seedAssistantMessage("threadA", {
+			id: "a-gated",
+			role: "assistant",
+			status: "completed",
+			segments: [{ kind: "text", text: "an earlier reply" }],
+			run_id: "r-gated",
+		});
+
+		await renderFocused(runtime, "threadA");
+
+		// The thread renders (not the skeleton)…
+		await screen.findByText("an earlier reply");
+		// …and once the (async) provider/status read settles disconnected, the slim
+		// connect hint appears as a real navigable link to the Models settings page.
+		const hint = await screen.findByRole("link", {
+			name: /connect a provider/i,
+		});
+		expect(hint.getAttribute("href")).toContain("/settings/models");
+
+		// Send is gated while disconnected.
+		expect(screen.getByRole("button", { name: /send/i })).toBeDisabled();
+
+		await runtime.dispose();
+	});
+
+	it("does NOT show the in-thread connect hint and keeps Send enabled when a provider is connected", async () => {
+		// Same focused-thread setup but default-CONNECTED: no in-thread hint, and
+		// Send works as usual (slice 3 gate is satisfied).
+		const runtime = makeStubRuntime({ runId: "run-connected", events: [] });
+		seedAssistantMessage("threadA", {
+			id: "a-connected",
+			role: "assistant",
+			status: "completed",
+			segments: [{ kind: "text", text: "an earlier reply" }],
+			run_id: "r-connected",
+		});
+
+		await renderFocused(runtime, "threadA");
+
+		await screen.findByText("an earlier reply");
+		// No connect hint, and Send is enabled.
+		expect(
+			screen.queryByRole("link", { name: /connect a provider/i }),
+		).toBeNull();
+		expect(screen.getByRole("button", { name: /send/i })).toBeEnabled();
 
 		await runtime.dispose();
 	});
