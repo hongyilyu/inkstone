@@ -107,11 +107,18 @@ function renderPage(runtime: ReturnType<typeof makeRuntime>["runtime"]) {
 	);
 }
 
+/** From the provider LIST view, click into the OpenAI provider's detail. */
+async function openProviderDetail(user: ReturnType<typeof userEvent.setup>) {
+	const entry = await screen.findByRole("button", { name: /OpenAI/ });
+	await user.click(entry);
+}
+
 describe("Models settings page (ADR-0024)", () => {
 	it("reflects provider connection + global effort from the backend", async () => {
 		const { runtime } = makeRuntime({ connected: true, effort: "high" });
 		renderPage(runtime);
 
+		// Connection status shows per-provider on the LIST view.
 		await waitFor(() =>
 			expect(screen.getByTestId("provider-status")).toHaveTextContent(
 				/connected/i,
@@ -123,6 +130,109 @@ describe("Models settings page (ADR-0024)", () => {
 				"true",
 			),
 		);
+	});
+
+	it("shows a provider entry; drills into its detail and back", async () => {
+		const user = userEvent.setup();
+		const models: ModelInfo[] = [
+			{ id: "gpt-5.5", name: "GPT-5.5", reasoning: true, input: ["text"] },
+		];
+		const { runtime } = makeRuntime({ connected: true, models });
+		renderPage(runtime);
+
+		// LIST view: a clickable provider entry for "OpenAI". No model rows yet.
+		const entry = await screen.findByRole("button", { name: /OpenAI/ });
+		expect(entry).toBeInTheDocument();
+		expect(screen.queryByRole("row", { name: /GPT-5\.5/ })).toBeNull();
+
+		// Drill in: the DETAIL view lists that provider's models.
+		await user.click(entry);
+		expect(
+			await screen.findByRole("row", { name: /GPT-5\.5/ }),
+		).toBeInTheDocument();
+
+		// A Back control returns to the list (provider entry visible again).
+		await user.click(screen.getByRole("button", { name: /back/i }));
+		expect(
+			await screen.findByRole("button", { name: /OpenAI/ }),
+		).toBeInTheDocument();
+		expect(screen.queryByRole("row", { name: /GPT-5\.5/ })).toBeNull();
+	});
+
+	it("keeps the provider row actionable when provider/status fetch FAILS: Not connected + Connect (not a permanent Checking…)", async () => {
+		// settings/get and model/catalog succeed (so the row renders), but
+		// provider/status REJECTS. The pre-slice behavior was an actionable
+		// "Not connected" + Connect; the regression left every row stuck on
+		// "Checking…" with no Connect button (connectedById={} → null per row).
+		const stub = WsClient.of({
+			threadCreate: die,
+			postMessage: die,
+			threadList: die,
+			getRunHistory: die,
+			recurrencePreview: () => Effect.die("not exercised in this test"),
+			threadGet: die,
+			threadRename: die,
+			threadArchive: die,
+			threadUnarchive: die,
+			threadListArchived: die,
+			listEntities: die,
+			getBacklinks: die,
+			observationQuery: die,
+			observationUpdate: die,
+			entityMutate: die,
+			subscribeRun: dieStream,
+			cancelRun: die,
+			retryRun: die,
+			// provider/status REJECTS — runPromise rejects, hitting refreshConnected's
+			// .catch. The error value is irrelevant (the catch ignores it).
+			providerStatus: () => Effect.die("status fetch failed"),
+			providerLoginStart: () =>
+				Effect.succeed({ authorize_url: "https://auth.example/x" }),
+			modelCatalog: () =>
+				Effect.succeed({
+					providers: [{ id: "openai-codex", label: "OpenAI", models: [] }],
+				}),
+			settingsGet: () =>
+				Effect.succeed({
+					provider: "openai-codex",
+					model: null,
+					effort: "off",
+					enabled_models: [],
+				}),
+			settingsSet: () =>
+				Effect.succeed({
+					provider: "openai-codex",
+					model: null,
+					effort: "off",
+					enabled_models: [],
+				}),
+			proposalGet: die,
+			rescanJournalEntry: die,
+			proposalDecide: die,
+			messageSearch: die,
+			proposalNotifications: () => Stream.empty,
+			connectionStatus: () => Stream.empty,
+		});
+		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
+		renderPage(runtime);
+
+		// The row settles to an actionable "Not connected" — never permanent "Checking…".
+		await waitFor(() =>
+			expect(screen.getByTestId("provider-status")).toHaveTextContent(
+				/not connected/i,
+			),
+		);
+		expect(screen.getByTestId("provider-status")).not.toHaveTextContent(
+			/checking/i,
+		);
+		// And the Connect affordance is present (the actionable recovery path).
+		// Match the exact "Connect" chip — the row's own button name also contains
+		// "connect" (from "Not connected"), so anchor the name.
+		expect(
+			screen.getByRole("button", { name: /^connect$/i }),
+		).toBeInTheDocument();
+
+		await runtime.dispose();
 	});
 
 	it("persists an effort change via settings/set", async () => {
@@ -252,7 +362,7 @@ describe("Models settings page (ADR-0024)", () => {
 		await runtime.dispose();
 	});
 
-	it("lists the catalog and persists a preferred model via settings/set", async () => {
+	it("lists the catalog in the provider detail and persists a preferred model via settings/set", async () => {
 		const user = userEvent.setup();
 		const models: ModelInfo[] = [
 			{
@@ -270,6 +380,9 @@ describe("Models settings page (ADR-0024)", () => {
 		];
 		const { runtime, settingsSet } = makeRuntime({ connected: true, models });
 		renderPage(runtime);
+
+		// Preferred model lives in the provider detail — drill in first.
+		await openProviderDetail(user);
 
 		const row = await screen.findByRole("row", { name: /GPT-5\.5/ });
 		expect(screen.getAllByRole("row")).toHaveLength(2);
@@ -364,6 +477,9 @@ describe("Models settings page (ADR-0024)", () => {
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 		renderPage(runtime);
+
+		// Preferred-model picks happen in the provider detail.
+		await openProviderDetail(user);
 
 		const row55 = await screen.findByRole("row", { name: /GPT-5\.5/ });
 		const rowMini = await screen.findByRole("row", { name: /GPT-5\.4 Mini/ });
