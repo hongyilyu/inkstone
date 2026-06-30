@@ -16,6 +16,10 @@ import { CODEX_ACCESS_TOKEN_ENV } from "./types.js";
  * runner-facing `Fixture` contract, so it lives here rather than on `Fixture`. */
 export type EvalFixture = Fixture & { holdout?: boolean };
 
+/** The fixture cohort a `pnpm eval` run measured — the only valid values of a
+ * results row's `split`. Closed so an invalid cohort can't be serialized. */
+export type Cohort = "all" | "holdout" | "no-holdout";
+
 /** The directory holding the eval fixtures (`eval/cases/*.json`), resolved from
  * this module's location so the load works regardless of cwd. */
 const CASES_DIR = join(dirname(fileURLToPath(import.meta.url)), "cases");
@@ -68,7 +72,7 @@ export function aggregate(results: ScoreResult[]): Aggregate {
 export interface ResultsRow extends Aggregate {
 	date: string;
 	prompt_hash: string;
-	split: string;
+	split: Cohort;
 }
 
 /** A short, stable hash of the system prompt — sha256 hex, first 12 chars — used
@@ -82,7 +86,7 @@ export function promptHash(prompt: string): string {
 export function resultsRow(
 	agg: Aggregate,
 	promptHashHex: string,
-	split: string,
+	split: Cohort,
 ): ResultsRow {
 	return {
 		date: new Date().toISOString(),

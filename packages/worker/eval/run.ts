@@ -56,20 +56,19 @@ function findDefaultToml(): string {
 	);
 }
 
-/** Read the default Workflow's `system_prompt` from `default.toml`. Extracts the
- * `system_prompt = """ ... """` triple-quoted basic-string block: TOML trims a
- * newline immediately after the opening `"""`, so the content is everything
- * between the open delimiter's trailing newline and the closing `"""`. Cached so
- * repeated calls (per-fixture manifest build + the prompt-hash in `index.ts`)
- * read the file once. */
-let cachedPrompt: string | undefined;
-export function loadSystemPrompt(): string {
-	if (cachedPrompt !== undefined) return cachedPrompt;
-	const toml = readFileSync(findDefaultToml(), "utf8");
+/** Extract the `system_prompt = """ ... """` triple-quoted basic-string block from
+ * a TOML source string. TOML trims a newline immediately after the opening `"""`,
+ * so the content is everything between the open delimiter's trailing newline and
+ * the closing `"""`; the closing `"""` sits on its own line, so the trailing
+ * newline before it is dropped (matching the prior verbatim copy, no trailing
+ * blank line). Pure (no I/O): `loadSystemPrompt` feeds it the real `default.toml`,
+ * and the test feeds it a hermetic fixture so the extraction algorithm is graded
+ * WITHOUT pinning the real prompt's wording (which prompt-tuning changes freely). */
+export function extractSystemPrompt(toml: string): string {
 	const open = toml.indexOf('system_prompt = """');
 	if (open === -1) {
 		throw new Error(
-			'loadSystemPrompt: no `system_prompt = """` in default.toml',
+			'extractSystemPrompt: no `system_prompt = """` in default.toml',
 		);
 	}
 	// Body starts after the opening delimiter and its immediately-following newline
@@ -77,11 +76,18 @@ export function loadSystemPrompt(): string {
 	const bodyStart = toml.indexOf("\n", open) + 1;
 	const close = toml.indexOf('"""', bodyStart);
 	if (close === -1) {
-		throw new Error("loadSystemPrompt: unterminated `system_prompt` block");
+		throw new Error("extractSystemPrompt: unterminated `system_prompt` block");
 	}
-	// The closing `"""` sits on its own line; drop the trailing newline before it
-	// so the prompt matches the prior verbatim copy (no trailing blank line).
-	cachedPrompt = toml.slice(bodyStart, close).replace(/\n$/, "");
+	return toml.slice(bodyStart, close).replace(/\n$/, "");
+}
+
+/** Read the default Workflow's `system_prompt` from `default.toml`. Cached so
+ * repeated calls (per-fixture manifest build + the prompt-hash in `index.ts`)
+ * read the file once. The parse is delegated to {@link extractSystemPrompt}. */
+let cachedPrompt: string | undefined;
+export function loadSystemPrompt(): string {
+	if (cachedPrompt !== undefined) return cachedPrompt;
+	cachedPrompt = extractSystemPrompt(readFileSync(findDefaultToml(), "utf8"));
 	return cachedPrompt;
 }
 
@@ -179,9 +185,16 @@ function searchWorld(
 ): ToolCallResponse {
 	const { type, query, limit } =
 		typeof params === "object" && params !== null
-			? (params as { type?: string; query?: string; limit?: number })
+			? (params as { type?: unknown; query?: unknown; limit?: unknown })
 			: {};
-	const needle = (query ?? "").toLowerCase();
+	// `query`/`limit` are model-supplied (untrusted): a non-string `query` would
+	// throw at `.toLowerCase()`, and a negative/NaN `limit` would mis-slice. Coerce
+	// before use so the fixture transport matches the advertised schema.
+	const needle = typeof query === "string" ? query.toLowerCase() : "";
+	const cap =
+		typeof limit === "number" && Number.isFinite(limit)
+			? Math.max(0, Math.floor(limit))
+			: undefined;
 	const results: SearchResultRow[] = world
 		.filter(
 			(e) =>
@@ -193,7 +206,7 @@ function searchWorld(
 	// caps 50, but a present-limit slice is the in-scope fidelity fix — the corpus is
 	// small so this is defense-in-depth).
 	return okResult({
-		results: typeof limit === "number" ? results.slice(0, limit) : results,
+		results: cap !== undefined ? results.slice(0, cap) : results,
 	});
 }
 
@@ -223,10 +236,16 @@ function evalTransport(
 						typeof params === "object" && params !== null
 							? (params as { mutation_kind?: unknown; payload?: unknown })
 							: {};
-					capture.current = {
-						mutation_kind: String(obj.mutation_kind ?? ""),
-						payload: obj.payload,
-					};
+					// First-wins, intrinsic to the handler (not dependent on `terminate`
+					// timing): if a model emits two propose calls in ONE assistant turn,
+					// both execute before the loop checks termination — guarding the
+					// assignment keeps the FIRST captured payload rather than last-wins.
+					if (capture.current === null) {
+						capture.current = {
+							mutation_kind: String(obj.mutation_kind ?? ""),
+							payload: obj.payload,
+						};
+					}
 					// `terminate: true` ends pi's agent loop after this tool result
 					// (`ToolResultOk.terminate`, honored by the proxy and
 					// `shouldTerminateToolBatch`). We capture the FIRST proposal and

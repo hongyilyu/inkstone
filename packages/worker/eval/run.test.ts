@@ -133,6 +133,36 @@ describe("eval runner (faux provider, keyless)", () => {
 		expect(faux.getPendingResponseCount()).toBe(1);
 	});
 
+	it("captures the FIRST of two propose calls in ONE turn (intrinsic first-wins)", async () => {
+		// Handler-level first-wins (independent of `terminate` timing): two
+		// propose_workspace_mutation calls in a SINGLE assistant message both run
+		// their callTool before the loop checks termination. The guarded assignment
+		// must keep the FIRST; the cross-turn test above only exercises termination.
+		const { faux, deps } = fauxDeps();
+		faux.setResponses([
+			fauxAssistantMessage([
+				fauxToolCall("propose_workspace_mutation", {
+					mutation_kind: "create_todo",
+					payload: { todo: { title: "FIRST" } },
+				}),
+				fauxToolCall("propose_workspace_mutation", {
+					mutation_kind: "create_person",
+					payload: { person: { name: "SECOND" } },
+				}),
+			]),
+		]);
+
+		const fixture: Fixture = {
+			message: "Remind me to buy milk",
+			world: [],
+			expected: { kind: "create_todo" },
+		};
+
+		const predicted = await runFixture(fixture, deps);
+		expect(predicted?.mutation_kind).toBe("create_todo");
+		expect(predicted?.payload).toEqual({ todo: { title: "FIRST" } });
+	});
+
 	it("searches the world first, then captures the proposal", async () => {
 		// search_entities does not terminate; the loop continues to the propose
 		// turn, which does. Asserts the world lookup runs without crashing and the

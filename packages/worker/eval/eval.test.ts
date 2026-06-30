@@ -14,7 +14,7 @@ import {
 	loadFixtures,
 	resultsRow,
 } from "./aggregate.js";
-import { loadSystemPrompt } from "./run.js";
+import { extractSystemPrompt, loadSystemPrompt } from "./run.js";
 import { scoreProposal } from "./score.js";
 import type { PredictedProposal, ScoreResult } from "./types.js";
 
@@ -197,13 +197,14 @@ describe("aggregate + append", () => {
 	});
 });
 
-// (b2) The six single-entity create_* fixtures must carry a name/title in
-// `expected.fields`, or the scorer aligns the expected entity (name `undefined`)
-// against NO correctly-named prediction — entityF1 collapses to 0 on a PERFECT
-// model output, dragging the aggregate headline down by a constant unrelated to
-// model quality. This block proves alignment: for each fixture we synthesize the
-// proposal a good model would emit (the canonical title/name) and assert
-// entityF1 === 1. RED against fixtures missing `expected.fields`.
+// (b2) The single-entity create_* fixtures (create_todo/_project/_person) must
+// carry a name/title in `expected.fields`, or the scorer aligns the expected
+// entity (name `undefined`) against NO correctly-named prediction — entityF1
+// collapses to 0 on a PERFECT model output, dragging the aggregate headline down
+// by a constant unrelated to model quality. This block proves alignment: for each
+// fixture we synthesize the proposal a good model would emit (the canonical
+// title/name) and assert entityF1 === 1. RED against fixtures missing
+// `expected.fields`.
 describe("create_* fixtures align with a correct prediction (no false zero)", () => {
 	// The canonical title/name a good model would emit for each fixture's message.
 	// MUST equal `expected.fields.{title,name}` in the fixture for the scorer to
@@ -212,8 +213,8 @@ describe("create_* fixtures align with a correct prediction (no false zero)", ()
 		file: string;
 		// The fixture's unique `message`, used to find it among loadFixtures().
 		message: string;
-		mutation_kind: "create_todo" | "create_project";
-		// The predicted payload a good model emits; `todo` nests, project is flat.
+		mutation_kind: "create_todo" | "create_project" | "create_person";
+		// The predicted payload a good model emits; `todo` nests, project/person flat.
 		payload: Record<string, unknown>;
 	}> = [
 		{
@@ -221,6 +222,22 @@ describe("create_* fixtures align with a correct prediction (no false zero)", ()
 			message: "Create a project to plan the Lisbon trip.",
 			mutation_kind: "create_project",
 			payload: { name: "Plan the Lisbon trip" },
+		},
+		{
+			// create_person goes through the SAME single-entity alignment path, which
+			// aligns on `name`. A person fixture that dropped `expected.fields.name`
+			// would collapse entityF1 to 0 on a perfect model (the backfill block below
+			// asserts only fieldF1, which stays a vacuous 1) — so cover it here too.
+			file: "person-alice-daycare.json",
+			message: "Remember Alice is the daycare coordinator.",
+			mutation_kind: "create_person",
+			payload: { name: "Alice", note: "daycare coordinator" },
+		},
+		{
+			file: "person-priya-owner.json",
+			message: "Add Priya as the API migration owner.",
+			mutation_kind: "create_person",
+			payload: { name: "Priya", note: "API migration owner" },
 		},
 		{
 			file: "todo-call-dentist.json",
@@ -276,6 +293,23 @@ describe("create_* fixtures align with a correct prediction (no false zero)", ()
 			expect(r.detail.entities.matched).toBe(1);
 		});
 	}
+
+	// The regression this block GUARDS: a single-entity create_* expected that drops
+	// its alignment `name` collapses entityF1 to 0 against a perfect prediction (the
+	// expected entity, name `undefined`, aligns against NO named prediction). Prove
+	// entityF1 actually reds in that case — so the per-fixture asserts above are a
+	// live tripwire, not a tautology. (The backfill block below would NOT catch this:
+	// with matched=0 there are no field pairs, so fieldF1 is a vacuous 1.)
+	it("a name-less expected create_person scores entityF1 0, not a false 1", () => {
+		const r = scoreProposal(
+			{ mutation_kind: "create_person", payload: { name: "Alice" } },
+			{ kind: "create_person", fields: { note: "daycare coordinator" } },
+		);
+		expect(r.entityF1).toBe(0);
+		expect(r.detail.entities.matched).toBe(0);
+		// The blind spot that makes the dropped name slip past the backfill block:
+		expect(r.fieldF1).toBe(1);
+	});
 });
 
 // (b3) FIELD-EXHAUSTIVE invariant (see `ExpectedProposal` in types.ts): a correct
@@ -370,29 +404,53 @@ describe("backfilled fixtures: a correct model scores fieldF1 === 1", () => {
 	});
 });
 
-// (c) The read-not-copy prompt loads from the TOML.
-describe("loadSystemPrompt (read-not-copy)", () => {
-	it("returns the real non-empty prompt from default.toml", () => {
-		const prompt = loadSystemPrompt();
-		expect(prompt.length).toBeGreaterThan(0);
-		expect(prompt.startsWith("You are Inkstone's assistant")).toBe(true);
+// (c) The read-not-copy prompt loads from the TOML. The EXTRACTION ALGORITHM is
+// graded hermetically against a fixture TOML (below) so a regression that swallows
+// the opening/closing `"""` or leaks the following `tools = [` line reds — WITHOUT
+// pinning the real prompt's wording (this PR exists to enable prompt-tuning; a
+// sentence-text assertion would red the worker suite on every legitimate edit).
+describe("extractSystemPrompt (hermetic extraction)", () => {
+	// A tiny fixture TOML: a known triple-quoted block bracketed by other keys, with
+	// TOML's leading-newline-after-`"""` and the closing `"""` on its own line.
+	const FIXTURE = [
+		'name = "demo"',
+		'system_prompt = """',
+		"FIRST LINE.",
+		"  indented continuation.",
+		"LAST LINE.",
+		'"""',
+		'tools = ["a", "b"]',
+	].join("\n");
+
+	it("returns the full block, both delimiters trimmed, nothing after it leaking", () => {
+		const body = extractSystemPrompt(FIXTURE);
+		// Full body, exact boundaries: leading newline after `"""` and the trailing
+		// newline before the closing `"""` are both dropped.
+		expect(body).toBe("FIRST LINE.\n  indented continuation.\nLAST LINE.");
+		// Neither delimiter nor the following `tools = [` line may leak in.
+		expect(body).not.toContain('"""');
+		expect(body).not.toContain("tools = [");
 	});
 
-	it("extracts the prompt body up to (not including) the closing delimiter", () => {
+	it("throws on a missing or unterminated block", () => {
+		expect(() => extractSystemPrompt('name = "x"')).toThrow(
+			/no .system_prompt/,
+		);
+		expect(() => extractSystemPrompt('system_prompt = """\nbody\n')).toThrow(
+			/unterminated/,
+		);
+	});
+});
+
+describe("loadSystemPrompt (read-not-copy)", () => {
+	it("returns a real non-empty prompt with no delimiter leakage", () => {
+		// Structural only — NOT wording. The hermetic block above grades extraction;
+		// here we only confirm the real read produces a clean, delimiter-free prompt.
 		const prompt = loadSystemPrompt();
-		// The real final line of default.toml's system_prompt block (the two-space
-		// indented continuation of the GTD link step). Pins the CLOSE boundary so a
-		// regression that swallows the closing `"""` or the trailing `tools = [` line
-		// reds — without this, only the START was checked.
-		expect(
-			prompt.endsWith(
-				"  unlinked. Recover the new Todo's id with search_entities before linking.",
-			),
-		).toBe(true);
-		// The extraction must stop at the delimiter: neither the closing triple-quote
-		// nor the following `tools = [` line may leak into the prompt.
+		expect(prompt.length).toBeGreaterThan(0);
 		expect(prompt).not.toContain('"""');
 		expect(prompt).not.toContain("tools = [");
+		expect(prompt).toBe(prompt.trim());
 	});
 });
 
