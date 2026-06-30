@@ -1,0 +1,10 @@
+{
+	"message": "Logged roughly 600 calories at lunch.",
+	"world": [],
+	"expected": {
+		"kind": "record_observations",
+		"observations": [
+			{ "schema_key": "nutrition.intake", "values": { "kcal": 600 } }
+		]
+	}
+}

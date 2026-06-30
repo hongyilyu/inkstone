@@ -1,0 +1,23 @@
+{
+	"message": "Did my morning meditation today.",
+	"world": [
+		{
+			"type": "habit",
+			"id": "0190d3c1-0000-7000-8000-000000000b01",
+			"name": "Meditation"
+		}
+	],
+	"expected": {
+		"kind": "record_observations",
+		"observations": [
+			{
+				"schema_key": "habit.checkin",
+				"values": {
+					"habit_id": "0190d3c1-0000-7000-8000-000000000b01",
+					"state": "done"
+				}
+			}
+		]
+	},
+	"holdout": true
+}

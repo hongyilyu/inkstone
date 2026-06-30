@@ -13,6 +13,7 @@
 		"build:provider-helper": "bun build --compile packages/provider-helper/src/provider.ts --outfile target/debug/inkstone-provider-helper",
 		"test:e2e": "pnpm -C tests/e2e test:e2e",
 		"test:e2e:install": "pnpm -C tests/e2e test:e2e:install",
+		"eval": "pnpm -C packages/worker eval",
 		"format": "biome format --write .",
 		"lint": "biome lint .",
 		"biome:fix": "biome check --write ."

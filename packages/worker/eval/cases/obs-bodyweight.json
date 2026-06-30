@@ -1,0 +1,8 @@
+{
+	"message": "Weighed 75.2kg this morning.",
+	"world": [],
+	"expected": {
+		"kind": "record_observations",
+		"observations": [{ "schema_key": "bodyweight", "values": { "kg": 75.2 } }]
+	}
+}

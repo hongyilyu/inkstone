@@ -11,7 +11,8 @@
 	},
 	"scripts": {
 		"check": "tsc --noEmit",
-		"test": "vitest run"
+		"test": "vitest run",
+		"eval": "tsx eval/index.ts"
 	},
 	"devDependencies": {
 		"@types/node": "^22.0.0",

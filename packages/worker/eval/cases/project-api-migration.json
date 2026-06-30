@@ -1,0 +1,8 @@
+{
+	"message": "Start a project to migrate the API to v2.",
+	"world": [],
+	"expected": {
+		"kind": "create_project",
+		"fields": { "name": "Migrate the API to v2" }
+	}
+}

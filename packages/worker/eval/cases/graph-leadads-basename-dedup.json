@@ -1,0 +1,21 @@
+{
+	"message": "Synced on Lead Ads testing with the team. We narrowed down the private-auction edge cases.",
+	"world": [
+		{
+			"type": "project",
+			"id": "0190d3c1-0000-7000-8000-0000000000d1",
+			"name": "Lead Ads"
+		}
+	],
+	"expected": {
+		"kind": "apply_intent_graph",
+		"entities": [
+			{
+				"type": "project",
+				"name": "Lead Ads",
+				"existing_id": "0190d3c1-0000-7000-8000-0000000000d1"
+			}
+		],
+		"links": [{ "kind": "journal_ref" }]
+	}
+}
