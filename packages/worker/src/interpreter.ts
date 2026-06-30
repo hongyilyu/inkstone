@@ -9,7 +9,7 @@ import {
 	runAgentLoopContinue,
 } from "@earendil-works/pi-agent-core";
 import type { Message, Model } from "@earendil-works/pi-ai";
-import { getModel, streamSimple } from "@earendil-works/pi-ai";
+import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import type { WorkerManifest } from "@inkstone/protocol";
 import { Effect } from "effect";
 import { manifestCodec } from "./manifest-codec.js";
@@ -27,18 +27,38 @@ export interface InterpreterDeps {
 	streamFn: StreamFn;
 }
 
-/** Production deps: real model registry + token-injecting streamSimple (ADR-0023). */
-export const defaultInterpreterDeps = (): InterpreterDeps => ({
-	resolveModel: (workflow) =>
-		getModel(
-			workflow.provider as Parameters<typeof getModel>[0],
-			workflow.model as never,
-		) as Model<string>,
-	streamFn: (model, context, options) => {
-		// access_token is injected per-call by the manifest closure in runInterpreter.
-		return streamSimple(model, context, options);
-	},
-});
+/** Production deps: real model registry + token-injecting streamSimple (ADR-0023).
+ *
+ * pi-ai 0.80.2 retired the top-level `getModel`/`streamSimple` (they survive only
+ * in the `@earendil-works/pi-ai/compat` shim, marked `@deprecated`). The modern
+ * equivalent is a `Models` collection of the built-in providers: `.getModel`
+ * resolves the catalog model, `.streamSimple` dispatches the request to the
+ * provider that owns it. We build ONE collection and share it across both deps so
+ * `streamSimple` resolves the same provider `resolveModel` looked the model up in.
+ *
+ * The OAuth access token still rides in `options.apiKey` (StreamOptions.apiKey,
+ * unchanged): the collection's auth resolution leaves an injected `apiKey`
+ * untouched for the oauth-only openai-codex provider, so the token reaches the
+ * request headers exactly as before. */
+export const defaultInterpreterDeps = (): InterpreterDeps => {
+	const models = builtinModels();
+	return {
+		resolveModel: (workflow) => {
+			// `getModel` returns undefined on a catalog miss (the 0.80.2 collection is
+			// nullable where the retired top-level `getModel` was not). Fail loud with
+			// the offending id rather than letting undefined surface as an opaque error
+			// deep in the agent loop.
+			const model = models.getModel(workflow.provider, workflow.model);
+			if (model === undefined) {
+				throw new Error(`unknown model ${workflow.provider}/${workflow.model}`);
+			}
+			return model as Model<string>;
+		},
+		streamFn: (model, context, options) =>
+			// access_token is injected per-call by the manifest closure in runInterpreter.
+			models.streamSimple(model, context, options),
+	};
+};
 
 /** Drive one Run to completion, emitting `text_delta` events then one terminal `done`/`error` — see docs/design/worker.md (ADR-0018, ADR-0025). */
 export function runInterpreter(

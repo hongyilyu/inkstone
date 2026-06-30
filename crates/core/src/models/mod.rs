@@ -55,13 +55,17 @@ pub fn default_title_model(provider: &str) -> Option<&'static str> {
     }
 }
 
-/// The model the titler should use for `provider`: the title model when it is a
-/// known catalog id, otherwise the chat [`default_model`]. An absent or unknown
-/// title model falls through to the chat default.
+/// The model the titler should use for `provider`: its dedicated title model,
+/// else the chat [`default_model`].
+///
+/// The title model is product policy (authored here, ADR-0046), NOT a
+/// user-selectable catalog entry — so it is deliberately NOT gated through
+/// [`is_known_model`]. The user-facing catalog ([`catalog`]) can be trimmed to a
+/// single chat model (e.g. `gpt-5.5`) while titling keeps using a cheaper model
+/// (`gpt-5.4-mini`) that the provider still serves. Validity of the title model
+/// is enforced downstream by `pi-ai` at request time, not by this catalog.
 pub fn title_model_for(provider: &str) -> Option<&'static str> {
-    default_title_model(provider)
-        .filter(|m| is_known_model(m))
-        .or_else(|| default_model(provider))
+    default_title_model(provider).or_else(|| default_model(provider))
 }
 
 #[cfg(test)]
@@ -75,9 +79,11 @@ mod tests {
     }
 
     #[test]
-    fn title_model_for_prefers_known_title_model() {
-        // openai-codex's title model is in the catalog, so it wins outright.
-        assert!(is_known_model("gpt-5.4-mini"));
+    fn title_model_for_uses_title_model_not_gated_by_catalog() {
+        // The title model is product policy, NOT a user-facing catalog entry: the
+        // catalog is trimmed to gpt-5.5 only, yet titling still resolves the cheaper
+        // gpt-5.4-mini. The resolution must NOT be gated by `is_known_model`.
+        assert!(!is_known_model("gpt-5.4-mini"));
         assert_eq!(title_model_for("openai-codex"), Some("gpt-5.4-mini"));
     }
 
@@ -85,19 +91,5 @@ mod tests {
     fn title_model_for_falls_back_to_chat_default() {
         // A provider with no title model defers to `default_model` (None today).
         assert_eq!(title_model_for("anthropic"), default_model("anthropic"));
-    }
-
-    #[test]
-    fn title_model_filter_rejects_unknown_id() {
-        // The "present but unknown title model" arm has no real provider to
-        // exercise it (the sole title model, gpt-5.4-mini, is in the catalog),
-        // so assert `title_model_for`'s composition directly: an unknown id is
-        // filtered out and `or_else` recovers the chat default.
-        let unknown = "no-such-title-model";
-        assert!(!is_known_model(unknown));
-        let resolved = Some(unknown)
-            .filter(|m| is_known_model(m))
-            .or_else(|| default_model("openai-codex"));
-        assert_eq!(resolved, default_model("openai-codex"));
     }
 }

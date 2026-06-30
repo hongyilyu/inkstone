@@ -43,15 +43,15 @@ fn settings_get_set_round_trips_and_validates() {
             &mut ws,
             2,
             "settings/set",
-            serde_json::json!({ "model": "gpt-5.4", "effort": "high" }),
+            serde_json::json!({ "model": "gpt-5.5", "effort": "high" }),
         )
         .await;
-        assert_eq!(set["result"]["model"], serde_json::json!("gpt-5.4"));
+        assert_eq!(set["result"]["model"], serde_json::json!("gpt-5.5"));
         assert_eq!(set["result"]["effort"], serde_json::json!("high"));
 
         // A fresh get reads the persisted values.
         let got2 = request(&mut ws, 3, "settings/get", serde_json::json!({})).await;
-        assert_eq!(got2["result"]["model"], serde_json::json!("gpt-5.4"));
+        assert_eq!(got2["result"]["model"], serde_json::json!("gpt-5.5"));
         assert_eq!(got2["result"]["effort"], serde_json::json!("high"));
 
         // Partial update: changing only the effort leaves the model intact.
@@ -62,7 +62,7 @@ fn settings_get_set_round_trips_and_validates() {
             serde_json::json!({ "effort": "low" }),
         )
         .await;
-        assert_eq!(set_effort["result"]["model"], serde_json::json!("gpt-5.4"));
+        assert_eq!(set_effort["result"]["model"], serde_json::json!("gpt-5.5"));
         assert_eq!(set_effort["result"]["effort"], serde_json::json!("low"));
 
         // Unknown model → invalid_params (-32602), and the prior value stands.
@@ -87,7 +87,7 @@ fn settings_get_set_round_trips_and_validates() {
 
         // The rejected writes changed nothing.
         let got3 = request(&mut ws, 7, "settings/get", serde_json::json!({})).await;
-        assert_eq!(got3["result"]["model"], serde_json::json!("gpt-5.4"));
+        assert_eq!(got3["result"]["model"], serde_json::json!("gpt-5.5"));
         assert_eq!(got3["result"]["effort"], serde_json::json!("low"));
 
         ws.close(None).await.ok();

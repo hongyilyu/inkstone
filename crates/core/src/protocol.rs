@@ -1921,8 +1921,8 @@ mod mirror_tests {
         assert_eq!(only_effort.effort.as_deref(), Some("low"));
 
         let only_model: SettingsSetParams =
-            serde_json::from_value(json!({ "model": "gpt-5.4" })).unwrap();
-        assert_eq!(only_model.model.as_deref(), Some("gpt-5.4"));
+            serde_json::from_value(json!({ "model": "gpt-5.5" })).unwrap();
+        assert_eq!(only_model.model.as_deref(), Some("gpt-5.5"));
         assert_eq!(only_model.effort, None);
 
         let empty: SettingsSetParams = serde_json::from_value(json!({})).unwrap();

@@ -1,10 +1,10 @@
 import {
 	fauxAssistantMessage,
+	fauxProvider,
 	fauxToolCall,
-	registerFauxProvider,
-	streamSimple,
 } from "@earendil-works/pi-ai";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
+import { fauxInterpreterDeps } from "../src/faux/faux-deps.js";
 import type { InterpreterDeps } from "../src/interpreter.js";
 import { runFixture } from "./run.js";
 import type { Fixture } from "./types.js";
@@ -37,29 +37,18 @@ describe.skipIf(!LIVE)("eval runner (real model)", () => {
 // `evalTransport` / world-search / the propose-capture branch with NO real key
 // by scripting the model through pi-ai's faux provider (mirrors
 // `src/interpreter.test.ts`). `runFixture(fixture, deps)` takes optional deps;
-// we inject `{ resolveModel: () => faux.getModel(), streamFn: streamSimple }`.
+// we inject the shared `fauxInterpreterDeps` wiring (faux model + a `Models`
+// collection's `streamSimple`).
 describe("eval runner (faux provider, keyless)", () => {
-	// Fresh faux provider per test, torn down after, so the pi-ai global
-	// api-registry never leaks a provider across tests.
-	const registrations: Array<{ unregister: () => void }> = [];
-	afterEach(() => {
-		for (const r of registrations.splice(0)) r.unregister();
-	});
-
 	function fauxDeps(): {
-		faux: ReturnType<typeof registerFauxProvider>;
+		faux: ReturnType<typeof fauxProvider>;
 		deps: InterpreterDeps;
 	} {
-		// The runner pins provider "openai-codex"; register the faux under that name
+		// The runner pins provider "openai-codex"; build the faux under that name
 		// for fidelity, though tests inject `resolveModel` directly so the model
-		// comes straight from the faux registration.
-		const faux = registerFauxProvider({ provider: "openai-codex" });
-		registrations.push(faux);
-		const deps: InterpreterDeps = {
-			resolveModel: () => faux.getModel(),
-			streamFn: streamSimple,
-		};
-		return { faux, deps };
+		// comes straight from the faux provider.
+		const faux = fauxProvider({ provider: "openai-codex" });
+		return { faux, deps: fauxInterpreterDeps(faux) };
 	}
 
 	it("captures the proposal the model emits via propose_workspace_mutation", async () => {
