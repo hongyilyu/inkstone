@@ -210,7 +210,7 @@ describe("create_* fixtures align with a correct prediction (no false zero)", ()
 	}> = [
 		{
 			file: "project-lisbon-trip.json",
-			message: "Create a project to plan the Lisbon trip in the fall.",
+			message: "Create a project to plan the Lisbon trip.",
 			mutation_kind: "create_project",
 			payload: { name: "Plan the Lisbon trip" },
 		},
@@ -228,7 +228,7 @@ describe("create_* fixtures align with a correct prediction (no false zero)", ()
 		},
 		{
 			file: "todo-followup-carol.json",
-			message: "Follow up with Carol on the vendor contract next week.",
+			message: "Follow up with Carol on the vendor contract.",
 			mutation_kind: "create_todo",
 			payload: {
 				todo: { title: "Follow up with Carol on the vendor contract" },
@@ -268,6 +268,98 @@ describe("create_* fixtures align with a correct prediction (no false zero)", ()
 			expect(r.detail.entities.matched).toBe(1);
 		});
 	}
+});
+
+// (b3) FIELD-EXHAUSTIVE invariant (see `ExpectedProposal` in types.ts): a correct
+// model must score fieldF1 === 1 on the backfilled fixtures. Each case synthesizes
+// the exact payload a good model would emit and asserts no field-precision penalty
+// fires — RED if a backfilled `expected` under-specifies (a hallucination-free
+// model would dock on an extra) or over-specifies (the model would miss a recall
+// key). Pins all three backfill shapes: a trimmed graph (no spurious `due_at`), a
+// `note` on a create_person, and observation `values` with `occurred_at` excluded.
+describe("backfilled fixtures: a correct model scores fieldF1 === 1", () => {
+	const fixtures = loadFixtures();
+	const find = (message: string) => {
+		const f = fixtures.find((x) => x.message === message);
+		expect(f, `fixture for "${message}" not found`).toBeDefined();
+		return f;
+	};
+
+	it("graph-project-with-action: trimmed message → no due_at to penalize", () => {
+		const fixture = find(
+			"Spent time on the Lead Ads project. I need to figure out the Rodeo side of it.",
+		);
+		if (!fixture) return;
+		const predicted: PredictedProposal = {
+			mutation_kind: "apply_intent_graph",
+			payload: {
+				journal_entry: {
+					handle: "@je",
+					occurred_at: "2026-06-30T10:00:00",
+					body: [
+						{ type: "text", text: "Spent time on " },
+						{ type: "entity_ref", target: "@leadads" },
+					],
+				},
+				entities: [
+					{
+						handle: "@leadads",
+						type: "project",
+						name: "Lead Ads",
+						existing_id: "0190d3c1-0000-7000-8000-0000000000e1",
+					},
+					{
+						handle: "@rodeo",
+						type: "todo",
+						title: "Figure out the Rodeo side",
+					},
+				],
+				links: [
+					{ kind: "journal_ref", from: "@je", to: "@leadads" },
+					{ kind: "todo_project", from: "@rodeo", to: "@leadads" },
+				],
+			},
+		};
+		const r = scoreProposal(predicted, fixture.expected);
+		expect(r.schemaValid).toBe(true);
+		expect(r.fieldF1).toBe(1);
+		expect(r.detail.fields.extraPredicted).toBe(0);
+	});
+
+	it("person-alice-daycare: note backfilled → emitting it is not an extra", () => {
+		const fixture = find("Remember Alice is the daycare coordinator.");
+		if (!fixture) return;
+		const predicted: PredictedProposal = {
+			mutation_kind: "create_person",
+			payload: { name: "Alice", note: "daycare coordinator" },
+		};
+		const r = scoreProposal(predicted, fixture.expected);
+		expect(r.schemaValid).toBe(true);
+		expect(r.fieldF1).toBe(1);
+		expect(r.detail.fields.extraPredicted).toBe(0);
+	});
+
+	it("obs-bodyweight: required occurred_at is excluded → no precision hit", () => {
+		const fixture = find("Weighed 75.2kg this morning.");
+		if (!fixture) return;
+		const predicted: PredictedProposal = {
+			mutation_kind: "record_observations",
+			payload: {
+				observations: [
+					{
+						schema_key: "bodyweight",
+						occurred_at: "2026-06-30T08:00:00",
+						values: { kg: 75.2 },
+					},
+				],
+			},
+		};
+		const r = scoreProposal(predicted, fixture.expected);
+		expect(r.schemaValid).toBe(true);
+		expect(r.obsF1).toBe(1);
+		expect(r.fieldF1).toBe(1);
+		expect(r.detail.fields.extraPredicted).toBe(0);
+	});
 });
 
 // (c) The read-not-copy prompt loads from the TOML.

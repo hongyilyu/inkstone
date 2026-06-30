@@ -43,7 +43,18 @@ export type ExpectedKind =
 
 /** The expected proposal for a fixture. Only the fields relevant to `kind` are
  * populated — `apply_intent_graph` uses `entities`/`links`, `record_observations`
- * uses `observations`, single-entity `create_*` uses `fields`. */
+ * uses `observations`, single-entity `create_*` uses `fields`.
+ *
+ * INVARIANT — expected fixtures must be FIELD-EXHAUSTIVE. List every field a
+ * correct model (following `crates/core/workflows/default.toml`) would emit for
+ * the `message`. The scorer's field metric penalizes predicted-only keys (field
+ * precision = correct/(correct+extraPredicted), see `score.ts`), so an OMITTED
+ * field is scored as "the model must NOT emit this" — under-specifying a field a
+ * correct model would produce scores that correct model FALSE-LOW. When in doubt:
+ * either specify the field, or remove the detail that triggers it from the
+ * `message` (e.g. drop a non-confidently-normalizable date like "before Friday"
+ * so no `due_at` is expected). The goal: a correct model scores ~1.0 on every
+ * fixture, and the field-precision penalty fires only on a genuine hallucination. */
 export interface ExpectedProposal {
 	kind: ExpectedKind;
 	/** For `apply_intent_graph`: the entity nodes (person/project/todo/...), each

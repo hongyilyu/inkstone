@@ -1,5 +1,8 @@
 {
 	"message": "Remember Alice is the daycare coordinator.",
 	"world": [],
-	"expected": { "kind": "create_person", "fields": { "name": "Alice" } }
+	"expected": {
+		"kind": "create_person",
+		"fields": { "name": "Alice", "note": "daycare coordinator" }
+	}
 }

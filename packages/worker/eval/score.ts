@@ -241,7 +241,13 @@ const HANDLE_TAGS = new Set(["handle"]);
  * Why precision matters: `@inkstone/protocol`'s schema decode defaults to
  * `onExcessProperty: "ignore"`, so a payload with the right expected fields PLUS
  * hallucinated extras still decodes clean. Without the precision term a bloated
- * bad payload would score field F1 = 1.0 (a false-HIGH). */
+ * bad payload would score field F1 = 1.0 (a false-HIGH).
+ *
+ * The flip side is an INVARIANT on the fixtures (see `ExpectedProposal` in
+ * `types.ts`): because a predicted-only scored key is an `extraPredicted`
+ * (precision hit), every `expected` record must be FIELD-EXHAUSTIVE — list every
+ * field a correct model emits for the message. Under-specify a field a correct
+ * model would produce and the precision term scores that correct model FALSE-LOW. */
 function scoreFields(
 	pairs: Alignment["pairs"],
 	scoredKeys: (rec: Record_) => string[],
@@ -304,9 +310,17 @@ function entityScoredKeys(rec: Record_): string[] {
 }
 
 /** The expected fields scored for an observation record — everything except the
- * `schema_key` that drove alignment. */
+ * `schema_key` that drove alignment AND `occurred_at`. `occurred_at` is excluded
+ * because it is schema-REQUIRED on every observation row yet its value is a
+ * non-deterministic timestamp the model derives from the message ("this morning",
+ * "today"): a correct model ALWAYS emits it, so leaving it scored would make every
+ * obs fixture score a false-LOW — either as an extra (precision hit) if expected
+ * omits it, or as a recall miss if expected pins a value the model won't match. It
+ * is structural, not graded content (like `schema_key`), so it is not scored. */
 function obsScoredKeys(rec: Record_): string[] {
-	return Object.keys(rec.fields).filter((k) => k !== "schema_key");
+	return Object.keys(rec.fields).filter(
+		(k) => k !== "schema_key" && k !== "occurred_at",
+	);
 }
 
 // ── the scorer ───────────────────────────────────────────────────────────────

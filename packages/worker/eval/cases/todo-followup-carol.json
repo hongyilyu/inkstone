@@ -1,5 +1,5 @@
 {
-	"message": "Follow up with Carol on the vendor contract next week.",
+	"message": "Follow up with Carol on the vendor contract.",
 	"world": [],
 	"expected": {
 		"kind": "create_todo",

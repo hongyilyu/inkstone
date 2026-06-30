@@ -1,6 +1,9 @@
 {
 	"message": "Add Priya as the API migration owner.",
 	"world": [],
-	"expected": { "kind": "create_person", "fields": { "name": "Priya" } },
+	"expected": {
+		"kind": "create_person",
+		"fields": { "name": "Priya", "note": "API migration owner" }
+	},
 	"holdout": true
 }
