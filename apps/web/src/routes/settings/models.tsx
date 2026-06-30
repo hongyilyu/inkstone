@@ -297,6 +297,7 @@ function ModelsSettings() {
 									>
 										<button
 											type="button"
+											aria-label={`Open ${p.label} models`}
 											onClick={() => setSelectedProvider(p.id)}
 											className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-md p-3 text-left transition-colors hover:bg-muted/50 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
 										>
