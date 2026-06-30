@@ -58,6 +58,18 @@ export interface PredictedProposal {
 	payload: unknown;
 }
 
+/** One eval case: the user `message` the model interprets, the `world` of
+ * already-accepted entities its `search_entities` calls resolve against, and the
+ * `expected` proposal the scorer (`score.ts`) judges the model's output against.
+ * The runner (`run.ts`) drives the real interpreter over `message`+`world` and
+ * returns the captured {@link PredictedProposal}; `expected` is unused by the
+ * runner and consumed only by the scorer. */
+export interface Fixture {
+	message: string;
+	world: ExistingEntity[];
+	expected: ExpectedProposal;
+}
+
 /** The scorer's verdict for one predicted↔expected pair. F1 values are 0..1. */
 export interface ScoreResult {
 	/** Did the predicted payload decode against its `@inkstone/protocol` schema? */
