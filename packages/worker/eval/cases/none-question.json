@@ -1,0 +1,5 @@
+{
+	"message": "What's the capital of France?",
+	"world": [],
+	"expected": { "kind": "none" }
+}

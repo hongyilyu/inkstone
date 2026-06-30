@@ -1,0 +1,38 @@
+{
+	"message": "Had a sync with Alice about Project Bob today. Eve will join the effort next week, and I need to send Eve the onboarding doc.",
+	"world": [
+		{
+			"type": "person",
+			"id": "0190d3c1-0000-7000-8000-0000000000a1",
+			"name": "Alice"
+		},
+		{
+			"type": "project",
+			"id": "0190d3c1-0000-7000-8000-0000000000b2",
+			"name": "Project Bob"
+		}
+	],
+	"expected": {
+		"kind": "apply_intent_graph",
+		"entities": [
+			{
+				"type": "person",
+				"name": "Alice",
+				"existing_id": "0190d3c1-0000-7000-8000-0000000000a1"
+			},
+			{ "type": "person", "name": "Eve" },
+			{
+				"type": "project",
+				"name": "Project Bob",
+				"existing_id": "0190d3c1-0000-7000-8000-0000000000b2"
+			},
+			{ "type": "todo", "title": "Send Eve the onboarding doc" }
+		],
+		"links": [
+			{ "kind": "journal_ref" },
+			{ "kind": "journal_ref" },
+			{ "kind": "journal_ref" },
+			{ "kind": "todo_person" }
+		]
+	}
+}

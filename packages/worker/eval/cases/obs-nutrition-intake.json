@@ -1,0 +1,8 @@
+{
+	"message": "Logged lunch: a grilled chicken breast with rice, roughly 600 calories.",
+	"world": [],
+	"expected": {
+		"kind": "record_observations",
+		"observations": [{ "schema_key": "nutrition.intake" }]
+	}
+}

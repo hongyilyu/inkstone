@@ -1,0 +1,6 @@
+{
+	"message": "Today I finally shipped the redesign I've been dreading for months. Relieved it's out.",
+	"world": [],
+	"expected": { "kind": "create_journal_entry" },
+	"holdout": true
+}

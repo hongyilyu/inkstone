@@ -1,0 +1,5 @@
+{
+	"message": "Spent the afternoon walking along the river. It was quiet and I felt my head finally clear after a hard week.",
+	"world": [],
+	"expected": { "kind": "create_journal_entry" }
+}

@@ -1,0 +1,94 @@
+// The pure, testable core of the `pnpm eval` entry: load fixtures off disk,
+// aggregate per-fixture ScoreResults into a single results row, append that row
+// to a JSONL log, plus the keyless-skip guard. `index.ts` is the thin I/O shell
+// that wires these to the real runner; everything graded by `eval.test.ts` lives
+// here so it stays key-free.
+
+import { createHash } from "node:crypto";
+import { appendFileSync, readdirSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { CODEX_ACCESS_TOKEN_ENV } from "./run.js";
+import type { Fixture, ScoreResult } from "./types.js";
+
+/** A fixture plus the eval-only `holdout` marker. `holdout` is a harness concern
+ * (split a held-out slice for measuring generalization), not part of the
+ * runner-facing `Fixture` contract, so it lives here rather than on `Fixture`. */
+export type EvalFixture = Fixture & { holdout?: boolean };
+
+/** The directory holding the eval fixtures (`eval/cases/*.json`), resolved from
+ * this module's location so the load works regardless of cwd. */
+const CASES_DIR = join(dirname(fileURLToPath(import.meta.url)), "cases");
+
+/** Load every `cases/*.json` fixture into an `EvalFixture[]`. JSON files are data,
+ * not code — we read + `JSON.parse` each; the `eval.test.ts` (a) block asserts
+ * they conform to the `Fixture` shape, so a malformed fixture reds CI rather than
+ * silently mis-scoring. */
+export function loadFixtures(dir: string = CASES_DIR): EvalFixture[] {
+	return readdirSync(dir)
+		.filter((f) => f.endsWith(".json"))
+		.sort()
+		.map((f) => JSON.parse(readFileSync(join(dir, f), "utf8")) as EvalFixture);
+}
+
+/** The aggregate metrics across a run: mean entity/obs/field F1 + the fixture
+ * count. Means over an empty set are 0 (n=0), never NaN. */
+export interface Aggregate {
+	entity_f1: number;
+	obs_f1: number;
+	field_f1: number;
+	n: number;
+}
+
+const mean = (xs: number[]): number =>
+	xs.length === 0 ? 0 : xs.reduce((a, b) => a + b, 0) / xs.length;
+
+/** Mean each F1 across the per-fixture results. */
+export function aggregate(results: ScoreResult[]): Aggregate {
+	return {
+		entity_f1: mean(results.map((r) => r.entityF1)),
+		obs_f1: mean(results.map((r) => r.obsF1)),
+		field_f1: mean(results.map((r) => r.fieldF1)),
+		n: results.length,
+	};
+}
+
+/** One appended row in `results.jsonl`: the aggregate metrics + a wall-clock
+ * timestamp + a short hash of the system prompt the run drove (so a row is
+ * attributable to a specific prompt revision). */
+export interface ResultsRow extends Aggregate {
+	date: string;
+	prompt_hash: string;
+}
+
+/** A short, stable hash of the system prompt — sha256 hex, first 12 chars — used
+ * to tag a results row with the prompt revision it measured. */
+export function promptHash(prompt: string): string {
+	return createHash("sha256").update(prompt).digest("hex").slice(0, 12);
+}
+
+/** Build the results row from an aggregate + the prompt hash. `date` is real
+ * wall-clock time (tooling code — a fixed clock buys nothing here). */
+export function resultsRow(agg: Aggregate, promptHashHex: string): ResultsRow {
+	return {
+		date: new Date().toISOString(),
+		prompt_hash: promptHashHex,
+		entity_f1: agg.entity_f1,
+		obs_f1: agg.obs_f1,
+		field_f1: agg.field_f1,
+		n: agg.n,
+	};
+}
+
+/** Append ONE JSON row (newline-terminated) to the JSONL log at `path`. */
+export function appendResultRow(path: string, row: ResultsRow): void {
+	appendFileSync(path, `${JSON.stringify(row)}\n`);
+}
+
+/** Whether a real provider credential is present. The keyless guard: with the
+ * token env var unset, the eval prints a skip notice and exits 0 — it never
+ * fails for want of a key (so CI stays green). */
+export function hasApiKey(): boolean {
+	const token = process.env[CODEX_ACCESS_TOKEN_ENV];
+	return token !== undefined && token.length > 0;
+}

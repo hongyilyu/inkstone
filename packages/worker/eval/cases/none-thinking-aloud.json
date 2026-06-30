@@ -1,0 +1,6 @@
+{
+	"message": "I wonder whether I should rewrite the scheduler or just patch it. What do you think?",
+	"world": [],
+	"expected": { "kind": "none" },
+	"holdout": true
+}

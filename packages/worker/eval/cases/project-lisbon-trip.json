@@ -1,0 +1,8 @@
+{
+	"message": "Create a project to plan the Lisbon trip in the fall.",
+	"world": [],
+	"expected": {
+		"kind": "create_project",
+		"fields": { "name": "Plan the Lisbon trip" }
+	}
+}

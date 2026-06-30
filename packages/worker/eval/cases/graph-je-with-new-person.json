@@ -1,0 +1,9 @@
+{
+	"message": "Long lunch with my new manager Dana today — talked through where the team is headed. Felt reassured.",
+	"world": [],
+	"expected": {
+		"kind": "apply_intent_graph",
+		"entities": [{ "type": "person", "name": "Dana" }],
+		"links": [{ "kind": "journal_ref" }]
+	}
+}

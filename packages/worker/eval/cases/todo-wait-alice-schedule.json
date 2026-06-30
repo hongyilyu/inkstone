@@ -1,0 +1,9 @@
+{
+	"message": "Wait for Alice to send the daycare schedule.",
+	"world": [],
+	"expected": {
+		"kind": "create_todo",
+		"fields": { "title": "Wait for Alice to send the daycare schedule" }
+	},
+	"holdout": true
+}

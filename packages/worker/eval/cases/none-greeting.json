@@ -1,0 +1,5 @@
+{
+	"message": "Hey, how's it going?",
+	"world": [],
+	"expected": { "kind": "none" }
+}
