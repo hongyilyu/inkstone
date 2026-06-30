@@ -2,7 +2,7 @@ import { expect, test } from "./fixtures.js";
 import { FAUX_WORKER_CMD } from "./spawnCore.js";
 
 /**
- * URL-addressable Threads (ADR-0042): the focused Thread IS the route. A first
+ * URL-addressable Threads (ADR-0061): the focused Thread IS the route. A first
  * send mints a Thread and navigates to `/thread/<id>`; a reload onto that URL
  * cold-hydrates the same conversation (reload-survival — the store starts empty,
  * so only the URL could have restored it); New Chat returns to `/`; and the
@@ -31,7 +31,7 @@ test("a first send mints a Thread and puts its id in the URL", async ({
 	await chat.send("Plan the offsite in Lisbon");
 	await chat.waitForAssistantText(/noted/i);
 
-	// The URL now carries the minted Thread id (ADR-0042).
+	// The URL now carries the minted Thread id (ADR-0061).
 	await expect.poll(() => chat.pathname()).toMatch(/^\/thread\/[0-9a-f-]+$/i);
 });
 
@@ -82,7 +82,7 @@ test("reloading a long Thread cold-lands at the bottom (latest message)", async 
 		timeout: 15_000,
 	});
 
-	// Lands at the bottom (ADR-0042): the latest turn is in view, the first is not.
+	// Lands at the bottom (ADR-0061): the latest turn is in view, the first is not.
 	await expect(chat.userBubble("the very first thing")).not.toBeInViewport();
 	await expect(chat.userBubble("final and most recent")).toBeInViewport();
 });

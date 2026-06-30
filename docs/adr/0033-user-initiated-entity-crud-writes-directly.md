@@ -11,7 +11,8 @@ Proposal. The user is their own approver — the Library form is the review surf
 ## Decision
 
 A user-initiated create/update/delete of an Entity (Person, Project, Todo, Journal
-Entry, including the inline entity-ref of a Journal Entry) is applied directly:
+Entry, Media (ADR-0058/0059), including the inline entity-ref of a Journal Entry) is
+applied directly:
 
 - carried over the existing JSON-RPC channel as a new `entity/mutate` request
   (ADR-0014 reserves the `entity/*` namespace; no new transport);
@@ -59,17 +60,18 @@ created_via_proposal_id IS NOT NULL` exemption, and `entity_revisions.proposal_i
   agent path in `decide`.
 - **Per-entity update semantics differ — clients are coupled to this.** `update_todo`
   is a three-way **merge** (load current, overlay the partial, re-validate the whole):
-  the editor sends only changed keys. `update_person`, `update_project`, and
-  `update_journal_entry` are **full-document replace**: the editor must send the
-  *complete* intended state, or omitted fields are dropped. A manual editor that sends
-  a diff to a replace-kind silently wipes unsent fields (the Project review ritual, a
-  Journal's `ended_at`). So each Library editor mirrors its entity's contract: Todo
-  diffs; Person/Project/Journal send the full document (Project/Journal carry the raw
-  stored fields the view model doesn't surface, to avoid dropping them).
+  the editor sends only changed keys. `update_person`, `update_project`,
+  `update_journal_entry`, and `update_media` are **full-document replace**: the editor
+  must send the *complete* intended state, or omitted fields are dropped. A manual editor
+  that sends a diff to a replace-kind silently wipes unsent fields (the Project review
+  ritual, a Journal's `ended_at`, a Media's `url`). So each Library editor mirrors its
+  entity's contract: Todo diffs; Person/Project/Journal/Media send the full document
+  (Project/Journal carry the raw stored fields the view model doesn't surface, to avoid
+  dropping them).
 - **Clearing an optional field** is a first-class user action the agent never
   needed. On the merge path (Todo) the partial-merge core gains a three-way: a key set
   to `null` removes it, any value sets it, absence preserves — this upgrades the agent
-  path too (it could not clear before). On the replace path (Person/Project/Journal)
+  path too (it could not clear before). On the replace path (Person/Project/Journal/Media)
   omit ≡ null: a field absent from the full document is simply cleared.
 - **Status↔timestamp on edit (Todo, Project).** A status change must clear the
   now-invalid terminal timestamp (e.g. `completed_at` when leaving `completed`), and a

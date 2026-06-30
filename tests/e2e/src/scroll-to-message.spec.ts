@@ -2,7 +2,7 @@ import { expect, test } from "./fixtures.js";
 import { FAUX_WORKER_CMD } from "./spawnCore.js";
 
 /**
- * Issue #138 + ADR-0042 (end-to-end): activating a ⌘K message-search hit
+ * Issue #138 + ADR-0061 (end-to-end): activating a ⌘K message-search hit
  * deep-links to `/thread/<id>?focusedMessageId=<id>`, which scrolls the EXACT
  * matched Message into view, briefly highlights it, then strips the param from
  * the URL (consume-then-strip) — not just landing on the Thread.
@@ -65,7 +65,7 @@ test("⌘K message hit deep-links to the exact message, highlights it, then stri
 
 	// Reload first: the live transcript carried client-minted message ids, but the
 	// search hit returns Core's server message_id. A reload onto the thread URL
-	// cold-hydrates via thread/get (reload-survival, ADR-0042) so the rendered rows
+	// cold-hydrates via thread/get (reload-survival, ADR-0061) so the rendered rows
 	// now carry server ids — the ones the hit's anchor will match. Then New Chat
 	// back to `/` so opening the hit is a true cross-surface deep-link.
 	await chat.reload();
@@ -96,7 +96,7 @@ test("⌘K message hit deep-links to the exact message, highlights it, then stri
 	// of eight, bottom-pinned), so being in-viewport can only be the jump.
 	await expect(target).toBeInViewport();
 
-	// Consume-then-strip (ADR-0042): the anchor is gone from the URL once consumed,
+	// Consume-then-strip (ADR-0061): the anchor is gone from the URL once consumed,
 	// so a reload or Back can't re-fire the jump.
 	await expect.poll(() => chat.search()).toBe("");
 });
@@ -106,7 +106,7 @@ test("a stale ?focusedMessageId (no such message) strips itself and still shows 
 }) => {
 	// A shared/typo'd deep link whose message id isn't in the thread must NOT
 	// wedge the thread at the top with the param stuck forever — once hydration
-	// settles and the id isn't found, the anchor strips (ADR-0042 consume-then-strip).
+	// settles and the id isn't found, the anchor strips (ADR-0061 consume-then-strip).
 	await chat.goto();
 	await chat.send("A normal message in this thread");
 	await chat.waitForAssistantText(/noted/i);

@@ -1,7 +1,7 @@
 import { expect, test } from "./fixtures.js";
 
 /**
- * Not-found state (ADR-0042, B-additive). Navigating to a `/thread/<id>` Core
+ * Not-found state (ADR-0061, B-additive). Navigating to a `/thread/<id>` Core
  * won't serve shows an honest "thread isn't available" state with a
  * Back-to-New-Chat exit — NOT an eternal skeleton, and NOT a retry that can't
  * succeed. Two deterministic dead-ends route here identically: a well-formed UUID

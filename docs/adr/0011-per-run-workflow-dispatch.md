@@ -35,4 +35,5 @@ Naming it wins on two grounds:
 ## Related
 
 - [ADR-0010](./0010-mvp-slice-chat-driven-web-client.md) — the slice this Dispatcher serves.
+- [ADR-0024](./0024-user-configurable-model-and-effort.md) — layers effective model/effort resolution onto the same seam; the Dispatcher entry point is `dispatch_and_resolve` in `crates/core/src/dispatcher.rs`, which picks the Workflow (this ADR) and then resolves its model/effort from settings (ADR-0024).
 - CONTEXT.md `Workflow`, `Router` — `Dispatcher` will be added alongside.

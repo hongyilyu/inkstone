@@ -97,7 +97,7 @@ function withSegments(input: MessageInput): Message {
  * `loading` while `thread/get` is in flight, `error` on a transient failed fetch
  * (drives a recoverable retry affordance), `not_found` when Core reports the
  * Thread does not exist (`UnknownThreadError`, a dead-end with a Back-to-New-Chat
- * exit — ADR-0042), `ready` once history is live or locally-originated. Absent =
+ * exit — ADR-0061), `ready` once history is live or locally-originated. Absent =
  * never hydrated.
  */
 export type HydrationStatus = "loading" | "ready" | "error" | "not_found";

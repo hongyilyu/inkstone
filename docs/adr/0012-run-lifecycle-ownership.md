@@ -54,3 +54,4 @@ These can be revisited; none is foundational.
 - [ADR-0006](./0006-run-events-vs-tool-protocol.md) — Run Events are observational; Core persists what it needs from them.
 - [ADR-0010](./0010-mvp-slice-chat-driven-web-client.md) — the slice this lifecycle serves.
 - [ADR-0025](./0025-proposal-park-and-resume.md) — adds `parked` as a durable, non-terminal Run state; parked Runs survive a Core restart instead of being force-errored.
+- [ADR-0028](./0028-run-status-materialized-transitions.md) — adds an `errored → running` retry edge (`run/retry`): a dead Run is no longer strictly terminal — the user can re-drive it in place (re-driving the user prompt fresh, not replaying the crashed Turn), amending the "a crashed Turn is a dead Run" framing here.

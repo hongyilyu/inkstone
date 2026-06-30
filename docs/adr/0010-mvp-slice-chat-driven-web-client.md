@@ -2,6 +2,8 @@
 
 > **Amendment.** Capture behavior in this ADR is updated to align with [ADR-0004](./0004-three-tier-storage-authority.md) (SQLite is the single source of truth). External-editor capture is no longer "deferred to a later slice" — it is dropped as an authoring path. All capture flows through the Client → Core surface into tier-2 SQLite.
 
+> **Forward note.** This ADR's "approve before Core applies" rule was later split by [ADR-0033](./0033-user-initiated-entity-crud-writes-directly.md): Proposals gate **agent-initiated** writes only; a user editing their own Library writes directly. The slice's surface has also grown well past chat-driven CRUD — [ADR-0056](./0056-habit-tracker-model.md) (Habit), [ADR-0059](./0059-media-entity-type.md) (Media), and [ADR-0054](./0054-topic-navigation-browse-axis.md) (topic-navigation browse axis) all postdate this MVP framing.
+
 The first vertical slice is **chat-driven**: the user opens the Web Client, types a message into a Thread, the Worker drives a Run, and Workspace changes the Worker wants to make are surfaced as Proposals the user approves before Core applies them. The Web Client is the only Client surface in the MVP.
 
 ## What's in scope

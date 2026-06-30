@@ -4,8 +4,8 @@ Core's per-Run streaming loop talks to the Worker process through a **`WorkerPor
 
 ## What this means concretely
 
-- **`crates/core/src/worker.rs` becomes a `worker/` module**: `port` (the `WorkerPort` interface), `run` (the generic loop + tool dispatch + parking + terminal handling), `child` (the `ChildWorker` adapter), `mod` (the public `spawn`/`resume` entry points + two manifest builders). The `ScriptedWorker` lives under `#[cfg(test)]`.
-- **The loop returns a typed `Exit`** (`Done` / `Disconnected` / `Errored` / `Parked`) instead of threading three local booleans, so the terminal-state decision is a value a test can assert directly.
+- **`crates/core/src/worker.rs` becomes a `worker/` module**: `port` (the `WorkerPort` interface), `run` (the generic loop + tool dispatch + parking + terminal handling), `child` (the `ChildWorker` adapter), `mod` (the public `spawn`/`resume` entry points + two manifest builders). The `ScriptedWorker` lives under `#[cfg(test)]`. A `title` module also reuses the seam: it drives its own fire-and-forget collector loop over `WorkerPort` / `ChildWorker` (not the shared `run_loop`) to harvest a generated thread title.
+- **The loop returns a typed `Exit`** (`Done` / `Disconnected` / `Errored` / `Parked` / `Cancelled`) instead of threading three local booleans, so the terminal-state decision is a value a test can assert directly.
 - **`run_worker` / `run_resume_worker` are deleted.** Their only real difference was the manifest, so fresh-vs-resume collapses to two manifest builders; both hand the manifest to `ChildWorker` and call the shared `run_loop`.
 - **The loop's logic is unit-testable in-process** against a `:memory:` SQLite pool and a `ScriptedWorker` — no `tsx`, no child process, no timing races. Every branch (text delta, tool round-trip, park, worker error, EOF-without-`done`) is reachable from a scripted frame sequence.
 - **Nothing on the wire changes.** `WorkerStdout`, `ToolResult`, and `WorkerManifest` (ADR-0009 hand-mirrored types) are reused verbatim; the port speaks those existing types, so there is no mapping layer.

@@ -1,6 +1,6 @@
 # Client↔Core wire protocol: a single loopback WebSocket carrying JSON-RPC 2.0
 
-Client ↔ Core is a bidirectional logical session. For the Web MVP, that session is implemented as one persistent **WebSocket** on loopback, carrying **JSON-RPC 2.0** Request / Response / Notification messages. Requests handle reads and mutations (including `run/cancel`). Notifications carry live Run progress, Proposal availability, and lightweight invalidation signals. **Run progress is durable in tier 2 through Message text and the Run Log; wire Run Events are live notifications.** After reconnect, the Client refetches state and resubscribes; active Runs resume through `run/subscribe`'s snapshot-then-tail path.
+Client ↔ Core is a bidirectional logical session. For the Web MVP, that session is implemented as one persistent **WebSocket** on loopback, carrying **JSON-RPC 2.0** Request / Response / Notification messages. Requests handle reads and mutations (including `run/cancel`). Notifications carry live Run progress, Proposal availability, and lightweight invalidation signals. **Run progress is durable in tier 2 through Message text and the Run Log; wire Run Events are live notifications.** After reconnect, the Client refetches state; an active Run resumes through `run/subscribe`'s snapshot-then-tail path.
 
 There is no second transport. Core's HTTP listener also serves the Web Client's static assets on the same TCP port; that is asset hosting, not API, and is covered by [ADR-0015](./0015-web-client-packaging.md).
 
@@ -18,22 +18,21 @@ JSON-RPC 2.0 is a small conventional envelope that fits the shapes Inkstone need
 
 Slash-style names, taking cues from LSP and Zed's ACP. They are not literal ACP/LSP — Inkstone's domain (Threads, Runs, parked Proposals, multi-tab fan-out) does not collapse onto either spec.
 
-- `session/*` — connection lifecycle. `session/hello`, `session/heartbeat`.
-- `thread/*` — Thread CRUD and history. `thread/list`, `thread/create`, `thread/get`, `thread/subscribe_changes`.
-- `run/*` — Runs. `run/post_message` (creates and starts a Run, returns `run_id`), `run/get`, `run/get_history`, `run/cancel`, `run/subscribe`.
-- `proposal/*` — Proposal review. `proposal/get`, `proposal/decide` (accept | reject | edit), `proposal/subscribe`.
-- `entity/*` — Canonical Entity reads and user-initiated writes. `entity/list` (type-parameterized — one Entity Type per call, e.g. `entity/list(type:"todo")` / `entity/list(type:"person")`), `entity/mutate` (user-initiated create/update/delete, applied directly per [ADR-0033](./0033-user-initiated-entity-crud-writes-directly.md)), `entity/subscribe_changes` / `entity/changed` (live invalidation; **deferred** — self-invalidation suffices for single-user, ADR-0033), etc., shaped per the schema ADR.
+- `thread/*` — Thread CRUD, history, and archive lifecycle. `thread/list`, `thread/list_archived`, `thread/create`, `thread/get`, `thread/rename`, `thread/archive`, `thread/unarchive`.
+- `run/*` — Runs. `run/post_message` (creates and starts a Run, returns `run_id`), `run/get_history`, `run/cancel`, `run/retry`, `run/subscribe`.
+- `proposal/*` — Proposal review. `proposal/get`, `proposal/decide` (accept | reject | edit).
+- `entity/*` — Canonical Entity reads and user-initiated writes. `entity/list` (type-parameterized — one Entity Type per call, e.g. `entity/list(type:"todo")` / `entity/list(type:"person")`), `entity/backlinks`, `entity/mutate` (user-initiated create/update/delete, applied directly per [ADR-0033](./0033-user-initiated-entity-crud-writes-directly.md)), shaped per the schema ADR. There is no `entity/changed` Notification and no per-resource subscribe method: self-invalidation after a Client's own `entity/mutate` suffices for single-user (ADR-0033).
 - `provider/*` — LLM-provider credential connection. `provider/status` (which providers are connected), `provider/login_start` (begin an OAuth login, returns the authorize URL). Added by [ADR-0023](./0023-provider-oauth-core-owned-credentials.md); see the as-built amendment below. Named `provider/*`, not `auth/*`, because [ADR-0007](./0007-local-first-single-user.md) reserves "auth" for the (absent) human-auth concern.
 
-Subscribe verbs are typed and per-resource — there is no generic `session/subscribe` with topic strings. The set of subscribe methods is small and obvious; adding one when the slice needs it is cheaper than registering topics.
+The only typed subscribe verb is `run/subscribe`, scoped to a single active Run's stream — there is no generic `session/subscribe` with topic strings. Every other live signal rides a socket-wide Notification (see below) that the Client treats as a refetch hint. Adding a subscribe method when a slice needs one is cheaper than registering topics.
 
 ## Server-pushed Notifications
 
 Categories Core sends without a Client request:
 
 - **Run Events** — `run/event` notifications carrying `{run_id, event}`. Subtypes per CONTEXT.md: `text_delta`, `tool_call`, `done`, `cancelled`, `error`. One stream per Run, identified by `run_id`. The durable Run Log has a monotonic `run_seq` per Run; the live wire event does not expose it today.
-- **Proposal pending** — `proposal/pending` Notification when a Run parks on a Proposal awaiting decision.
-- **Mutation events** — `entity/changed`, `thread/changed`, `proposal/changed`. One Notification per Core-side mutation, not coalesced. The Client uses these to invalidate cached views; tab B sees tab A's edits without polling. **These Notifications are live-only and not persisted.** A Client that misses one because it was disconnected refetches state on reconnect; it does not replay missed invalidation hints.
+- **Proposal pending / changed** — `proposal/pending` when a Run parks on a Proposal awaiting decision; `proposal/changed` when a pending Proposal is decided or otherwise mutated (ADR-0025).
+- **Mutation events** — `thread/titled` (a Run named a Thread), `provider/connected` ([ADR-0049](./0049-provider-connected-notification.md)), and the proposal Notifications above. One Notification per Core-side mutation, not coalesced. The Client uses these to invalidate cached views; tab B sees tab A's edits without polling. **These Notifications are live-only and not persisted.** A Client that misses one because it was disconnected refetches state on reconnect; it does not replay missed invalidation hints.
 
 The `request_id` of the Request that *initiated* a stream is not reused as the stream identifier. Streams are identified by their domain id (`run_id`, `proposal_id`). This decouples stream lifetime from the Request that opened it.
 
@@ -42,40 +41,33 @@ The `request_id` of the Request that *initiated* a stream is not reused as the s
 - **Run history + Run Log**: durable in tier 2 (per [ADR-0012](./0012-run-lifecycle-ownership.md) and [ADR-0028](./0028-run-status-materialized-transitions.md)). The live `run/event` Notification is not itself the durable record; `run/subscribe` reconstitutes active-Run text from persisted Message text, and `run/get_history` remains deferred until a consumer needs durable coarse-event replay.
 - **Proposal state**: durable in tier 2.
 - **Thread / Run / Entity state**: durable in tier 2.
-- **Invalidation Notifications** (`entity/changed`, `thread/changed`, `proposal/changed`): live-only. Not persisted. The Client treats them as "refetch this view" hints, nothing more.
+- **Invalidation Notifications** (`proposal/pending`, `proposal/changed`, `thread/titled`, `provider/connected`): live-only. Not persisted. The Client treats them as "refetch this view" hints, nothing more.
 
 The wire does **not** commit Inkstone to a workspace-wide event log. If a future Workflow needs durable, resumable replay of mutation events, that is the right time to introduce a change feed — not now.
 
 ## Subscriptions
 
-A Client opens a stream with the relevant typed subscribe method:
+A Client opens a Run stream with the one typed subscribe method:
 
 - `run/subscribe(run_id, since_run_seq?)` — live Run-Event stream. The `since_run_seq` is optional and only useful for resuming an active Run's stream after a reconnect; for a Run that has already completed, prefer `run/get_history`. **MVP note:** [ADR-0022](./0022-run-event-delivery-hub-snapshot-tail.md) implements `run/subscribe` as *snapshot-then-tail* (Core emits the current persisted assistant text as a snapshot, then the live tail). The `since_run_seq` cursor and `run/get_history` are deferred under that ADR — the snapshot covers the only active-Run resume case the MVP exercises.
-- `thread/subscribe_changes()` — live `thread/changed` Notifications.
-- `entity/subscribe_changes()` — live `entity/changed` Notifications.
-- `proposal/subscribe()` — live `proposal/pending` and `proposal/changed` Notifications.
 
-Each subscription is independent. Closing the WebSocket cancels them all; reconnect requires re-subscribing.
+Every other live signal — `proposal/pending`, `proposal/changed`, `thread/titled` — rides a socket-wide Notification with no per-resource subscribe method; the Client handles whichever ones it cares about. Closing the WebSocket ends the Run stream and silences the Notifications; the reconnect path (below) re-attaches.
 
 ## Reconnect
 
 After a WebSocket drop, the Client:
 
-1. Opens a new WebSocket.
-2. Sends `session/hello` with `protocol_version` and a `client_id`.
-3. Refetches relevant state via normal queries (`thread/list`, `thread/get` for the open Thread, `entity/list` per Entity Type, `proposal/get` for the pending Proposal if any).
-4. Resubscribes to live updates.
-5. **For an active Run**, calls `run/get_history(run_id, since_run_seq)` to fetch any Run Events emitted while disconnected, then `run/subscribe(run_id)` to resume the live stream.
+1. Reconnects the socket. The `WsClient` transport Layer does this on its own with an exponential-then-fixed retry ramp ([ADR-0051](./0051-connection-liveness-signal.md)); the application code does not hand-roll a reconnect.
+2. Refetches relevant state via normal queries (`thread/list`, `thread/get` for the open Thread, `entity/list` per Entity Type, `proposal/get` for the pending Proposal if any).
+3. **For an active Run**, calls `run/subscribe(run_id)` to resume the live stream.
 
-> **MVP amendment ([ADR-0022](./0022-run-event-delivery-hub-snapshot-tail.md)).** Step 5 is implemented as a single `run/subscribe(run_id)` call: Core replies with a *snapshot* of the Run's current persisted assistant text, then streams the live tail from a per-run hub. The separate `run/get_history` + `since_run_seq` call is deferred until a consumer needs durable coarse-event replay. The reloaded Client therefore resyncs an active Run through the same subscribe path as a fresh one.
+> **MVP amendment ([ADR-0022](./0022-run-event-delivery-hub-snapshot-tail.md)).** Step 3 is a single `run/subscribe(run_id)` call: Core replies with a *snapshot* of the Run's current persisted assistant text, then streams the live tail from a per-run hub. A separate `run/get_history` + `since_run_seq` catch-up call is deferred until a consumer needs durable coarse-event replay. The reloaded Client therefore resyncs an active Run through the same subscribe path as a fresh one.
 
 There is no workspace-global replay cursor. The only "since cursor" in the protocol is the per-Run `run_seq`, scoped to a single active Run's stream — and even that is just a small ordering tool for the active-Run case.
 
-## Heartbeat
+## Liveness
 
-The Client sends a `session/heartbeat` Request on a documented interval (e.g. 30s). A missed Response is the trigger to close and reconnect — WebSocket-level ping/pong is unreliable across laptop sleep/wake, where the OS keeps the TCP connection but the peer is silently dead. Detecting this earlier than "the next user-initiated action takes 30+ seconds and times out" matters for UX.
-
-Heartbeat is **client-initiated only**. Core notices a dead Client when its next attempted send fails; it does not need to ping. Heartbeat frames are logged at `trace`/`debug` level, not `info`, so a healthy connection produces no operational noise.
+There is no application-level heartbeat. Socket liveness is derived purely from the transport Layer's own connect / reconnect / disconnect lifecycle ([ADR-0051](./0051-connection-liveness-signal.md)): the Layer exposes a `connected | reconnecting | disconnected` signal and reconnects unboundedly when the link drops. A dead Client is noticed by Core when its next attempted send fails; neither side pings.
 
 ## Error model
 
@@ -102,18 +94,9 @@ Cancellation is a first-class terminal Run Event, not an `error` with a cancella
 
 If the Worker already streamed assistant text before cancellation wins, Core keeps that partial text in the Thread and marks the assistant Message `incomplete`, not `completed`. The terminal Run Event is still `cancelled`; Clients render the partial text as an unfinished cancelled response rather than deleting it or treating it as a clean answer.
 
-## `session/hello` is the version handshake
+## Version handshake
 
-The first message a Client sends after the WebSocket opens is `session/hello`:
-
-```json
-{ "jsonrpc": "2.0", "id": 1, "method": "session/hello",
-  "params": { "client_id": "...", "protocol_version": "1" } }
-```
-
-Core replies with `{ "protocol_version": "1", "server_info": {...} }`. If the protocol versions are incompatible, Core returns a `protocol_version_mismatch` error in the Response and **keeps the connection open** but refuses to service any other methods. The Client surfaces "please refresh" to the user. Closing on the wrong hello forces a reconnect loop with no user-visible signal of what's wrong.
-
-There is no `schema_hash` in the MVP. In production the SPA is embedded in the Core binary (see [ADR-0015](./0015-web-client-packaging.md)) so version mismatch is impossible by construction; in dev, `protocol_version` alone is sufficient. Re-add a runtime fingerprint later if dev drift turns out to be painful in practice.
+There is no version-handshake message in the MVP. A Client opens the WebSocket and starts issuing methods directly — no `session/hello`, no `protocol_version` exchange, no `schema_hash`. In production the SPA is embedded in the Core binary (see [ADR-0015](./0015-web-client-packaging.md)) so version mismatch is impossible by construction; in dev, Client and Core build from the same `packages/protocol` source. Re-add an explicit handshake and a `protocol_version_mismatch` error if dev drift turns out to be painful in practice.
 
 ## What this ADR does *not* decide
 
@@ -131,19 +114,18 @@ There is no `schema_hash` in the MVP. In production the SPA is embedded in the C
 - **Multi-channel sockets (Jupyter ZMQ pattern)** — solves multi-frontend priority routing problems Inkstone doesn't have.
 - **Bespoke envelope (`{request_id, op, args}` / `{event_type, payload}`)** — reinvents JSON-RPC 2.0 with less spec, fewer libraries, custom error model. Rejected.
 - **Workspace-global event log with sequence cursor and permanent retention.** Tempting symmetry, but creates a durable application event log with no concrete need driving it. Per-Run event sequence numbers are sufficient for the only resumable case (an active Run's stream). Mutation events are live-only invalidation hints. Rejected; revisit if a Workflow needs durable change-feed replay.
-- **Generic `session/subscribe(topic)` with topic strings.** Concrete per-resource subscribe verbs (`run/subscribe`, `entity/subscribe_changes`, etc.) are smaller, typed, and avoid a topic-registry concept. Rejected.
-- **Bilateral heartbeat** (both sides ping). The motivating case (laptop sleep silently zombying the WebSocket) is a Client-side problem; Core notices a dead Client when its next send fails. Client-initiated heartbeat alone covers the gap. Rejected.
+- **Generic `session/subscribe(topic)` with topic strings.** A concrete typed verb (`run/subscribe`) plus socket-wide Notifications for the rest are smaller, typed, and avoid a topic-registry concept. Rejected.
+- **Application-level heartbeat** (a `session/heartbeat` Request on an interval). The motivating case (laptop sleep silently zombying the WebSocket) is handled at the transport layer instead: the `WsClient` Layer's own reconnect detects and re-establishes a dead link ([ADR-0051](./0051-connection-liveness-signal.md)), and Core notices a dead Client when its next send fails. A bespoke heartbeat frame on top earns nothing. Rejected.
 - **Fire-and-forget `run/cancel`.** Saves one frame per cancel but loses the ability to distinguish `accepted` vs `already_terminal` vs `unknown_run`. Rejected.
-- **`schema_hash` runtime fingerprint.** Premature for MVP; production embeds the SPA in Core; dev drift is rare and recoverable. Rejected for now.
+- **`session/hello` version handshake / `schema_hash` runtime fingerprint.** Premature for MVP; production embeds the SPA in Core and dev builds Client and Core from one `packages/protocol` source, so drift is rare and recoverable. Rejected for now.
 
 ## As-built amendment: `provider/*` methods (ADR-0023)
 
-[ADR-0023](./0023-provider-oauth-core-owned-credentials.md) adds LLM-provider credential connection to the client surface. The namespace is `provider/*` (not `auth/*`) because [ADR-0007](./0007-local-first-single-user.md) reserves "auth" for the human-auth concern Inkstone deliberately does not have. Two request/response methods, no new Notification:
+[ADR-0023](./0023-provider-oauth-core-owned-credentials.md) adds LLM-provider credential connection to the client surface. The namespace is `provider/*` (not `auth/*`) because [ADR-0007](./0007-local-first-single-user.md) reserves "auth" for the human-auth concern Inkstone deliberately does not have. Two request/response methods plus one Notification:
 
 - **`provider/status`** → `{ providers: [{ id, connected }] }`. Reports which providers have stored credentials. Called by the settings view on mount and on window focus.
-- **`provider/login_start`** `{ provider }` → `{ authorize_url }`. Core spawns the Provider Helper, which runs the OAuth `:1455` loopback and prints the authorize URL; Core relays it. The Client opens the URL in a **new tab**; the helper's loopback handles the OpenAI callback and writes credentials via Core, then serves its own success page. The settings tab (still alive) re-queries `provider/status` on focus to flip to connected.
-
-A live `provider/changed` Notification was considered and **deferred**: the new-tab flow leaves the settings tab alive, so focus-driven `provider/status` re-query is sufficient for the scrappy first cut. A push notification earns its keep only if connection state must update with no user action; revisit then.
+- **`provider/login_start`** `{ provider }` → `{ authorize_url }`. Core spawns the Provider Helper, which runs the OAuth `:1455` loopback and prints the authorize URL; Core relays it. The Client opens the URL in a **new tab**; the helper's loopback handles the OpenAI callback and writes credentials via Core, then serves its own success page.
+- **`provider/connected`** `{ provider }` Notification ([ADR-0049](./0049-provider-connected-notification.md)). When Core's detached credential-drain task persists the rotated OAuth credentials, it frames this onto the originating connection so the Settings → Models card flips to Connected live, without waiting for the settings tab to regain focus. A focus-driven `provider/status` re-query remains the fallback path.
 
 ## Related
 - [ADR-0002](./0002-clients-talk-only-to-core.md) — Clients only reach Core.
@@ -155,3 +137,5 @@ A live `provider/changed` Notification was considered and **deferred**: the new-
 - [ADR-0015](./0015-web-client-packaging.md) — how the SPA reaches the browser in dev vs prod.
 - [ADR-0022](./0022-run-event-delivery-hub-snapshot-tail.md) — amends this ADR's reconnect flow: `run/subscribe` is snapshot-then-tail over a per-run hub; `run/get_history` deferred.
 - [ADR-0023](./0023-provider-oauth-core-owned-credentials.md) — adds the `provider/*` methods amended above.
+- [ADR-0049](./0049-provider-connected-notification.md) — adds the `provider/connected` Notification.
+- [ADR-0051](./0051-connection-liveness-signal.md) — transport-layer reconnect + the `connected | reconnecting | disconnected` liveness signal that replaces an application heartbeat.

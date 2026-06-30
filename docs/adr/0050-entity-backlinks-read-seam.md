@@ -67,7 +67,7 @@ EntityBacklinksResult {
   first; `linked_todos` is newest-first.
 - **Which kinds.** Only Person, Project, and Todo are `entity_ref` targets (the
   schema CHECK), so only those three fire the read. Journal Entry is the *source*
-  of mentions (it keeps its body + ref-chips); Bookmark is a read-only leaf.
+  of mentions (it keeps its body + ref-chips); Media (ADR-0059) is a read-only leaf.
 - **Footer narrowing.** The Inspector's "Captured from" footer drops its
   `journal_entry`-source branch (the legacy JE-anchored create's origin link — its
   relationship now surfaces canonically under "Mentioned in"). It keeps the

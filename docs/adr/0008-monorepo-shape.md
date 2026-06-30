@@ -6,6 +6,7 @@ Inkstone is a single repository combining a Rust Cargo workspace and a pnpm work
 apps/web/             React Web Client
 crates/core/          Core daemon (Rust)
 packages/protocol/    Shared protocol definitions (TypeScript side)
+packages/provider-helper/ Provider-helper subprocess (TypeScript)
 packages/ui-sdk/      Client-to-Core wrapper consumed by Clients
 packages/worker/      Worker (TypeScript)
 tests/                Test area: end-to-end harness (tests/e2e) + cross-language contract tests (tests/contract)

@@ -182,7 +182,7 @@ describe("Sidebar", () => {
 
 		await user.click(first);
 
-		// Thread focus is the URL (ADR-0042): the row asks its parent to navigate.
+		// Thread focus is the URL (ADR-0061): the row asks its parent to navigate.
 		expect(onOpenThread).toHaveBeenCalledWith("t-1");
 
 		await runtime.dispose();

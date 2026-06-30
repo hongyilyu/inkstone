@@ -70,8 +70,8 @@ column, no migration, no new tier-2 table. Consequences:
 
 Validation lives in Core's `entities::validate` (the single runtime authority;
 the schemars structs only *describe* the tool schema, they do not validate the
-opaque payload). A new `validate_recurrence` mirrors `validate_review_every`:
-it rejects unknown fields and enforces these invariants.
+opaque payload). A `validate_recurrence` hook (driven by `recurrence_spec()`, like
+`review_every_spec()`) rejects unknown fields and enforces these invariants.
 
 - `interval` is an integer `>= 1`; `unit` is one of the six units.
 - `anchor` ∈ {defer_at, due_at}.

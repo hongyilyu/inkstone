@@ -10,7 +10,7 @@ This ADR adds a **shippable launch form**: each program compiles to a single sel
 - **ADR-0023:** the Provider Helper is a stateless OAuth process Core spawns (`login` / `refresh`); Core owns the Credential Store; the helper hands its result back on stdout.
 - **ADR-0040:** the Provider Helper lives in its **own package** so each package "owns exactly one thing." It explicitly left **production cwd / packaging** out of scope, noting: *"if [a packaging layer] is added, it sets the env overrides to absolute paths (the seam already supports this)."*
 - **ADR-0027:** scopes the Worker interpreter's "sole stdio site" to the Worker and excludes the helper as a separate binary.
-- Three spawn sites build a command today, each `env::var(...).unwrap_or_else(<relative tsx string>)` then **whitespace-split**: `worker/mod.rs` (`INKSTONE_WORKER_CMD`), `runs/provider.rs` (`INKSTONE_PROVIDER_LOGIN_CMD`), `provider_auth.rs` (`INKSTONE_PROVIDER_HELPER_CMD`). The whitespace split mis-parses any path containing a space.
+- Spawn sites build a command today, each `env::var(...).unwrap_or_else(<relative tsx string>)` then **whitespace-split**: `worker/mod.rs` (`INKSTONE_WORKER_CMD`), `runs/provider.rs` (`INKSTONE_PROVIDER_LOGIN_CMD`), `provider_auth.rs` (`INKSTONE_PROVIDER_HELPER_CMD`), plus the one-shot title worker (`INKSTONE_TITLE_WORKER_CMD`, the same program as the Worker). The whitespace split mis-parses any path containing a space.
 - A feasibility spike compiled all entry points with `bun build --compile` (`bun` 1.3.13) and ran them: the node-builtins fixture, the full interpreter tree (2491 modules: `pi-agent-core` + `effect` + `pi-ai`) driving a run offline, `provider.ts login` binding `:1455` and emitting a real PKCE `authorize_url`, and the real Core spawning a compiled binary and driving a run to completion. No native addons in the tree; the production entries read no sibling files at runtime.
 
 ## Decision
@@ -19,7 +19,7 @@ This ADR adds a **shippable launch form**: each program compiles to a single sel
 
 2. **`bun build --compile` is the compiler.** The spike proved it runs the full `pi-ai` / `pi-agent-core` / `effect` tree, raw sockets (`:1455`), and PKCE/TLS init under the compiled runtime. `deno compile` and Node SEA are viable fallbacks but were not needed; `bun` cleared every level on the first try. This commits the repo to `bun` as a **build-time** tool (added to CI); it is not a runtime dependency of Core or of a shipped binary.
 
-3. **Core resolves the launch form through one ordered policy**, applied per role (worker / provider-login / provider-refresh):
+3. **Core resolves the launch form through one ordered policy**, applied per role (worker / titler / provider-login / provider-refresh — the titler runs the same program and `inkstone-worker` binary as the worker, with its own `INKSTONE_TITLE_WORKER_CMD` override so it stays independently injectable):
    1. **`INKSTONE_*_CMD` env override set** → use it, parsed with **`shlex`** (not whitespace-split, fixing the space-in-path bug). This is the **test seam** — every integration/e2e test points it at a `.ts` fixture via `tsx` — and the power-user / explicit-packaging escape hatch. It **always wins**.
    2. **else** → the **real program**: if a sibling executable (`inkstone-worker` / `inkstone-provider-helper`) exists next to Core's own executable (`current_exe`'s directory), spawn it.
    3. **else** → `tsx <script>` from the repo-root-relative source path (the dev-from-source form).

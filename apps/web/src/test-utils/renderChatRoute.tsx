@@ -14,7 +14,7 @@ import { RuntimeProvider } from "@/runtime";
 import { makeQueryClient } from "./renderWithQuery";
 
 /**
- * Mount a router-aware chat component (ADR-0042) in an ad-hoc memory router with
+ * Mount a router-aware chat component (ADR-0061) in an ad-hoc memory router with
  * the two real chat paths — `/` (no `threadId`) and `/thread/$threadId` — both
  * rendering `element`. This gives the component its `useParams`/`useNavigate`
  * context in isolation, without the `_chat` layout's Sidebar/RunFeed siblings

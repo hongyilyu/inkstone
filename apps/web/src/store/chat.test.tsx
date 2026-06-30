@@ -99,7 +99,7 @@ describe("chat store + stream bridge", () => {
 		const runtime = makeStubRuntime(queue, "run-A");
 
 		// Run lives in the bridge's fiber map, not tied to focus (which is the URL
-		// now, ADR-0042): the stream settles regardless of any navigation.
+		// now, ADR-0061): the stream settles regardless of any navigation.
 		await send(runtime, "threadA", "hi");
 
 		Queue.unsafeOffer(queue, { kind: "text_delta", delta: "part1" });
@@ -433,7 +433,7 @@ describe("chat store + stream bridge", () => {
 });
 
 // The scroll-to-message anchor (issue #138) is now URL search-param state
-// (`?focusedMessageId=`, ADR-0042), not a store field — its behavior is proven in
+// (`?focusedMessageId=`, ADR-0061), not a store field — its behavior is proven in
 // ChatColumn.test.tsx (scroll + highlight + consume-then-strip) and the
 // scroll-to-message e2e, not here.
 

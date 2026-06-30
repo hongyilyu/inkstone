@@ -6,6 +6,8 @@ This ADR pins the canonical SQLite schema (tier 2 per [ADR-0004](./0004-three-ti
 
 Eleven tables, all tier-2. All primary keys are **UUIDv7** (time-ordered; `ORDER BY id` yields chronological iteration without a separate index).
 
+**As-built (see migration `crates/core/migrations/0001_initial.sql`):** the live schema has grown past these eleven, but the later tables are each owned by their own ADR, not this one — `observations`/`observation_revisions`/`observation_sources` ([ADR-0053](./0053-observation-records.md)), `media`/`media_attachments` ([ADR-0058](./0058-media-attachment-substrate.md)), `entity_sources`/`entity_refs`, `todo_person_refs`, and `settings` ([ADR-0024](./0024-user-configurable-model-and-effort.md)). The inline amendments below track only how the slice-1 tables themselves drifted.
+
 ```sql
 -- Threads --------------------------------------------------------------
 CREATE TABLE threads (
@@ -23,11 +25,15 @@ CREATE TABLE runs (
   workflow_version         TEXT NOT NULL,
   provider                 TEXT NOT NULL,             -- LLM provider snapshotted at Run start
   model                    TEXT NOT NULL,             -- specific model id snapshotted at Run start
+  -- Amended (ADR-0024): runs.thinking_level TEXT NOT NULL — resolved effort
+  -- snapshotted at Run start; resume reads this, not live settings.
   user_message_id          TEXT NOT NULL REFERENCES messages(id) DEFERRABLE INITIALLY DEFERRED,
   idempotency_key          TEXT UNIQUE,
   awaiting_tool_call_id    TEXT REFERENCES tool_calls(id),  -- waitpoint when status='parked'
+  -- Amended: the start state is 'running', not 'pending' — a Run is live the
+  -- moment it is created, so 'pending' was dropped from the CHECK.
   status                   TEXT NOT NULL CHECK (status IN
-                            ('pending','running','parked','completed','errored','cancelled')),
+                            ('running','parked','completed','errored','cancelled')),
   terminal_reason          TEXT CHECK (terminal_reason IS NULL OR terminal_reason IN
                             ('completed','cancelled','worker_disconnected','core_restarted','errored')),
   error_code               TEXT,                      -- enumerated wire error per ADR-0014, NULL unless status='errored'
@@ -36,7 +42,7 @@ CREATE TABLE runs (
   ended_at                 INTEGER
 );
 CREATE INDEX idx_runs_thread_started ON runs(thread_id, started_at);
-CREATE INDEX idx_runs_status         ON runs(status) WHERE status IN ('pending','running','parked');
+CREATE INDEX idx_runs_status         ON runs(status) WHERE status IN ('running','parked');  -- Amended: no 'pending' start state
 
 -- Messages and parts ---------------------------------------------------
 CREATE TABLE messages (
@@ -54,8 +60,10 @@ CREATE INDEX idx_messages_run            ON messages(run_id);
 CREATE TABLE message_parts (
   message_id  TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
   seq         INTEGER NOT NULL,
-  type        TEXT NOT NULL CHECK (type IN ('text','attachment')),
-  text        TEXT NOT NULL DEFAULT '',           -- mutated during streaming for text parts (UPSERT)
+  -- Amended: a 'reasoning' part type was added — model reasoning streams into
+  -- its own part via the same UPSERT path as 'text'.
+  type        TEXT NOT NULL CHECK (type IN ('text','attachment','reasoning')),
+  text        TEXT NOT NULL DEFAULT '',           -- mutated during streaming for text/reasoning parts (UPSERT)
   data        TEXT,                                -- JSON sidecar (attachment metadata, …)
   PRIMARY KEY (message_id, seq)
 );
@@ -77,17 +85,25 @@ CREATE INDEX idx_tool_calls_run ON tool_calls(run_id);
 
 -- run_steps interleaves messages and tool_calls in chronological order
 -- per Run, so the timeline is one ordered query.
+-- Amended (ADR-0045): a `message` step gains `part_seq` and resolves to a
+-- SPECIFIC text part via the composite FK `(message_id, part_seq) REFERENCES
+-- message_parts(message_id, seq)`, not just the message — each contiguous run
+-- of assistant text is its own part + step, so post-tool text sequences after
+-- the tool. The CHECK requires `part_seq` non-NULL for message steps, NULL for
+-- tool_call steps.
 CREATE TABLE run_steps (
   run_id         TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
   seq            INTEGER NOT NULL,
   kind           TEXT NOT NULL CHECK (kind IN ('message','tool_call')),
   message_id     TEXT REFERENCES messages(id),
+  part_seq       INTEGER,                          -- (ADR-0045) the message_parts.seq this step resolves to (kind='message')
   tool_call_id   TEXT REFERENCES tool_calls(id),
   created_at     INTEGER NOT NULL,
   PRIMARY KEY (run_id, seq),
+  FOREIGN KEY (message_id, part_seq) REFERENCES message_parts(message_id, seq),
   CHECK (
-    (kind = 'message'   AND message_id   IS NOT NULL AND tool_call_id IS NULL) OR
-    (kind = 'tool_call' AND tool_call_id IS NOT NULL AND message_id   IS NULL)
+    (kind = 'message'   AND message_id   IS NOT NULL AND part_seq IS NOT NULL AND tool_call_id IS NULL) OR
+    (kind = 'tool_call' AND tool_call_id IS NOT NULL AND part_seq IS NULL     AND message_id   IS NULL)
   )
 );
 

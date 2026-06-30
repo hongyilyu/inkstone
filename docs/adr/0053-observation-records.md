@@ -10,10 +10,11 @@ Add **Observation** as a second tier-2 content family alongside Canonical
 Entities.
 
 Canonical Entities remain the closed, compile-checked noun set: Journal Entry,
-Person, Project, Todo, Bookmark, and rare future identity-bearing objects such
-as a Habit definition. Observations are timestamped tracker facts validated by a
-Core-owned schema registry: `bodyweight`, `nutrition.intake`,
-`exercise.session`, `habit.checkin`, and similar streams.
+Person, Project, Todo, Media, and identity-bearing objects such as a Habit
+definition. Observations are timestamped tracker facts validated by a
+Core-owned schema registry: today `bodyweight`, `nutrition.intake`, and
+`habit.checkin` are registered; streams like `exercise.session` are
+illustrative of the intended shape, not yet implemented.
 
 Observation records use their own storage and client/Core verbs rather than
 being rows in `entities`:
@@ -34,8 +35,8 @@ being rows in `entities`:
   kind, not one proposal kind per tracker stream.
 
 The first proving slice is `bodyweight`: relation-free, decimal-valued, and
-queryable by schema/time. Correction starts as delete-and-re-record; update
-history waits for a real edit surface.
+queryable by schema/time. Correction is now a real edit surface: `observation/update` revises in place
+and appends to `observation_revisions`, read back via `observation/get_history`.
 
 ## Why separate from `entities`
 

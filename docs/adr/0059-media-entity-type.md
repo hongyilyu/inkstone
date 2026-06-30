@@ -1,8 +1,8 @@
 # Media: a queue+log Entity Type, replacing Bookmark
 
-/ supersedes [ADR-0036 (bookmark-entity-type)](./0036-bookmark-entity-type.md)
+/ supersedes [ADR-0060 (bookmark-entity-type)](./0060-bookmark-entity-type.md)
 
-Bookmark (ADR-0036) is `{title, url?, note?, tags?}` — an outward-pointing thing
+Bookmark (ADR-0060) is `{title, url?, note?, tags?}` — an outward-pointing thing
 the user saved, with **no lifecycle**. The topic-navigation work (ADR-0054)
 gives the Library a curated **Media** topic, but Core has no `media` type, and a
 bookmark — a flat saved link — has no honest home in a "read/watch queue." Rather
@@ -34,7 +34,7 @@ to preserve, so Bookmark is removed outright rather than bridged.
   - `finished_at` — optional clearable local datetime (`YYYY-MM-DDTHH:MM:SS`),
     the log timestamp.
   - `url`, `note` — optional clearable strings (no URL-format validation — Core
-    stores, it does not parse, per ADR-0036/0031).
+    stores, it does not parse, per ADR-0060/0031).
   - `tags` — optional clearable non-empty-string array.
 
   Allow-listed keys; any other field rejected. `url`/`note`/`tags`/`rating`/
@@ -52,7 +52,7 @@ to preserve, so Bookmark is removed outright rather than bridged.
   partial-merge): the editor sends the complete `data`; Core validates and
   replaces.
 
-- **User-CRUD-only**, inheriting Bookmark's stance verbatim (ADR-0036): Media
+- **User-CRUD-only**, inheriting Bookmark's stance verbatim (ADR-0060): Media
   lives in `entities::validate` + the `entity/mutate` path, is **absent from the
   agent's `propose_workspace_mutation` and `search_entities`**, and the three
   `MutationKind::{Create,Update,Delete}Media` kinds stay in the

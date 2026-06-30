@@ -201,7 +201,7 @@ describe("CommandPalette (⌘K)", () => {
 			within(results).getByText("Send Alice the updated daycare schedule"),
 		).toBeInTheDocument();
 
-		// Activating a message hit navigates to that Thread's route (ADR-0042) and
+		// Activating a message hit navigates to that Thread's route (ADR-0061) and
 		// deep-links the within-thread scroll anchor in the search param — the ONE
 		// thing that distinguishes a message hit from a plain thread hit (the thread
 		// branch carries no search). Assert both so dropping the anchor regresses.

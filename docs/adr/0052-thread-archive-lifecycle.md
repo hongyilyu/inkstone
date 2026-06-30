@@ -22,7 +22,7 @@ affordance.
 
 **Why archive, not delete.** Entities have no `thread_id`, but
 `entity_sources.source_message_id` cascades off `messages`
-(`ON DELETE CASCADE`, [migration `0001_initial.sql:150-163`](../../crates/core/migrations/0001_initial.sql)).
+(`ON DELETE CASCADE`, [migration `0001_initial.sql:162-176`](../../crates/core/migrations/0001_initial.sql)).
 Hard-deleting a Thread that sourced surviving Entities would cascade away the
 Message its "Captured from" provenance ([ADR-0030](./0030-journal-entry-anchored-capture.md))
 points at, dangling the link. Archiving keeps the Thread (and its messages, runs,
@@ -90,7 +90,7 @@ combinator ([ADR-0029](./0029-request-handler-seam.md)), which already owns the
   idiom.
 
 - **Archiving the focused Thread reselects to the welcome route.** The focused
-  Thread *is* the route `/thread/$threadId` ([ADR-0042](./0042-url-addressable-threads.md)),
+  Thread *is* the route `/thread/$threadId` ([ADR-0061](./0061-url-addressable-threads.md)),
   so archiving the current Thread would strand the owner on a row that just left
   the sidebar. The archive mutation's `onSuccess` reads the focused `threadId`
   from the router and, iff it matches the archived id, navigates to `/` (the
@@ -99,10 +99,11 @@ combinator ([ADR-0029](./0029-request-handler-seam.md)), which already owns the
   multi-window; inkstone is single-window — a direct navigate is enough).
 
 - **The Archived view lives in the `_chat` shell, reached from a sidebar nav row.**
-  Archived *Threads* are not Library *entities* (Todos/JEs/People), so the
-  Archived view is a route under the `_chat` shell (alongside `/thread/$id`), not
-  under the Library shell. An "Archived" nav row in the chat Sidebar (near
-  Library/Search) is the entry point.
+  Archived *Threads* are not entities (Todos/JEs/People), so the Archived view is
+  its own `/archived` route under the `_chat` shell (alongside `/thread/$id`). An
+  "Archived" nav row in the chat Sidebar is the entry point: `_chat.tsx` wires the
+  Sidebar's `onOpenArchived` to `navigate({ to: "/archived" })`
+  ([`apps/web/src/routes/_chat.tsx`](../../apps/web/src/routes/_chat.tsx)).
 
 - **Scope is the sidebar Thread list only.** Archiving hides a Thread from the
   default sidebar list. It does **not** filter the Thread's Runs out of the
@@ -152,7 +153,7 @@ combinator ([ADR-0029](./0029-request-handler-seam.md)), which already owns the
   `ThreadMutateResult` join the non-payload struct registry).
 - [ADR-0029](./0029-request-handler-seam.md) — the request-handler combinator and
   its `UnknownThread` → `-32001` mapping the mutating verbs reuse.
-- [ADR-0042](./0042-url-addressable-threads.md) — the focused Thread is the route;
+- [ADR-0061](./0061-url-addressable-threads.md) — the focused Thread is the route;
   why archiving the focused Thread must reselect.
 - [ADR-0030](./0030-journal-entry-anchored-capture.md) — "Captured from"
   provenance; the cascade archive is designed to preserve.

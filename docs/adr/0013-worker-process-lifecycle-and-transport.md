@@ -55,3 +55,5 @@ The cost is that you cannot easily attach a separately running Worker to Core fo
 - [ADR-0012](./0012-run-lifecycle-ownership.md) — Run state owned by Core. Per-Run ephemeral Workers depend on this; this ADR refines the "Worker dies" cases.
 - [ADR-0022](./0022-run-event-delivery-hub-snapshot-tail.md) — where a Worker's emitted Run Events land: a per-run hub owned by Core, not the connection that started the Run.
 - [ADR-0025](./0025-proposal-park-and-resume.md) — makes the park / tear-down / respawn path concrete; `runAgentLoopContinue` is the resume entry point, and park is a third Worker exit distinct from `done` and disconnect.
+- [ADR-0026](./0026-worker-transport-seam.md) — puts Core's end of this stdio pipe behind a `WorkerPort` seam; the run loop (`run_loop`) is generic over the port, with the subprocess-stdio transport this ADR pins becoming the production `ChildWorker` adapter.
+- [ADR-0027](./0027-worker-interpreter-transport-seam.md) — the Worker-side mirror: the interpreter depends on a `WorkerTransport` service, moving the Worker's end of the stdio pipe behind a seam.

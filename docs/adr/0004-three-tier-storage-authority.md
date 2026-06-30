@@ -2,12 +2,12 @@
 
 > **Note on filename.** The slug is historical. Inkstone has **two** tiers; the file is kept at `0004-three-tier-storage-authority.md` to preserve inbound ADR links.
 
-Inkstone has two persistence tiers, both in SQLite. Tier 2 is authoritative for everything Core durably owns — content **and** application state. Tier 3 is derived: re-derivable indexes and views, authoritative for nothing.
+Inkstone has two persistence tiers, both in SQLite. Tier 2 is authoritative for everything Core durably owns — content **and** application state. Tier 3 is derived: re-derivable indexes and views, authoritative for nothing. In practice the schema today is effectively single-tier — every table is canonical (tier 2), and tier 3 holds nothing yet; it is a reserved category for when a derived store earns its keep.
 
 | Tier | Storage | Authoritative for | Examples |
 |---|---|---|---|
 | 2. Canonical | SQLite (canonical tables) | All content and application state Inkstone durably owns | Threads, Runs, Proposals, Canonical Entities, approvals, captured content |
-| 3. Derived | SQLite (derived tables/indexes) | Nothing canonical; rebuildable from tier 2 | FTS, backlinks, dashboards, denormalized views |
+| 3. Derived | SQLite (derived tables/indexes) | Nothing canonical; rebuildable from tier 2 | *(none built yet)* — future: an FTS projection, denormalized dashboards, or similar rebuildable views |
 
 ## Why
 
@@ -17,7 +17,7 @@ This keeps the Entity-lifecycle gate that is 0004's real reason to exist explici
 
 > **Extraction candidate (tier 3) → Proposal (tier 2) → Accepted Entity (tier 2).**
 
-Putting Accepted Entities in the same tier as FTS indexes would mean "rebuild from sources" silently destroys user decisions. Splitting tier 2 from tier 3 keeps the contract explicit: tier 3 can be dropped and rebuilt at any time; tier 2 cannot.
+Putting Accepted Entities in the same tier as a rebuildable index (an FTS projection, say) would mean "rebuild from sources" silently destroys user decisions. Splitting tier 2 from tier 3 keeps the contract explicit: tier 3 can be dropped and rebuilt at any time; tier 2 cannot.
 
 ## Consequences
 

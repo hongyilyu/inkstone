@@ -55,7 +55,7 @@ test("a decided proposal card still names the created Entity and links to the Li
 		card.getByRole("button", { name: /view in library/i }),
 	).toBeVisible();
 
-	// RELOAD: the thread is URL-addressable (/thread/<id>, ADR-0042), so the
+	// RELOAD: the thread is URL-addressable (/thread/<id>, ADR-0061), so the
 	// refresh lands back on the same thread and rehydrates from Core.
 	await chat.reload();
 

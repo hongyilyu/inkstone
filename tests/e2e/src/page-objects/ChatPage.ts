@@ -140,7 +140,7 @@ export class ChatPage {
 		await expect(this.composer()).toBeVisible();
 	}
 
-	/** The current URL path (without origin) — the focused Thread lives here (ADR-0042). */
+	/** The current URL path (without origin) — the focused Thread lives here (ADR-0061). */
 	pathname(): string {
 		return new URL(this.page.url()).pathname;
 	}

@@ -1,0 +1,104 @@
+# Architecture Decision Records
+
+Each ADR records one decision: the context that forced it, the decision itself, and
+the consequences (including costs accepted on purpose). ADRs are **append-only** —
+a decision that changes is not edited away; a new ADR supersedes it and both stay in
+the tree as history. Prose may be refreshed in place to track the code, but the
+recorded *decision* does not.
+
+New ADR: copy [`0000-template.md`](./0000-template.md), take the next free number
+(currently **0062**), and add a row below. When superseding, add the
+`/ supersedes` and `/ superseded by` pointers to both files and update the table.
+
+## Conventions
+
+- **H1** is a prose title (no number prefix). The filename carries the number: `NNNN-slug.md`.
+- **Supersession** is recorded as a `/ supersedes …` or `/ superseded by …` pointer line
+  directly under the H1, linking by number **and** slug-path so links survive renumbering.
+- **Numbering** is monotonic and never reused. `0005` is a **retired gap** (a killed
+  Vault-export ADR) — do not reuse it. Two former collisions were resolved by renumber:
+  Bookmark `0036`→`0060`, URL-addressable-Threads `0042`→`0061`.
+
+## Index
+
+| # | Decision | Status |
+|---|---|---|
+| 0001 | Two-component split: Core (Rust) and Worker (TypeScript) | Accepted |
+| 0002 | Clients communicate with Core only | Accepted |
+| 0003 | Worker reaches Core-owned resources only through the Tool Protocol | Accepted |
+| 0004 | Storage authority: SQLite is the single source of truth | Accepted |
+| 0006 | Run Events and Tool Protocol are separate logical channels | Accepted |
+| 0007 | Local-first, single-user | Accepted |
+| 0008 | Monorepo shape | Accepted |
+| 0009 | Protocol strategy: manually mirrored types + contract tests | Accepted |
+| 0010 | MVP slice: chat-driven Web Client | Accepted |
+| 0011 | Per-Run Workflow dispatch is an explicit seam | Accepted |
+| 0012 | Run lifecycle: Core owns durable state, Worker owns in-flight Turn state | Accepted |
+| 0013 | Worker process lifecycle: per-Run, ephemeral, subprocess stdio | Accepted |
+| 0014 | Client↔Core wire protocol: a single loopback WebSocket carrying JSON-RPC 2.0 | Accepted |
+| 0015 | Web Client packaging: Vite in dev, embedded in Core in prod | Accepted |
+| 0016 | Proposal application policy: every mutation is a Proposal; auto-approve is Core policy | Accepted |
+| 0017 | Tier-2 SQLite schema for slice 1 | Accepted |
+| 0018 | Workflow and tool definitions: data in Core, generic Worker | Accepted |
+| 0019 | Test Harness architecture: spawned Core, headless browser, mock LLM | Accepted |
+| 0020 | Effect across the TypeScript codebase | Accepted |
+| 0021 | Web Client styling: Tailwind v4 + base-ui primitives | Accepted |
+| 0022 | Run event delivery: per-run hub, connection-decoupled, snapshot-then-tail | Accepted |
+| 0023 | Provider OAuth: Core-owned credentials, reused pi-ai flow | Accepted |
+| 0024 | User-configurable model and effort; model leaves the Workflow TOML | Accepted |
+| 0025 | Proposals park the Run; resume via Worker tear-down | Accepted |
+| 0026 | Worker transport is a code-level seam: a `WorkerPort` the run loop depends on | Accepted |
+| 0027 | Worker-side transport is a code-level seam: a `WorkerTransport` the interpreter depends on | Accepted |
+| 0028 | Run and Proposal status are materialized, changed only through guarded transitions | Accepted |
+| 0029 | Request handlers are `Result<S, HandlerError>` behind one framing combinator | Accepted |
+| 0030 | Journal Entries anchor chat capture; Daily Notes are derived views | Superseded in part by 0042 |
+| 0031 | GTD Todo, Person, and Project entity model | Accepted |
+| 0032 | GTD relations ride on entity/list; clients derive Project↔Person↔Todo | Accepted (presentation annotated by 0054) |
+| 0033 | User-initiated Entity CRUD writes directly; Proposals gate only the agent | Accepted |
+| 0034 | Mark-project-reviewed: a Core-owned review-advance write path | Accepted |
+| 0035 | Message search: a substring scan over completed message text | Accepted |
+| 0036 | Skills: drop-in markdown procedures the model loads mid-Run | Accepted |
+| 0037 | Todo recurrence rule: an OmniFocus-style repeat persisted in Todo data | Accepted |
+| 0038 | Diagnostic logs are structured `tracing` events on a rolling JSONL file | Accepted |
+| 0039 | Recurring Todo occurrence generation: completing a recurring Todo spawns its successor | Accepted |
+| 0040 | The Provider Helper lives in its own package | Accepted |
+| 0041 | Compiled Worker / Provider-Helper binaries, resolved by Core | Accepted |
+| 0042 | Workspace capture is one intent graph: batched recognition, deterministic resolve, atomic apply | Accepted |
+| 0043 | Tool-call activity rehydrates via `thread/get` | Superseded in part by 0045 |
+| 0044 | Decided Proposal outcomes rehydrate via `thread/get` | Superseded in part by 0045 |
+| 0045 | Assistant turn is an ordered segment timeline, sequenced by `run_steps` | Accepted |
+| 0046 | Thread title is generated by a one-shot non-Run worker at creation | Accepted (placeholder def superseded by 0048) |
+| 0047 | Run-less server→client notifications ride the originating connection | Accepted |
+| 0048 | Thread-title fallback is a word-boundary slug, not a prompt dump | Accepted |
+| 0049 | Provider OAuth completion rides the connection-notification channel | Accepted |
+| 0050 | Entity backlinks read seam | Accepted |
+| 0051 | Socket-liveness signal + unbounded reconnect | Accepted |
+| 0052 | Thread archive lifecycle (archive-not-delete, rename) | Accepted |
+| 0053 | Observation records for high-volume tracker facts | Accepted |
+| 0054 | Topic navigation replaces the flat entity-type Library as the browse axis | Accepted |
+| 0055 | GTD ownership boundaries and the canonical relation read | Accepted |
+| 0056 | Habit tracker model (entity config + check-in observation stream) | Accepted |
+| 0057 | Backend timeline read model: a typed `(occurred_at, kind, ref)` union | Accepted (design; slice unbuilt) |
+| 0058 | Media and attachment backend substrate | Accepted |
+| 0059 | Media: a queue+log Entity Type, replacing Bookmark | Accepted (supersedes 0060) |
+| 0060 | Bookmark Entity Type (replaced the `recipe` placeholder) | Superseded by 0059 |
+| 0061 | URL-addressable Threads: the route is the source of truth for thread focus | Accepted |
+
+## Supersession map
+
+- **0060 Bookmark → 0059 Media** — Bookmark replaced outright by the richer Media queue+log type.
+- **0043 + 0044 (rehydration) → 0045** — superseded *in part*: 0045 replaced their wire
+  projection (`MessageView.tool_calls` / `.proposal` → `Segment` timeline); their
+  persistence and settled-vs-in-flight rules still hold.
+- **0030 (Journal capture) → 0042** — superseded *in part*: one-entity-at-a-time extraction
+  replaced by the single atomic intent-graph apply.
+- **0046 (generated title) → 0048** — superseded *in part*: only the placeholder/fallback
+  definition (the word-boundary slug); the generated-title cap stands.
+- **0032 (GTD read contract) — annotated by 0054**, not superseded: the read contract
+  stands; only the presentation became topic-grouped instead of type-grouped.
+
+## Retired / renumbered
+
+- `0005` — retired gap (killed Vault-export decision). Never reused.
+- `0036` formerly held two files; the Bookmark ADR moved to **0060**, Skills keeps **0036**.
+- `0042` formerly held two files; URL-addressable-Threads moved to **0061**, intent-graph keeps **0042**.
