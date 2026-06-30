@@ -25,6 +25,7 @@ import { type InterpreterDeps, runInterpreter } from "../src/interpreter.js";
 import type { ToolCallResponse } from "../src/tool-proxy.js";
 import { WorkerTransport } from "../src/transport.js";
 import type { ExistingEntity, Fixture, PredictedProposal } from "./types.js";
+import { CODEX_ACCESS_TOKEN_ENV } from "./types.js";
 
 const PROVIDER = "openai-codex";
 const MODEL = "gpt-5.5"; // crates/core/src/models::default_model("openai-codex")
@@ -159,15 +160,6 @@ const TOOL_ALLOWLIST = [
 
 /** A valid synthetic UUIDv7-shaped run id (mirrors interpreter.test's id). */
 const SYNTHETIC_RUN_ID = "01900000-0000-7000-8000-000000000abc";
-
-/** The provider access token the runner authenticates with. The default
- * Workflow's provider (`openai-codex`) is OAuth (ADR-0023): `streamSimple`
- * requires an `apiKey`, which the interpreter injects from
- * `manifest.access_token`. The eval reads that token from the environment — set
- * `INKSTONE_CODEX_ACCESS_TOKEN` to a ChatGPT/Codex access token (the `access`
- * field Core stores in its credential file). No token → `run.test.ts` is
- * `skipIf`-gated and the run is skipped, never failed. */
-export const CODEX_ACCESS_TOKEN_ENV = "INKSTONE_CODEX_ACCESS_TOKEN";
 
 /** A `search_entities` result row, in Core's real wire shape (`search_entities`
  * returns `{ "results": [{ id, type, label, aliases? }] }` as a JSON string). */

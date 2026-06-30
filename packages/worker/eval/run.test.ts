@@ -6,8 +6,9 @@ import {
 } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it } from "vitest";
 import type { InterpreterDeps } from "../src/interpreter.js";
-import { CODEX_ACCESS_TOKEN_ENV, runFixture } from "./run.js";
+import { runFixture } from "./run.js";
 import type { Fixture } from "./types.js";
+import { CODEX_ACCESS_TOKEN_ENV } from "./types.js";
 
 // The runner drives the REAL model, so it needs a real provider credential
 // (openai-codex OAuth access token, ADR-0023). This describe is `skipIf`-gated

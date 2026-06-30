@@ -66,7 +66,7 @@ async function main(): Promise<void> {
 
 	const agg = aggregate(results);
 	console.log(
-		`\nn=${agg.n}  entity_f1=${f3(agg.entity_f1)}  obs_f1=${f3(agg.obs_f1)}  field_f1=${f3(agg.field_f1)}`,
+		`\nn=${agg.n}  entity_f1=${f3(agg.entity_f1)}  obs_f1=${f3(agg.obs_f1)}  field_f1=${f3(agg.field_f1)}  kind_match_rate=${f3(agg.kind_match_rate)}`,
 	);
 
 	const row = resultsRow(agg, promptHash(loadSystemPrompt()));

@@ -8,6 +8,16 @@
 // scorer; this slice only needs the scorer, but `ExistingEntity` is defined now
 // because slice 2 feeds the "world" the model searched against.
 
+/** The env var the runner reads the provider access token from. Lives in this
+ * leaf module (no deps) so the keyless fixture-aggregation path (`aggregate.ts`,
+ * `hasApiKey`) can read it WITHOUT importing the runner (`run.ts`) — importing
+ * `run.ts` would drag the interpreter/model dependencies into the key-free path.
+ * The default Workflow's provider (`openai-codex`) is OAuth (ADR-0023): set
+ * `INKSTONE_CODEX_ACCESS_TOKEN` to a ChatGPT/Codex access token (the `access`
+ * field Core stores in its credential file). No token → the real-model paths
+ * skip, never fail. */
+export const CODEX_ACCESS_TOKEN_ENV = "INKSTONE_CODEX_ACCESS_TOKEN";
+
 /** An entity the fixture's "world" already contains (what `search_entities`
  * would return). Slice 2 consumes this; defined here so the type surface is
  * stable. */
@@ -80,7 +90,8 @@ export interface ScoreResult {
 	entityF1: number;
 	/** F1 over the observation record pool (record_observations). */
 	obsF1: number;
-	/** Micro-F1 (accuracy over matched fields) — see `score.ts`. */
+	/** Field F1 over matched-pair fields: harmonic mean of field precision
+	 * (penalizes hallucinated extra fields) and recall — see `score.ts`. */
 	fieldF1: number;
 	detail: {
 		entities: {
@@ -97,7 +108,12 @@ export interface ScoreResult {
 			predicted: number;
 			expected: number;
 		};
-		fields: { correct: number; total: number };
+		/** Field F1 inputs across matched pairs: `correct` expected scored keys hit,
+		 * `expectedTotal` expected scored keys (recall denominator), and
+		 * `extraPredicted` hallucinated predicted scored keys NOT expected (the
+		 * precision penalty). fieldF1 = harmonic mean of
+		 * `correct/(correct+extraPredicted)` and `correct/expectedTotal`. */
+		fields: { correct: number; expectedTotal: number; extraPredicted: number };
 		/** Why the score is what it is, when it isn't a clean alignment — e.g.
 		 * "invalid", "kind_mismatch", "none_expected_but_proposed", "missed". */
 		reason?: string;

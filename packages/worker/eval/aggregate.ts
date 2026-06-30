@@ -8,8 +8,8 @@ import { createHash } from "node:crypto";
 import { appendFileSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { CODEX_ACCESS_TOKEN_ENV } from "./run.js";
 import type { Fixture, ScoreResult } from "./types.js";
+import { CODEX_ACCESS_TOKEN_ENV } from "./types.js";
 
 /** A fixture plus the eval-only `holdout` marker. `holdout` is a harness concern
  * (split a held-out slice for measuring generalization), not part of the
@@ -31,24 +31,31 @@ export function loadFixtures(dir: string = CASES_DIR): EvalFixture[] {
 		.map((f) => JSON.parse(readFileSync(join(dir, f), "utf8")) as EvalFixture);
 }
 
-/** The aggregate metrics across a run: mean entity/obs/field F1 + the fixture
- * count. Means over an empty set are 0 (n=0), never NaN. */
+/** The aggregate metrics across a run: mean entity/obs/field F1, the
+ * `kind_match_rate` (fraction of fixtures whose proposed mutation_kind matched the
+ * expected kind), + the fixture count. Means over an empty set are 0 (n=0), never
+ * NaN. `kind_match_rate` is tracked separately from `entity_f1` because a proposal
+ * can wrap the CORRECT records under the WRONG kind (e.g. an apply_intent_graph
+ * that should have been a create_todo): entity_f1 still credits the record-level
+ * match, so without a kind metric a kind-confusion regression would be invisible. */
 export interface Aggregate {
 	entity_f1: number;
 	obs_f1: number;
 	field_f1: number;
+	kind_match_rate: number;
 	n: number;
 }
 
 const mean = (xs: number[]): number =>
 	xs.length === 0 ? 0 : xs.reduce((a, b) => a + b, 0) / xs.length;
 
-/** Mean each F1 across the per-fixture results. */
+/** Mean each F1 + the kind-match rate across the per-fixture results. */
 export function aggregate(results: ScoreResult[]): Aggregate {
 	return {
 		entity_f1: mean(results.map((r) => r.entityF1)),
 		obs_f1: mean(results.map((r) => r.obsF1)),
 		field_f1: mean(results.map((r) => r.fieldF1)),
+		kind_match_rate: mean(results.map((r) => (r.kindMatch ? 1 : 0))),
 		n: results.length,
 	};
 }
@@ -76,6 +83,7 @@ export function resultsRow(agg: Aggregate, promptHashHex: string): ResultsRow {
 		entity_f1: agg.entity_f1,
 		obs_f1: agg.obs_f1,
 		field_f1: agg.field_f1,
+		kind_match_rate: agg.kind_match_rate,
 		n: agg.n,
 	};
 }

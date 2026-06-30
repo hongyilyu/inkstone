@@ -124,6 +124,35 @@ describe("scoreProposal — apply_intent_graph alignment", () => {
 		expect(r.entityF1).toBe(0);
 	});
 
+	it("matches ONE expected against at most one of two same-tag duplicates (greedy dedup)", () => {
+		// Two identical predicted persons against ONE expected person. align()'s
+		// `used[]` + `break` guard must consume only ONE predicted, so the second
+		// duplicate stays unmatched and docks precision. Dropping `break` (or the
+		// `used` mark) would double-count the single expected → matched 2, precision
+		// 1.0 — a false-HIGH that inflates precision. This pins matched 1.
+		const predicted: PredictedProposal = {
+			mutation_kind: "apply_intent_graph",
+			payload: {
+				entities: [
+					{ handle: "@a1", type: "person", name: "Alice" },
+					{ handle: "@a2", type: "person", name: "Alice" },
+				],
+				links: [],
+			},
+		};
+		const expected: ExpectedProposal = {
+			kind: "apply_intent_graph",
+			entities: [{ type: "person", name: "Alice" }],
+		};
+		const r = scoreProposal(predicted, expected);
+		expect(r.detail.entities.matched).toBe(1);
+		// 1 matched of 2 predicted → precision 0.5; 1 of 1 expected → recall 1.
+		expect(r.detail.entities.precision).toBeCloseTo(0.5, 5);
+		expect(r.detail.entities.recall).toBeCloseTo(1, 5);
+		// entityF1 = f1(0.5, 1) = 2·0.5·1/1.5 = 2/3 (field-independent here).
+		expect(r.entityF1).toBeCloseTo(2 / 3, 5);
+	});
+
 	it("docks fieldF1 but keeps entityF1 when a matched record has a wrong field", () => {
 		const predicted: PredictedProposal = {
 			mutation_kind: "apply_intent_graph",
@@ -141,10 +170,75 @@ describe("scoreProposal — apply_intent_graph alignment", () => {
 		const r = scoreProposal(predicted, expected);
 		expect(r.entityF1).toBe(1); // record still aligns on type+name
 		expect(r.fieldF1).toBeLessThan(1);
-		// scored keys = name (correct) + note (wrong); type/handle excluded →
-		// 1 of 2 correct → fieldF1 = 0.5.
-		expect(r.detail.fields).toEqual({ correct: 1, total: 2 });
-		expect(r.fieldF1).toBeCloseTo(0.5, 5);
+		// expected scored keys = name (correct) + note (wrong); type/handle excluded.
+		// No EXTRA predicted scored keys (both name+note are expected) → precision 1,
+		// recall 1/2 → fieldF1 = f1(1, 0.5) = 2·1·0.5/1.5 = 2/3.
+		expect(r.detail.fields).toEqual({
+			correct: 1,
+			expectedTotal: 2,
+			extraPredicted: 0,
+		});
+		expect(r.fieldF1).toBeCloseTo(2 / 3, 5);
+	});
+
+	it("scores fieldF1 = 1 when matched fields are exactly right (no extras)", () => {
+		const predicted: PredictedProposal = {
+			mutation_kind: "apply_intent_graph",
+			payload: {
+				entities: [
+					{ handle: "@a", type: "person", name: "Alice", note: "a note" },
+				],
+				links: [],
+			},
+		};
+		const expected: ExpectedProposal = {
+			kind: "apply_intent_graph",
+			entities: [{ type: "person", name: "Alice", note: "a note" }],
+		};
+		const r = scoreProposal(predicted, expected);
+		expect(r.detail.fields).toEqual({
+			correct: 2,
+			expectedTotal: 2,
+			extraPredicted: 0,
+		});
+		expect(r.fieldF1).toBe(1);
+	});
+
+	it("docks fieldF1 (precision) when the prediction hallucinates an EXTRA field", () => {
+		// Right expected fields PLUS a hallucinated `phone`. The protocol decode
+		// ignores excess properties, so schemaValid + entityF1 stay perfect — only the
+		// new field-precision term catches the bloat. Without it this scored 1.0.
+		const predicted: PredictedProposal = {
+			mutation_kind: "apply_intent_graph",
+			payload: {
+				entities: [
+					{
+						handle: "@a",
+						type: "person",
+						name: "Alice",
+						note: "a note",
+						phone: "555-0100",
+					},
+				],
+				links: [],
+			},
+		};
+		const expected: ExpectedProposal = {
+			kind: "apply_intent_graph",
+			entities: [{ type: "person", name: "Alice", note: "a note" }],
+		};
+		const r = scoreProposal(predicted, expected);
+		expect(r.entityF1).toBe(1); // record still aligns on type+name
+		expect(r.fieldF1).toBeLessThan(1); // the precision hit
+		// expected scored keys = name + note (both correct) → correct 2, expectedTotal
+		// 2. predicted scored keys = name + note + phone → phone is EXTRA → 1.
+		// precision = 2/(2+1) = 2/3, recall = 2/2 = 1 → fieldF1 = f1(2/3, 1) = 0.8.
+		expect(r.detail.fields).toEqual({
+			correct: 2,
+			expectedTotal: 2,
+			extraPredicted: 1,
+		});
+		expect(r.fieldF1).toBeCloseTo(0.8, 5);
 	});
 });
 

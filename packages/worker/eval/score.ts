@@ -226,24 +226,42 @@ function scorePool(
 
 const HANDLE_TAGS = new Set(["handle"]);
 
-/** Compare matched record pairs field-by-field, scoring only the fields the
- * expected record specifies (extra predicted fields don't penalize). Strings are
- * compared after normalize; everything else by deep-equality. Returns the running
- * correct/total counts across all matched pairs. */
+/** Compare matched record pairs field-by-field, accumulating the three counts a
+ * real field F1 needs across all matched pairs:
+ *   - `correct`        — expected scored keys whose predicted value matches.
+ *   - `expectedTotal`  — expected scored keys (the recall denominator).
+ *   - `extraPredicted` — predicted scored keys NOT among the expected scored keys
+ *     (hallucinated extra fields — the precision penalty).
+ * The SAME `scoredKeys` exclusion (type/handle for entities, schema_key for
+ * observations) is applied to BOTH records, so the alignment keys never count as
+ * fields on either side. Strings compare after normalize; everything else by
+ * deep-equality. Field precision is `correct / (correct + extraPredicted)` and
+ * recall is `correct / expectedTotal` — see the scorer's `f1(precision, recall)`.
+ *
+ * Why precision matters: `@inkstone/protocol`'s schema decode defaults to
+ * `onExcessProperty: "ignore"`, so a payload with the right expected fields PLUS
+ * hallucinated extras still decodes clean. Without the precision term a bloated
+ * bad payload would score field F1 = 1.0 (a false-HIGH). */
 function scoreFields(
 	pairs: Alignment["pairs"],
 	scoredKeys: (rec: Record_) => string[],
-): { correct: number; total: number } {
+): { correct: number; expectedTotal: number; extraPredicted: number } {
 	let correct = 0;
-	let total = 0;
+	let expectedTotal = 0;
+	let extraPredicted = 0;
 	for (const { expected, predicted } of pairs) {
-		for (const key of scoredKeys(expected)) {
-			total += 1;
+		const expectedKeys = scoredKeys(expected);
+		const expectedKeySet = new Set(expectedKeys);
+		for (const key of expectedKeys) {
+			expectedTotal += 1;
 			if (fieldEquals(expected.fields[key], predicted.fields[key]))
 				correct += 1;
 		}
+		for (const key of scoredKeys(predicted)) {
+			if (!expectedKeySet.has(key)) extraPredicted += 1;
+		}
 	}
-	return { correct, total };
+	return { correct, expectedTotal, extraPredicted };
 }
 
 function fieldEquals(a: unknown, b: unknown): boolean {
@@ -269,10 +287,16 @@ function deepEqual(a: unknown, b: unknown): boolean {
 	return false;
 }
 
-/** The expected fields scored for an entity record — everything the expected
- * specifies EXCEPT the structural keys that drove alignment (`type`/`handle`),
- * since those are not graded content. (`name`/`title` ARE graded — a matched
- * record can still have, e.g., a near-but-not-equal name worth penalizing.) */
+/** The scored fields of an entity record — everything it specifies EXCEPT the
+ * structural keys that drove alignment (`type`/`handle`), since those are not
+ * graded content. (`name`/`title` ARE graded — a matched record can still have,
+ * e.g., a near-but-not-equal name worth penalizing.) `existing_id` is
+ * DELIBERATELY graded: the create-vs-reuse decision (does the model re-point to
+ * an entity already in the world, or hallucinate a duplicate create?) is part of
+ * what the eval measures — five graph fixtures pin reuse correctness on it — so
+ * it is NOT excluded here, and a wrong/absent `existing_id` docks field F1. The
+ * same exclusion set is applied to predicted records in `scoreFields`, so a
+ * spurious predicted `existing_id` counts as an extra (precision hit). */
 function entityScoredKeys(rec: Record_): string[] {
 	return Object.keys(rec.fields).filter(
 		(k) => k !== "type" && !HANDLE_TAGS.has(k),
@@ -295,6 +319,12 @@ const emptyPool = (): PoolScore => ({
 	expected: 0,
 });
 
+const emptyFields = (): {
+	correct: number;
+	expectedTotal: number;
+	extraPredicted: number;
+} => ({ correct: 0, expectedTotal: 0, extraPredicted: 0 });
+
 /** A perfect result (all F1 = 1, clean pools) — the `none`+`null` case. */
 function perfect(): ScoreResult {
 	return {
@@ -306,7 +336,7 @@ function perfect(): ScoreResult {
 		detail: {
 			entities: { ...emptyPool(), precision: 1, recall: 1 },
 			observations: { ...emptyPool(), precision: 1, recall: 1 },
-			fields: { correct: 0, total: 0 },
+			fields: emptyFields(),
 		},
 	};
 }
@@ -321,7 +351,7 @@ function zeroed(reason: string, opts?: Partial<ScoreResult>): ScoreResult {
 		detail: {
 			entities: emptyPool(),
 			observations: emptyPool(),
-			fields: { correct: 0, total: 0 },
+			fields: emptyFields(),
 			reason,
 		},
 	};
@@ -396,12 +426,25 @@ export function scoreProposal(
 	const ent = scorePool(entExpected, entPredicted);
 	const obs = scorePool(obsExpected, obsPredicted);
 
-	// 7. Field micro-F1 over matched pairs (both pools' matches contribute).
+	// 7. Field F1 over matched pairs (both pools' matches contribute). Recall over
+	// the expected scored keys, precision over the union of correct + hallucinated
+	// EXTRA predicted scored keys — so a bloated payload (right fields + extras)
+	// takes a precision hit instead of scoring a false-high 1.0 (see scoreFields).
 	const entFields = scoreFields(ent.pairs, entityScoredKeys);
 	const obsFields = scoreFields(obs.pairs, obsScoredKeys);
 	const correct = entFields.correct + obsFields.correct;
-	const total = entFields.total + obsFields.total;
-	const fieldF1 = total === 0 ? 1 : correct / total;
+	const expectedTotal = entFields.expectedTotal + obsFields.expectedTotal;
+	const extraPredicted = entFields.extraPredicted + obsFields.extraPredicted;
+	// No graded fields on either side (nothing expected, nothing extra) → vacuously
+	// perfect. Otherwise harmonic-mean the field precision and recall.
+	const fieldPredictedTotal = correct + extraPredicted;
+	const fieldF1 =
+		expectedTotal === 0 && fieldPredictedTotal === 0
+			? 1
+			: f1(
+					fieldPredictedTotal === 0 ? 0 : correct / fieldPredictedTotal,
+					expectedTotal === 0 ? 0 : correct / expectedTotal,
+				);
 
 	return {
 		schemaValid: true,
@@ -412,7 +455,7 @@ export function scoreProposal(
 		detail: {
 			entities: ent.score,
 			observations: obs.score,
-			fields: { correct, total },
+			fields: { correct, expectedTotal, extraPredicted },
 			reason: kindMatch ? undefined : "kind_mismatch",
 		},
 	};

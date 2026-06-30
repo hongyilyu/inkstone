@@ -80,10 +80,11 @@ describe("aggregate + append", () => {
 		entityF1: number,
 		obsF1: number,
 		fieldF1: number,
+		kindMatch = true,
 	): ScoreResult {
 		return {
 			schemaValid: true,
-			kindMatch: true,
+			kindMatch,
 			entityF1,
 			obsF1,
 			fieldF1,
@@ -102,63 +103,89 @@ describe("aggregate + append", () => {
 					predicted: 0,
 					expected: 0,
 				},
-				fields: { correct: 0, total: 0 },
+				fields: { correct: 0, expectedTotal: 0, extraPredicted: 0 },
 			},
 		};
 	}
 
-	it("aggregate computes the mean F1s and count, mapping each field to its own key", () => {
+	it("aggregate computes the mean F1s, kind_match_rate, and count, mapping each field to its own key", () => {
 		// DISTINCT per-field means so an entity↔obs↔field key swap reds: entity → 0.6,
-		// obs → 0.3, field → 0.7 (three different values, none coincidentally equal).
-		const agg = aggregate([score(1, 0.5, 0.8), score(0.2, 0.1, 0.6)]);
+		// obs → 0.3, field → 0.7. kind_match_rate is a FOURTH distinct value (0.5: one
+		// kindMatch true, one false) so a kind→F1 mis-map reds too.
+		const agg = aggregate([
+			score(1, 0.5, 0.8, true),
+			score(0.2, 0.1, 0.6, false),
+		]);
 		expect(agg.entity_f1).toBeCloseTo(0.6, 5);
 		expect(agg.obs_f1).toBeCloseTo(0.3, 5);
 		expect(agg.field_f1).toBeCloseTo(0.7, 5);
+		expect(agg.kind_match_rate).toBeCloseTo(0.5, 5);
 		expect(agg.n).toBe(2);
 	});
 
 	it("aggregate over an empty set is all-zero, n=0", () => {
 		const agg = aggregate([]);
-		expect(agg).toEqual({ entity_f1: 0, obs_f1: 0, field_f1: 0, n: 0 });
+		expect(agg).toEqual({
+			entity_f1: 0,
+			obs_f1: 0,
+			field_f1: 0,
+			kind_match_rate: 0,
+			n: 0,
+		});
 	});
 
-	it("resultsRow has the 6-field shape + types", () => {
+	it("resultsRow has the 7-field shape + types", () => {
 		const row = resultsRow(aggregate([score(1, 1, 1)]), "abc123def456");
 		expect(typeof row.date).toBe("string");
 		expect(typeof row.prompt_hash).toBe("string");
 		expect(typeof row.entity_f1).toBe("number");
 		expect(typeof row.obs_f1).toBe("number");
 		expect(typeof row.field_f1).toBe("number");
+		expect(typeof row.kind_match_rate).toBe("number");
 		expect(typeof row.n).toBe("number");
 		expect(Object.keys(row).sort()).toEqual(
-			["date", "entity_f1", "field_f1", "n", "obs_f1", "prompt_hash"].sort(),
+			[
+				"date",
+				"entity_f1",
+				"field_f1",
+				"kind_match_rate",
+				"n",
+				"obs_f1",
+				"prompt_hash",
+			].sort(),
 		);
 	});
 
-	it("appendResultRow writes ONE JSON line that parses back with all 6 fields", () => {
+	it("appendResultRow writes ONE JSON line that parses back with all 7 fields", () => {
 		const dir = mkdtempSync(join(tmpdir(), "eval-results-"));
 		const file = join(dir, "results.jsonl");
-		const row = resultsRow(aggregate([score(0.8, 0.6, 0.9)]), "deadbeef0000");
+		// Two fixtures, ONE kind mismatch → kind_match_rate 0.5 (distinct from the F1s).
+		const row = resultsRow(
+			aggregate([score(0.8, 0.6, 0.9, true), score(0.8, 0.6, 0.9, false)]),
+			"deadbeef0000",
+		);
 		appendResultRow(file, row);
 		const lines = readFileSync(file, "utf8").trim().split("\n");
 		expect(lines).toHaveLength(1);
 		const parsed = JSON.parse(lines[0]);
-		expect(parsed).toMatchObject({ prompt_hash: "deadbeef0000", n: 1 });
+		expect(parsed).toMatchObject({ prompt_hash: "deadbeef0000", n: 2 });
 		for (const k of [
 			"date",
 			"prompt_hash",
 			"entity_f1",
 			"obs_f1",
 			"field_f1",
+			"kind_match_rate",
 			"n",
 		]) {
 			expect(parsed[k]).toBeDefined();
 		}
-		// Assert the VALUES land on the right keys (distinct 0.8/0.6/0.9), so a swap
+		// Assert the VALUES land on the right keys (distinct 0.8/0.6/0.9/0.5), so a swap
 		// in the aggregate→row→append path reds instead of sailing through on shape.
 		expect(parsed.entity_f1).toBeCloseTo(0.8, 5);
 		expect(parsed.obs_f1).toBeCloseTo(0.6, 5);
 		expect(parsed.field_f1).toBeCloseTo(0.9, 5);
+		expect(parsed.kind_match_rate).toBeCloseTo(0.5, 5);
 	});
 });
 
@@ -249,6 +276,23 @@ describe("loadSystemPrompt (read-not-copy)", () => {
 		const prompt = loadSystemPrompt();
 		expect(prompt.length).toBeGreaterThan(0);
 		expect(prompt.startsWith("You are Inkstone's assistant")).toBe(true);
+	});
+
+	it("extracts the prompt body up to (not including) the closing delimiter", () => {
+		const prompt = loadSystemPrompt();
+		// The real final line of default.toml's system_prompt block (the two-space
+		// indented continuation of the GTD link step). Pins the CLOSE boundary so a
+		// regression that swallows the closing `"""` or the trailing `tools = [` line
+		// reds — without this, only the START was checked.
+		expect(
+			prompt.endsWith(
+				"  unlinked. Recover the new Todo's id with search_entities before linking.",
+			),
+		).toBe(true);
+		// The extraction must stop at the delimiter: neither the closing triple-quote
+		// nor the following `tools = [` line may leak into the prompt.
+		expect(prompt).not.toContain('"""');
+		expect(prompt).not.toContain("tools = [");
 	});
 });
 
