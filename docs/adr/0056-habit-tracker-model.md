@@ -20,35 +20,35 @@ The two never share a field except the join key.
   (`mutation.rs:170`), in `EntityType::ALL` (`mutation.rs:174-181`), stored as
   `entities.type = "habit"` via the generic `spec().stored_type` accessor
   (`mutation.rs:224-232`, `as_str` at `:238-239`). Its data JSON is
-  `habit_core` (`mutation.rs:326-334`): required non-empty `name`, required
+  `habit_core` (`mutation.rs:361-369`): required non-empty `name`, required
   `cadence`, clearable `target`, optional `status`, clearable `note`. Schema
   version 1 (`HABIT_SCHEMA_VERSION`, `mutation.rs:43`).
 - **The check-in is an Observation**, not a row on the entity. The
-  `habit.checkin` schema (`observations.rs:528-560`, version 1 at `:14`) carries
-  `habit_id` (UUID), `state ∈ {done, skipped, missed}` (`:538-544`), and optional
-  `quantity` (`:545-552`). Facts persist in `observations` / `observation_revisions`
-  (`migrations/0001_initial.sql:179-216`), tables wholly distinct from `entities`.
+  `habit.checkin` schema (`observations.rs:559-587`, version 1 at `:14`) carries
+  `habit_id` (UUID), `state ∈ {done, skipped, missed}` (`:569-575`), and optional
+  `quantity` (`:576-583`). Facts persist in `observations` / `observation_revisions`
+  (`migrations/0001_initial.sql:190-227`), tables wholly distinct from `entities`.
 
 No definition field (`cadence`/`target`/`status`/`note`) appears in the check-in
 schema, and no fact field (`state`/`quantity`/`occurred_at`) appears in
 `habit_core`. The **only** field common to both stores is `habit_id` — and it
-lives *on the check-in* as the foreign key (`observations.rs:537`), never mirrored
+lives *on the check-in* as the foreign key (`observations.rs:568`), never mirrored
 onto the Habit.
 
 ### Questions settled (#262)
 
 | #262 question | Answer | Anchor |
 |---|---|---|
-| Library entity, tracker config, recurrence schedule, or hybrid? | **Hybrid** — entity config + observation facts | `mutation.rs:170`, `observations.rs:528-560` |
-| Which fields on the entity vs. observation values? | Definition (`name`/`cadence`/`target`/`status`/`note`) on entity; per-event `state`/`quantity` in `values_json`; `habit_id` is the join key on the check-in | `mutation.rs:326-334`, `observations.rs:537-552` |
-| How do cadence/status/target differ from Project recurrence/review? | Same `{interval,unit}` shape, but advisory metadata only — no `next/last_reviewed_at`, no occurrence spawn | `mutation.rs:437-452` vs `:456-471` |
-| Canonical query for current state / recent check-ins / streak / schedule? | Entity read (list-and-pick) for config + `observation/query{related_entity_id}` for check-ins; streak is a derived view, never stored | `queries.rs:1131-1137`, `protocol.rs:499` |
-| How does deleting/editing a Habit affect historical check-ins? | Delete is **blocked** while any live or historical check-in references it; update is full-replace with an immutable id | `apply.rs:894-905`, `queries.rs:1197-1220` |
+| Library entity, tracker config, recurrence schedule, or hybrid? | **Hybrid** — entity config + observation facts | `mutation.rs:170`, `observations.rs:559-587` |
+| Which fields on the entity vs. observation values? | Definition (`name`/`cadence`/`target`/`status`/`note`) on entity; per-event `state`/`quantity` in `values_json`; `habit_id` is the join key on the check-in | `mutation.rs:361-369`, `observations.rs:568-583` |
+| How do cadence/status/target differ from Project recurrence/review? | Same `{interval,unit}` shape, but advisory metadata only — no `next/last_reviewed_at`, no occurrence spawn | `mutation.rs:490-505` vs `:509-524` |
+| Canonical query for current state / recent check-ins / streak / schedule? | Entity read (list-and-pick) for config + `observation/query{related_entity_id}` for check-ins; streak is a derived view, never stored | `queries.rs:1392-1424`, `protocol.rs:499` |
+| How does deleting/editing a Habit affect historical check-ins? | Delete is **blocked** while any live or historical check-in references it; update is full-replace with an immutable id | `apply.rs:907-926`, `queries.rs:1494` |
 
 ## Cadence is advisory metadata, not a scheduler
 
-`habit_cadence_spec` (`mutation.rs:437-452`) is structurally identical to
-`review_every_spec` (`mutation.rs:456-471`) — a positive `interval` plus a
+`habit_cadence_spec` (`mutation.rs:490-505`) is structurally identical to
+`review_every_spec` (`mutation.rs:509-524`) — a positive `interval` plus a
 `{day, week, month, year}` unit. The resemblance ends at the shape:
 
 - A Habit carries **no scheduling timestamp**. `habit_core` has exactly five
@@ -75,14 +75,14 @@ The Habit↔check-in link is **value-embedded, not a relation row**:
 - The link is `$.habit_id` inside the observation's `values_json`. There is **no
   foreign key** and **no `observation_relations` table**.
 - It is validated **only at write time**: `invalid_relation_reason`
-  (`db/observations.rs:266-286`) calls `entity_is_type` (`queries.rs:1292`) to
+  (`db/observations.rs:281-301`) calls `entity_is_type` (`queries.rs:1601`) to
   confirm `habit_id` names an existing Entity of type `habit`, on both record and
   observation-update (correction) paths. The pure values walk checks UUID shape
   only ([ADR-0053](./0053-observation-records.md) two-stage validation).
 - It is queried via `json_extract`: the `related_entity_id` filter hard-codes
   `schema_key = 'habit.checkin'` and matches `json_extract(values_json, '$.habit_id')`
-  (`queries.rs:1131-1137`), validated as a UUID in `validate_query`
-  (`observations.rs:636-638`).
+  (`queries.rs:1392-1424`), validated as a UUID in `validate_query`
+  (`observations.rs:714-715`).
 - **Streak is never stored.** No column, no aggregate table — it is a read-side
   derivation rebuildable from the check-in facts, authoritative for nothing.
 
@@ -93,7 +93,7 @@ Two as-built nuances this ADR records (neither is a defect to fix in scope):
 - The `related_entity_id` read hits the base `observations` table, which has **no
   `$.habit_id` index** — the partial index
   `idx_observation_revisions_habit_checkin_habit_id`
-  (`migrations/0001_initial.sql:214-216`) covers `observation_revisions` only.
+  (`migrations/0001_initial.sql:225-227`) covers `observation_revisions` only.
 
 ## Lifecycle: delete blocks, update full-replaces
 
@@ -109,7 +109,7 @@ reject**, by design. This realizes ADR-0053's write-time relation rule as a
 observation schema must define delete behavior for its referenced Entity Type.
 
 **Update is full-replace.** `update_habit` takes the generic `update_entity` arm
-(`apply.rs:963-994`) that overwrites the data document and appends a revision —
+(`apply.rs:984-1001`) that overwrites the data document and appends a revision —
 unlike `update_todo`'s in-tx partial merge. The target `entity_id` is stripped
 from stored data, so a Habit's id is immutable; an update can therefore never
 orphan a check-in.
@@ -119,7 +119,7 @@ orphan a check-in.
 - **Current config**: there is no Core get-by-id, so a single Habit is read via
   the `entity/list` path and picked client-side.
 - **Recent check-ins**: `observation/query { related_entity_id }`
-  (`protocol.rs:499`, `queries.rs:1131-1137`). `related_entity_id` alone pins the
+  (`protocol.rs:499`, `queries.rs:1392-1424`). `related_entity_id` alone pins the
   schema to `habit.checkin` server-side, so passing `schema_keys: ["habit.checkin"]`
   is redundant-but-supported.
 - **Streak / schedule state**: a derived view over the check-in stream + cadence,
@@ -146,9 +146,9 @@ the delete-block guard enforces.
   protocol mirror — `packages/protocol` mirrors only the `habit.checkin`
   *observation* schema. Habits are authored through `entity/mutate` directly.
 - **Direct-user-CRUD-only.** `create_habit` / `update_habit` / `delete_habit` are
-  never agent-proposable: they return `NotProposable` (`mutation.rs:1424-1426`) and
-  are absent from the `ProposableMutation` enum (`mutation.rs:1180`). (This ADR
-  also fixes a stale citation: `mutation.rs:1174` credited ADR-0053 for the
+  never agent-proposable: they return `NotProposable` (`mutation.rs:1473-1479`) and
+  are absent from the `ProposableMutation` enum (`mutation.rs:1233`). (This ADR
+  also fixes a stale citation: `mutation.rs:1227` credited ADR-0053 for the
   never-proposable policy, which ADR-0053 never stated — it states it here.)
 - **One surprising edge**: `search_entities` advertises "Habits" to the agent
   (`search_entities.rs:16`) even though there is no agent or user-facing create
@@ -168,11 +168,11 @@ the delete-block guard enforces.
 Codifying as-built must not trigger a rewrite. Three real gaps are filed as
 follow-ups rather than fixed here:
 
-- **`target` is a free string** (`mutation.rs:330`), where its meaning is a
+- **`target` is a free string** (`mutation.rs:365`), where its meaning is a
   structured/numeric goal the check-in `quantity` would be measured against. Clean
   v2 candidate (`HABIT_SCHEMA_VERSION` is 1) —
   [#274](https://github.com/hongyilyu/inkstone/issues/274).
-- **`quantity` has no `min: 0` floor** (`observations.rs:546`), so a negative
+- **`quantity` has no `min: 0` floor** (`observations.rs:579`), so a negative
   quantity validates — unlike `bodyweight.kg`, which floors at 0 —
   [#275](https://github.com/hongyilyu/inkstone/issues/275).
 - **The relation check is status-blind**, so a check-in can reference a
@@ -189,11 +189,11 @@ test-pinned.
 These pin the two load-bearing invariants and must stay green (zero behavioral
 diff from this ADR):
 
-- `delete_habit_rejects_historical_checkin_revision_reference` (`apply.rs:1283`) —
+- `delete_habit_rejects_historical_checkin_revision_reference` (`apply.rs:1304`) —
   a Habit referenced only by a corrected-away historical revision still blocks
   delete.
 - `observations_record_habit_checkin_validates_relation_and_query_filter`
-  (`observations_tests.rs:800`) — write-time relation validation + the
+  (`observations_tests.rs:815`) — write-time relation validation + the
   `related_entity_id` query filter.
 
 ## Related

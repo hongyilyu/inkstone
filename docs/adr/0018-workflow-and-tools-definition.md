@@ -2,8 +2,8 @@
 
 > **As-built amendment (real-worker-codex feature, see [ADR-0023](./0023-provider-oauth-core-owned-credentials.md)).** When the generic interpreter replaced the echo Worker, the spawn manifest was extended beyond this ADR's original sketch in two backward-compatible ways:
 > - **Assembled conversation history.** The manifest carries an ordered `messages[]` array — the Thread's completed Messages that Core assembles from tier 2 — so a Run is multi-turn. The Worker maps these to `pi-agent-core` `AgentMessage[]`. (The original ADR implied only the current prompt; history was always going to be needed and is additive.)
-> - **An optional provider access token.** For OAuth providers (`openai-codex`), Core injects a short-lived `access_token` into the manifest, resolved per-spawn per ADR-0023. Non-OAuth providers (e.g. the `faux` test provider) omit it.
-> - **Deferred fields.** `auto_approve` and `bootstrap` are not yet emitted — they wait for the tools slice. `tools = []` ships today.
+> - **An optional provider access token.** For OAuth providers (`openai-codex`, the production default), Core injects a short-lived `access_token` into the manifest, resolved per-spawn per ADR-0023. Non-OAuth providers (e.g. the `faux` test provider) omit it.
+> - **Unbuilt fields.** `auto_approve` and `bootstrap` were sketched below but never landed in the Workflow data shape or the manifest. The auto-approve decision lives in a Core-side seam (`db::should_auto_approve()`, always `false` today — every Proposal parks the Run per ADR-0025); no bootstrap tool-call list ships. `tools` ships populated.
 
 A **Workflow** is a TOML file in `crates/core/workflows/`. It is pure declarative data — name, version, system prompt, tool allowlist, model + provider, auto-approve rules, and an optional bootstrap tool-call list. Workflows are owned by Core; the Worker has no per-Workflow code.
 
@@ -31,8 +31,7 @@ Adding a Workflow becomes "add one TOML file in `crates/core/workflows/`" — no
 
 name     = "default"
 version  = "1.0.0"
-provider = "anthropic"
-model    = "claude-sonnet-4-6"
+provider = "openai-codex"
 
 system_prompt = """
 You assist with interstitial journaling. The user types loose entries;
@@ -41,30 +40,30 @@ for review.
 """
 
 tools = [
+  "read_thread",
+  "read_current_thread_journal_entries",
+  "propose_workspace_mutation",
   "search_entities",
-  "propose_create_entities",
 ]
-
-auto_approve = []  # empty per ADR-0016 in slice 1
-
-[[bootstrap]]
-tool   = "recent_thread_summary"
-params = { limit = 5 }
 ```
+
+`model` and `thinking_level` are optional and omitted in production
+`default.toml` — they resolve from user settings per ADR-0024. The
+`auto_approve` and `bootstrap` keys sketched in earlier drafts never landed
+(see the as-built amendment above).
 
 Core deserializes via a Rust struct + `serde`. Bad TOML fails at startup with line/column.
 
 ## Worker is a generic interpreter
 
-`packages/worker/src/main.ts` is the only entry point. On spawn:
+`packages/worker/src/worker-main.ts` (invoked via `cli.ts`) is the only entry point. On spawn:
 
 1. Read manifest from stdin (Core sent it).
 2. Initialize the LLM SDK by `manifest.provider`.
 3. Build proxy `AgentTool`s from `manifest.tools` (see *Tools* below).
-4. Execute `manifest.bootstrap[]` tool calls; splice results into the system prompt.
-5. Hand `{ systemPrompt, model, tools, messages }` to `pi-agent-core`'s loop.
-6. Relay tool requests / results across stdio while the loop runs.
-7. Exit when the loop terminates (or when Core signals abort per [ADR-0013](./0013-worker-process-lifecycle-and-transport.md)).
+4. Hand `{ systemPrompt, model, tools, messages }` to `pi-agent-core`'s loop.
+5. Relay tool requests / results across stdio while the loop runs.
+6. Exit when the loop terminates (or when Core signals abort per [ADR-0013](./0013-worker-process-lifecycle-and-transport.md)).
 
 There is no per-Workflow file in the Worker. Adding a Workflow does not touch Worker code.
 
@@ -208,6 +207,8 @@ This is the mechanism that distinguishes mid-Run abort (Worker still alive) from
 
 Core enforces the Workflow's allowlist on every `tool_request`, using its own copy of the manifest. The Worker's tool array (used by the LLM via `pi-agent-core`) is already filtered, so the model shouldn't propose a disallowed tool — but Core checks anyway. ADR-0003's chokepoint stays intact.
 
+The registry (`crates/core/src/tools/`) holds five tools today: `read_thread`, `read_current_thread_journal_entries`, `propose_workspace_mutation`, `search_entities`, and `load_skill`. `load_skill` is *ambient* (ADR-0036): both the manifest build (`run_descriptors`) and the dispatch gate (`is_allowed`) append it on every Run regardless of the Workflow's own allowlist, so the dual gate becomes "registered AND (allowlisted OR ambient)".
+
 ## Versioning
 
 `workflow_version` is a manual semver string declared in the TOML's `version` field. The Workflow author bumps it when system prompt, tool set, model, or auto-approve rules change. `runs.workflow_version` (per [ADR-0017](./0017-tier-2-schema-slice-1.md)) snapshots whatever Core had loaded at Run start.
@@ -231,7 +232,7 @@ If a Workflow's tool descriptor fails sanitization, Core refuses to start the Ru
 - **Hot reload of Workflows.** Slice 1 reloads on Core restart. Adding hot reload is a Core feature, not a manifest-format question.
 - **User-authored Workflows.** Slice 1 ships a single hand-written Workflow. If users author Workflows later (e.g. as markdown files with frontmatter, or via a UI builder), the format question reopens. The TOML format chosen here is forward-compatible — a generated TOML from any source is valid.
 - **`prepareArguments` support.** `pi-agent-core`'s `AgentTool.prepareArguments` is an optional pre-validation hook that lets a tool coerce raw model output before the schema check. Slice 1 ships no tools that need it; the proxy omits the field. Adding it later means extending the `CoreToolDescriptor` shape with an optional `prepare_arguments` declaration and giving the proxy a way to invoke it (likely a Core-side coercion call before the main `tool_request`, or a Worker-side declarative coercion table). Out of scope until a tool needs it.
-- **`onUpdate` / streaming partial tool results.** `pi-agent-core`'s `execute` accepts an `onUpdate(partial)` callback for tools that stream progress. Slice 1 ships no streaming tools (`search_entities` and `propose_create_entities` are atomic). Adding streaming requires a `tool_update { run_id, tool_call_id, partial }` wire frame Core can push between `tool_request` and the final `tool_result`. The proxy would forward each into `onUpdate`. Wire-frame extension is straightforward; deferred until a tool needs it.
+- **`onUpdate` / streaming partial tool results.** `pi-agent-core`'s `execute` accepts an `onUpdate(partial)` callback for tools that stream progress. Slice 1 ships no streaming tools (`search_entities` and `read_thread` are atomic). Adding streaming requires a `tool_update { run_id, tool_call_id, partial }` wire frame Core can push between `tool_request` and the final `tool_result`. The proxy would forward each into `onUpdate`. Wire-frame extension is straightforward; deferred until a tool needs it.
 - **Tool implementations in TypeScript via `handler: "ts:<module>"`.** All tools in slice 1 are Rust per ADR-0003. The `handler` escape hatch is reserved for tools that genuinely need a TS-only SDK Core can't reach (e.g. a future MCP client, a TS-native vector store SDK without Rust bindings). The criterion: a tool may declare `handler = "ts:<module>"` only if it is **read-only** with respect to durable Workspace state — if it touches SQLite, it must be Rust to preserve [ADR-0003](./0003-worker-via-tool-protocol.md)'s chokepoint. The escape exists; the bar is high; the slice-1 set has no qualifying tools.
 - **Multi-stage Workflows or programmatic prompt construction.** Slice 1's Workflows fit "system prompt + tools + bootstrap." When a Workflow needs procedural logic that doesn't fit, two paths are open: (1) extend the data shape (stages array, prompt-template DSL), or (2) add a per-Workflow handler escape — same shape as the tool handler escape, with the same chokepoint criterion. Either is reachable without disturbing the simple-data Workflows.
 - **Tool registry mechanism in Rust.** Whether tools are registered via a `#[tool]` proc macro, a trait-implementing struct registered in a `lazy_static`, or an explicit list in `mod.rs`. Code-write detail.

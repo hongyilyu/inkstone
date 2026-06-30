@@ -12,7 +12,11 @@ succeeds.
 This **supersedes** the `thread/create` behavior described in
 [ADR-0022](./0022-run-event-delivery-hub-snapshot-tail.md) and implemented in
 `runs/thread_create.rs`, where the title was *defined as* the prompt truncated
-to 80 scalars. That truncation is retained, but only as the placeholder.
+to 80 scalars. That truncation is retained, but only as the placeholder. *(The
+placeholder derivation is later refined by
+[ADR-0048](./0048-thread-title-fallback-slug.md): a word-boundary slug trimmed
+to ~32 scalars replaces the 80-scalar mid-word truncation. The **generated**
+title's `TITLE_MAX_CHARS` cap below is unaffected.)*
 
 ## Context
 
@@ -145,5 +149,9 @@ stops on `done`/`error`/EOF.
 - [ADR-0047](./0047-connection-notification-channel.md) — the run-less
   connection-notification channel that delivers the generated title live to the
   creating connection, superseding this ADR's lazy-only delivery.
+- [ADR-0048](./0048-thread-title-fallback-slug.md) — supersedes this ADR's
+  placeholder definition: the create-time fallback is a word-boundary slug
+  (~32 scalars), not the prompt truncated to 80 scalars; the generated title's
+  `TITLE_MAX_CHARS` cap is retained.
 - Follow-up issue: transient-failure retry affordance, still out of scope (live
   delivery shipped in ADR-0047).

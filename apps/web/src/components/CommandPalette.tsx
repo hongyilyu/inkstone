@@ -164,7 +164,7 @@ export function CommandPalette() {
 			return;
 		}
 		if (result.type === "message") {
-			// Deep-link to the Thread AND the within-thread anchor (ADR-0042): the
+			// Deep-link to the Thread AND the within-thread anchor (ADR-0061): the
 			// `?focusedMessageId` param tells ChatColumn to scroll the matched Message
 			// into view and briefly highlight it once hydrated (issue #138), then
 			// strips itself (consume-then-strip).

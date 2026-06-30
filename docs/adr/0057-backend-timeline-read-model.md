@@ -37,8 +37,8 @@ such a time as a required, domain-meaningful field:
 
 | Kind | Source table (filter) | Authoritative time | Real column (verified) |
 | --- | --- | --- | --- |
-| `journal` | `entities` where `type = 'journal_entry'` | `occurred_at` | `mutation.rs:714` — `Field::datetime("occurred_at").require()`; stored in `entities.data` JSON, read via `json_extract(data, '$.occurred_at')` |
-| `observation` | `observations` | `occurred_at` (start); `ended_at` optional | `migration 0001_initial.sql:183` (`occurred_at TEXT NOT NULL`), `:184` (`ended_at TEXT`) |
+| `journal` | `entities` where `type = 'journal_entry'` | `occurred_at` | `mutation.rs:767` — `Field::datetime("occurred_at").require()`; stored in `entities.data` JSON, read via `json_extract(data, '$.occurred_at')` |
+| `observation` | `observations` | `occurred_at` (start); `ended_at` optional | `migration 0001_initial.sql:194` (`occurred_at TEXT NOT NULL`), `:195` (`ended_at TEXT`) |
 
 Both fields are `LocalDateTime` — local wall-clock `YYYY-MM-DDTHH:MM:SS`, no timezone
 (`field_spec.rs` `FieldSpec::LocalDateTime`, pattern `^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$`).
@@ -50,7 +50,7 @@ The following are **deliberately not v1 timeline members**:
 
 - **Todos — out-of-scope; a GTD-axis concern, not a happening.** A Todo's four
   authoritative times (`defer_at`, `due_at`, `completed_at`, `dropped_at` —
-  `mutation.rs:351-354`, the four `clearable_datetime` fields) are *forward-looking
+  `mutation.rs:386-389`, the four `clearable_datetime` fields) are *forward-looking
   intentions and resolution stamps*, not events that occurred. A Todo lives on the
   **GTD** browse axis (Inbox/Waiting/Scheduled/Review; ADR-0031/0032/0054), and its
   scheduling dates belong to a **calendar/forecast** axis ([#236](https://github.com/hongyilyu/inkstone/issues/236)),
@@ -79,15 +79,15 @@ the union needs **no time conversion**: wall-clock strings sort lexically ⇔
 chronologically, an invariant the codebase already banks on (`recurrence.rs:80` — "Wall-clock
 strings sort chronologically, so a string compare is correct"). The journal arm reads
 its time with the established `json_extract(data, '$.occurred_at')` pattern
-(`queries.rs:1549` uses the same idiom on `entities.data`); the observation arm reads
+(`queries.rs:1858` uses the same idiom on `entities.data`); the observation arm reads
 the `occurred_at` column directly. The union is then one `ORDER BY occurred_at DESC`,
-exactly as the observation list query already orders (`queries.rs:1139`), with a stable
+exactly as the observation list query already orders (`queries.rs:1326`), with a stable
 `kind, ref_id` tiebreak.
 
 **The `created_at` fallback (ms-epoch) is documented but inert in v1.** Inkstone stores
 two time representations — domain times are wall-clock TEXT, while `created_at` /
 `proposals.decided_at` / `messages.created_at` are INTEGER ms-epoch
-(`0001_initial.sql:121,136,189`) — and Core never converts between them in SQL today
+(`0001_initial.sql:121,136,41`) — and Core never converts between them in SQL today
 (zero `strftime`/`unixepoch`/`datetime(` hits in `crates/core`). The only
 epoch→wall-clock bridge is Rust civil-date math at the global
 `review_anchor_utc_offset_minutes` offset (`entities.rs:966`,

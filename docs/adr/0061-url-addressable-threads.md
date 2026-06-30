@@ -39,7 +39,7 @@ from just its id).
   navigation injected as props" convention and the issue #138/#169 stance of
   "store anchor, not route param, to keep `ChatColumn` router-free." That stance
   predates chat having any URL identity; it is superseded here. (It was never an
-  ADR — the `ADR-0024` citation in `App.tsx` misattributes it; ADR-0024 is
+  ADR — the `ADR-0024` citation on the file-based router in `main.tsx` misattributes it; ADR-0024 is
   user-configurable-model-and-effort and says nothing about routing.)
 - **The Message anchor is consume-then-strip.** On arrival, `ChatColumn` scrolls
   the anchored Message into view and blooms the lamplight highlight, then strips

@@ -23,7 +23,7 @@ export function Sidebar({
 	onOpenThread?: (threadId: string) => void;
 	onNewChat?: () => void;
 } = {}) {
-	// The focused Thread is the route (ADR-0042); read it to mark the current row.
+	// The focused Thread is the route (ADR-0061); read it to mark the current row.
 	const { threadId } = useParams({ strict: false });
 	const focusedThreadId = threadId ?? null;
 
@@ -207,7 +207,7 @@ function ThreadRow({
 						title={item.title}
 						onArchive={() =>
 							// Reselect fires on the mutation's SUCCESS, not synchronously:
-							// archiving the focused Thread (ADR-0042 — focus IS the route)
+							// archiving the focused Thread (ADR-0061 — focus IS the route)
 							// must drop us off `/thread/$id`. Reuse `onNewChat` (wired to
 							// navigate({to:"/"}) in _chat.tsx) — landing on the welcome route
 							// is exactly the reselect we want, so no extra nav prop.

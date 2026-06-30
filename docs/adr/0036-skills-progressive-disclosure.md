@@ -53,7 +53,8 @@ Four mechanisms, all owned by Core (Rust):
    instructs the model how to use tools that are *already* registered in Core
    (`propose_workspace_mutation`, `search_entities`, …). A Skill cannot introduce a
    tool: Core's registry is the authority (ADR-0018), and the allowlist is
-   re-enforced on every `tool_request` (`worker/run.rs:235`). A skill that "needs a
+   re-enforced on every `tool_request` (`tools::is_allowed`, `worker/run.rs:294`).
+   A skill that "needs a
    new tool" is a request to extend Core's Rust registry — a separate,
    code-reviewed change, not something a dropped-in markdown file can do.
 
@@ -155,8 +156,8 @@ import path is trivial.
   in the existing `tools` array.
 
 - **`load_skill` is always allowed.** It is appended to the effective allowlist for
-  every Run, so the dual-gate check (`workflow.tools` ∧ `is_registered`) at
-  `worker/run.rs:235` must treat it as permitted regardless of the Workflow's own
+  every Run, so the dual-gate check (`workflow.tools` ∧ `is_registered`) in
+  `tools::is_allowed` (`worker/run.rs:294`) must treat it as permitted regardless of the Workflow's own
   `tools`. Simplest form: register it like any tool and have the manifest builder
   always include it.
 

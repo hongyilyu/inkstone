@@ -17,8 +17,8 @@ import { renderWithQuery } from "@/test-utils/renderWithQuery";
 afterEach(cleanup);
 
 /** The `_chat` layout owns the shared shell (Sidebar + recent-Runs rail) and an
- *  `<Outlet/>` for the center — ADR-0042. These tests drive the real route tree. */
-describe("_chat layout route (ADR-0042)", () => {
+ *  `<Outlet/>` for the center — ADR-0061. These tests drive the real route tree. */
+describe("_chat layout route (ADR-0061)", () => {
 	it("renders the three-region shell with the recent-runs rail at /", async () => {
 		renderWithQuery(
 			<RuntimeProvider config={{ url: "ws://stub/ws" }}>
@@ -98,7 +98,7 @@ describe("_chat layout route (ADR-0042)", () => {
 		const row = await screen.findByRole("button", { name: /Clickable run/ });
 		await userEvent.click(row);
 
-		// Opening a Run's Thread is a navigation now (ADR-0042), not a store poke.
+		// Opening a Run's Thread is a navigation now (ADR-0061), not a store poke.
 		await waitFor(() => {
 			expect(router.state.location.pathname).toBe("/thread/thread-77");
 		});

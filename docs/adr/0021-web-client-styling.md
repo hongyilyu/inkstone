@@ -33,7 +33,7 @@ Light/dark uses **semantic tokens that flip values under `[data-theme]`**, not T
 
 Reusable styled primitives — `Button`, `Card`, `Badge`, `Input`, `Textarea`, `Disclosure`, etc. — live under `apps/web/src/components/ui/` (shadcn convention). Each is a thin wrapper that composes a base-ui primitive (where one exists) with `cva` variants and `cn` (clsx + tailwind-merge). Slice-level components (`Sidebar`, `ChatColumn`, `RunFeed`, `ProposalCard`, etc.) live one level up at `apps/web/src/components/` and import from `components/ui/`.
 
-Shared **layout** shells live here too: `NavShell` (the left nav both surfaces render into) and `WorkspaceShell` (the three-region frame — left nav, framed middle, collapsible right rail — that the chat `/` and `/library` surfaces both compose). Page surfaces pass the slots; the shell owns the grid, the collapse state, and the framed-card chrome.
+Shared **layout** shells live under `components/ui/` too: `NavShell` (`nav-shell.tsx`, the left nav both surfaces render into) and `WorkspaceShell` (`workspace-shell.tsx`, the three-region frame — left nav, framed middle, collapsible right rail — that the chat `/` and `/library` surfaces both compose). Page surfaces pass the slots; the shell owns the grid, the collapse state, and the framed-card chrome.
 
 The primitive kit is established up-front rather than grown ad-hoc per slice, so each later slice imports a ready primitive instead of inlining cva and risking divergent variants across slices. Variant lists stay minimal (only what the slice loop has actually needed); a primitive is only added when at least one slice consumes it.
 

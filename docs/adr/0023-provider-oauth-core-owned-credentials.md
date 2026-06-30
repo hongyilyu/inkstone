@@ -22,7 +22,7 @@ This ADR records that division because it is hard to reverse (it shapes the mani
 
 4. **The manifest carries only the access token.** The refresh token (the long-lived secret) never crosses the process boundary into a Worker. The codex provider re-derives the account id from the access-token JWT at call time, so the access token alone is sufficient for a Run.
 
-5. **Two stateless TypeScript entry points** in `packages/worker`: the run interpreter (gets an access token, runs the chat loop) and the Provider Helper (`login` / `refresh` modes, runs pi-ai's OAuth). Neither holds durable state; Core owns the file and all orchestration.
+5. **Two stateless TypeScript entry points:** the run interpreter in `packages/worker` (gets an access token, runs the chat loop) and the Provider Helper in `packages/provider-helper` (`login` / `refresh` modes, runs pi-ai's OAuth). Neither holds durable state; Core owns the file and all orchestration.
 
 6. **Login orchestration rides Core's client surface (ADR-0014).** The Web Client never runs OAuth itself: it asks Core to start login, Core spawns the Provider Helper, the helper's `:1455` loopback handles the OpenAI callback and prints the credential JSON on stdout, and Core writes it. See the ADR-0014 amendment for the wire methods.
 

@@ -9,8 +9,9 @@ way to attach the same asset to more than the one message that birthed it.
 ## Decision
 
 Add a **media substrate** as a Core-internal create/read path, mirroring the
-Observation module's layering (`db/media.rs` facade + SQL in `db/queries.rs` +
-parse/digest in `media.rs`). Two new tier-2 tables:
+Observation module's layering (`db/media.rs` holds the facade plus parse/digest,
+with SQL in `db/queries.rs`). Two new tier-2 tables, added in the single
+`0001_initial.sql` migration:
 
 - `media` stores the metadata envelope: `mime`, `byte_size`, content `digest`,
   `storage_path` (relative to a media root), nullable `width`/`height`/

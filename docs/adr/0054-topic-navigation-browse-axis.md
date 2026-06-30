@@ -1,6 +1,6 @@
 # Topic navigation replaces the flat entity-type Library as the browse axis
 
-/ builds on [ADR-0031](./0031-gtd-todo-person-project-model.md), [ADR-0032](./0032-gtd-relations-on-entity-list.md), [ADR-0030](./0030-journal-entry-anchored-capture.md), [ADR-0050](./0050-entity-backlinks-read-seam.md), [ADR-0053](./0053-observation-records.md), [ADR-0042](./0042-url-addressable-threads.md), [ADR-0021](./0021-web-client-styling.md), [ADR-0007](./0007-local-first-single-user.md), [ADR-0004](./0004-three-tier-storage-authority.md)
+/ builds on [ADR-0031](./0031-gtd-todo-person-project-model.md), [ADR-0032](./0032-gtd-relations-on-entity-list.md), [ADR-0030](./0030-journal-entry-anchored-capture.md), [ADR-0050](./0050-entity-backlinks-read-seam.md), [ADR-0053](./0053-observation-records.md), [ADR-0061](./0061-url-addressable-threads.md), [ADR-0021](./0021-web-client-styling.md), [ADR-0007](./0007-local-first-single-user.md), [ADR-0004](./0004-three-tier-storage-authority.md)
 
 Inkstone has two independent axes (see `docs/plans/topics/MODEL.md`). The **capture
 axis** — `Chat → Journal → proposals → { entities, observations }` — is unchanged:
@@ -43,10 +43,9 @@ reads that already exist.
      every topic; it is not itself a type-filter.
    - **GTD** — Todo · Project · Person (via `todo_person_refs`). Action board / lists.
    - **Timeline** — Journal Entry · Person · Project, rendered chronologically.
-   - **Health** — observation streams (ADR-0053). Placeholder until #253; its
-     interior IA (the deferred questions below) is resolved in
-     `docs/plans/observation-ui/NAV.md`.
-   - **Media** — read/watch queue. Placeholder until #252.
+   - **Health** — observation streams (ADR-0053), live via `observation/query` (#253);
+     its interior IA is resolved in `docs/plans/observation-ui/NAV.md`.
+   - **Media** — read/watch queue, live as the `media`-kind collection (#252).
 
 2. **A topic is a client-side presentation/projection over the existing reads — NO
    backend or contract change.** Every topic view is computed in the web view-model
@@ -79,13 +78,17 @@ reads that already exist.
    the same Person under Timeline is an interaction history — one entity, two
    projections.
 
-5. **Health and Media are honest placeholders until their backing surfaces land.**
-   They ship as thin "coming soon" panels that link to their tracking issues — Health →
-   [#253](https://github.com/hongyilyu/inkstone/issues/253) (the Observations read
-   surface, ADR-0053, deferred) and Media → [#252](https://github.com/hongyilyu/inkstone/issues/252)
-   (the Bookmark→Media replacement, deferred). They render **no fake data**; an empty,
-   labelled stub that names its issue is more honest than a mocked dashboard, and it
-   reserves the topic's place in the nav so its arrival is additive, not a re-layout.
+5. **Health and Media are live surfaces.** Health (`HealthView`) is a calm,
+   day-grouped chronological stream of recorded observations read from the live
+   `observation/query` (via `useObservations`), with schema filter chips (ADR-0053,
+   [#253](https://github.com/hongyilyu/inkstone/issues/253)). Media is the live faceted
+   `EntityCollection` for the `media` kind (the Bookmark→Media replacement,
+   [#252](https://github.com/hongyilyu/inkstone/issues/252)). Both render **real data
+   only** — the original "coming soon" stub (`StubTopic`) is now orphaned dead code,
+   superseded by these surfaces. The earlier stance held: an empty, labelled stub that
+   names its issue was more honest than a mocked dashboard, and it reserved each topic's
+   place in the nav so its arrival was additive, not a re-layout — which is exactly how
+   both graduated to live.
 
 6. **"Library" is retired as a UI concept.** It was never a domain term — only a
    container that exposed the entity-type enum as navigation. The shell, the nav rows,
@@ -206,7 +209,7 @@ which is acceptable because that was a developer's view of the data, not a user'
   schemas, which is precisely what topics deliver). Tracked: [#253](https://github.com/hongyilyu/inkstone/issues/253).
   Health's interior IA (one schema-grouped surface, no per-schema nav) is resolved in
   `docs/plans/observation-ui/NAV.md`.
-- [ADR-0042](./0042-url-addressable-threads.md) — the `_chat` / `library` layout-route
+- [ADR-0061](./0061-url-addressable-threads.md) — the `_chat` / `library` layout-route
   pattern (`WorkspaceShell` + `<Outlet/>`, children read params/search) the topic routes
   follow.
 - [ADR-0057](./0057-backend-timeline-read-model.md) — the backend timeline read model.

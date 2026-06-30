@@ -89,7 +89,7 @@ function makeStubRuntime(opts: {
 }
 
 /**
- * Mount ChatColumn focused on `threadId` (its route is `/thread/<id>`, ADR-0042).
+ * Mount ChatColumn focused on `threadId` (its route is `/thread/<id>`, ADR-0061).
  * `focusedMessageId` appends the `?focusedMessageId=` deep-link search param.
  */
 function renderFocused(
@@ -385,7 +385,7 @@ describe("ChatColumn", () => {
 			assistantBubble.closest('[data-role="assistant"]'),
 		).toBeInTheDocument();
 
-		// Mint-on-send navigates to the new thread's URL (ADR-0042) — focus is the route.
+		// Mint-on-send navigates to the new thread's URL (ADR-0061) — focus is the route.
 		await waitFor(() => {
 			expect(router.state.location.pathname).toBe("/thread/thread-new");
 		});
@@ -749,7 +749,7 @@ describe("ChatColumn", () => {
 			run_id: "r-deep",
 		});
 
-		// A ⌘K hit deep-linked to the message via ?focusedMessageId= (ADR-0042).
+		// A ⌘K hit deep-linked to the message via ?focusedMessageId= (ADR-0061).
 		const { router } = await renderFocused(runtime, "threadA", {
 			focusedMessageId: "a-deep",
 		});
@@ -887,7 +887,7 @@ describe("ChatColumn", () => {
 		}
 	});
 
-	it("scrolls to the bottom on cold-load when no anchor is set (ADR-0042)", async () => {
+	it("scrolls to the bottom on cold-load when no anchor is set (ADR-0061)", async () => {
 		// jsdom has no layout, so stub a non-zero scrollHeight and capture scrollTop
 		// writes — the cold-load effect pins scrollTop to scrollHeight.
 		const setScrollTop = vi.fn();

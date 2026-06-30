@@ -45,7 +45,7 @@ export function ChatColumn() {
 	const runtime = useRuntime();
 	const queryClient = useQueryClient();
 	const navigate = useNavigate();
-	// The focused Thread is the route (ADR-0042): `/thread/$threadId` carries the
+	// The focused Thread is the route (ADR-0061): `/thread/$threadId` carries the
 	// id, `/` (welcome) has none. `strict: false` lets one component serve both —
 	// the Library reads its `$kind` the same way (routes/library/route.tsx).
 	const { threadId } = useParams({ strict: false });
@@ -58,7 +58,7 @@ export function ChatColumn() {
 	const [sendError, setSendError] = useState<string | null>(null);
 	// The Message a ⌘K search hit jumped to (issue #138): scrolled into view and
 	// briefly ringed once its row is in the DOM. The URL search param is the
-	// pending jump (ADR-0042); `highlightId` is the transient visual that lingers
+	// pending jump (ADR-0061); `highlightId` is the transient visual that lingers
 	// ~1.6s then fades. `strict: false` so the / (welcome) route — which has no
 	// search schema — reads `undefined` rather than throwing.
 	const { focusedMessageId } = useSearch({ strict: false }) as {
@@ -74,7 +74,7 @@ export function ChatColumn() {
 	const hydrationFailed =
 		focusedThreadId !== null && noMessages && hydration === "error";
 	// A Thread the URL points at that Core says doesn't exist (stale shared link,
-	// deleted Thread): an honest dead-end, not a retry (ADR-0042). `noMessages` is
+	// deleted Thread): an honest dead-end, not a retry (ADR-0061). `noMessages` is
 	// not required — a missing Thread never has messages — but keeps the branch
 	// symmetric with the others.
 	const threadNotFound =
@@ -94,7 +94,7 @@ export function ChatColumn() {
 
 	// The thread whose initial scroll has already been placed — guards the
 	// cold-load bottom-scroll so it fires once per thread-load, not on every
-	// streamed delta (ADR-0042). The anchor effect below also stamps it, so a
+	// streamed delta (ADR-0061). The anchor effect below also stamps it, so a
 	// consumed deep-link counts as that thread's initial scroll and the bottom
 	// effect can't clobber the just-completed jump.
 	const initialScrollThread = useRef<string | null>(null);
@@ -108,7 +108,7 @@ export function ChatColumn() {
 	// same thread still jumps, while a strip-window re-fire (same id) does not.
 	const scrolledAnchorId = useRef<string | null>(null);
 
-	// Cold-load / thread-switch lands at the latest message (ADR-0042). The old
+	// Cold-load / thread-switch lands at the latest message (ADR-0061). The old
 	// mount-only scroll no-op'd on a cold thread (messages arrive AFTER mount), so
 	// reloading onto a long thread used to land at the top. Pin to the bottom when
 	// the thread's messages first render — UNLESS a `?focusedMessageId` anchor is
@@ -134,7 +134,7 @@ export function ChatColumn() {
 	// lets the cold-thread path fire once history arrives.
 	useEffect(() => {
 		if (focusedMessageId === undefined || focusedThreadId === null) return;
-		// Consume-then-strip (ADR-0042): drop the param so a reload/re-render can't
+		// Consume-then-strip (ADR-0061): drop the param so a reload/re-render can't
 		// re-fire the jump, replacing (not pushing) so Back doesn't land un-stripped.
 		const stripAnchor = () =>
 			navigate({
@@ -319,7 +319,7 @@ export function ChatColumn() {
 							);
 						}
 					} else {
-						// Mint-on-send: thread focus is the URL (ADR-0042), so on success
+						// Mint-on-send: thread focus is the URL (ADR-0061), so on success
 						// navigate to the new thread's route. The thread is pre-seeded and
 						// marked `ready`, so the post-navigate remount reads it without a
 						// re-hydrate; on failure stay on `/` and surface the error.
@@ -383,7 +383,7 @@ function ChatHydrationError({ onRetry }: { onRetry: () => void }) {
 }
 
 /** Shown while a selected thread hydrates: placeholder bubbles, not a spinner. */
-/** A Thread the URL points at that Core says doesn't exist (ADR-0042): an honest
+/** A Thread the URL points at that Core says doesn't exist (ADR-0061): an honest
  *  dead-end with a Back-to-New-Chat exit — mirrors the Library's "Unknown
  *  collection" card. NOT a retry: a missing Thread can't be re-fetched into being. */
 function ChatThreadNotFound({ onNewChat }: { onNewChat: () => void }) {

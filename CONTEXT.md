@@ -36,7 +36,7 @@ _Avoid_: auth helper, login worker, oauth client.
 ### Execution
 
 **Thread**:
-A durable conversation, scoped to a Workspace. Contains one or more Runs. The unit a user returns to when continuing a prior topic. Individually addressable: the Web Client encodes the focused Thread in the URL as `/thread/<threadId>` (ADR-0042), so a Thread survives reload and is shareable/bookmarkable; an optional `?focusedMessageId=` anchors a specific Message on arrival.
+A durable conversation, scoped to a Workspace. Contains one or more Runs. The unit a user returns to when continuing a prior topic. Individually addressable: the Web Client encodes the focused Thread in the URL as `/thread/<threadId>` (ADR-0061), so a Thread survives reload and is shareable/bookmarkable; an optional `?focusedMessageId=` anchors a specific Message on arrival.
 
 **Run**:
 One user request handled end-to-end within a Thread. Durable, cancellable, individually addressable. A Run contains one or more Turns and concludes with a final assistant response, an error, or cancellation.

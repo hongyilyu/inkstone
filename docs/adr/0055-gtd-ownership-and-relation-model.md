@@ -25,28 +25,28 @@ unit tests so the boundaries cannot silently drift.
 
 The `entities` row (`crates/core/migrations/0001_initial.sql:129`) owns Todo,
 Project, and Person *identity*: `id`, `type`, `data`, and the create/update
-timestamps. `todo_person_refs` (`0001_initial.sql:242`) is the **only** first-class
+timestamps. `todo_person_refs` (`0001_initial.sql:311`) is the **only** first-class
 GTD relation table — at most one row per `(todo_id, person_id)`, with both
 `todo_id` and `person_id` FKs declared `ON DELETE CASCADE`
-(`0001_initial.sql:243-244`).
+(`0001_initial.sql:312-313`).
 
 Everything else is a field inside the entity `data` JSON, not a column and not a
 table:
 
 - Todo: `project_id`, `defer_at`, `due_at`, `recurrence`, `status` and its
   `completed_at` / `dropped_at` timestamps — validated as a whole by
-  `validate_todo_data` (`crates/core/src/entities.rs:774`).
+  `validate_todo_data` (`crates/core/src/entities.rs:802`).
 - Project: `status` and its `completed_at` / `dropped_at`, plus
   `review_every` / `next_review_at` / `last_reviewed_at` — validated by
-  `validate_project_data` (`crates/core/src/entities.rs:562`).
+  `validate_project_data` (`crates/core/src/entities.rs:590`).
 
 **Why `project_id` is JSON, not an FK column.** Because `project_id` is not a real
 foreign key, no pool-level (pre-write) validation can guarantee the named Project
 still exists at write time. The apply path therefore **re-checks** the link inside
 the open transaction — `recheck_todo_project_link`
-(`crates/core/src/db/apply.rs:268`; the WHY is documented at `apply.rs:254`) — and a
+(`crates/core/src/db/apply.rs:270`; the WHY is documented at `apply.rs:256`) — and a
 Project delete is a **hand-rolled JSON cascade** (`DeleteProject`,
-`apply.rs:841`) rather than a database `ON DELETE`. This is the deliberate cost of
+`apply.rs:843`) rather than a database `ON DELETE`. This is the deliberate cost of
 keeping the column in JSON. Promoting `project_id` to a real FK column is a
 breaking migration, deferred to Follow-ups.
 
@@ -54,8 +54,8 @@ breaking migration, deferred to Follow-ups.
 
 `entity/list` is the **canonical** GTD relation read. A Todo row carries its Person
 References as the wire field `EntityRow.person_refs`
-(`crates/core/src/protocol.rs:560`), hydrated from `todo_person_refs` by
-`entity_row_to_wire` (`crates/core/src/runs/entity.rs:41`); the Todo's owning
+(`crates/core/src/protocol.rs:607`), hydrated from `todo_person_refs` by
+`entity_row_to_wire` (`crates/core/src/runs/entity.rs:22`); the Todo's owning
 Project rides in the same row's `data` as `project_id`. Clients **derive** the
 transitive Project↔Person↔Todo relations locally from the single load-all batch
 (ADR-0032). This pair — canonical list read plus client-side derivation — is the
@@ -74,32 +74,32 @@ The guarantees the model holds, each with its enforcing anchor:
 
 - **Status↔timestamp.** A `completed` Project requires `completed_at` and forbids
   `dropped_at`; `dropped` is the mirror; `active`/`on_hold` forbid both —
-  `project_status_timestamp_invariant` (`crates/core/src/entities.rs:578`). The
+  `project_status_timestamp_invariant` (`crates/core/src/entities.rs:606`). The
   parallel Todo invariant (`active` has no `on_hold`, otherwise the same shape)
-  lives in `todo_status_timestamp_invariant` (`entities.rs:789`).
+  lives in `todo_status_timestamp_invariant` (`entities.rs:817`).
 - **At most one ref per `(todo_id, person_id)`, with `waiting_on ⊇ related`.** A
   `related` ref never downgrades an existing `waiting_on`. De-dup is in
-  `deduped_refs` (`apply.rs:216` — `waiting_on` wins; first-seen order preserved),
+  `deduped_refs` (`apply.rs:218` — `waiting_on` wins; first-seen order preserved),
   applied across both `set` and `add` (`apply.rs:293`), and the persistence-level
   upsert keeps the same rule (`upsert_todo_person_ref` SQL: `role = CASE WHEN
   todo_person_refs.role = 'waiting_on' THEN 'waiting_on' ELSE excluded.role END`).
 - **Recurrence successor fires once, carries refs.** A successor spawns ONLY on the
-  `active → completed` transition (`apply.rs:386`), so a re-save of an
+  `active → completed` transition (`apply.rs:388`), so a re-save of an
   already-completed Todo never re-spawns. The successor carries every Todo Person
   Reference forward, role preserved (`apply.rs:463`).
 
 ### 4. Proposal update/delete for GTD
 
 - **`update_todo` ref-op precedence** is `set_person_refs` → `add_person_refs` →
-  `remove_person_ids` (`apply.rs:363-378`, documented at `apply.rs:293`):
+  `remove_person_ids` (`apply.rs:364-380`, documented at `apply.rs:293`):
   `set_person_refs` is a wholesale full replace (delete-all, then insert the deduped
   set); `add_person_refs` upserts each ref (upgrade `related`→`waiting_on`, never the
   reverse); `remove_person_ids` deletes each named pair.
 - **`delete_project`** unsets `project_id` on every owning Todo (the JSON cascade,
-  `apply.rs:841`) and leaves each Todo's `title`/`note` and its `todo_person_refs`
+  `apply.rs:843`) and leaves each Todo's `title`/`note` and its `todo_person_refs`
   rows intact.
 - **`delete_person`** removes the Person entity; its `todo_person_refs` rows
-  cascade away via the FK `ON DELETE CASCADE` (`0001_initial.sql:243`), with no
+  cascade away via the FK `ON DELETE CASCADE` (`0001_initial.sql:313`), with no
   explicit ref-delete SQL in apply.
 
 ## Invariants pinned by tests
@@ -107,9 +107,9 @@ The guarantees the model holds, each with its enforcing anchor:
 Five unit tests pin the boundaries above. Two already exist (already-passing pins,
 not added by this ADR):
 
-- `successor_carries_refs_and_inherits_proposal_authorship` (`apply.rs:1844`) — the
+- `successor_carries_refs_and_inherits_proposal_authorship` (`apply.rs:1865`) — the
   active→completed successor carries refs forward, role preserved.
-- `re_saving_completed_recurring_todo_spawns_no_second_successor` (`apply.rs:2038`)
+- `re_saving_completed_recurring_todo_spawns_no_second_successor` (`apply.rs:2059`)
   — re-saving an already-completed recurring Todo spawns no second successor.
 
 Three are added by this ADR's slice:
@@ -128,7 +128,7 @@ Three are added by this ADR's slice:
   field to a real `entities`-adjacent FK column (or a Todo↔Project join table) is a
   breaking migration. This ADR **files** it as a follow-up and does **not** perform
   it. Doing so would let the database enforce the cascade currently hand-rolled at
-  `apply.rs:841` and drop the in-transaction recheck at `apply.rs:268`. This is
+  `apply.rs:843` and drop the in-transaction recheck at `apply.rs:270`. This is
   issue #261's "Identified follow-up migrations" acceptance criterion.
 - Generic Tags/Contexts (where/tool/energy) and subtasks/action groups remain
   deferred and are already tracked under ADR-0031's "Deferred" section.

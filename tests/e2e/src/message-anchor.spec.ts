@@ -10,7 +10,7 @@ import { dbPathFor, seedEntities, sqlite } from "./seed.js";
  *   web codec (`parseSource` surfaces `messageId`) →
  *   EntityDetail "Captured from" navigate with `?focusedMessageId` (slice 2 UI) →
  *   ChatColumn's existing scroll / lamplight-highlight / consume-then-strip
- *   machinery (already shipped for ⌘K message search, ADR-0042).
+ *   machinery (already shipped for ⌘K message search, ADR-0061).
  * The unit/component suites cover each hop alone; only this spec proves the wire.
  *
  * We seed six filler messages FIRST and the TARGET last, in a SHORT (600px)
@@ -102,7 +102,7 @@ test("a Captured-from link deep-links to the exact capturing message, highlighte
 	await expect(target.locator("[data-highlighted]")).toHaveCount(1);
 	await expect(target).toBeInViewport();
 
-	// Consume-then-strip (ADR-0042): once consumed, the anchor is gone from the URL,
+	// Consume-then-strip (ADR-0061): once consumed, the anchor is gone from the URL,
 	// so a reload or Back can't re-fire the jump.
 	await expect.poll(() => chat.search()).toBe("");
 });

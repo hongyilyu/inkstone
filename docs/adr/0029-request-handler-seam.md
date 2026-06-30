@@ -6,9 +6,9 @@ UUID-bearing params are typed as `Uuid` **at decode** (not `String` parsed insid
 
 ## Scope
 
-The ~12 **request→response** methods, the ones whose whole job is "one request in, one Response out":
+The ~20 **request→response** methods, the ones whose whole job is "one request in, one Response out":
 
-`run/post_message`, `run/cancel`, `thread/create`, `thread/list`, `thread/get`, `entity/list`, `proposal/get`, `provider/status`, `model/catalog`, `settings/get`, `settings/set`, `provider/login_start`.
+e.g. `run/post_message`, `run/cancel`, `thread/create`, `thread/list`, `thread/get`, `entity/list`, `proposal/get`, `provider/status`, `model/catalog`, `settings/get`, `settings/set`, `provider/login_start`.
 
 Two methods are **deliberately out** (see below): `run/subscribe` and `proposal/decide`.
 
@@ -26,7 +26,7 @@ Two methods are **deliberately out** (see below): `run/subscribe` and `proposal/
 
 ## Why a combinator, not a handler trait or a router framework
 
-The 12 methods are statically known and live behind one loopback WebSocket ([ADR-0014](./0014-client-core-wire-protocol.md)). A generic higher-order function (`handle<P, S>`) monomorphizes per method — zero-cost, each handler stays a plain `async fn`, and the dispatch `match` in `runs/mod.rs` stays a readable table. A `trait Handler` + `dyn` registry, or an extractor/router framework in the shape of axum/tower, would add runtime dispatch and a registration concept to buy flexibility nothing here needs — the indirection-without-leverage [ADR-0026](./0026-worker-transport-seam.md) is wary of. If a method count or a middleware need ever justifies a router, the combinator does not preclude one; none is built now.
+The ~20 methods are statically known and live behind one loopback WebSocket ([ADR-0014](./0014-client-core-wire-protocol.md)). A generic higher-order function (`handle<P, S>`) monomorphizes per method — zero-cost, each handler stays a plain `async fn`, and the dispatch `match` in `runs/mod.rs` stays a readable table. A `trait Handler` + `dyn` registry, or an extractor/router framework in the shape of axum/tower, would add runtime dispatch and a registration concept to buy flexibility nothing here needs — the indirection-without-leverage [ADR-0026](./0026-worker-transport-seam.md) is wary of. If a method count or a middleware need ever justifies a router, the combinator does not preclude one; none is built now.
 
 ## What stays out (deliberately not wrapped)
 
@@ -37,7 +37,7 @@ The 12 methods are statically known and live behind one loopback WebSocket ([ADR
 
 Both still benefit from the typed-id decode: their params are `Uuid`-typed like the rest, so a malformed id fails at decode.
 
-**Refinement — `proposal/decide` stays out of the combinator but gets its own deep interface.** Out of the combinator is not the same as hand-rolled. The transaction moves into a deep `crate::decide` module: `decide::apply(pool, proposal_id, decision, edited_payload, idempotency_key, resume) -> Result<DecideOutcome, DecideError>`, where `DecideOutcome` is `Accepted{run_id, entity_id}` / `Rejected{run_id}` and `DecideError` carries the negative outcomes — `LostRace` (the guarded-flip-lost race, was `db::ApplyError::NotPending`), `NotDecidable` and `Invalid` (collapsing to `-32002` / `-32602` on the wire), and `Internal`. The module owns idempotency, the guarded apply/reject, and the resume + still-parked recovery as **one** path — collapsing the two duplicated recover-then-resume copies the hand-rolled handler carried. `runs/proposal.rs::handle_decide` becomes a thin shell — decode → `decide::apply` → map `DecideError`→`HandlerError` at a **single** framing site → push `proposal/changed` — so the one-framing-site discipline the combinator gives the wrapped methods now holds here too, by hand. The resume step is injected as a closure (`worker::resume` in production) so `decide` takes no dependency on the `worker` subsystem and its logic is assertable as a value against a `:memory:` pool. `run/subscribe`'s body stays hand-written.
+**Refinement — `proposal/decide` stays out of the combinator but gets its own deep interface.** Out of the combinator is not the same as hand-rolled. The transaction moves into a deep `crate::decide` module: `decide::apply(pool, proposal_id, decision, edited_payload, decisions, idempotency_key, resume) -> Result<DecideOutcome, DecideError>`, where `DecideOutcome` is `Accepted{run_id, entity_id}` / `Rejected{run_id}` and `DecideError` carries the negative outcomes — `LostRace` (the guarded-flip-lost race, was `db::ApplyError::NotPending`), `NotDecidable` and `Invalid` (collapsing to `-32002` / `-32602` on the wire), and `Internal`. The module owns idempotency, the guarded apply/reject, and the resume + still-parked recovery as **one** path — collapsing the two duplicated recover-then-resume copies the hand-rolled handler carried. `runs/proposal.rs::handle_decide` becomes a thin shell — decode → `decide::apply` → map `DecideError`→`HandlerError` at a **single** framing site → push `proposal/changed` — so the one-framing-site discipline the combinator gives the wrapped methods now holds here too, by hand. The resume step is injected as a closure (`worker::resume` in production) so `decide` takes no dependency on the `worker` subsystem and its logic is assertable as a value against a `:memory:` pool. `run/subscribe`'s body stays hand-written.
 
 ## Why type ids at decode, not parse them in the body
 
@@ -64,9 +64,9 @@ The combinator's success path is also non-panicking: a result that fails to seri
 
 ## Considered and rejected
 
-- **Validate ids inside each body (C1).** Keeps `protocol.rs` a pure wire mirror and preserves per-field messages, but leaves the error-code choice in every handler — exactly what drifted. Rejected: the guard belongs at decode, not in 12 places that must each remember it.
+- **Validate ids inside each body (C1).** Keeps `protocol.rs` a pure wire mirror and preserves per-field messages, but leaves the error-code choice in every handler — exactly what drifted. Rejected: the guard belongs at decode, not in ~20 places that must each remember it.
 - **Wrap all 14 methods, including `run/subscribe` and `proposal/decide`.** Rejected: they are streams / idempotent multi-step transactions, not one-Response calls; forcing them through the combinator would either break their shape or bloat it with streaming and idempotency concerns they alone need.
-- **A handler `trait` + `dyn` registry, or a router/extractor framework.** Rejected: runtime dispatch and a registration concept for 12 statically-known methods on one socket — indirection without leverage ([ADR-0026](./0026-worker-transport-seam.md)). The combinator stays a monomorphized HOF.
+- **A handler `trait` + `dyn` registry, or a router/extractor framework.** Rejected: runtime dispatch and a registration concept for ~20 statically-known methods on one socket — indirection without leverage ([ADR-0026](./0026-worker-transport-seam.md)). The combinator stays a monomorphized HOF.
 - **A separate "validated params" layer distinct from the wire structs.** A second type per method that the wire struct decodes into. Rejected: a type per method for little gain at this size; type the wire struct's id field directly.
 - **Keep the per-handler `send_*` calls, only dedupe the UUID parse.** Rejected: leaves each handler choosing its error framer, so the drift stays possible.
 - **Return Core's internal error detail to the client.** Rejected: leaks SQL and function names over the wire for information the client cannot use; full detail is logged server-side instead.

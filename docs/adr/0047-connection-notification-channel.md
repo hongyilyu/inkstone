@@ -34,11 +34,13 @@ subscription. So it has no existing path to any connected Client.
 
 This is the first of a *family* of run-less deliveries Core will need — a
 detached task finishes and the **waiting** connection wants the result. The
-strongest near-term sibling is **provider OAuth completion**
-(`provider.rs:162`), which today literally says *"the Client learns the outcome
-by re-querying `provider/status` on focus."* Cross-tab sync (entity / thread /
+strongest near-term sibling was **provider OAuth completion**
+(`provider.rs`), whose handler then said *"the Client learns the outcome by
+re-querying `provider/status` on focus"* — now shipped as the second consumer
+(ADR-0049). Cross-tab sync (entity / thread /
 settings changed in another tab) is a further, weaker member. This ADR
-establishes the channel; only `thread/titled` ships on it now.
+establishes the channel; `thread/titled` ships on it here, and provider OAuth
+completion (ADR-0049) followed as the second consumer.
 
 ## Decision
 
@@ -131,7 +133,7 @@ establishes the channel; only `thread/titled` ships on it now.
   (it rides a subscription; this rides the bare connection).
 - [ADR-0009](./0009-protocol-strategy.md) — the wire protocol + the
   contract-parity gate the new notification crosses.
-- Follow-ups (zero code here): provider OAuth-connected notification (the
-  strongest future consumer); the title transient-failure retry/regenerate
+- [ADR-0049](./0049-provider-connected-notification.md) — the second consumer: provider OAuth completion now rides this channel (the sibling this ADR named).
+- Follow-ups (zero code here): the title transient-failure retry/regenerate
   affordance (issue #206 deferred item 2); global broadcast / true multi-tab
   live sync.

@@ -7,6 +7,8 @@ The Web Client's static assets (HTML, JS bundle, CSS, images) reach the browser 
 
 In both cases, Core's HTTP+WebSocket server is unchanged. Only the source of the SPA bytes differs.
 
+> **As built (HEAD): the embedded-SPA production path is not yet implemented.** Core does not depend on `rust-embed`; nothing is embedded at compile time. The release binary (`!debug_assertions`) ignores `INKSTONE_WEB_DIR` and serves `GET /` as a bare `"Inkstone Core"` liveness string, not the SPA (`crates/core/src/main.rs`, `web_dir_for_serving`). The only SPA-serving path that exists today is the *debug-only* `INKSTONE_WEB_DIR` → `ServeDir`/`ServeFile` from disk — i.e. the "serve from `dist/` on disk" option this ADR considers and rejects below — used in dev (ADR-0019). The sections below describe the intended end state; the embed step still has to be built. Until then, the "version mismatch impossible by construction" guarantee does not yet hold.
+
 ## How the production listener routes requests
 
 Core opens a single TCP listener on `127.0.0.1:PORT`. The HTTP server handles:

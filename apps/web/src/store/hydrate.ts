@@ -189,7 +189,7 @@ export function hydrateThread(
 	}).pipe(
 		// Two deterministic dead-ends map to `not_found` (an honest "thread isn't
 		// available" state with a Back-to-New-Chat exit, never a retry that can't
-		// succeed — ADR-0042 B-additive): a genuinely missing Thread (Core `-32001`
+		// succeed — ADR-0061 B-additive): a genuinely missing Thread (Core `-32001`
 		// → UnknownThreadError) and a malformed thread id (Core `-32602` →
 		// InvalidParamsError, e.g. a typo'd or truncated shared `/thread/<bad>` link —
 		// the id is arbitrary URL input the route does not pre-validate). Both fail
