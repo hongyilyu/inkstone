@@ -13,7 +13,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { StreamFn } from "@earendil-works/pi-agent-core";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import type {
 	CoreToolDescriptor,
@@ -304,11 +303,11 @@ function defaultRealDeps(): InterpreterDeps {
 			}
 			return model;
 		},
-		streamFn: ((model, context, options) =>
+		streamFn: (model, context, options) =>
 			models.streamSimple(model, context, {
 				...options,
 				temperature: 0,
-			})) as StreamFn,
+			}),
 	};
 }
 

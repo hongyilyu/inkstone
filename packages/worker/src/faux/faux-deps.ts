@@ -6,7 +6,9 @@ import type { InterpreterDeps } from "../interpreter.js";
 // so the stream fn must dispatch through a `Models` collection that owns it
 // (the old top-level `streamSimple` had a global registry to find it; the modern
 // one does not). `resolveModel`/`streamFn` mirror `defaultInterpreterDeps`, but
-// over a single faux provider instead of the built-in catalog.
+// over a single faux provider: `createModels()` (an EMPTY collection) holds only
+// `faux.provider`, not `builtinModels()`'s real catalog — the deliberate
+// asymmetry that keeps the faux model the only one this seam can resolve.
 //
 // One seam shared by the faux Worker entry (`faux-worker.ts`) and every
 // faux-driven test (interpreter/tool-proxy/eval), so the collection wiring lives

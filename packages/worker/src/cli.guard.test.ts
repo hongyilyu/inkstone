@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 // Production-entry guard: cli.ts must carry no faux/test-only provider code (ADR-0019) — see docs/design/worker-tests.md
 const BANNED = [
 	"INKSTONE_FAUX",
-	"registerFauxProvider",
+	"fauxProvider",
 	"fauxAssistantMessage",
 	"fauxToolCall",
 	"fauxDepsFor",
