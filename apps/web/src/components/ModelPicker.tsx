@@ -2,6 +2,7 @@ import { Popover } from "@base-ui-components/react/popover";
 import type { ModelInfo } from "@inkstone/protocol";
 import { Brain, Check, ChevronDown, Eye } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { filterEnabledModels } from "@/lib/enabledModels.js";
 import { cn } from "@/lib/utils.js";
 import { useRuntime } from "@/runtime";
 import { fetchCatalog, fetchSettings, saveSettings } from "@/store/settings";
@@ -52,9 +53,7 @@ export function ModelPicker() {
 	// unset→full-catalog default); a non-empty set lists only those ids.
 	const enabled = useMemo(() => {
 		if (enabledIds === null) return [];
-		if (enabledIds.length === 0) return models;
-		const allow = new Set(enabledIds);
-		return models.filter((m) => allow.has(m.id));
+		return filterEnabledModels(models, enabledIds);
 	}, [models, enabledIds]);
 
 	const visible = useMemo(() => {

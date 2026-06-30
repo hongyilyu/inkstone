@@ -15,7 +15,7 @@ use crate::{models, settings, workflow};
 /// Read the effective settings for the default Workflow: provider, preferred
 /// model (falling back to the per-provider default the resolver uses, mirroring
 /// effort), global effort, and the enabled-model set (the stored curation, else
-/// the full catalog).
+/// the empty "uncurated = all enabled" sentinel — never the materialized catalog).
 async fn current(pool: &SqlitePool) -> sqlx::Result<SettingsResult> {
     let wf = workflow::default_workflow();
     let model = settings::preferred_model(pool, &wf.name)

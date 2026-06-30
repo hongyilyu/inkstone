@@ -1,6 +1,7 @@
 import type { ModelInfo } from "@inkstone/protocol";
 import { Brain, Eye, Star } from "lucide-react";
 import { useId } from "react";
+import { isModelEnabled } from "@/lib/enabledModels.js";
 import { cn } from "@/lib/utils.js";
 import { Badge } from "./ui/badge.js";
 
@@ -27,10 +28,10 @@ export function ModelCatalogTable({
 	onToggleEnabled,
 }: ModelCatalogTableProps) {
 	const hintId = useId();
-	// An empty (or omitted) `enabledIds` means "no curation → all enabled" (ADR-0024).
-	const allEnabled = !enabledIds || enabledIds.length === 0;
-	const isEnabled = (id: string) =>
-		allEnabled || (enabledIds?.includes(id) ?? false);
+	// Membership follows the shared ADR-0024 rule: an empty (or omitted)
+	// `enabledIds` means "no curation → all enabled"; a non-empty set enables only
+	// its members.
+	const isEnabled = (id: string) => isModelEnabled(enabledIds ?? [], id);
 	if (models.length === 0) {
 		return (
 			<div className="rounded-md border border-input border-dashed px-3 py-8 text-center text-muted-foreground text-sm">
