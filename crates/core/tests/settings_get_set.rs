@@ -204,6 +204,97 @@ fn settings_get_enabled_models_returns_stored_set() {
 }
 
 #[test]
+fn settings_set_enabled_models_persists_and_enforces_default_membership() {
+    // `settings/set` accepts an `enabled_models` set, round-trips it, and rejects
+    // (invalid_params, no write) any update whose effective preferred model would
+    // not be a member of the effective enabled set (ADR-0024).
+    let workspace = Workspace::new();
+    let core = workspace.core().spawn();
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime builds");
+
+    rt.block_on(async {
+        let mut ws = core.connect().await;
+
+        // (a) A set INCLUDING the current default (gpt-5.5) succeeds; the effective
+        // model stays a member of the new enabled set. Round-trips via settings/get.
+        let set = request(
+            &mut ws,
+            1,
+            "settings/set",
+            serde_json::json!({ "enabled_models": ["gpt-5.4", "gpt-5.5"] }),
+        )
+        .await;
+        assert_eq!(
+            set["result"]["enabled_models"],
+            serde_json::json!(["gpt-5.4", "gpt-5.5"]),
+            "set echoes the persisted enabled_models: {set}"
+        );
+        let got = request(&mut ws, 2, "settings/get", serde_json::json!({})).await;
+        assert_eq!(
+            got["result"]["enabled_models"],
+            serde_json::json!(["gpt-5.4", "gpt-5.5"]),
+            "enabled_models round-trips via settings/get: {got}"
+        );
+
+        // (b) A set EXCLUDING the current default (gpt-5.5) → invalid_params, and the
+        // prior enabled_models stands (nothing persisted).
+        let bad = request(
+            &mut ws,
+            3,
+            "settings/set",
+            serde_json::json!({ "enabled_models": ["gpt-5.4"] }),
+        )
+        .await;
+        assert_eq!(
+            bad["error"]["code"],
+            serde_json::json!(-32602),
+            "enabled set excluding the default model is rejected: {bad}"
+        );
+        let got2 = request(&mut ws, 4, "settings/get", serde_json::json!({})).await;
+        assert_eq!(
+            got2["result"]["enabled_models"],
+            serde_json::json!(["gpt-5.4", "gpt-5.5"]),
+            "rejected enabled_models persisted nothing: {got2}"
+        );
+
+        // (c) Setting a model NOT in the stored enabled_models (gpt-5.5/gpt-5.4)
+        // → invalid_params: the effective model would fall outside the enabled set.
+        let bad_model = request(
+            &mut ws,
+            5,
+            "settings/set",
+            serde_json::json!({ "model": "gpt-5.1" }),
+        )
+        .await;
+        assert_eq!(
+            bad_model["error"]["code"],
+            serde_json::json!(-32602),
+            "model outside the stored enabled set is rejected: {bad_model}"
+        );
+
+        // (d) An enabled_models member that is not a known catalog id → invalid_params.
+        let bad_id = request(
+            &mut ws,
+            6,
+            "settings/set",
+            serde_json::json!({ "enabled_models": ["gpt-5.5", "totally-not-a-model"] }),
+        )
+        .await;
+        assert_eq!(
+            bad_id["error"]["code"],
+            serde_json::json!(-32602),
+            "unknown enabled_models member is rejected: {bad_id}"
+        );
+
+        ws.close(None).await.ok();
+    });
+}
+
+#[test]
 fn settings_set_malformed_params_rejected() {
     let workspace = Workspace::new();
     let core = workspace.core().spawn();

@@ -77,8 +77,46 @@ pub(super) async fn handle_set(
                 return Err(HandlerError::InvalidParams(format!("invalid effort {effort:?}")));
             }
         }
+        if let Some(ref enabled) = params.enabled_models {
+            if let Some(unknown) = enabled.iter().find(|m| !models::is_known_model(m)) {
+                return Err(HandlerError::InvalidParams(format!(
+                    "unknown enabled model {unknown:?}"
+                )));
+            }
+        }
 
         let wf = workflow::default_workflow();
+
+        // The effective post-merge enabled set: a submitted set replaces the stored
+        // curation, else the stored-or-full-catalog default holds.
+        let effective_enabled = match params.enabled_models.clone() {
+            Some(enabled) => enabled,
+            None => settings::enabled_models(pool)
+                .await
+                .map_err(|e| HandlerError::Internal(e.into()))?
+                .unwrap_or_else(all_catalog_model_ids),
+        };
+
+        // The effective preferred model: a submitted model wins, else the stored
+        // preference, else the per-provider default the resolver falls back to.
+        let effective_model = match params.model.clone() {
+            Some(model) => Some(model),
+            None => settings::preferred_model(pool, &wf.name)
+                .await
+                .map_err(|e| HandlerError::Internal(e.into()))?
+                .or_else(|| models::default_model(&wf.provider).map(str::to_string)),
+        };
+
+        // The default must stay a member of the enabled set (ADR-0024). A provider
+        // with no effective default has nothing to enforce.
+        if let Some(ref model) = effective_model {
+            if !effective_enabled.iter().any(|m| m == model) {
+                return Err(HandlerError::InvalidParams(format!(
+                    "effective model {model:?} is not in the enabled set"
+                )));
+            }
+        }
+
         if let Some(ref model) = params.model {
             settings::set_preferred_model(pool, &wf.name, model)
                 .await
@@ -86,6 +124,11 @@ pub(super) async fn handle_set(
         }
         if let Some(ref effort) = params.effort {
             settings::set_effort(pool, effort)
+                .await
+                .map_err(|e| HandlerError::Internal(e.into()))?;
+        }
+        if let Some(ref enabled) = params.enabled_models {
+            settings::set_enabled_models(pool, enabled)
                 .await
                 .map_err(|e| HandlerError::Internal(e.into()))?;
         }

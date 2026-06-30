@@ -823,10 +823,16 @@ export const SettingsResult = S.Struct({
 });
 export type SettingsResult = S.Schema.Type<typeof SettingsResult>;
 
-/** `settings/set` params: a partial update; an absent field is left unchanged. */
+/**
+ * `settings/set` params: a partial update; an absent field is left unchanged.
+ *
+ * `enabled_models` replaces the curated set of catalog model ids made available in chat (Core rejects with
+ * invalid_params if the effective default model is not a member of the effective enabled set).
+ */
 export const SettingsSetParams = S.Struct({
 	model: S.optional(S.String),
 	effort: S.optional(S.String),
+	enabled_models: S.optional(S.Array(S.String)),
 });
 export type SettingsSetParams = S.Schema.Type<typeof SettingsSetParams>;
 

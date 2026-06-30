@@ -1039,13 +1039,18 @@ pub struct SettingsResult {
 
 /// `settings/set` params (ADR-0024): a partial update. An absent field is left
 /// unchanged; a present `model` must be a known catalog id and a present
-/// `effort` a valid thinking level, else `invalid_params`.
+/// `effort` a valid thinking level, else `invalid_params`. A present
+/// `enabled_models` replaces the curated set; each member must be a known
+/// catalog id and the effective preferred model must remain a member, else
+/// `invalid_params`.
 #[derive(Debug, Deserialize)]
 pub struct SettingsSetParams {
     #[serde(default)]
     pub model: Option<String>,
     #[serde(default)]
     pub effort: Option<String>,
+    #[serde(default)]
+    pub enabled_models: Option<Vec<String>>,
 }
 
 /// One tool call inside an assistant manifest message (ADR-0025 resume).

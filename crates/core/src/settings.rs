@@ -78,7 +78,6 @@ pub async fn enabled_models(pool: &SqlitePool) -> sqlx::Result<Option<Vec<String
 
 /// Persist the enabled chat model set as a JSON-encoded array. The caller
 /// validates each id against the catalog first (ADR-0002).
-#[allow(dead_code)] // wired by the `settings/set` write path in slice 2
 pub async fn set_enabled_models(pool: &SqlitePool, models: &[String]) -> sqlx::Result<()> {
     let json = serde_json::to_string(models).map_err(|e| sqlx::Error::Encode(Box::new(e)))?;
     crate::db::set_setting(pool, ENABLED_MODELS_KEY, &json).await
