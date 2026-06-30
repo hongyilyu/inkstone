@@ -1,12 +1,19 @@
 import type { ModelInfo } from "@inkstone/protocol";
 import * as sdk from "@inkstone/ui-sdk";
 import { WsClient, type WsError } from "@inkstone/ui-sdk";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
 	createMemoryHistory,
 	createRouter,
 	RouterProvider,
 } from "@tanstack/react-router";
-import { cleanup, screen, waitFor, within } from "@testing-library/react";
+import {
+	cleanup,
+	render,
+	screen,
+	waitFor,
+	within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Effect, Layer, ManagedRuntime, Stream } from "effect";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -492,6 +499,71 @@ describe("Models settings page — provider/connected live push (ADR-0049)", () 
 		} finally {
 			spy.mockRestore();
 			window.removeEventListener("focus", focusSpy);
+		}
+	});
+
+	// renderPage builds its own internal QueryClient (renderWithQuery, no
+	// injection seam), so wrap with a test-owned client here to spy its
+	// invalidateQueries — the chat gate reads ["provider-status"].
+	function renderPageWithClient(
+		runtime: ReturnType<typeof makeFlippingRuntime>,
+		client: QueryClient,
+	) {
+		const router = createRouter({
+			routeTree,
+			history: createMemoryHistory({ initialEntries: ["/settings/models"] }),
+		});
+		render(
+			<QueryClientProvider client={client}>
+				<RuntimeProvider runtime={runtime}>
+					<RouterProvider router={router} />
+				</RuntimeProvider>
+			</QueryClientProvider>,
+		);
+	}
+
+	it("invalidates the ['provider-status'] query on the live push, so a mounted chat gate re-reads", async () => {
+		// Capture the page's "provider/connected" closure via the SDK seam.
+		let pushed: ((params: unknown) => void) | undefined;
+		const spy = vi
+			.spyOn(sdk, "setNotificationHandler")
+			.mockImplementation((method, handler) => {
+				if (method === "provider/connected") pushed = handler;
+			});
+
+		try {
+			const client = new QueryClient({
+				defaultOptions: { queries: { retry: false } },
+			});
+			const invalidateSpy = vi.spyOn(client, "invalidateQueries");
+
+			const runtime = makeFlippingRuntime();
+			renderPageWithClient(runtime, client);
+
+			// Let mount settle: the card first reports Not connected.
+			await waitFor(() =>
+				expect(screen.getByTestId("provider-status")).toHaveTextContent(
+					/not connected/i,
+				),
+			);
+
+			if (pushed === undefined) {
+				throw new Error(
+					'ModelsSettings did not register a "provider/connected" handler',
+				);
+			}
+
+			// Isolate the PUSH path from the mount-invalidate: clear, THEN fire.
+			invalidateSpy.mockClear();
+			pushed({ provider: "openai-codex" });
+
+			await waitFor(() =>
+				expect(invalidateSpy).toHaveBeenCalledWith(
+					expect.objectContaining({ queryKey: ["provider-status"] }),
+				),
+			);
+		} finally {
+			spy.mockRestore();
 		}
 	});
 

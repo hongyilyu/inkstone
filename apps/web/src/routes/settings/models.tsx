@@ -3,6 +3,7 @@ import {
 	clearNotificationHandler,
 	setNotificationHandler,
 } from "@inkstone/ui-sdk";
+import { useQueryClient } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { useCallback, useEffect, useState } from "react";
 import { EffortControl } from "@/components/EffortControl";
@@ -23,6 +24,7 @@ import { fetchCatalog, fetchSettings, saveSettings } from "@/store/settings";
 /** `/settings/models` (ADR-0024): provider connection, global effort control, and the catalog table with one Preferred model — persisted via `settings/*`, read from `model/catalog`. */
 function ModelsSettings() {
 	const runtime = useRuntime();
+	const queryClient = useQueryClient();
 	const [connected, setConnected] = useState<boolean | null>(null);
 	const [busy, setBusy] = useState(false);
 	const [models, setModels] = useState<readonly ModelInfo[]>([]);
@@ -62,7 +64,13 @@ function ModelsSettings() {
 		fetchConnected(runtime, PROVIDER_OPENAI_CODEX)
 			.then(setConnected)
 			.catch(() => setConnected(false));
-	}, [runtime]);
+		// The chat gate (connect welcome + composer soft-disable) reads
+		// ["provider-status"] via useProviderStatus. Invalidating here makes a
+		// connect propagate live to a still-mounted chat column, complementing the
+		// remount-refetch. This is the single chokepoint — mount, focus, and the
+		// `provider/connected` push all route through refreshConnected.
+		queryClient.invalidateQueries({ queryKey: ["provider-status"] });
+	}, [runtime, queryClient]);
 
 	// Clear the transient acknowledgement after a beat (both hooks + the connect flag).
 	const { clearStatus: clearEffortStatus } = effort;
