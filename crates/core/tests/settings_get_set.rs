@@ -13,18 +13,11 @@ use common::{Workspace, Ws, next_text};
 
 /// The full set of catalog model ids, mirroring `models::catalog()` flattened.
 /// Hand-listed so the test pins the catalog shape rather than re-deriving it.
-const ALL_CATALOG_IDS: &[&str] = &[
-    "gpt-5.1",
-    "gpt-5.1-codex-max",
-    "gpt-5.1-codex-mini",
-    "gpt-5.2",
-    "gpt-5.2-codex",
-    "gpt-5.3-codex",
-    "gpt-5.3-codex-spark",
-    "gpt-5.4",
-    "gpt-5.4-mini",
-    "gpt-5.5",
-];
+// The user-facing chat catalog (ADR-0024). pi-ai 0.80.2 (#292) curates
+// openai-codex down to a single selectable chat model; gpt-5.4-mini is
+// title-only and not in the user catalog. Keep this in lockstep with
+// crates/core/src/models/openai-codex.json.
+const ALL_CATALOG_IDS: &[&str] = &["gpt-5.5"];
 
 /// Open a migrated pool against the Workspace DB so a test can seed a setting
 /// row directly before Core spawns (mirrors `current_thread_journal_entries`).
@@ -183,7 +176,7 @@ fn settings_get_enabled_models_returns_stored_set() {
             "INSERT INTO settings (key, value) VALUES ('enabled_models', ?1) \
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         )
-        .bind(serde_json::json!(["gpt-5.4"]).to_string())
+        .bind(serde_json::json!(["gpt-5.5"]).to_string())
         .execute(&pool)
         .await
         .expect("seed enabled_models");
@@ -195,7 +188,7 @@ fn settings_get_enabled_models_returns_stored_set() {
         let got = request(&mut ws, 1, "settings/get", serde_json::json!({})).await;
         assert_eq!(
             got["result"]["enabled_models"],
-            serde_json::json!(["gpt-5.4"]),
+            serde_json::json!(["gpt-5.5"]),
             "stored enabled_models round-trips exactly: {got}"
         );
 
@@ -219,67 +212,62 @@ fn settings_set_enabled_models_persists_and_enforces_default_membership() {
     rt.block_on(async {
         let mut ws = core.connect().await;
 
+        // The pi-ai 0.80.2 (#292) openai-codex chat catalog ships a single
+        // selectable model (gpt-5.5), which is also the per-provider default. The
+        // membership invariant is exercised here with the cases that are provable
+        // against a one-model catalog: an enabled set containing the default, the
+        // empty set (which excludes the default), and an unknown member id. The
+        // "set a KNOWN non-default model outside the enabled set" case needs a
+        // second known catalog id and is unprovable until a second model/provider
+        // exists; the invariant's `effective_model ∈ effective_enabled` check
+        // covers it by construction (see crates/core/src/runs/settings.rs).
+
         // (a) A set INCLUDING the current default (gpt-5.5) succeeds; the effective
         // model stays a member of the new enabled set. Round-trips via settings/get.
         let set = request(
             &mut ws,
             1,
             "settings/set",
-            serde_json::json!({ "enabled_models": ["gpt-5.4", "gpt-5.5"] }),
+            serde_json::json!({ "enabled_models": ["gpt-5.5"] }),
         )
         .await;
         assert_eq!(
             set["result"]["enabled_models"],
-            serde_json::json!(["gpt-5.4", "gpt-5.5"]),
+            serde_json::json!(["gpt-5.5"]),
             "set echoes the persisted enabled_models: {set}"
         );
         let got = request(&mut ws, 2, "settings/get", serde_json::json!({})).await;
         assert_eq!(
             got["result"]["enabled_models"],
-            serde_json::json!(["gpt-5.4", "gpt-5.5"]),
+            serde_json::json!(["gpt-5.5"]),
             "enabled_models round-trips via settings/get: {got}"
         );
 
-        // (b) A set EXCLUDING the current default (gpt-5.5) → invalid_params, and the
-        // prior enabled_models stands (nothing persisted).
+        // (b) The EMPTY set excludes the current default (gpt-5.5) → invalid_params,
+        // and the prior enabled_models stands (nothing persisted).
         let bad = request(
             &mut ws,
             3,
             "settings/set",
-            serde_json::json!({ "enabled_models": ["gpt-5.4"] }),
+            serde_json::json!({ "enabled_models": [] }),
         )
         .await;
         assert_eq!(
             bad["error"]["code"],
             serde_json::json!(-32602),
-            "enabled set excluding the default model is rejected: {bad}"
+            "an enabled set excluding the default model is rejected: {bad}"
         );
         let got2 = request(&mut ws, 4, "settings/get", serde_json::json!({})).await;
         assert_eq!(
             got2["result"]["enabled_models"],
-            serde_json::json!(["gpt-5.4", "gpt-5.5"]),
+            serde_json::json!(["gpt-5.5"]),
             "rejected enabled_models persisted nothing: {got2}"
         );
 
-        // (c) Setting a model NOT in the stored enabled_models (gpt-5.5/gpt-5.4)
-        // → invalid_params: the effective model would fall outside the enabled set.
-        let bad_model = request(
-            &mut ws,
-            5,
-            "settings/set",
-            serde_json::json!({ "model": "gpt-5.1" }),
-        )
-        .await;
-        assert_eq!(
-            bad_model["error"]["code"],
-            serde_json::json!(-32602),
-            "model outside the stored enabled set is rejected: {bad_model}"
-        );
-
-        // (d) An enabled_models member that is not a known catalog id → invalid_params.
+        // (c) An enabled_models member that is not a known catalog id → invalid_params.
         let bad_id = request(
             &mut ws,
-            6,
+            5,
             "settings/set",
             serde_json::json!({ "enabled_models": ["gpt-5.5", "totally-not-a-model"] }),
         )

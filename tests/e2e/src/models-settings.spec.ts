@@ -56,13 +56,17 @@ test("Models settings: drill into a provider; effort persists and the default mo
 });
 
 /**
- * Closes the loop with slice 3: the per-provider detail lets the user toggle which
- * models are enabled for chat. Disabling a non-default model persists through
- * Core's `settings/set { enabled_models }` (round-trips across a reload) AND scopes
- * the composer's ModelPicker (the slice-3 consumer) so the disabled model vanishes
- * there. The current default (GPT-5.5) cannot be disabled — its toggle is locked.
+ * The per-provider detail lets the user toggle which models are enabled for chat,
+ * with the current default's toggle LOCKED so the default can never fall outside
+ * the enabled set (mirrors Core's default∈enabled invariant). The pi-ai 0.80.2
+ * (#292) openai-codex chat catalog ships a single selectable model (GPT-5.5),
+ * which is the default — so the provable end-to-end behavior is that the sole
+ * model is Preferred, enabled, and its disable toggle is locked. The
+ * disable-a-model → drops-from-composer-picker loop (slice 3 ↔ slice 5) needs a
+ * second selectable model and is exercised once a second model/provider lands;
+ * the scoping logic itself is covered by ModelPicker.test.tsx + models.page.test.tsx.
  */
-test("Models settings: disable a non-default model — it persists, drops from the composer picker, and the default's toggle is locked", async ({
+test("Models settings: the default model is enabled with a locked disable toggle", async ({
 	chat,
 	page,
 }) => {
@@ -75,7 +79,8 @@ test("Models settings: disable a non-default model — it persists, drops from t
 	await page.getByRole("button", { name: /OpenAI/ }).click();
 
 	// The default (GPT-5.5) is Preferred and its enable toggle is LOCKED — a
-	// disabled checkbox the user can't un-toggle (mirrors Core's default∈enabled).
+	// checked, disabled checkbox the user can't un-toggle (mirrors Core's
+	// default∈enabled invariant).
 	const defaultRow = page.getByRole("row", { name: /GPT-5\.5/ });
 	await expect(defaultRow.getByText(/^preferred$/i)).toBeVisible();
 	const defaultToggle = defaultRow.getByRole("checkbox", {
@@ -83,34 +88,4 @@ test("Models settings: disable a non-default model — it persists, drops from t
 	});
 	await expect(defaultToggle).toBeChecked();
 	await expect(defaultToggle).toBeDisabled();
-
-	// Disable a non-default model (GPT-5.4 Mini). It starts enabled (empty set =
-	// "all enabled"); toggling it OFF materializes the full catalog minus it.
-	const miniRow = page.getByRole("row", { name: /GPT-5\.4 Mini/ });
-	const miniToggle = miniRow.getByRole("checkbox", {
-		name: /enabled for chat/i,
-	});
-	await expect(miniToggle).toBeChecked();
-	await miniToggle.click();
-	await expect(miniToggle).not.toBeChecked();
-
-	// Reload: the explicit enabled set must round-trip through Core's SQLite.
-	await page.reload();
-	await expect(page.getByRole("heading", { name: "Models" })).toBeVisible();
-	await page.getByRole("button", { name: /OpenAI/ }).click();
-	await expect(
-		page
-			.getByRole("row", { name: /GPT-5\.4 Mini/ })
-			.getByRole("checkbox", { name: /enabled for chat/i }),
-	).not.toBeChecked();
-
-	// Back to chat: the composer ModelPicker (slice-3 consumer) now lists only the
-	// enabled models — GPT-5.4 Mini is gone, the default GPT-5.5 remains.
-	await chat.goto();
-	await page.getByRole("button", { name: /select model/i }).click();
-	const pickerList = page.getByRole("list");
-	await expect(pickerList.getByText("GPT-5.5", { exact: true })).toBeVisible();
-	await expect(
-		pickerList.getByText("GPT-5.4 Mini", { exact: true }),
-	).toHaveCount(0);
 });
