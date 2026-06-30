@@ -37,6 +37,7 @@ fn write_credential(dir: &Path, access: &str, refresh: &str, expires: i64) {
     std::fs::write(
         dir.join("openai-codex.json"),
         serde_json::json!({
+            "kind": "oauth",
             "access": access,
             "refresh": refresh,
             "expires": expires,

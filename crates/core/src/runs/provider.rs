@@ -13,7 +13,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use super::handler::{self, HandlerError};
 use super::reply;
-use crate::credentials::{self, Credentials, OPENAI_CODEX};
+use crate::credentials::{self, Credentials, OPENAI_CODEX, StoredCredential};
 use crate::protocol::{
     ProviderLoginStartParams, ProviderLoginStartResult, ProviderStatus, ProviderStatusResult,
 };
@@ -169,7 +169,9 @@ pub(super) async fn handle_login_start(
             let result = read_login_credentials(&mut lines).await;
             match result {
                 Ok(Some(creds)) => {
-                    if let Err(e) = credentials::write(OPENAI_CODEX, &creds) {
+                    if let Err(e) =
+                        credentials::write(OPENAI_CODEX, &StoredCredential::Oauth(creds))
+                    {
                         eprintln!("provider login: persisting credentials failed: {e}");
                     } else {
                         // Persist succeeded — credentials are durable. Push the

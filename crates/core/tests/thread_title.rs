@@ -20,10 +20,12 @@ mod common;
 use common::{Workspace, fixture_cmd, next_text};
 
 /// Write a non-expired `openai-codex` credential into `dir` so Core's token gate
-/// resolves `Ok(Some(_))`. Mirrors `credentials::Credentials`'s on-disk shape.
+/// resolves `Ok(Some(_))`. Mirrors `credentials::StoredCredential`'s on-disk
+/// shape (internally tagged: `kind` + the OAuth fields).
 fn seed_codex_credential(dir: &std::path::Path) {
     std::fs::create_dir_all(dir).expect("create credentials dir");
     let body = r#"{
+        "kind": "oauth",
         "access": "tok_access",
         "refresh": "tok_refresh",
         "expires": 9999999999999,
