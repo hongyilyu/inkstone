@@ -1,24 +1,31 @@
 import {
+	createModels,
 	fauxAssistantMessage,
+	fauxProvider,
 	fauxText,
 	fauxThinking,
-	registerFauxProvider,
-	streamSimple,
 } from "@earendil-works/pi-ai";
 import type { RunEvent, WorkerManifest } from "@inkstone/protocol";
 import { Effect } from "effect";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { type InterpreterDeps, runInterpreter } from "./interpreter.js";
 import {
 	type CapturedToolRequest,
 	InMemoryTransport,
 } from "./transport-memory.js";
 
-// Fresh faux provider per test, torn down after, so the pi-ai global api-registry never leaks a provider across tests.
-const registrations: Array<{ unregister: () => void }> = [];
-afterEach(() => {
-	for (const r of registrations.splice(0)) r.unregister();
-});
+// Each test builds a fresh faux provider on its own `Models` collection (pi-ai
+// 0.80.2's `fauxProvider` is instance-scoped — no process-global registry — so
+// there is nothing to unregister between tests).
+function fauxDeps(faux: ReturnType<typeof fauxProvider>): InterpreterDeps {
+	const models = createModels();
+	models.setProvider(faux.provider);
+	return {
+		resolveModel: () => faux.getModel(),
+		streamFn: (model, context, options) =>
+			models.streamSimple(model, context, options),
+	};
+}
 
 function fauxManifest(overrides: Partial<WorkerManifest> = {}): WorkerManifest {
 	return {
@@ -53,14 +60,10 @@ function runChat(
 
 describe("generic interpreter (faux provider)", () => {
 	it("emits a faux completion as text_delta then done through the transport", async () => {
-		const faux = registerFauxProvider({ provider: "faux" });
-		registrations.push(faux);
+		const faux = fauxProvider({ provider: "faux" });
 		faux.setResponses([fauxAssistantMessage("hello")]);
 
-		const deps: InterpreterDeps = {
-			resolveModel: () => faux.getModel(),
-			streamFn: streamSimple,
-		};
+		const deps = fauxDeps(faux);
 
 		const events = await runChat(fauxManifest(), deps);
 
@@ -71,8 +74,7 @@ describe("generic interpreter (faux provider)", () => {
 	});
 
 	it("surfaces a faux error as the error event, not done", async () => {
-		const faux = registerFauxProvider({ provider: "faux" });
-		registrations.push(faux);
+		const faux = fauxProvider({ provider: "faux" });
 		faux.setResponses([
 			fauxAssistantMessage("", {
 				stopReason: "error",
@@ -80,10 +82,7 @@ describe("generic interpreter (faux provider)", () => {
 			}),
 		]);
 
-		const deps: InterpreterDeps = {
-			resolveModel: () => faux.getModel(),
-			streamFn: streamSimple,
-		};
+		const deps = fauxDeps(faux);
 
 		const events = await runChat(fauxManifest(), deps);
 
@@ -94,11 +93,10 @@ describe("generic interpreter (faux provider)", () => {
 
 	it("resumes from a tool_result transcript", async () => {
 		// resume-transcript invariant — see docs/design/worker-tests.md
-		const faux = registerFauxProvider({
+		const faux = fauxProvider({
 			provider: "faux",
 			tokenSize: { min: 1, max: 2 },
 		});
-		registrations.push(faux);
 
 		let sawToolResult = false;
 		let sawToolCall = false;
@@ -138,10 +136,7 @@ describe("generic interpreter (faux provider)", () => {
 			},
 		]);
 
-		const deps: InterpreterDeps = {
-			resolveModel: () => faux.getModel(),
-			streamFn: streamSimple,
-		};
+		const deps = fauxDeps(faux);
 
 		const manifest = fauxManifest({
 			mode: "resume",
@@ -225,8 +220,7 @@ describe("generic interpreter (faux provider)", () => {
 
 	it("passes prior history into the loop context", async () => {
 		// The faux response factory inspects its context, proving the manifest's assembled history reached the provider.
-		const faux = registerFauxProvider({ provider: "faux" });
-		registrations.push(faux);
+		const faux = fauxProvider({ provider: "faux" });
 		let seenUserTexts: string[] = [];
 		faux.setResponses([
 			(context) => {
@@ -241,10 +235,7 @@ describe("generic interpreter (faux provider)", () => {
 			},
 		]);
 
-		const deps: InterpreterDeps = {
-			resolveModel: () => faux.getModel(),
-			streamFn: streamSimple,
-		};
+		const deps = fauxDeps(faux);
 
 		const manifest = fauxManifest({
 			prompt: "current question",
@@ -262,11 +253,10 @@ describe("generic interpreter (faux provider)", () => {
 
 	it("emits thinking as reasoning_delta, distinct from text", async () => {
 		// Faux chunks deltas (tokenSize) like the resume test — join reasoning_delta deltas to compare.
-		const faux = registerFauxProvider({
+		const faux = fauxProvider({
 			provider: "faux",
 			tokenSize: { min: 1, max: 2 },
 		});
-		registrations.push(faux);
 		faux.setResponses([
 			fauxAssistantMessage([
 				fauxThinking("Let me check the schema."),
@@ -274,10 +264,7 @@ describe("generic interpreter (faux provider)", () => {
 			]),
 		]);
 
-		const deps: InterpreterDeps = {
-			resolveModel: () => faux.getModel(),
-			streamFn: streamSimple,
-		};
+		const deps = fauxDeps(faux);
 
 		const events = await runChat(fauxManifest(), deps);
 
@@ -303,14 +290,10 @@ describe("generic interpreter (faux provider)", () => {
 	});
 
 	it("emits no reasoning_delta when there is no thinking block", async () => {
-		const faux = registerFauxProvider({ provider: "faux" });
-		registrations.push(faux);
+		const faux = fauxProvider({ provider: "faux" });
 		faux.setResponses([fauxAssistantMessage("hi")]);
 
-		const deps: InterpreterDeps = {
-			resolveModel: () => faux.getModel(),
-			streamFn: streamSimple,
-		};
+		const deps = fauxDeps(faux);
 
 		const events = await runChat(fauxManifest(), deps);
 
@@ -322,11 +305,10 @@ describe("generic interpreter (faux provider)", () => {
 		// character-streamed — a large tokenSize makes faux emit it as a single delta so
 		// the per-delta guard sees the whole sentinel (faux's default chunking is a test
 		// artifact that would split it across deltas).
-		const faux = registerFauxProvider({
+		const faux = fauxProvider({
 			provider: "faux",
 			tokenSize: { min: 100, max: 100 },
 		});
-		registrations.push(faux);
 		faux.setResponses([
 			fauxAssistantMessage([
 				fauxThinking("[Reasoning redacted]"),
@@ -334,10 +316,7 @@ describe("generic interpreter (faux provider)", () => {
 			]),
 		]);
 
-		const deps: InterpreterDeps = {
-			resolveModel: () => faux.getModel(),
-			streamFn: streamSimple,
-		};
+		const deps = fauxDeps(faux);
 
 		const events = await runChat(fauxManifest(), deps);
 

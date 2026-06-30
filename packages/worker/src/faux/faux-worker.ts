@@ -3,12 +3,12 @@
 import { readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
+	createModels,
 	fauxAssistantMessage,
+	fauxProvider,
 	fauxText,
 	fauxThinking,
 	fauxToolCall,
-	registerFauxProvider,
-	streamSimple,
 } from "@earendil-works/pi-ai";
 import type { WorkerManifest } from "@inkstone/protocol";
 import type { InterpreterDeps } from "../interpreter.js";
@@ -560,7 +560,7 @@ function createTodoProposal(
  * the named Person/Project (each search a distinct step), then propose ONE
  * create_todo with whatever links resolved. No reference step. */
 function setExtractTodoResponses(
-	faux: ReturnType<typeof registerFauxProvider>,
+	faux: ReturnType<typeof fauxProvider>,
 	manifest: WorkerManifest,
 	todo: NonNullable<ExtractScenario["todo"]>,
 ): void {
@@ -814,7 +814,7 @@ function enrichCreateProposal(step: EnrichStep) {
  * proposal at a time. Steps already linked or abandoned (declined create) are
  * skipped; when none remain, confirm and stop. */
 function setCaptureEnrichResponses(
-	faux: ReturnType<typeof registerFauxProvider>,
+	faux: ReturnType<typeof fauxProvider>,
 	manifest: WorkerManifest,
 	scenario: CaptureScenario,
 ): void {
@@ -907,7 +907,7 @@ function setCaptureEnrichResponses(
 /** Script the faux provider for direct capture for THIS process. A fresh run
  * proposes the create_* once and parks; resumes drive Todo enrichment. */
 function setCaptureResponses(
-	faux: ReturnType<typeof registerFauxProvider>,
+	faux: ReturnType<typeof fauxProvider>,
 	manifest: WorkerManifest,
 ): void {
 	const scenario = readCaptureScenario();
@@ -946,7 +946,7 @@ function setCaptureResponses(
 
 /** Script the faux provider for the extraction state machine for THIS process. */
 function setExtractResponses(
-	faux: ReturnType<typeof registerFauxProvider>,
+	faux: ReturnType<typeof fauxProvider>,
 	manifest: WorkerManifest,
 ): void {
 	const scenario = readExtractScenario();
@@ -1060,7 +1060,7 @@ function setExtractResponses(
 
 /** Build interpreter deps that script pi-ai's faux provider from `INKSTONE_FAUX_*` env vars — see docs/design/worker.md for the five modes. */
 export function fauxDepsFor(manifest: WorkerManifest): InterpreterDeps {
-	const faux = registerFauxProvider({ provider: "faux" });
+	const faux = fauxProvider({ provider: "faux" });
 	const errorMessage = process.env.INKSTONE_FAUX_ERROR;
 	if (errorMessage !== undefined && errorMessage.length > 0) {
 		faux.setResponses([
@@ -1198,9 +1198,18 @@ export function fauxDepsFor(manifest: WorkerManifest): InterpreterDeps {
 			textTurn(process.env.INKSTONE_FAUX_RESPONSE ?? "faux reply"),
 		]);
 	}
+	// pi-ai 0.80.2's `fauxProvider` does NOT register into a process-global
+	// api-registry the way the retired `registerFauxProvider` did, so the old
+	// top-level `streamSimple` (which dispatched through that global registry) has
+	// nothing to find. Register the faux provider on a `Models` collection and use
+	// the collection's `streamSimple` as the stream fn — it dispatches to the
+	// provider that owns the model.
+	const models = createModels();
+	models.setProvider(faux.provider);
 	return {
 		resolveModel: () => faux.getModel(),
-		streamFn: streamSimple,
+		streamFn: (model, context, options) =>
+			models.streamSimple(model, context, options),
 	};
 }
 

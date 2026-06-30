@@ -14,7 +14,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { StreamFn } from "@earendil-works/pi-agent-core";
-import { getModel, streamSimple } from "@earendil-works/pi-ai";
+import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import type {
 	CoreToolDescriptor,
 	RunEvent,
@@ -305,10 +305,13 @@ export async function runFixture(
 	fixture: Fixture,
 	deps?: InterpreterDeps,
 ): Promise<PredictedProposal | null> {
+	// One built-in `Models` collection shared by both deps (pi-ai 0.80.2 retired
+	// the top-level getModel/streamSimple — see interpreter.ts defaultInterpreterDeps).
+	const models = builtinModels();
 	const resolved: InterpreterDeps = deps ?? {
-		resolveModel: () => getModel(PROVIDER as never, MODEL as never),
+		resolveModel: () => models.getModel(PROVIDER, MODEL) as never,
 		streamFn: ((model, context, options) =>
-			streamSimple(model, context, {
+			models.streamSimple(model, context, {
 				...options,
 				temperature: 0,
 			})) as StreamFn,

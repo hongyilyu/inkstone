@@ -1,10 +1,10 @@
 import {
+	createModels,
 	fauxAssistantMessage,
+	fauxProvider,
 	fauxToolCall,
-	registerFauxProvider,
-	streamSimple,
 } from "@earendil-works/pi-ai";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import type { InterpreterDeps } from "../src/interpreter.js";
 import { runFixture } from "./run.js";
 import type { Fixture } from "./types.js";
@@ -39,25 +39,22 @@ describe.skipIf(!LIVE)("eval runner (real model)", () => {
 // `src/interpreter.test.ts`). `runFixture(fixture, deps)` takes optional deps;
 // we inject `{ resolveModel: () => faux.getModel(), streamFn: streamSimple }`.
 describe("eval runner (faux provider, keyless)", () => {
-	// Fresh faux provider per test, torn down after, so the pi-ai global
-	// api-registry never leaks a provider across tests.
-	const registrations: Array<{ unregister: () => void }> = [];
-	afterEach(() => {
-		for (const r of registrations.splice(0)) r.unregister();
-	});
-
 	function fauxDeps(): {
-		faux: ReturnType<typeof registerFauxProvider>;
+		faux: ReturnType<typeof fauxProvider>;
 		deps: InterpreterDeps;
 	} {
-		// The runner pins provider "openai-codex"; register the faux under that name
+		// The runner pins provider "openai-codex"; build the faux under that name
 		// for fidelity, though tests inject `resolveModel` directly so the model
-		// comes straight from the faux registration.
-		const faux = registerFauxProvider({ provider: "openai-codex" });
-		registrations.push(faux);
+		// comes straight from the faux provider. pi-ai 0.80.2's `fauxProvider` is
+		// instance-scoped (no process-global registry to tear down), so the stream
+		// fn must route through a `Models` collection that owns the faux provider.
+		const faux = fauxProvider({ provider: "openai-codex" });
+		const models = createModels();
+		models.setProvider(faux.provider);
 		const deps: InterpreterDeps = {
 			resolveModel: () => faux.getModel(),
-			streamFn: streamSimple,
+			streamFn: (model, context, options) =>
+				models.streamSimple(model, context, options),
 		};
 		return { faux, deps };
 	}

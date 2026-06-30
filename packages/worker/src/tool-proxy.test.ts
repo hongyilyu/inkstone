@@ -2,10 +2,10 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
+	createModels,
 	fauxAssistantMessage,
+	fauxProvider,
 	fauxToolCall,
-	registerFauxProvider,
-	streamSimple,
 } from "@earendil-works/pi-ai";
 import type { RunEvent, WorkerManifest } from "@inkstone/protocol";
 import { Effect } from "effect";
@@ -16,12 +16,22 @@ import {
 	InMemoryTransport,
 } from "./transport-memory.js";
 
-// Fresh faux provider per test, torn down after.
-const registrations: Array<{ unregister: () => void }> = [];
 afterEach(() => {
-	for (const r of registrations.splice(0)) r.unregister();
 	delete process.env.INKSTONE_WORKER_TOOL_CALL_LOG;
 });
+
+// Each test builds a fresh faux provider on its own `Models` collection (pi-ai
+// 0.80.2's `fauxProvider` is instance-scoped — no process-global registry to
+// tear down between tests).
+function fauxDeps(faux: ReturnType<typeof fauxProvider>): InterpreterDeps {
+	const models = createModels();
+	models.setProvider(faux.provider);
+	return {
+		resolveModel: () => faux.getModel(),
+		streamFn: (model, context, options) =>
+			models.streamSimple(model, context, options),
+	};
+}
 
 function manifestWithReadThread(): WorkerManifest {
 	return {
@@ -58,8 +68,7 @@ describe("tool proxy round-trip via WorkerTransport (faux provider)", () => {
 			tmp,
 			"tool-calls.jsonl",
 		);
-		const faux = registerFauxProvider({ provider: "faux" });
-		registrations.push(faux);
+		const faux = fauxProvider({ provider: "faux" });
 		// Turn 1: model calls read_thread. Turn 2: final text answer reflecting the scripted result.
 		faux.setResponses([
 			fauxAssistantMessage(
@@ -69,10 +78,7 @@ describe("tool proxy round-trip via WorkerTransport (faux provider)", () => {
 			fauxAssistantMessage("here is the thread"),
 		]);
 
-		const deps: InterpreterDeps = {
-			resolveModel: () => faux.getModel(),
-			streamFn: streamSimple,
-		};
+		const deps = fauxDeps(faux);
 
 		// The seam supplies the scripted Tool Result (keyed by tool_call_id) and records the outbound tool_request (ADR-0027).
 		const events: RunEvent[] = [];
@@ -131,8 +137,7 @@ describe("tool proxy round-trip via WorkerTransport (faux provider)", () => {
 	});
 
 	it("a callTool error throws into the loop without crashing the run", async () => {
-		const faux = registerFauxProvider({ provider: "faux" });
-		registrations.push(faux);
+		const faux = fauxProvider({ provider: "faux" });
 		faux.setResponses([
 			fauxAssistantMessage(
 				[fauxToolCall("read_thread", { thread_id: "nope" }, { id: "tc_err" })],
@@ -141,10 +146,7 @@ describe("tool proxy round-trip via WorkerTransport (faux provider)", () => {
 			fauxAssistantMessage("could not read it"),
 		]);
 
-		const deps: InterpreterDeps = {
-			resolveModel: () => faux.getModel(),
-			streamFn: streamSimple,
-		};
+		const deps = fauxDeps(faux);
 
 		const events: RunEvent[] = [];
 		const requests: CapturedToolRequest[] = [];

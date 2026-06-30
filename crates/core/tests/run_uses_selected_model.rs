@@ -35,16 +35,17 @@ fn run_uses_selected_model_and_effort() {
     let run_id = rt.block_on(async {
         let mut ws = core.connect().await;
 
-        // A non-default model + effort, so the assertions prove the selection
-        // won, not the fallback.
+        // A non-default effort (the catalog ships a single model, gpt-5.5, which
+        // doubles as the default — so effort "high" vs the default "off" is what
+        // proves the selection won, not the fallback).
         let set = request(
             &mut ws,
             1,
             "settings/set",
-            serde_json::json!({ "model": "gpt-5.4", "effort": "high" }),
+            serde_json::json!({ "model": "gpt-5.5", "effort": "high" }),
         )
         .await;
-        assert_eq!(set["result"]["model"], serde_json::json!("gpt-5.4"));
+        assert_eq!(set["result"]["model"], serde_json::json!("gpt-5.5"));
 
         let created = request(&mut ws, 2, "thread/create", serde_json::json!({ "prompt": "hi" })).await;
         let run_id = created["result"]["run_id"]
@@ -84,10 +85,10 @@ fn run_uses_selected_model_and_effort() {
             if let Some(row) = row {
                 let model: String = row.get("model");
                 let text: String = row.get("text");
-                assert_eq!(model, "gpt-5.4", "runs.model is the SELECTED model");
+                assert_eq!(model, "gpt-5.5", "runs.model is the SELECTED model");
                 if !text.is_empty() {
                     assert_eq!(
-                        text, "model=gpt-5.4|effort=high",
+                        text, "model=gpt-5.5|effort=high",
                         "manifest carried the selected model + global effort"
                     );
                     break;
