@@ -6,7 +6,7 @@ import {
 import { useQueryClient } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { ChevronRight } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { EffortControl } from "@/components/EffortControl";
 import { ProviderModelsDetail } from "@/components/ProviderModelsDetail";
 import { Button } from "@/components/ui/button";
@@ -58,13 +58,29 @@ function ModelsSettings() {
 			[runtime],
 		),
 	);
+	// The curated enabled set. Empty = "no curation → all enabled" (ADR-0024);
+	// the same optimistic/latest-write-wins/rollback machinery as model + effort.
+	const enabledModels = useOptimisticSetting<readonly string[]>(
+		[],
+		useCallback(
+			(next) =>
+				saveSettings(runtime, { enabled_models: next }).then(
+					(s) => s.enabled_models,
+				),
+			[runtime],
+		),
+	);
 
 	// One shared acknowledgement line for the section: error wins over saved.
 	const saveStatus: SaveStatus = connectFailed
 		? "error"
-		: effort.status === "error" || model.status === "error"
+		: effort.status === "error" ||
+				model.status === "error" ||
+				enabledModels.status === "error"
 			? "error"
-			: effort.status === "saved" || model.status === "saved"
+			: effort.status === "saved" ||
+					model.status === "saved" ||
+					enabledModels.status === "saved"
 				? "saved"
 				: "idle";
 
@@ -122,18 +138,20 @@ function ModelsSettings() {
 			});
 	}, [runtime, queryClient, providers]);
 
-	// Clear the transient acknowledgement after a beat (both hooks + the connect flag).
+	// Clear the transient acknowledgement after a beat (all hooks + the connect flag).
 	const { clearStatus: clearEffortStatus } = effort;
 	const { clearStatus: clearModelStatus } = model;
+	const { clearStatus: clearEnabledStatus } = enabledModels;
 	useEffect(() => {
 		if (saveStatus === "idle") return;
 		const t = setTimeout(() => {
 			clearEffortStatus();
 			clearModelStatus();
+			clearEnabledStatus();
 			setConnectFailed(false);
 		}, 2500);
 		return () => clearTimeout(t);
-	}, [saveStatus, clearEffortStatus, clearModelStatus]);
+	}, [saveStatus, clearEffortStatus, clearModelStatus, clearEnabledStatus]);
 
 	// Requery connection on mount + on focus — login happens in a separate tab, so focus-return is when the outcome is known (ADR-0023).
 	useEffect(() => {
@@ -156,6 +174,7 @@ function ModelsSettings() {
 
 	const { seed: seedEffort } = effort;
 	const { seed: seedModel } = model;
+	const { seed: seedEnabled } = enabledModels;
 	useEffect(() => {
 		let alive = true;
 		fetchSettings(runtime)
@@ -163,6 +182,7 @@ function ModelsSettings() {
 				if (!alive) return;
 				seedEffort(s.effort);
 				seedModel(s.model);
+				seedEnabled(s.enabled_models);
 			})
 			.catch(() => {});
 		fetchCatalog(runtime)
@@ -174,7 +194,37 @@ function ModelsSettings() {
 		return () => {
 			alive = false;
 		};
-	}, [runtime, seedEffort, seedModel]);
+	}, [runtime, seedEffort, seedModel, seedEnabled]);
+
+	// Full catalog ids across all providers — the materialized baseline when the
+	// stored enabled set is empty(=all) and the user makes a first toggle (so the
+	// wire carries an explicit set, not [] which would mean "all" again).
+	const allModelIds = useMemo(
+		() => providers.flatMap((p) => p.models).map((m) => m.id),
+		[providers],
+	);
+
+	// Toggle a model's chat-enabled membership. The empty stored set means "all
+	// enabled", so toggling OFF first materializes the full catalog, then drops the
+	// id — never persisting []. The current default can't be disabled (mirrors
+	// Core's slice-2 invariant; the disabled toggle already blocks the click, this
+	// is defense-in-depth so we never send a set excluding it).
+	const setModelEnabled = enabledModels.set;
+	const currentDefault = model.value;
+	const onToggleEnabled = useCallback(
+		(id: string, next: boolean) => {
+			if (!next && id === currentDefault) return;
+			const stored = enabledModels.value;
+			const baseline = stored.length === 0 ? allModelIds : stored;
+			const nextSet = next
+				? baseline.includes(id)
+					? baseline
+					: [...baseline, id]
+				: baseline.filter((x) => x !== id);
+			setModelEnabled(nextSet);
+		},
+		[enabledModels.value, allModelIds, currentDefault, setModelEnabled],
+	);
 
 	const onConnect = useCallback(
 		(providerId: string) => {
@@ -222,6 +272,8 @@ function ModelsSettings() {
 					models={focused.models}
 					selectedId={model.value}
 					onSelect={model.set}
+					enabledIds={enabledModels.value}
+					onToggleEnabled={onToggleEnabled}
 					onBack={() => setSelectedProvider(null)}
 				/>
 			) : (

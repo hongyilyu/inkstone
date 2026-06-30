@@ -34,14 +34,21 @@ function makeRuntime(opts: {
 	connected?: boolean;
 	effort?: string;
 	models?: readonly ModelInfo[];
+	model?: string | null;
+	enabledModels?: readonly string[];
 }) {
-	const settingsSet = vi.fn((params: { model?: string; effort?: string }) =>
-		Effect.succeed({
-			provider: "openai-codex",
-			model: params.model ?? null,
-			effort: params.effort ?? opts.effort ?? "off",
-			enabled_models: [],
-		}),
+	const settingsSet = vi.fn(
+		(params: {
+			model?: string;
+			effort?: string;
+			enabled_models?: readonly string[];
+		}) =>
+			Effect.succeed({
+				provider: "openai-codex",
+				model: params.model ?? null,
+				effort: params.effort ?? opts.effort ?? "off",
+				enabled_models: params.enabled_models ?? [],
+			}),
 	);
 	const stub = WsClient.of({
 		threadCreate: die,
@@ -77,9 +84,9 @@ function makeRuntime(opts: {
 		settingsGet: () =>
 			Effect.succeed({
 				provider: "openai-codex",
-				model: null,
+				model: opts.model ?? null,
 				effort: opts.effort ?? "off",
-				enabled_models: [],
+				enabled_models: opts.enabledModels ?? [],
 			}),
 		settingsSet,
 		proposalGet: die,
@@ -399,6 +406,81 @@ describe("Models settings page (ADR-0024)", () => {
 				/preferred/i,
 			),
 		).toBeInTheDocument();
+	});
+
+	it("locks the current default's enable toggle; toggling a non-default off persists the materialized set minus it; choosing a new default frees the old one", async () => {
+		const user = userEvent.setup();
+		const models: ModelInfo[] = [
+			{ id: "gpt-5.5", name: "GPT-5.5", reasoning: true, input: ["text"] },
+			{
+				id: "gpt-5.4-mini",
+				name: "GPT-5.4 Mini",
+				reasoning: true,
+				input: ["text"],
+			},
+		];
+		// Stored enabled set is empty (= "all enabled", slice 3 rule); default is GPT-5.5.
+		const { runtime, settingsSet } = makeRuntime({
+			connected: true,
+			models,
+			model: "gpt-5.5",
+			enabledModels: [],
+		});
+		renderPage(runtime);
+
+		await openProviderDetail(user);
+
+		const defaultRow = await screen.findByRole("row", { name: /GPT-5\.5/ });
+		const miniRow = await screen.findByRole("row", { name: /GPT-5\.4 Mini/ });
+
+		// The current default (GPT-5.5) toggle is LOCKED: checked + disabled + hint.
+		const defaultToggle = within(defaultRow).getByRole("checkbox", {
+			name: /enabled for chat/i,
+		});
+		expect(defaultToggle).toBeChecked();
+		expect(defaultToggle).toBeDisabled();
+		expect(defaultToggle).toHaveAccessibleDescription(
+			/another model as default/i,
+		);
+
+		// Toggling the non-default OFF while stored set is empty(=all) must MATERIALIZE
+		// the full catalog and persist it minus the toggled-off model — never `[]`
+		// (which would mean "all" again).
+		await user.click(
+			within(miniRow).getByRole("checkbox", { name: /enabled for chat/i }),
+		);
+		await waitFor(() =>
+			expect(settingsSet).toHaveBeenCalledWith({
+				enabled_models: ["gpt-5.5"],
+			}),
+		);
+
+		// Now make GPT-5.4 Mini the default. With Mini re-enabled (it must be enabled to
+		// be the default) and chosen as preferred, GPT-5.5's toggle unlocks.
+		await user.click(
+			within(
+				await screen.findByRole("row", { name: /GPT-5\.4 Mini/ }),
+			).getByRole("checkbox", { name: /enabled for chat/i }),
+		);
+		await user.click(
+			within(
+				await screen.findByRole("row", { name: /GPT-5\.4 Mini/ }),
+			).getByRole("button", { name: /set as preferred/i }),
+		);
+
+		await waitFor(() => {
+			const freed = within(
+				screen.getByRole("row", { name: /GPT-5\.5/ }),
+			).getByRole("checkbox", { name: /enabled for chat/i });
+			expect(freed).not.toBeDisabled();
+		});
+		// And the new default (Mini) is now the locked one.
+		expect(
+			within(screen.getByRole("row", { name: /GPT-5\.4 Mini/ })).getByRole(
+				"checkbox",
+				{ name: /enabled for chat/i },
+			),
+		).toBeDisabled();
 	});
 
 	it("ignores an out-of-order save: a stale response cannot overwrite the newer choice", async () => {

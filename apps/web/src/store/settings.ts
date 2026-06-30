@@ -16,10 +16,14 @@ export async function fetchSettings(
 	return runtime.runPromise(program);
 }
 
-/** Persist a partial settings update (preferred model and/or global effort), returning the re-read settings. */
+/** Persist a partial settings update (preferred model, global effort, and/or the enabled-model set), returning the re-read settings. */
 export async function saveSettings(
 	runtime: WsRuntime,
-	params: { readonly model?: string; readonly effort?: string },
+	params: {
+		readonly model?: string;
+		readonly effort?: string;
+		readonly enabled_models?: readonly string[];
+	},
 ): Promise<SettingsResult> {
 	const program = Effect.gen(function* () {
 		const client = yield* WsClient;

@@ -10,6 +10,10 @@ export interface ProviderModelsDetailProps {
 	/** The currently-preferred model id (null when none chosen). */
 	selectedId: string | null;
 	onSelect: (id: string) => void;
+	/** Ids enabled for chat (empty = "all enabled", ADR-0024). */
+	enabledIds: readonly string[];
+	/** Toggle a model's chat-enabled membership. */
+	onToggleEnabled: (id: string, next: boolean) => void;
 	/** Return to the provider list. */
 	onBack: () => void;
 }
@@ -20,6 +24,8 @@ export function ProviderModelsDetail({
 	models,
 	selectedId,
 	onSelect,
+	enabledIds,
+	onToggleEnabled,
 	onBack,
 }: ProviderModelsDetailProps) {
 	return (
@@ -36,12 +42,15 @@ export function ProviderModelsDetail({
 				<h3 className="font-semibold text-base">{label}</h3>
 			</div>
 			<p className="text-muted-foreground text-xs">
-				The model new chats use by default.
+				Toggle which models are available in chat, and set the one new chats use
+				by default.
 			</p>
 			<ModelCatalogTable
 				models={models}
 				selectedId={selectedId}
 				onSelect={onSelect}
+				enabledIds={enabledIds}
+				onToggleEnabled={onToggleEnabled}
 			/>
 		</div>
 	);

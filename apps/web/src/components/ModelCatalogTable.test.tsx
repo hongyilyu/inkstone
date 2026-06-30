@@ -61,4 +61,68 @@ describe("ModelCatalogTable", () => {
 		expect(screen.queryByText("Vision")).toBeNull();
 		expect(screen.queryByText("Reasoning")).toBeNull();
 	});
+
+	it("locks the current default's enable toggle (disabled + hint) so it can't be disabled", () => {
+		render(
+			<ModelCatalogTable
+				models={[model("alpha"), model("bravo")]}
+				selectedId="alpha"
+				onSelect={() => {}}
+				enabledIds={["alpha", "bravo"]}
+				onToggleEnabled={() => {}}
+			/>,
+		);
+
+		const defaultRow = screen.getByRole("row", { name: /alpha/ });
+		const toggle = within(defaultRow).getByRole("checkbox", {
+			name: /enabled for chat/i,
+		});
+		// The default model is always enabled and its toggle is locked.
+		expect(toggle).toBeChecked();
+		expect(toggle).toBeDisabled();
+		expect(toggle).toHaveAccessibleDescription(/another model as default/i);
+	});
+
+	it("toggles a non-default model via onToggleEnabled", async () => {
+		const user = userEvent.setup();
+		const onToggleEnabled = vi.fn();
+		render(
+			<ModelCatalogTable
+				models={[model("alpha"), model("bravo")]}
+				selectedId="alpha"
+				onSelect={() => {}}
+				enabledIds={["alpha", "bravo"]}
+				onToggleEnabled={onToggleEnabled}
+			/>,
+		);
+
+		const otherRow = screen.getByRole("row", { name: /bravo/ });
+		const toggle = within(otherRow).getByRole("checkbox", {
+			name: /enabled for chat/i,
+		});
+		expect(toggle).toBeChecked();
+		expect(toggle).not.toBeDisabled();
+
+		await user.click(toggle);
+		// Currently enabled → toggling targets `false`.
+		expect(onToggleEnabled).toHaveBeenCalledWith("bravo", false);
+	});
+
+	it("treats an empty enabledIds as 'all enabled' (every toggle checked)", () => {
+		render(
+			<ModelCatalogTable
+				models={[model("alpha"), model("bravo")]}
+				selectedId="alpha"
+				onSelect={() => {}}
+				enabledIds={[]}
+				onToggleEnabled={() => {}}
+			/>,
+		);
+		for (const name of ["alpha", "bravo"]) {
+			const row = screen.getByRole("row", { name: new RegExp(name) });
+			expect(
+				within(row).getByRole("checkbox", { name: /enabled for chat/i }),
+			).toBeChecked();
+		}
+	});
 });
