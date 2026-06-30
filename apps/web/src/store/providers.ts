@@ -1,3 +1,4 @@
+import type { ProviderStatusResult } from "@inkstone/protocol";
 import { WsClient } from "@inkstone/ui-sdk";
 import { Effect } from "effect";
 import type { WsRuntime } from "../runtime.js";
@@ -5,15 +6,13 @@ import type { WsRuntime } from "../runtime.js";
 // Thin imperative bridge between the settings UI and the SDK provider/* methods (ADR-0023); no store state of its own.
 export const PROVIDER_OPENAI_CODEX = "openai-codex";
 
-/** Query whether `provider` currently has stored credentials. */
-export async function fetchConnected(
+/** Read the full `provider/status` payload (all providers + their connected flags). */
+export async function fetchProviderStatus(
 	runtime: WsRuntime,
-	provider: string,
-): Promise<boolean> {
+): Promise<ProviderStatusResult> {
 	const program = Effect.gen(function* () {
 		const client = yield* WsClient;
-		const result = yield* client.providerStatus();
-		return result.providers.find((p) => p.id === provider)?.connected ?? false;
+		return yield* client.providerStatus();
 	});
 	return runtime.runPromise(program);
 }

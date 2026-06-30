@@ -15,7 +15,7 @@ import {
 } from "@/lib/hooks/useOptimisticSetting";
 import { useRuntime } from "@/runtime";
 import {
-	fetchConnected,
+	fetchProviderStatus,
 	PROVIDER_OPENAI_CODEX,
 	startLogin,
 } from "@/store/providers";
@@ -65,16 +65,24 @@ function ModelsSettings() {
 
 	const refreshConnected = useCallback(() => {
 		// Monotonic request id: mount, focus, AND the `provider/connected` push all
-		// call this, so two fetchConnected round-trips can be in flight at once and
+		// call this, so two provider/status round-trips can be in flight at once and
 		// resolve out of order. Without a guard a stale earlier resolution could land
 		// last and overwrite the shared ["provider-status"] cache (below) back to a
 		// wrong value — recreating the very flash this write exists to prevent. Only
 		// the latest request commits its result.
 		const requestId = ++latestStatusRequest.current;
-		fetchConnected(runtime, PROVIDER_OPENAI_CODEX)
-			.then((isConnected) => {
+		// Read the FULL provider/status payload (not just this provider's bool): the
+		// shared cache is the chat gate's source of truth and useProviderStatus
+		// derives `anyConnected` across ALL providers[], so writing a synthesized
+		// single-row snapshot would drop any other connected provider. Derive this
+		// card's flag from the same payload — one round-trip, no resynthesis.
+		fetchProviderStatus(runtime)
+			.then((status) => {
 				if (requestId !== latestStatusRequest.current) return;
-				setConnected(isConnected);
+				setConnected(
+					status.providers.find((p) => p.id === PROVIDER_OPENAI_CODEX)
+						?.connected ?? false,
+				);
 				// Write the freshly-read truth into the shared ["provider-status"] cache
 				// the chat gate (connect welcome + composer soft-disable) reads via
 				// useProviderStatus. This is the single chokepoint — mount, focus, and the
@@ -88,9 +96,10 @@ function ModelsSettings() {
 				// before the refetch lands, flashing the connect screen at a now-connected
 				// user. Writing the value keeps the cache truthful for that remount AND
 				// notifies a still-mounted chat observer immediately (no refetch needed).
-				queryClient.setQueryData<ProviderStatusResult>(["provider-status"], {
-					providers: [{ id: PROVIDER_OPENAI_CODEX, connected: isConnected }],
-				});
+				queryClient.setQueryData<ProviderStatusResult>(
+					["provider-status"],
+					status,
+				);
 			})
 			.catch(() => {
 				if (requestId !== latestStatusRequest.current) return;

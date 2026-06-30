@@ -412,7 +412,7 @@ function ChatConnectWelcome() {
 				tone="brand"
 				size="lg"
 				title="Welcome to Inkstone"
-				description="Connect a provider to start chatting. Inkstone runs on your own account — nothing leaves this device."
+				description="Connect a provider to start chatting. Inkstone runs on your own account, and your entries and knowledge stay on your device."
 				action={
 					// Styled to match the sibling empties' `<Button variant="chip"
 					// size="pill">` CTAs, but a real navigable Link (TanStack Router) since

@@ -576,6 +576,102 @@ describe("Models settings page — provider/connected live push (ADR-0049)", () 
 		}
 	});
 
+	it("writes the FULL provider/status payload, not a single-provider snapshot (preserves other providers)", async () => {
+		// CodeRabbit caught this: useProviderStatus derives anyConnected across ALL
+		// providers[], so refreshConnected must cache the whole provider/status
+		// result — not a synthesized openai-codex-only row that would drop other
+		// providers from the shared cache. The runtime reports TWO providers; the
+		// write must keep both.
+		let pushed: ((params: unknown) => void) | undefined;
+		const spy = vi
+			.spyOn(sdk, "setNotificationHandler")
+			.mockImplementation((method, handler) => {
+				if (method === "provider/connected") pushed = handler;
+			});
+
+		try {
+			const twoProviderStatus: ProviderStatusResult = {
+				providers: [
+					{ id: "openai-codex", connected: true },
+					{ id: "anthropic", connected: true },
+				],
+			};
+			const stub = WsClient.of({
+				threadCreate: die,
+				postMessage: die,
+				threadList: die,
+				getRunHistory: die,
+				recurrencePreview: () => Effect.die("not exercised in this test"),
+				threadGet: die,
+				threadRename: die,
+				threadArchive: die,
+				threadUnarchive: die,
+				threadListArchived: die,
+				listEntities: die,
+				getBacklinks: die,
+				observationQuery: die,
+				observationUpdate: die,
+				entityMutate: die,
+				subscribeRun: dieStream,
+				cancelRun: die,
+				retryRun: die,
+				providerStatus: () => Effect.succeed(twoProviderStatus),
+				providerLoginStart: () =>
+					Effect.succeed({ authorize_url: "https://auth.example/x" }),
+				modelCatalog: () =>
+					Effect.succeed({
+						providers: [{ id: "openai-codex", label: "OpenAI", models: [] }],
+					}),
+				settingsGet: () =>
+					Effect.succeed({
+						provider: "openai-codex",
+						model: null,
+						effort: "off",
+					}),
+				settingsSet: () =>
+					Effect.succeed({
+						provider: "openai-codex",
+						model: null,
+						effort: "off",
+					}),
+				proposalGet: die,
+				rescanJournalEntry: die,
+				proposalDecide: die,
+				messageSearch: die,
+				proposalNotifications: () => Stream.empty,
+				connectionStatus: () => Stream.empty,
+			});
+			const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
+			const client = new QueryClient({
+				defaultOptions: { queries: { retry: false } },
+			});
+			renderPageWithClient(
+				runtime as unknown as ReturnType<typeof makeFlippingRuntime>,
+				client,
+			);
+
+			if (pushed === undefined) {
+				await waitFor(() => expect(pushed).toBeDefined());
+			}
+			pushed?.({ provider: "openai-codex" });
+
+			await waitFor(() => {
+				const cached = client.getQueryData<ProviderStatusResult>([
+					"provider-status",
+				]);
+				// BOTH providers survive — not clobbered down to the openai-codex row.
+				expect(cached?.providers.map((p) => p.id).sort()).toEqual([
+					"anthropic",
+					"openai-codex",
+				]);
+			});
+
+			await runtime.dispose();
+		} finally {
+			spy.mockRestore();
+		}
+	});
+
 	it("focus-refetch fallback flips the card in isolation — no push fired", async () => {
 		// Regression lock for the existing focus-refetch safety net (ADR-0023),
 		// proven independent of the live push: never fire the handler.
