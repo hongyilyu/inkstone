@@ -1,4 +1,4 @@
-import type { ModelInfo } from "@inkstone/protocol";
+import type { ModelInfo, ProviderStatusResult } from "@inkstone/protocol";
 import * as sdk from "@inkstone/ui-sdk";
 import { WsClient, type WsError } from "@inkstone/ui-sdk";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -503,8 +503,9 @@ describe("Models settings page — provider/connected live push (ADR-0049)", () 
 	});
 
 	// renderPage builds its own internal QueryClient (renderWithQuery, no
-	// injection seam), so wrap with a test-owned client here to spy its
-	// invalidateQueries — the chat gate reads ["provider-status"].
+	// injection seam), so wrap with a test-owned client here to read/spy the
+	// ["provider-status"] cache — the chat gate (connect welcome + composer
+	// soft-disable) reads it via useProviderStatus.
 	function renderPageWithClient(
 		runtime: ReturnType<typeof makeFlippingRuntime>,
 		client: QueryClient,
@@ -522,7 +523,7 @@ describe("Models settings page — provider/connected live push (ADR-0049)", () 
 		);
 	}
 
-	it("invalidates the ['provider-status'] query on the live push, so a mounted chat gate re-reads", async () => {
+	it("writes connected into the ['provider-status'] cache on the live push, so a remounting chat gate reads the truth (no stale-cache flash)", async () => {
 		// Capture the page's "provider/connected" closure via the SDK seam.
 		let pushed: ((params: unknown) => void) | undefined;
 		const spy = vi
@@ -535,7 +536,14 @@ describe("Models settings page — provider/connected live push (ADR-0049)", () 
 			const client = new QueryClient({
 				defaultOptions: { queries: { retry: false } },
 			});
-			const invalidateSpy = vi.spyOn(client, "invalidateQueries");
+			// Pre-seed the cache as a prior disconnected `/` visit would have: the
+			// chat query is now INACTIVE (the user navigated here to /settings), so
+			// invalidateQueries (type:"active" by default) would NOT refetch it — only
+			// setQueryData keeps it truthful for the chat column's remount. This is the
+			// regression guard for the cross-engine-caught stale-cache flash.
+			client.setQueryData<ProviderStatusResult>(["provider-status"], {
+				providers: [{ id: "openai-codex", connected: false }],
+			});
 
 			const runtime = makeFlippingRuntime();
 			renderPageWithClient(runtime, client);
@@ -553,15 +561,16 @@ describe("Models settings page — provider/connected live push (ADR-0049)", () 
 				);
 			}
 
-			// Isolate the PUSH path from the mount-invalidate: clear, THEN fire.
-			invalidateSpy.mockClear();
+			// Fire the push: the flipping runtime now reports connected, so the page
+			// must write connected:true into the shared cache (not just mark it stale).
 			pushed({ provider: "openai-codex" });
 
-			await waitFor(() =>
-				expect(invalidateSpy).toHaveBeenCalledWith(
-					expect.objectContaining({ queryKey: ["provider-status"] }),
-				),
-			);
+			await waitFor(() => {
+				const cached = client.getQueryData<ProviderStatusResult>([
+					"provider-status",
+				]);
+				expect(cached?.providers.some((p) => p.connected)).toBe(true);
+			});
 		} finally {
 			spy.mockRestore();
 		}

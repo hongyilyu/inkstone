@@ -1,4 +1,4 @@
-import type { ThreadGetResult } from "@inkstone/protocol";
+import type { ProviderStatusResult, ThreadGetResult } from "@inkstone/protocol";
 import {
 	type RunEventValue,
 	UnknownThreadError,
@@ -338,6 +338,48 @@ describe("ChatColumn", () => {
 
 		await renderChatRoute(<ChatColumn />, { runtime, path: "/" });
 
+		expect(
+			screen.getByRole("heading", { name: /start a chat/i }),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByRole("heading", { name: /welcome to inkstone/i }),
+		).toBeNull();
+
+		await runtime.dispose();
+	});
+
+	it("serves the ordinary welcome synchronously from a pre-populated connected cache (no flash on a warm second visit)", async () => {
+		// The CHAT side of the stale-cache flash fix: on a second visit to `/`,
+		// ChatColumn remounts and — with staleTime:0 + refetchOnMount — refetches,
+		// but TanStack serves the CACHED ["provider-status"] value synchronously on
+		// the first render. This pins that a connected cache yields the ordinary
+		// "Start a chat" welcome on that first paint, never the connect screen. The
+		// companion guard that the connect actually WRITES connected into the cache
+		// (setQueryData, not a no-op invalidate of the then-inactive query) lives in
+		// routes/settings/models.page.test.tsx and is the test that breaks if the fix
+		// is reverted.
+		const client = new QueryClient({
+			defaultOptions: {
+				queries: { retry: false, staleTime: Number.POSITIVE_INFINITY },
+			},
+		});
+		client.setQueryData<ProviderStatusResult>(["provider-status"], {
+			providers: [{ id: "openai-codex", connected: true }],
+		});
+		const runtime = makeStubRuntime({
+			runId: "run-secondvisit",
+			events: [],
+			providerConnected: true,
+		});
+
+		await renderChatRoute(<ChatColumn />, {
+			runtime,
+			path: "/",
+			queryClient: client,
+		});
+
+		// Connected cache → ordinary welcome on the first synchronous paint, never the
+		// connect screen.
 		expect(
 			screen.getByRole("heading", { name: /start a chat/i }),
 		).toBeInTheDocument();
