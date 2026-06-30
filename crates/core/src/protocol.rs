@@ -1043,8 +1043,9 @@ pub struct SettingsResult {
 /// unchanged; a present `model` must be a known catalog id and a present
 /// `effort` a valid thinking level, else `invalid_params`. A present
 /// `enabled_models` replaces the curated set; each member must be a known
-/// catalog id and the effective preferred model must remain a member, else
-/// `invalid_params`.
+/// catalog id. An empty `[]` is the "uncurated = all enabled" sentinel (a reset),
+/// always accepted; for a NON-EMPTY (curated) set the effective preferred model
+/// must remain a member, else `invalid_params`.
 #[derive(Debug, Deserialize)]
 pub struct SettingsSetParams {
     #[serde(default)]

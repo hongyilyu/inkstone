@@ -827,8 +827,9 @@ export type SettingsResult = S.Schema.Type<typeof SettingsResult>;
 /**
  * `settings/set` params: a partial update; an absent field is left unchanged.
  *
- * `enabled_models` replaces the curated set of catalog model ids made available in chat (Core rejects with
- * invalid_params if the effective default model is not a member of the effective enabled set).
+ * `enabled_models` replaces the curated set of catalog model ids made available in chat. An empty `[]` is the
+ * "uncurated = all enabled" sentinel (a reset), always accepted; for a non-empty (curated) set Core rejects with
+ * invalid_params if the effective default model is not a member.
  */
 export const SettingsSetParams = S.Struct({
 	model: S.optional(S.String),
