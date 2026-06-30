@@ -80,15 +80,6 @@ interface JournalEntrySnapshot {
 	body?: Array<{ type?: string; text?: string }>;
 }
 
-function lastUserText(
-	messages: readonly { role: string; content?: unknown }[],
-): string {
-	const lastUser = [...messages]
-		.reverse()
-		.find((message) => message.role === "user");
-	return textOf(lastUser?.content);
-}
-
 function classifyJournalIntakePrompt(prompt: string): JournalIntakeAction {
 	const lower = prompt.toLowerCase();
 	const referencesCurrentEntry =
