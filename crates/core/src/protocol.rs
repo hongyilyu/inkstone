@@ -1026,23 +1026,34 @@ pub struct ModelCatalogResult {
 /// `settings/get` + `settings/set` result (ADR-0024): the effective model
 /// selection and global effort for the default Workflow. `model` falls back to
 /// the per-provider default when the user has not picked one (`null` only when
-/// the provider has no default); `effort` defaults to `off`.
+/// the provider has no default); `effort` defaults to `off`. `enabled_models`
+/// is the user's curated set of available chat models; it is `[]` (the empty
+/// "uncurated = all enabled" sentinel) when the user has not curated — Core never
+/// materializes today's catalog into the response, so the client expands empty→all
+/// and a future catalog growth is not frozen out for an uncurated user.
 #[derive(Debug, Serialize)]
 pub struct SettingsResult {
     pub provider: String,
     pub model: Option<String>,
     pub effort: String,
+    pub enabled_models: Vec<String>,
 }
 
 /// `settings/set` params (ADR-0024): a partial update. An absent field is left
 /// unchanged; a present `model` must be a known catalog id and a present
-/// `effort` a valid thinking level, else `invalid_params`.
+/// `effort` a valid thinking level, else `invalid_params`. A present
+/// `enabled_models` replaces the curated set; each member must be a known
+/// catalog id. An empty `[]` is the "uncurated = all enabled" sentinel (a reset),
+/// always accepted; for a NON-EMPTY (curated) set the effective preferred model
+/// must remain a member, else `invalid_params`.
 #[derive(Debug, Deserialize)]
 pub struct SettingsSetParams {
     #[serde(default)]
     pub model: Option<String>,
     #[serde(default)]
     pub effort: Option<String>,
+    #[serde(default)]
+    pub enabled_models: Option<Vec<String>>,
 }
 
 /// One tool call inside an assistant manifest message (ADR-0025 resume).
@@ -2615,6 +2626,7 @@ mod parity_fixtures {
                     provider: "openai-codex".to_string(),
                     model: Some("gpt-5.5".to_string()),
                     effort: "high".to_string(),
+                    enabled_models: vec!["gpt-5.4".to_string(), "gpt-5.5".to_string()],
                 }
             ),
             fx!(
@@ -2623,6 +2635,11 @@ mod parity_fixtures {
                     provider: "openai-codex".to_string(),
                     model: None,
                     effort: "off".to_string(),
+                    // The unset/uncurated default: an empty enabled set (ADR-0024),
+                    // NOT the materialized catalog — Core never bakes today's catalog
+                    // into the response, so an uncurated user is not frozen out of
+                    // models added later.
+                    enabled_models: vec![],
                 }
             ),
             // ── slice 4: worker↔core protocol (the surface ADR-0009 was written

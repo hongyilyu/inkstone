@@ -809,18 +809,32 @@ export type ModelCatalogResult = S.Schema.Type<typeof ModelCatalogResult>;
 
 // settings/* (ADR-0024): the user's preferred model + global effort.
 
-/** `settings/get` / `settings/set` result: the effective model selection and global effort for the default Workflow. */
+/**
+ * `settings/get` / `settings/set` result: the effective model selection and global effort for the default Workflow.
+ *
+ * `enabled_models` is the set of catalog model ids the user has made available for chat; it is `[]` (the empty
+ * "uncurated = all enabled" sentinel) when the user has not curated — Core returns `[]`, never the materialized
+ * catalog, so the client expands empty→all and models added later are not frozen out for an uncurated user.
+ */
 export const SettingsResult = S.Struct({
 	provider: S.String,
 	model: S.NullOr(S.String),
 	effort: S.String,
+	enabled_models: S.Array(S.String),
 });
 export type SettingsResult = S.Schema.Type<typeof SettingsResult>;
 
-/** `settings/set` params: a partial update; an absent field is left unchanged. */
+/**
+ * `settings/set` params: a partial update; an absent field is left unchanged.
+ *
+ * `enabled_models` replaces the curated set of catalog model ids made available in chat. An empty `[]` is the
+ * "uncurated = all enabled" sentinel (a reset), always accepted; for a non-empty (curated) set Core rejects with
+ * invalid_params if the effective default model is not a member.
+ */
 export const SettingsSetParams = S.Struct({
 	model: S.optional(S.String),
 	effort: S.optional(S.String),
+	enabled_models: S.optional(S.Array(S.String)),
 });
 export type SettingsSetParams = S.Schema.Type<typeof SettingsSetParams>;
 

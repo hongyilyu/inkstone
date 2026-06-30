@@ -34,13 +34,21 @@ function makeRuntime(opts: {
 	connected?: boolean;
 	effort?: string;
 	models?: readonly ModelInfo[];
+	model?: string | null;
+	enabledModels?: readonly string[];
 }) {
-	const settingsSet = vi.fn((params: { model?: string; effort?: string }) =>
-		Effect.succeed({
-			provider: "openai-codex",
-			model: params.model ?? null,
-			effort: params.effort ?? opts.effort ?? "off",
-		}),
+	const settingsSet = vi.fn(
+		(params: {
+			model?: string;
+			effort?: string;
+			enabled_models?: readonly string[];
+		}) =>
+			Effect.succeed({
+				provider: "openai-codex",
+				model: params.model ?? null,
+				effort: params.effort ?? opts.effort ?? "off",
+				enabled_models: params.enabled_models ?? [],
+			}),
 	);
 	const stub = WsClient.of({
 		threadCreate: die,
@@ -76,8 +84,9 @@ function makeRuntime(opts: {
 		settingsGet: () =>
 			Effect.succeed({
 				provider: "openai-codex",
-				model: null,
+				model: opts.model ?? null,
 				effort: opts.effort ?? "off",
+				enabled_models: opts.enabledModels ?? [],
 			}),
 		settingsSet,
 		proposalGet: die,
@@ -105,11 +114,18 @@ function renderPage(runtime: ReturnType<typeof makeRuntime>["runtime"]) {
 	);
 }
 
+/** From the provider LIST view, click into the OpenAI provider's detail. */
+async function openProviderDetail(user: ReturnType<typeof userEvent.setup>) {
+	const entry = await screen.findByRole("button", { name: /OpenAI/ });
+	await user.click(entry);
+}
+
 describe("Models settings page (ADR-0024)", () => {
 	it("reflects provider connection + global effort from the backend", async () => {
 		const { runtime } = makeRuntime({ connected: true, effort: "high" });
 		renderPage(runtime);
 
+		// Connection status shows per-provider on the LIST view.
 		await waitFor(() =>
 			expect(screen.getByTestId("provider-status")).toHaveTextContent(
 				/connected/i,
@@ -121,6 +137,109 @@ describe("Models settings page (ADR-0024)", () => {
 				"true",
 			),
 		);
+	});
+
+	it("shows a provider entry; drills into its detail and back", async () => {
+		const user = userEvent.setup();
+		const models: ModelInfo[] = [
+			{ id: "gpt-5.5", name: "GPT-5.5", reasoning: true, input: ["text"] },
+		];
+		const { runtime } = makeRuntime({ connected: true, models });
+		renderPage(runtime);
+
+		// LIST view: a clickable provider entry for "OpenAI". No model rows yet.
+		const entry = await screen.findByRole("button", { name: /OpenAI/ });
+		expect(entry).toBeInTheDocument();
+		expect(screen.queryByRole("row", { name: /GPT-5\.5/ })).toBeNull();
+
+		// Drill in: the DETAIL view lists that provider's models.
+		await user.click(entry);
+		expect(
+			await screen.findByRole("row", { name: /GPT-5\.5/ }),
+		).toBeInTheDocument();
+
+		// A Back control returns to the list (provider entry visible again).
+		await user.click(screen.getByRole("button", { name: /back/i }));
+		expect(
+			await screen.findByRole("button", { name: /OpenAI/ }),
+		).toBeInTheDocument();
+		expect(screen.queryByRole("row", { name: /GPT-5\.5/ })).toBeNull();
+	});
+
+	it("keeps the provider row actionable when provider/status fetch FAILS: Not connected + Connect (not a permanent Checking…)", async () => {
+		// settings/get and model/catalog succeed (so the row renders), but
+		// provider/status REJECTS. The pre-slice behavior was an actionable
+		// "Not connected" + Connect; the regression left every row stuck on
+		// "Checking…" with no Connect button (connectedById={} → null per row).
+		const stub = WsClient.of({
+			threadCreate: die,
+			postMessage: die,
+			threadList: die,
+			getRunHistory: die,
+			recurrencePreview: () => Effect.die("not exercised in this test"),
+			threadGet: die,
+			threadRename: die,
+			threadArchive: die,
+			threadUnarchive: die,
+			threadListArchived: die,
+			listEntities: die,
+			getBacklinks: die,
+			observationQuery: die,
+			observationUpdate: die,
+			entityMutate: die,
+			subscribeRun: dieStream,
+			cancelRun: die,
+			retryRun: die,
+			// provider/status REJECTS — runPromise rejects, hitting refreshConnected's
+			// .catch. The error value is irrelevant (the catch ignores it).
+			providerStatus: () => Effect.die("status fetch failed"),
+			providerLoginStart: () =>
+				Effect.succeed({ authorize_url: "https://auth.example/x" }),
+			modelCatalog: () =>
+				Effect.succeed({
+					providers: [{ id: "openai-codex", label: "OpenAI", models: [] }],
+				}),
+			settingsGet: () =>
+				Effect.succeed({
+					provider: "openai-codex",
+					model: null,
+					effort: "off",
+					enabled_models: [],
+				}),
+			settingsSet: () =>
+				Effect.succeed({
+					provider: "openai-codex",
+					model: null,
+					effort: "off",
+					enabled_models: [],
+				}),
+			proposalGet: die,
+			rescanJournalEntry: die,
+			proposalDecide: die,
+			messageSearch: die,
+			proposalNotifications: () => Stream.empty,
+			connectionStatus: () => Stream.empty,
+		});
+		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
+		renderPage(runtime);
+
+		// The row settles to an actionable "Not connected" — never permanent "Checking…".
+		await waitFor(() =>
+			expect(screen.getByTestId("provider-status")).toHaveTextContent(
+				/not connected/i,
+			),
+		);
+		expect(screen.getByTestId("provider-status")).not.toHaveTextContent(
+			/checking/i,
+		);
+		// And the Connect affordance is present (the actionable recovery path).
+		// Match the exact "Connect" chip — the row's own button name also contains
+		// "connect" (from "Not connected"), so anchor the name.
+		expect(
+			screen.getByRole("button", { name: /^connect$/i }),
+		).toBeInTheDocument();
+
+		await runtime.dispose();
 	});
 
 	it("persists an effort change via settings/set", async () => {
@@ -156,7 +275,14 @@ describe("Models settings page (ADR-0024)", () => {
 		const settingsSet = vi.fn(() =>
 			Effect.promise(
 				() => new Promise<void>((_, reject) => releases.push(() => reject())),
-			).pipe(Effect.as({ provider: "openai-codex", model: null, effort: "x" })),
+			).pipe(
+				Effect.as({
+					provider: "openai-codex",
+					model: null,
+					effort: "x",
+					enabled_models: [],
+				}),
+			),
 		);
 		const stub = WsClient.of({
 			threadCreate: die,
@@ -191,6 +317,7 @@ describe("Models settings page (ADR-0024)", () => {
 					provider: "openai-codex",
 					model: null,
 					effort: "low",
+					enabled_models: [],
 				}),
 			settingsSet,
 			proposalGet: die,
@@ -242,7 +369,7 @@ describe("Models settings page (ADR-0024)", () => {
 		await runtime.dispose();
 	});
 
-	it("lists the catalog and persists a preferred model via settings/set", async () => {
+	it("lists the catalog in the provider detail and persists a preferred model via settings/set", async () => {
 		const user = userEvent.setup();
 		const models: ModelInfo[] = [
 			{
@@ -261,6 +388,9 @@ describe("Models settings page (ADR-0024)", () => {
 		const { runtime, settingsSet } = makeRuntime({ connected: true, models });
 		renderPage(runtime);
 
+		// Preferred model lives in the provider detail — drill in first.
+		await openProviderDetail(user);
+
 		const row = await screen.findByRole("row", { name: /GPT-5\.5/ });
 		expect(screen.getAllByRole("row")).toHaveLength(2);
 
@@ -276,6 +406,88 @@ describe("Models settings page (ADR-0024)", () => {
 				/preferred/i,
 			),
 		).toBeInTheDocument();
+	});
+
+	it("locks the current default's enable toggle; toggling a non-default off persists the materialized set minus it; choosing a new default frees the old one", async () => {
+		const user = userEvent.setup();
+		const models: ModelInfo[] = [
+			{ id: "gpt-5.5", name: "GPT-5.5", reasoning: true, input: ["text"] },
+			{
+				id: "gpt-5.4-mini",
+				name: "GPT-5.4 Mini",
+				reasoning: true,
+				input: ["text"],
+			},
+		];
+		// Stored enabled set is empty (= "all enabled", slice 3 rule); default is GPT-5.5.
+		const { runtime, settingsSet } = makeRuntime({
+			connected: true,
+			models,
+			model: "gpt-5.5",
+			enabledModels: [],
+		});
+		renderPage(runtime);
+
+		await openProviderDetail(user);
+
+		const defaultRow = await screen.findByRole("row", { name: /GPT-5\.5/ });
+		const miniRow = await screen.findByRole("row", { name: /GPT-5\.4 Mini/ });
+
+		// The current default (GPT-5.5) toggle is LOCKED: checked + disabled + hint.
+		const defaultToggle = within(defaultRow).getByRole("checkbox", {
+			name: /enabled for chat/i,
+		});
+		expect(defaultToggle).toBeChecked();
+		expect(defaultToggle).toBeDisabled();
+		expect(defaultToggle).toHaveAccessibleDescription(
+			/another model as default/i,
+		);
+
+		// Toggling the non-default OFF while stored set is empty(=all) must MATERIALIZE
+		// the full catalog and persist it minus the toggled-off model — never `[]`
+		// (which would mean "all" again).
+		await user.click(
+			within(miniRow).getByRole("checkbox", { name: /enabled for chat/i }),
+		);
+		await waitFor(() =>
+			expect(settingsSet).toHaveBeenCalledWith({
+				enabled_models: ["gpt-5.5"],
+			}),
+		);
+
+		// Re-enable GPT-5.4 Mini. That makes EVERY model enabled again, so the set
+		// normalizes back to the `[]` uncurated sentinel rather than persisting the
+		// full materialized catalog (which would re-freeze against future growth).
+		await user.click(
+			within(
+				await screen.findByRole("row", { name: /GPT-5\.4 Mini/ }),
+			).getByRole("checkbox", { name: /enabled for chat/i }),
+		);
+		await waitFor(() =>
+			expect(settingsSet).toHaveBeenCalledWith({ enabled_models: [] }),
+		);
+
+		// Now make GPT-5.4 Mini the default. With Mini enabled and chosen as
+		// preferred, GPT-5.5's toggle unlocks.
+		await user.click(
+			within(
+				await screen.findByRole("row", { name: /GPT-5\.4 Mini/ }),
+			).getByRole("button", { name: /set as preferred/i }),
+		);
+
+		await waitFor(() => {
+			const freed = within(
+				screen.getByRole("row", { name: /GPT-5\.5/ }),
+			).getByRole("checkbox", { name: /enabled for chat/i });
+			expect(freed).not.toBeDisabled();
+		});
+		// And the new default (Mini) is now the locked one.
+		expect(
+			within(screen.getByRole("row", { name: /GPT-5\.4 Mini/ })).getByRole(
+				"checkbox",
+				{ name: /enabled for chat/i },
+			),
+		).toBeDisabled();
 	});
 
 	it("ignores an out-of-order save: a stale response cannot overwrite the newer choice", async () => {
@@ -305,6 +517,7 @@ describe("Models settings page (ADR-0024)", () => {
 					provider: "openai-codex",
 					model: params.model ?? null,
 					effort: params.effort ?? "off",
+					enabled_models: [],
 				}),
 			),
 		);
@@ -341,6 +554,7 @@ describe("Models settings page (ADR-0024)", () => {
 					provider: "openai-codex",
 					model: null,
 					effort: "off",
+					enabled_models: [],
 				}),
 			settingsSet,
 			proposalGet: die,
@@ -352,6 +566,9 @@ describe("Models settings page (ADR-0024)", () => {
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 		renderPage(runtime);
+
+		// Preferred-model picks happen in the provider detail.
+		await openProviderDetail(user);
 
 		const row55 = await screen.findByRole("row", { name: /GPT-5\.5/ });
 		const rowMini = await screen.findByRole("row", { name: /GPT-5\.4 Mini/ });
@@ -438,9 +655,19 @@ function makeFlippingRuntime() {
 				providers: [{ id: "openai-codex", label: "OpenAI", models: [] }],
 			}),
 		settingsGet: () =>
-			Effect.succeed({ provider: "openai-codex", model: null, effort: "off" }),
+			Effect.succeed({
+				provider: "openai-codex",
+				model: null,
+				effort: "off",
+				enabled_models: [],
+			}),
 		settingsSet: () =>
-			Effect.succeed({ provider: "openai-codex", model: null, effort: "off" }),
+			Effect.succeed({
+				provider: "openai-codex",
+				model: null,
+				effort: "off",
+				enabled_models: [],
+			}),
 		proposalGet: die,
 		rescanJournalEntry: die,
 		proposalDecide: die,
@@ -627,12 +854,14 @@ describe("Models settings page — provider/connected live push (ADR-0049)", () 
 						provider: "openai-codex",
 						model: null,
 						effort: "off",
+						enabled_models: [],
 					}),
 				settingsSet: () =>
 					Effect.succeed({
 						provider: "openai-codex",
 						model: null,
 						effort: "off",
+						enabled_models: [],
 					}),
 				proposalGet: die,
 				rescanJournalEntry: die,

@@ -1,5 +1,9 @@
 # User-configurable model and effort; model leaves the Workflow TOML
 
+Status: Accepted
+/ amended by [ADR-0062 (provider auth-kind abstraction)](./0062-provider-auth-kind-abstraction.md) — once a second provider (OpenRouter) connects, the active **provider is derived from the selected model** (the catalog is provider-keyed and model ids do not collide across providers), not read from the Workflow TOML default. `settings/set` still carries only `model` + `effort` (+ `enabled_models`, below); provider is resolved by reverse-lookup of the chosen model in the catalog.
+/ amended (in place, pre-release §5) — **enabled-model set + global default invariant.** Beyond the single preferred `model`, the user curates *which* catalog models are available in chat: a new global `enabled_models` settings key (a JSON array of model ids; **defaults to the full catalog when unset**, so existing behavior is preserved). `SettingsResult` carries `enabled_models`; `SettingsSetParams` accepts an optional `enabled_models`. `settings/set` enforces, after applying the partial, that the effective preferred `model` is a member of the effective `enabled_models` — rejecting with `invalid_params` otherwise (so the default can never fall outside the enabled set; the Web Client mirrors this by locking the current default's disable toggle). The composer model picker is scoped to `enabled_models`. The Settings → Models surface becomes a provider list that drills into a per-provider detail view listing that provider's catalog models with enable toggles.
+
 A user picks **which model** the assistant uses and a **global effort level** from
 the Web Client. Both are persisted by Core and override what a Workflow's TOML
 declares. This amends [ADR-0018](./0018-workflow-and-tools-definition.md) (which

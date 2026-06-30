@@ -1,5 +1,8 @@
 import type { ModelInfo } from "@inkstone/protocol";
 import { Brain, Eye, Star } from "lucide-react";
+import { useId } from "react";
+import { isModelEnabled } from "@/lib/enabledModels.js";
+import { cn } from "@/lib/utils.js";
 import { Badge } from "./ui/badge.js";
 
 export interface ModelCatalogTableProps {
@@ -7,7 +10,13 @@ export interface ModelCatalogTableProps {
 	selectedId: string | null;
 	onSelect: (id: string) => void;
 	disabled?: boolean;
+	/** Ids enabled for chat. Empty (or omitted) means "no curation → all enabled" (ADR-0024); a non-empty set enables only those ids. */
+	enabledIds?: readonly string[];
+	/** Toggle a model's chat-enabled membership. `next` is the desired state. Omitting it (with `enabledIds`) hides the toggle. */
+	onToggleEnabled?: (id: string, next: boolean) => void;
 }
+
+const LOCKED_DEFAULT_HINT = "Set another model as default to disable it.";
 
 /** Model catalog as a table (ADR-0024): one row per model with name and capability chips; one row is "Preferred", others reveal a "Set as preferred" action. Presentational. */
 export function ModelCatalogTable({
@@ -15,7 +24,14 @@ export function ModelCatalogTable({
 	selectedId,
 	onSelect,
 	disabled,
+	enabledIds,
+	onToggleEnabled,
 }: ModelCatalogTableProps) {
+	const hintId = useId();
+	// Membership follows the shared ADR-0024 rule: an empty (or omitted)
+	// `enabledIds` means "no curation → all enabled"; a non-empty set enables only
+	// its members.
+	const isEnabled = (id: string) => isModelEnabled(enabledIds ?? [], id);
 	if (models.length === 0) {
 		return (
 			<div className="rounded-md border border-input border-dashed px-3 py-8 text-center text-muted-foreground text-sm">
@@ -30,6 +46,11 @@ export function ModelCatalogTable({
 				<tbody>
 					{models.map((m) => {
 						const preferred = m.id === selectedId;
+						const enabled = isEnabled(m.id);
+						// The current default must stay enabled (mirrors Core's slice-2
+						// invariant: default ∈ enabled). Its disable toggle is locked
+						// until another model is made default.
+						const lockedDefault = preferred;
 						return (
 							<tr
 								key={m.id}
@@ -63,6 +84,46 @@ export function ModelCatalogTable({
 										</div>
 									</div>
 								</td>
+								{onToggleEnabled ? (
+									<td className="w-0 p-2 align-middle">
+										<label
+											className={cn(
+												"inline-flex",
+												lockedDefault || disabled
+													? "cursor-not-allowed"
+													: "cursor-pointer",
+											)}
+											title={lockedDefault ? LOCKED_DEFAULT_HINT : undefined}
+										>
+											{/* Native checkbox carries the a11y state (label, checked,
+											    disabled, description); visually hidden via `peer`, the
+											    sibling span renders the switch track + thumb. */}
+											<input
+												type="checkbox"
+												className="peer sr-only"
+												aria-label="Enabled for chat"
+												aria-describedby={lockedDefault ? hintId : undefined}
+												checked={enabled}
+												disabled={disabled || lockedDefault}
+												onChange={() => onToggleEnabled(m.id, !enabled)}
+											/>
+											<span
+												aria-hidden
+												className={cn(
+													"inline-flex h-5 w-9 shrink-0 items-center rounded-full border border-transparent p-0.5 transition-colors peer-focus-visible:ring-1 peer-focus-visible:ring-ring peer-disabled:opacity-60",
+													enabled ? "bg-primary" : "bg-input",
+												)}
+											>
+												<span
+													className={cn(
+														"size-4 rounded-full bg-background shadow-sm transition-transform",
+														enabled ? "translate-x-4" : "translate-x-0",
+													)}
+												/>
+											</span>
+										</label>
+									</td>
+								) : null}
 								<td className="w-0 p-2 align-middle">
 									{preferred ? (
 										<Badge variant="primary" className="whitespace-nowrap">
@@ -88,6 +149,11 @@ export function ModelCatalogTable({
 					})}
 				</tbody>
 			</table>
+			{onToggleEnabled ? (
+				<p id={hintId} className="sr-only">
+					{LOCKED_DEFAULT_HINT}
+				</p>
+			) : null}
 		</div>
 	);
 }

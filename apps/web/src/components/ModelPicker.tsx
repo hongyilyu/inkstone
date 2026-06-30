@@ -2,6 +2,7 @@ import { Popover } from "@base-ui-components/react/popover";
 import type { ModelInfo } from "@inkstone/protocol";
 import { Brain, Check, ChevronDown, Eye } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { filterEnabledModels } from "@/lib/enabledModels.js";
 import { cn } from "@/lib/utils.js";
 import { useRuntime } from "@/runtime";
 import { fetchCatalog, fetchSettings, saveSettings } from "@/store/settings";
@@ -13,6 +14,11 @@ export function ModelPicker() {
 	const runtime = useRuntime();
 	const [models, setModels] = useState<readonly ModelInfo[]>([]);
 	const [selectedId, setSelectedId] = useState<string | null>(null);
+	// `null` until settings/get resolves; only then does the empty-vs-curated
+	// distinction become meaningful. Keeping it null pre-load prevents the
+	// transient "show all" flash a curated user would otherwise see in the gap
+	// between the catalog and the settings resolving.
+	const [enabledIds, setEnabledIds] = useState<readonly string[] | null>(null);
 	const [open, setOpen] = useState(false);
 	const [query, setQuery] = useState("");
 
@@ -25,9 +31,16 @@ export function ModelPicker() {
 			.catch(() => {});
 		fetchSettings(runtime)
 			.then((s) => {
-				if (alive) setSelectedId(s.model);
+				if (!alive) return;
+				setSelectedId(s.model);
+				setEnabledIds(s.enabled_models);
 			})
-			.catch(() => {});
+			// On failure, clear the loading sentinel to the uncurated set ([]= show
+			// all) rather than leaving it null forever — otherwise a settings/get
+			// error would freeze the picker empty even after the catalog loads.
+			.catch(() => {
+				if (alive) setEnabledIds([]);
+			});
 		return () => {
 			alive = false;
 		};
@@ -38,13 +51,23 @@ export function ModelPicker() {
 		[models, selectedId],
 	);
 
+	// Scope the catalog to the user's enabled set (ADR-0024). Until settings
+	// load (`enabledIds === null`) show nothing — a curated user must never see
+	// a disabled model, even for one frame. Once loaded, an empty
+	// `enabled_models` means "no curation → show all" (matches Core's
+	// unset→full-catalog default); a non-empty set lists only those ids.
+	const enabled = useMemo(() => {
+		if (enabledIds === null) return [];
+		return filterEnabledModels(models, enabledIds);
+	}, [models, enabledIds]);
+
 	const visible = useMemo(() => {
 		const q = query.trim().toLowerCase();
-		if (!q) return models;
-		return models.filter(
+		if (!q) return enabled;
+		return enabled.filter(
 			(m) => m.name.toLowerCase().includes(q) || m.id.toLowerCase().includes(q),
 		);
-	}, [models, query]);
+	}, [enabled, query]);
 
 	const pick = (id: string) => {
 		setSelectedId(id); // optimistic

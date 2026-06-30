@@ -267,6 +267,7 @@ export class WsClient extends Context.Tag("@inkstone/ui-sdk/WsClient")<
 		readonly settingsSet: (params: {
 			readonly model?: string;
 			readonly effort?: string;
+			readonly enabled_models?: readonly string[];
 		}) => Effect.Effect<SettingsResult, WsError>;
 		readonly proposalGet: (
 			runId: RunId,
@@ -702,6 +703,7 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 			const settingsSet = (params: {
 				readonly model?: string;
 				readonly effort?: string;
+				readonly enabled_models?: readonly string[];
 			}): Effect.Effect<SettingsResult, WsError> =>
 				request("settings/set", { ...params }, SettingsResult);
 

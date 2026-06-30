@@ -1,5 +1,6 @@
 {
   "effort": "off",
+  "enabled_models": [],
   "model": null,
   "provider": "openai-codex"
 }

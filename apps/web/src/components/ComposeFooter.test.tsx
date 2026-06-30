@@ -58,12 +58,14 @@ function makeRuntime() {
 				provider: "openai-codex",
 				model: "gpt-5.5",
 				effort: "off",
+				enabled_models: [],
 			}),
 		settingsSet: () =>
 			Effect.succeed({
 				provider: "openai-codex",
 				model: "gpt-5.5",
 				effort: "off",
+				enabled_models: [],
 			}),
 		proposalGet: die,
 		rescanJournalEntry: die,

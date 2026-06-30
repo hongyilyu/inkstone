@@ -1,4 +1,5 @@
 {
   "model": "gpt-5.5",
-  "effort": "high"
+  "effort": "high",
+  "enabled_models": ["gpt-5.4", "gpt-5.5"]
 }
