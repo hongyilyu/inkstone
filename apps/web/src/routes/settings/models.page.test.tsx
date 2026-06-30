@@ -40,6 +40,7 @@ function makeRuntime(opts: {
 			provider: "openai-codex",
 			model: params.model ?? null,
 			effort: params.effort ?? opts.effort ?? "off",
+			enabled_models: [],
 		}),
 	);
 	const stub = WsClient.of({
@@ -78,6 +79,7 @@ function makeRuntime(opts: {
 				provider: "openai-codex",
 				model: null,
 				effort: opts.effort ?? "off",
+				enabled_models: [],
 			}),
 		settingsSet,
 		proposalGet: die,
@@ -156,7 +158,14 @@ describe("Models settings page (ADR-0024)", () => {
 		const settingsSet = vi.fn(() =>
 			Effect.promise(
 				() => new Promise<void>((_, reject) => releases.push(() => reject())),
-			).pipe(Effect.as({ provider: "openai-codex", model: null, effort: "x" })),
+			).pipe(
+				Effect.as({
+					provider: "openai-codex",
+					model: null,
+					effort: "x",
+					enabled_models: [],
+				}),
+			),
 		);
 		const stub = WsClient.of({
 			threadCreate: die,
@@ -191,6 +200,7 @@ describe("Models settings page (ADR-0024)", () => {
 					provider: "openai-codex",
 					model: null,
 					effort: "low",
+					enabled_models: [],
 				}),
 			settingsSet,
 			proposalGet: die,
@@ -305,6 +315,7 @@ describe("Models settings page (ADR-0024)", () => {
 					provider: "openai-codex",
 					model: params.model ?? null,
 					effort: params.effort ?? "off",
+					enabled_models: [],
 				}),
 			),
 		);
@@ -341,6 +352,7 @@ describe("Models settings page (ADR-0024)", () => {
 					provider: "openai-codex",
 					model: null,
 					effort: "off",
+					enabled_models: [],
 				}),
 			settingsSet,
 			proposalGet: die,
@@ -438,9 +450,19 @@ function makeFlippingRuntime() {
 				providers: [{ id: "openai-codex", label: "OpenAI", models: [] }],
 			}),
 		settingsGet: () =>
-			Effect.succeed({ provider: "openai-codex", model: null, effort: "off" }),
+			Effect.succeed({
+				provider: "openai-codex",
+				model: null,
+				effort: "off",
+				enabled_models: [],
+			}),
 		settingsSet: () =>
-			Effect.succeed({ provider: "openai-codex", model: null, effort: "off" }),
+			Effect.succeed({
+				provider: "openai-codex",
+				model: null,
+				effort: "off",
+				enabled_models: [],
+			}),
 		proposalGet: die,
 		rescanJournalEntry: die,
 		proposalDecide: die,
@@ -627,12 +649,14 @@ describe("Models settings page — provider/connected live push (ADR-0049)", () 
 						provider: "openai-codex",
 						model: null,
 						effort: "off",
+						enabled_models: [],
 					}),
 				settingsSet: () =>
 					Effect.succeed({
 						provider: "openai-codex",
 						model: null,
 						effort: "off",
+						enabled_models: [],
 					}),
 				proposalGet: die,
 				rescanJournalEntry: die,

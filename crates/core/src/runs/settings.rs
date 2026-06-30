@@ -14,7 +14,8 @@ use crate::{models, settings, workflow};
 
 /// Read the effective settings for the default Workflow: provider, preferred
 /// model (falling back to the per-provider default the resolver uses, mirroring
-/// effort), and global effort.
+/// effort), global effort, and the enabled-model set (the stored curation, else
+/// the full catalog).
 async fn current(pool: &SqlitePool) -> sqlx::Result<SettingsResult> {
     let wf = workflow::default_workflow();
     let model = settings::preferred_model(pool, &wf.name)
@@ -23,11 +24,25 @@ async fn current(pool: &SqlitePool) -> sqlx::Result<SettingsResult> {
     let effort = settings::effort_setting(pool)
         .await?
         .unwrap_or_else(|| settings::DEFAULT_EFFORT.to_string());
+    let enabled_models = settings::enabled_models(pool)
+        .await?
+        .unwrap_or_else(all_catalog_model_ids);
     Ok(SettingsResult {
         provider: wf.provider.clone(),
         model,
         effort,
+        enabled_models,
     })
+}
+
+/// Every model id in the catalog, flattened across providers — the default
+/// enabled set when the user has not curated one (ADR-0024).
+fn all_catalog_model_ids() -> Vec<String> {
+    models::catalog()
+        .providers
+        .iter()
+        .flat_map(|p| p.models.iter().map(|m| m.id.clone()))
+        .collect()
 }
 
 pub(super) async fn handle_get(

@@ -809,11 +809,17 @@ export type ModelCatalogResult = S.Schema.Type<typeof ModelCatalogResult>;
 
 // settings/* (ADR-0024): the user's preferred model + global effort.
 
-/** `settings/get` / `settings/set` result: the effective model selection and global effort for the default Workflow. */
+/**
+ * `settings/get` / `settings/set` result: the effective model selection and global effort for the default Workflow.
+ *
+ * `enabled_models` is the set of catalog model ids the user has made available for chat; when the user has not
+ * curated a set, Core defaults it to the full catalog.
+ */
 export const SettingsResult = S.Struct({
 	provider: S.String,
 	model: S.NullOr(S.String),
 	effort: S.String,
+	enabled_models: S.Array(S.String),
 });
 export type SettingsResult = S.Schema.Type<typeof SettingsResult>;
 

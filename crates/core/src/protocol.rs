@@ -1026,12 +1026,15 @@ pub struct ModelCatalogResult {
 /// `settings/get` + `settings/set` result (ADR-0024): the effective model
 /// selection and global effort for the default Workflow. `model` falls back to
 /// the per-provider default when the user has not picked one (`null` only when
-/// the provider has no default); `effort` defaults to `off`.
+/// the provider has no default); `effort` defaults to `off`. `enabled_models`
+/// is the user's curated set of available chat models, defaulting to the full
+/// catalog when uncurated.
 #[derive(Debug, Serialize)]
 pub struct SettingsResult {
     pub provider: String,
     pub model: Option<String>,
     pub effort: String,
+    pub enabled_models: Vec<String>,
 }
 
 /// `settings/set` params (ADR-0024): a partial update. An absent field is left
@@ -2615,6 +2618,7 @@ mod parity_fixtures {
                     provider: "openai-codex".to_string(),
                     model: Some("gpt-5.5".to_string()),
                     effort: "high".to_string(),
+                    enabled_models: vec!["gpt-5.4".to_string(), "gpt-5.5".to_string()],
                 }
             ),
             fx!(
@@ -2623,6 +2627,11 @@ mod parity_fixtures {
                     provider: "openai-codex".to_string(),
                     model: None,
                     effort: "off".to_string(),
+                    enabled_models: crate::models::catalog()
+                        .providers
+                        .iter()
+                        .flat_map(|p| p.models.iter().map(|m| m.id.clone()))
+                        .collect(),
                 }
             ),
             // ── slice 4: worker↔core protocol (the surface ADR-0009 was written

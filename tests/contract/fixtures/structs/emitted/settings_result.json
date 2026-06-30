@@ -1,5 +1,9 @@
 {
   "effort": "high",
+  "enabled_models": [
+    "gpt-5.4",
+    "gpt-5.5"
+  ],
   "model": "gpt-5.5",
   "provider": "openai-codex"
 }

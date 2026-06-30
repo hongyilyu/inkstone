@@ -10,12 +10,18 @@
 //!   effort                            global   "off"    off|minimal|low|medium|  settings.effort
 //!                                                       high|xhigh
 //!   model:<workflow_name>             per-WF   (none)   a model id in the catalog workflow_prefs.model
+//!   enabled_models                    global   (none)   JSON array of catalog ids settings.value
 //!   review_anchor_utc_offset_minutes  global   0        a signed integer         settings.value
 
 use sqlx::SqlitePool;
 
 /// The global effort (thinking level) key.
 const EFFORT_KEY: &str = "effort";
+
+/// The global key holding the user's curated set of enabled chat models
+/// (ADR-0024), stored as a JSON-encoded array of catalog model ids. Unset until
+/// the user curates a set; callers default it to the full catalog.
+const ENABLED_MODELS_KEY: &str = "enabled_models";
 
 /// The minutes east of UTC for the Workspace review anchor (ADR-0031). Seeds the
 /// local wall clock used to compute a new active Project's default
@@ -57,4 +63,23 @@ pub async fn set_preferred_model(
     model: &str,
 ) -> sqlx::Result<()> {
     crate::db::set_setting(pool, &model_key(workflow_name), model).await
+}
+
+/// The stored set of enabled chat model ids, or `None` until the user curates
+/// one (ADR-0024). Callers default `None` to the full catalog. A malformed
+/// stored value (not a JSON array) surfaces as a decode error.
+pub async fn enabled_models(pool: &SqlitePool) -> sqlx::Result<Option<Vec<String>>> {
+    let raw = crate::db::get_setting(pool, ENABLED_MODELS_KEY).await?;
+    raw.map(|json| {
+        serde_json::from_str::<Vec<String>>(&json).map_err(|e| sqlx::Error::Decode(Box::new(e)))
+    })
+    .transpose()
+}
+
+/// Persist the enabled chat model set as a JSON-encoded array. The caller
+/// validates each id against the catalog first (ADR-0002).
+#[allow(dead_code)] // wired by the `settings/set` write path in slice 2
+pub async fn set_enabled_models(pool: &SqlitePool, models: &[String]) -> sqlx::Result<()> {
+    let json = serde_json::to_string(models).map_err(|e| sqlx::Error::Encode(Box::new(e)))?;
+    crate::db::set_setting(pool, ENABLED_MODELS_KEY, &json).await
 }

@@ -4,10 +4,46 @@
 //! nothing.
 
 use futures_util::SinkExt;
+use sqlx::SqlitePool;
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use tokio_tungstenite::tungstenite::Message;
 
 mod common;
 use common::{Workspace, Ws, next_text};
+
+/// The full set of catalog model ids, mirroring `models::catalog()` flattened.
+/// Hand-listed so the test pins the catalog shape rather than re-deriving it.
+const ALL_CATALOG_IDS: &[&str] = &[
+    "gpt-5.1",
+    "gpt-5.1-codex-max",
+    "gpt-5.1-codex-mini",
+    "gpt-5.2",
+    "gpt-5.2-codex",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.4",
+    "gpt-5.4-mini",
+    "gpt-5.5",
+];
+
+/// Open a migrated pool against the Workspace DB so a test can seed a setting
+/// row directly before Core spawns (mirrors `current_thread_journal_entries`).
+async fn migrated_pool(workspace: &Workspace) -> SqlitePool {
+    let options = SqliteConnectOptions::new()
+        .filename(workspace.db_path())
+        .create_if_missing(true)
+        .foreign_keys(true);
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await
+        .expect("open sqlite pool");
+    sqlx::migrate!("./migrations")
+        .run(&pool)
+        .await
+        .expect("run migrations");
+    pool
+}
 
 async fn request(ws: &mut Ws, id: u64, method: &str, params: serde_json::Value) -> serde_json::Value {
     let req = serde_json::json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
@@ -89,6 +125,79 @@ fn settings_get_set_round_trips_and_validates() {
         let got3 = request(&mut ws, 7, "settings/get", serde_json::json!({})).await;
         assert_eq!(got3["result"]["model"], serde_json::json!("gpt-5.5"));
         assert_eq!(got3["result"]["effort"], serde_json::json!("low"));
+
+        ws.close(None).await.ok();
+    });
+}
+
+#[test]
+fn settings_get_enabled_models_defaults_to_full_catalog() {
+    // A fresh Workspace has no `enabled_models` set, so `settings/get` reports
+    // every catalog model id as enabled (the default-fill branch).
+    let workspace = Workspace::new();
+    let core = workspace.core().spawn();
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime builds");
+
+    rt.block_on(async {
+        let mut ws = core.connect().await;
+
+        let got = request(&mut ws, 1, "settings/get", serde_json::json!({})).await;
+        let enabled = got["result"]["enabled_models"]
+            .as_array()
+            .expect("enabled_models is an array")
+            .iter()
+            .map(|v| v.as_str().expect("model id is a string").to_string())
+            .collect::<Vec<_>>();
+        let expected = ALL_CATALOG_IDS
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            enabled, expected,
+            "fresh DB reports the full catalog as enabled: {got}"
+        );
+
+        ws.close(None).await.ok();
+    });
+}
+
+#[test]
+fn settings_get_enabled_models_returns_stored_set() {
+    // With an `enabled_models` value already stored (seeded directly — the
+    // wire write path lands in slice 2), `settings/get` returns exactly it.
+    let workspace = Workspace::new();
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime builds");
+
+    rt.block_on(async {
+        // Seed the KV row before Core spawns: a JSON-encoded one-element array.
+        let pool = migrated_pool(&workspace).await;
+        sqlx::query(
+            "INSERT INTO settings (key, value) VALUES ('enabled_models', ?1) \
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        )
+        .bind(serde_json::json!(["gpt-5.4"]).to_string())
+        .execute(&pool)
+        .await
+        .expect("seed enabled_models");
+        pool.close().await;
+
+        let core = workspace.core().spawn();
+        let mut ws = core.connect().await;
+
+        let got = request(&mut ws, 1, "settings/get", serde_json::json!({})).await;
+        assert_eq!(
+            got["result"]["enabled_models"],
+            serde_json::json!(["gpt-5.4"]),
+            "stored enabled_models round-trips exactly: {got}"
+        );
 
         ws.close(None).await.ok();
     });
