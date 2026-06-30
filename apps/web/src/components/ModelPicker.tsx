@@ -35,7 +35,12 @@ export function ModelPicker() {
 				setSelectedId(s.model);
 				setEnabledIds(s.enabled_models);
 			})
-			.catch(() => {});
+			// On failure, clear the loading sentinel to the uncurated set ([]= show
+			// all) rather than leaving it null forever — otherwise a settings/get
+			// error would freeze the picker empty even after the catalog loads.
+			.catch(() => {
+				if (alive) setEnabledIds([]);
+			});
 		return () => {
 			alive = false;
 		};

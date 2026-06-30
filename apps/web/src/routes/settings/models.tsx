@@ -281,18 +281,19 @@ function ModelsSettings() {
 				)}
 			</div>
 
-			{focused ? (
+			{focused && enabledModels.value !== null ? (
 				<ProviderModelsDetail
 					label={focused.label}
 					models={focused.models}
 					selectedId={model.value}
 					onSelect={model.set}
-					// Pre-load (`null`) presents as uncurated (all enabled); the detail
-					// is only reachable after a provider-row click, by which point
-					// settings/get (fired on mount) has long since seeded the real set,
-					// and onToggleEnabled no-ops while value is null — so a toggle can't
-					// write off the sentinel.
-					enabledIds={enabledModels.value ?? []}
+					// Only rendered once settings have seeded (`enabledModels.value !==
+					// null`), so this is the real curated set — never the pre-load
+					// sentinel. The catalog (which makes provider rows clickable) and
+					// settings race on mount, so a fast click can land before settings
+					// load; until then we keep showing the list (below) rather than
+					// flash the detail as "all enabled" with no locked default.
+					enabledIds={enabledModels.value}
 					onToggleEnabled={onToggleEnabled}
 					onBack={() => setSelectedProvider(null)}
 				/>
@@ -317,7 +318,13 @@ function ModelsSettings() {
 									>
 										<button
 											type="button"
+											// The accessible NAME stays connect-free ("Open … models") so it
+											// can't collide with the e2e `getByRole("button",{name:"Connect"})`
+											// query (the status text "Not connected" contains "Connect").
+											// The status + count ride along as the accessible DESCRIPTION via
+											// aria-describedby, so assistive tech hears them too.
 											aria-label={`Open ${p.label} models`}
+											aria-describedby={`provider-meta-${p.id}`}
 											onClick={() => setSelectedProvider(p.id)}
 											className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-md p-3 text-left transition-colors hover:bg-muted/50 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
 										>
@@ -328,7 +335,10 @@ function ModelsSettings() {
 												<span className="truncate font-medium text-sm">
 													{p.label}
 												</span>
-												<span className="flex items-center gap-1.5 text-xs">
+												<span
+													id={`provider-meta-${p.id}`}
+													className="flex items-center gap-1.5 text-xs"
+												>
 													<span
 														data-testid="provider-status"
 														className={cn(

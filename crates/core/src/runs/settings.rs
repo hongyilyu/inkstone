@@ -70,21 +70,36 @@ pub(super) async fn handle_set(
                 return Err(HandlerError::InvalidParams(format!("invalid effort {effort:?}")));
             }
         }
-        if let Some(ref enabled) = params.enabled_models {
-            if let Some(unknown) = enabled.iter().find(|m| !models::is_known_model(m)) {
-                return Err(HandlerError::InvalidParams(format!(
-                    "unknown enabled model {unknown:?}"
-                )));
+        // A submitted set is normalized to a true SET: every member must be a known
+        // catalog id, and duplicates are dropped (order-preserving) so the stored
+        // and echoed value honors the curated-set contract rather than persisting a
+        // bag with repeats.
+        let submitted_enabled = match params.enabled_models {
+            Some(ref enabled) => {
+                if let Some(unknown) = enabled.iter().find(|m| !models::is_known_model(m)) {
+                    return Err(HandlerError::InvalidParams(format!(
+                        "unknown enabled model {unknown:?}"
+                    )));
+                }
+                let mut seen = std::collections::HashSet::new();
+                Some(
+                    enabled
+                        .iter()
+                        .filter(|m| seen.insert((*m).clone()))
+                        .cloned()
+                        .collect::<Vec<_>>(),
+                )
             }
-        }
+            None => None,
+        };
 
         let wf = workflow::default_workflow();
 
-        // The effective post-merge enabled set: a submitted set replaces the stored
-        // curation, else the stored set holds. An EMPTY set is the "uncurated"
-        // sentinel meaning "all models enabled" (ADR-0024) — never "enable
-        // nothing" — so it imposes no membership constraint below.
-        let effective_enabled = match params.enabled_models.clone() {
+        // The effective post-merge enabled set: a submitted (deduped) set replaces
+        // the stored curation, else the stored set holds. An EMPTY set is the
+        // "uncurated" sentinel meaning "all models enabled" (ADR-0024) — never
+        // "enable nothing" — so it imposes no membership constraint below.
+        let effective_enabled = match submitted_enabled.clone() {
             Some(enabled) => enabled,
             None => settings::enabled_models(pool)
                 .await
@@ -114,6 +129,20 @@ pub(super) async fn handle_set(
             }
         }
 
+        // Write order matters for the default∈enabled invariant: persist the
+        // enabled set BEFORE the preferred model. The writes are separate
+        // statements (not one transaction), so a later write can fail after an
+        // earlier one committed. Writing enabled-first means any surviving partial
+        // state is (new enabled set, old model) — and the old model was validated
+        // against its own enabled set at its write time, and shrinking the set
+        // below the old model is already rejected up-front above — so a partial
+        // write can never strand the stored default outside the stored enabled set.
+        // (Effort binds no cross-key invariant, so its position is immaterial.)
+        if let Some(ref enabled) = submitted_enabled {
+            settings::set_enabled_models(pool, enabled)
+                .await
+                .map_err(|e| HandlerError::Internal(e.into()))?;
+        }
         if let Some(ref model) = params.model {
             settings::set_preferred_model(pool, &wf.name, model)
                 .await
@@ -121,11 +150,6 @@ pub(super) async fn handle_set(
         }
         if let Some(ref effort) = params.effort {
             settings::set_effort(pool, effort)
-                .await
-                .map_err(|e| HandlerError::Internal(e.into()))?;
-        }
-        if let Some(ref enabled) = params.enabled_models {
-            settings::set_enabled_models(pool, enabled)
                 .await
                 .map_err(|e| HandlerError::Internal(e.into()))?;
         }

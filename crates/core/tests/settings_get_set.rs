@@ -273,6 +273,27 @@ fn settings_set_enabled_models_persists_and_enforces_default_membership() {
             "rejected enabled_models persisted nothing: {got3}"
         );
 
+        // (d) A submitted set with DUPLICATE ids is normalized to a true set
+        // (order-preserving dedup) before persisting, not stored/echoed verbatim.
+        let dup = request(
+            &mut ws,
+            7,
+            "settings/set",
+            serde_json::json!({ "enabled_models": ["gpt-5.5", "gpt-5.5"] }),
+        )
+        .await;
+        assert_eq!(
+            dup["result"]["enabled_models"],
+            serde_json::json!(["gpt-5.5"]),
+            "duplicate enabled_models ids are deduped: {dup}"
+        );
+        let got4 = request(&mut ws, 8, "settings/get", serde_json::json!({})).await;
+        assert_eq!(
+            got4["result"]["enabled_models"],
+            serde_json::json!(["gpt-5.5"]),
+            "deduped enabled_models round-trips as a set: {got4}"
+        );
+
         ws.close(None).await.ok();
     });
 }
