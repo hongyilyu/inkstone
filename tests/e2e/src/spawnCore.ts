@@ -296,12 +296,17 @@ export async function spawnCore(
 		opts.siblingBinaries?.providerHelper !== undefined;
 	if (!startDisconnected) {
 		mkdirSync(credentialsDir, { recursive: true });
-		// Shape mirrors crates/core/src/credentials.rs `Credentials`. `expires` is
-		// far in the future so the access token never looks expired (no refresh
-		// path); the faux/echo worker ignores the token value entirely.
+		// Shape mirrors crates/core/src/credentials.rs `StoredCredential`: an
+		// INTERNALLY-tagged enum (ADR-0062), so the OAuth codex credential carries a
+		// `"kind":"oauth"` discriminator flat alongside the token fields. Without it
+		// `read()` fails to deserialize and `provider/status` returns an internal
+		// error for EVERY provider row. `expires` is far in the future so the access
+		// token never looks expired (no refresh path); the faux/echo worker ignores
+		// the token value entirely.
 		writeFileSync(
 			path.join(credentialsDir, "openai-codex.json"),
 			JSON.stringify({
+				kind: "oauth",
 				access: "e2e-faux-access-token",
 				refresh: "e2e-faux-refresh-token",
 				expires: 4_102_444_800_000,

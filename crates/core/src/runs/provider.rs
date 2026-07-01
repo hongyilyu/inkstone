@@ -13,9 +13,10 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use super::handler::{self, HandlerError};
 use super::reply;
-use crate::credentials::{self, Credentials, OPENAI_CODEX};
+use crate::credentials::{self, Credentials, StoredCredential};
 use crate::protocol::{
-    ProviderLoginStartParams, ProviderLoginStartResult, ProviderStatus, ProviderStatusResult,
+    ProviderConfigureParams, ProviderLoginStartParams, ProviderLoginStartResult, ProviderStatus,
+    ProviderStatusResult, ProviderTestParams,
 };
 
 pub(super) async fn handle(
@@ -24,17 +25,103 @@ pub(super) async fn handle(
     out_tx: &UnboundedSender<String>,
 ) {
     handler::handle(id, params, out_tx, |_p: serde_json::Value| async move {
-        // ChatGPT/Codex is the only supported provider. A corrupt credential
-        // file surfaces as an internal error, not a misleading "connected: false".
-        let connected =
-            credentials::is_connected(OPENAI_CODEX).map_err(|e| HandlerError::Internal(e.into()))?;
+        provider_status()
+    })
+    .await;
+}
 
-        Ok(ProviderStatusResult {
-            providers: vec![ProviderStatus {
-                id: OPENAI_CODEX.to_string(),
-                connected,
-            }],
+/// The connection state of every registered provider ([`crate::providers::all`],
+/// ADR-0062). Each row carries the registry's `auth_kind` so the Client branches
+/// Connect-vs-Configure off the wire. A corrupt credential file surfaces as an
+/// internal error, not a misleading "connected: false". Shared by
+/// `provider/status` and the `provider/configure` reply.
+fn provider_status() -> Result<ProviderStatusResult, HandlerError> {
+    let providers = crate::providers::all()
+        .iter()
+        .map(|entry| {
+            Ok(ProviderStatus {
+                id: entry.id.to_string(),
+                connected: credentials::is_connected(entry.id)
+                    .map_err(|e| HandlerError::Internal(e.into()))?,
+                auth_kind: entry.auth_kind,
+            })
         })
+        .collect::<Result<Vec<_>, HandlerError>>()?;
+    Ok(ProviderStatusResult { providers })
+}
+
+pub(super) async fn handle_configure(
+    id: serde_json::Value,
+    params: serde_json::Value,
+    out_tx: &UnboundedSender<String>,
+) {
+    // The closure moves a clone to push `provider/connected`; `handler::handle`
+    // keeps the borrow for its own framing (both target the same connection).
+    let notify_tx = out_tx.clone();
+    handler::handle(id, params, out_tx, |params: ProviderConfigureParams| async move {
+        // Only key-configurable providers accept a pasted key (registry-derived,
+        // ADR-0062). An unknown provider AND an OAuth-only one (codex → use
+        // login_start) both reject as invalid_params — configure is for
+        // static-key providers.
+        if !crate::providers::is_configurable(&params.provider) {
+            return Err(HandlerError::InvalidParams(format!(
+                "provider {:?} is not key-configurable",
+                params.provider
+            )));
+        }
+
+        // Reject-before-write (ADR-0014): an empty/whitespace key would persist a
+        // credential that reports connected:true yet fails at request time. Guard
+        // AFTER the provider check so provider-validity still reports first.
+        let key = params.api_key.trim();
+        if key.is_empty() {
+            return Err(HandlerError::InvalidParams(
+                "api_key must not be empty".to_string(),
+            ));
+        }
+
+        // Persist the TRIMMED key: surrounding whitespace/newlines (e.g. a pasted
+        // "  sk-or-…\n") would otherwise be stored verbatim and sent as invalid
+        // auth bytes at request time, reporting connected but failing every call.
+        credentials::write(
+            &params.provider,
+            &StoredCredential::ApiKey {
+                key: key.to_string(),
+            },
+        )
+        .map_err(|e| HandlerError::Internal(e.into()))?;
+
+        // The key is durable — push the live signal (ADR-0049) so the Settings
+        // card flips to Connected without a focus refetch, exactly like login.
+        reply::send_provider_connected(&notify_tx, &params.provider);
+
+        provider_status()
+    })
+    .await;
+}
+
+pub(super) async fn handle_test(
+    id: serde_json::Value,
+    params: serde_json::Value,
+    out_tx: &UnboundedSender<String>,
+) {
+    // The liveness probe (ADR-0062) resolves the credential and spawns a one-shot
+    // ephemeral Worker; it NEVER touches the pool (no Thread, no Run row). A dead
+    // result (unconfigured / no reply) is a normal response, not a JSON-RPC error,
+    // so the body is `Ok`.
+    handler::handle(id, params, out_tx, |params: ProviderTestParams| async move {
+        // Reject an unknown provider BEFORE probing. `provider` reaches
+        // `credentials::credential_path` as `credentials/{provider}.json`, so an
+        // unvalidated value like "../../secret" would path-traverse to probe an
+        // arbitrary `.json` file. Gate against the registry (invalid_params) so
+        // only real providers ever reach the credential store.
+        if !crate::providers::is_known(&params.provider) {
+            return Err(HandlerError::InvalidParams(format!(
+                "unknown provider {:?}",
+                params.provider
+            )));
+        }
+        Ok::<_, HandlerError>(crate::worker::probe_liveness(&params.provider, &params.model).await)
     })
     .await;
 }
@@ -69,7 +156,10 @@ pub(super) async fn handle_login_start(
     out_tx: &UnboundedSender<String>,
 ) {
     handler::handle(id, params, out_tx, |params: ProviderLoginStartParams| async move {
-        if params.provider != OPENAI_CODEX {
+        // Only OAuth (login_allowed) providers begin a browser login (ADR-0062);
+        // an unknown OR key-configurable provider (use provider/configure) is
+        // invalid_params. Registry-derived, not a codex-only branch.
+        if !crate::providers::login_allowed(&params.provider) {
             return Err(HandlerError::InvalidParams(format!(
                 "unknown provider {:?}",
                 params.provider
@@ -165,16 +255,23 @@ pub(super) async fn handle_login_start(
         // the waiting Settings → Models card flips live; the focus-refetch
         // (ADR-0023) remains the fallback if the push is missed (dead `out_tx`).
         let out_tx = out_tx.clone();
+        // Persist under (and push for) the provider the login was started for,
+        // not a codex constant — the eligibility gate above is registry-driven
+        // (`login_allowed`), so a second OAuth provider must not overwrite the
+        // openai-codex credential file.
+        let provider = params.provider;
         tokio::spawn(async move {
             let result = read_login_credentials(&mut lines).await;
             match result {
                 Ok(Some(creds)) => {
-                    if let Err(e) = credentials::write(OPENAI_CODEX, &creds) {
+                    if let Err(e) =
+                        credentials::write(&provider, &StoredCredential::Oauth(creds))
+                    {
                         eprintln!("provider login: persisting credentials failed: {e}");
                     } else {
                         // Persist succeeded — credentials are durable. Push the
                         // live signal; a dead `out_tx` makes it a silent no-op.
-                        reply::send_provider_connected(&out_tx, OPENAI_CODEX);
+                        reply::send_provider_connected(&out_tx, &provider);
                     }
                 }
                 Ok(None) => {

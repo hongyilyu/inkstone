@@ -56,7 +56,7 @@ fn provider_status_reflects_credential_presence() {
         let cred_path = creds_dir.join("openai-codex.json");
         std::fs::write(
             &cred_path,
-            r#"{"access":"tok_access","refresh":"tok_refresh","expires":9999999999999,"account_id":"acct_1"}"#,
+            r#"{"kind":"oauth","access":"tok_access","refresh":"tok_refresh","expires":9999999999999,"account_id":"acct_1"}"#,
         )
         .expect("write credential file");
         #[cfg(unix)]

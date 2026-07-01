@@ -968,11 +968,15 @@ pub enum WorkerStdout {
 }
 
 /// One provider's connection status in `provider/status` (ADR-0023). `connected`
-/// is true when a credential file exists for it.
+/// is true when a credential file exists for it. `auth_kind` (ADR-0062) is the
+/// provider's authentication kind from the [`crate::providers`] registry,
+/// serialized as `"oauth"` / `"api_key"` — the Web branches Connect-vs-Configure
+/// on it rather than guessing from the id.
 #[derive(Debug, Serialize)]
 pub struct ProviderStatus {
     pub id: String,
     pub connected: bool,
+    pub auth_kind: crate::providers::AuthKind,
 }
 
 /// `provider/status` result: the connection state of each known provider.
@@ -980,6 +984,39 @@ pub struct ProviderStatus {
 #[derive(Debug, Serialize)]
 pub struct ProviderStatusResult {
     pub providers: Vec<ProviderStatus>,
+}
+
+/// `provider/configure` params (ADR-0062): store a static API key for a
+/// key-configurable provider (OpenRouter). Rust mirror of the TS
+/// `ProviderConfigureParams`; the result reuses `ProviderStatusResult` (the
+/// refreshed status). A non-key-configurable provider (codex is OAuth-only) or an
+/// unknown provider → `invalid_params`, decided in the handler.
+#[derive(Debug, Deserialize)]
+pub struct ProviderConfigureParams {
+    pub provider: String,
+    pub api_key: String,
+}
+
+/// `provider/test` params (ADR-0062): probe a provider's liveness with the
+/// given `model` — Core resolves the credential, spawns a one-shot ephemeral
+/// Worker with a fixed ping prompt, and reports whether it answered. Rust mirror
+/// of the TS `ProviderTestParams`. Provider-agnostic: works for an openrouter
+/// static key AND a codex OAuth credential.
+#[derive(Debug, Deserialize)]
+pub struct ProviderTestParams {
+    pub provider: String,
+    pub model: String,
+}
+
+/// `provider/test` result (ADR-0062): whether the provider answered (`alive`),
+/// with an optional failure `message` when it did not (an error frame's text, a
+/// timeout, or a "not configured" note). `message` is omitted (not `null`,
+/// matching the TS `S.optional`) on the alive path.
+#[derive(Debug, Serialize)]
+pub struct ProviderTestResult {
+    pub alive: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 /// `provider/login_start` params: which provider to begin an OAuth login for.
@@ -1607,6 +1644,44 @@ mod mirror_tests {
         assert_eq!(
             serde_json::to_value(&n).unwrap(),
             json!({ "provider": "openai-codex" }),
+        );
+    }
+
+    #[test]
+    fn provider_configure_params_decodes_provider_and_api_key() {
+        let wire = json!({ "provider": "openrouter", "api_key": "sk-or-secret" });
+        let p: ProviderConfigureParams = serde_json::from_value(wire).unwrap();
+        assert_eq!(p.provider, "openrouter");
+        assert_eq!(p.api_key, "sk-or-secret");
+    }
+
+    #[test]
+    fn provider_test_params_decodes_provider_and_model() {
+        let wire = json!({ "provider": "openrouter", "model": "anthropic/claude-opus-4.8" });
+        let p: ProviderTestParams = serde_json::from_value(wire).unwrap();
+        assert_eq!(p.provider, "openrouter");
+        assert_eq!(p.model, "anthropic/claude-opus-4.8");
+    }
+
+    #[test]
+    fn provider_test_result_encodes_alive_and_dead() {
+        // Alive: message omitted (skip_serializing_if None), matching S.optional.
+        let alive = ProviderTestResult {
+            alive: true,
+            message: None,
+        };
+        let v = serde_json::to_value(&alive).unwrap();
+        assert_eq!(v, json!({ "alive": true }));
+        assert!(v.get("message").is_none());
+
+        // Dead: message present.
+        let dead = ProviderTestResult {
+            alive: false,
+            message: Some("provider rejected the request".to_string()),
+        };
+        assert_eq!(
+            serde_json::to_value(&dead).unwrap(),
+            json!({ "alive": false, "message": "provider rejected the request" }),
         );
     }
 
@@ -2588,13 +2663,24 @@ mod parity_fixtures {
                 }
             ),
             // ── provider/status, provider/login_start ──
+            // provider/status enumerates BOTH known providers (ADR-0062): the
+            // OAuth codex (connected) and the key-configurable openrouter
+            // (disconnected), covering both `connected` values.
             fx!(
                 "provider_status_result.json",
                 ProviderStatusResult {
-                    providers: vec![ProviderStatus {
-                        id: "openai-codex".to_string(),
-                        connected: true,
-                    }],
+                    providers: vec![
+                        ProviderStatus {
+                            id: "openai-codex".to_string(),
+                            connected: true,
+                            auth_kind: crate::providers::AuthKind::Oauth,
+                        },
+                        ProviderStatus {
+                            id: "openrouter".to_string(),
+                            connected: false,
+                            auth_kind: crate::providers::AuthKind::ApiKey,
+                        },
+                    ],
                 }
             ),
             fx!(
@@ -2640,6 +2726,23 @@ mod parity_fixtures {
                     // into the response, so an uncurated user is not frozen out of
                     // models added later.
                     enabled_models: vec![],
+                }
+            ),
+            // ── provider/test (ADR-0062): the liveness result, alive + dead. The
+            // alive fixture omits `message` (skip_serializing_if None, matching the
+            // TS S.optional); the dead fixture carries it. ──
+            fx!(
+                "provider_test_result.json",
+                ProviderTestResult {
+                    alive: true,
+                    message: None,
+                }
+            ),
+            fx!(
+                "provider_test_result.dead.json",
+                ProviderTestResult {
+                    alive: false,
+                    message: Some("provider rejected the request".to_string()),
                 }
             ),
             // ── slice 4: worker↔core protocol (the surface ADR-0009 was written
@@ -2876,6 +2979,8 @@ mod parity_fixtures {
             "model_catalog_result.json",
             "settings_result.json",
             "settings_result.bare.json",
+            "provider_test_result.json",
+            "provider_test_result.dead.json",
             "run_event.text_delta.json",
             "run_event.tool_call.started.json",
             "run_event.tool_call.completed.json",
@@ -2990,6 +3095,8 @@ mod parity_fixtures {
         parses!(ThreadArchiveParams, "thread_archive_params.json");
         parses!(ThreadUnarchiveParams, "thread_unarchive_params.json");
         parses!(ProviderLoginStartParams, "provider_login_start_params.json");
+        parses!(ProviderConfigureParams, "provider_configure_params.json");
+        parses!(ProviderTestParams, "provider_test_params.json");
         parses!(SettingsSetParams, "settings_set_params.json");
         parses!(SettingsSetParams, "settings_set_params.bare.json");
 

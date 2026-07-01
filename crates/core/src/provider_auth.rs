@@ -2,12 +2,14 @@
 //! Worker, Core resolves a short-lived access token and injects only that into
 //! the manifest — the refresh token never crosses the process boundary.
 //!
-//! Refresh is Core-orchestrated and single-flight: a process-global async mutex
-//! serializes refreshes, with double-checked expiry after acquiring the lock so
-//! concurrent Runs trigger exactly one refresh.
+//! Resolution dispatches by auth kind (ADR-0062): an `Oauth` credential takes
+//! the refresh path below; a static `ApiKey` returns its stored key as-is and
+//! never touches the refresh machinery. A provider with no stored credential
+//! resolves to `None`, so the manifest omits `access_token`.
 //!
-//! Only `openai-codex` is OAuth; any other provider has no stored credential
-//! and resolves to `None`, so the manifest omits `access_token`.
+//! Refresh (OAuth only) is Core-orchestrated and single-flight: a process-global
+//! async mutex serializes refreshes, with double-checked expiry after acquiring
+//! the lock so concurrent Runs trigger exactly one refresh.
 
 use std::process::Stdio;
 use std::sync::OnceLock;
@@ -18,7 +20,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::Mutex;
 
-use crate::credentials::{self, Credentials, OPENAI_CODEX};
+use crate::credentials::{self, Credentials, StoredCredential};
 
 /// Serializes credential refreshes across all in-flight Runs (single-flight,
 /// ADR-0023), so the rotated refresh token is never used twice.
@@ -27,20 +29,30 @@ fn refresh_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
-/// Resolve a fresh access token for `provider`, or `None` if it is not OAuth.
-/// For `openai-codex`: return the stored token if valid, else refresh once under
-/// the single-flight lock (double-checked) and persist the rotated credential.
+/// Resolve a fresh access token for `provider`, dispatching by auth kind
+/// (ADR-0062). A static `ApiKey` returns its stored key as-is — no refresh, no
+/// lock, no helper spawn. An `Oauth` credential returns the stored token if
+/// valid, else refreshes once under the single-flight lock (double-checked) and
+/// persists the rotated credential. No stored credential → `None`.
 pub async fn resolve_access_token(provider: &str, now_ms: i64) -> Result<Option<String>> {
-    if provider != OPENAI_CODEX {
-        return Ok(None);
-    }
-
-    let Some(creds) = credentials::read(OPENAI_CODEX)? else {
+    match credentials::read(provider)? {
+        // Static key: never rotates; the refresh machinery is OAuth-only.
+        Some(StoredCredential::ApiKey { key }) => Ok(Some(key)),
+        Some(StoredCredential::Oauth(creds)) => resolve_oauth(provider, creds, now_ms).await,
         // No credential stored: the Run proceeds tokenless and the provider
         // call fails with an auth error, prompting the user to connect.
-        return Ok(None);
-    };
+        None => Ok(None),
+    }
+}
 
+/// The OAuth valid-or-refresh path (ADR-0023), unchanged: return the stored
+/// access token if valid, else refresh once under the single-flight lock
+/// (double-checked) and persist the rotated credential.
+async fn resolve_oauth(
+    provider: &str,
+    creds: Credentials,
+    now_ms: i64,
+) -> Result<Option<String>> {
     if !creds.is_expired(now_ms) {
         return Ok(Some(creds.access));
     }
@@ -49,15 +61,16 @@ pub async fn resolve_access_token(provider: &str, now_ms: i64) -> Result<Option<
     let _guard = refresh_lock().lock().await;
 
     // Double-check: another Run may have refreshed while we waited.
-    if let Some(fresh) = credentials::read(OPENAI_CODEX)? {
+    if let Some(StoredCredential::Oauth(fresh)) = credentials::read(provider)? {
         if !fresh.is_expired(now_ms) {
             return Ok(Some(fresh.access));
         }
     }
 
     let rotated = refresh_via_helper(&creds.refresh).await?;
-    credentials::write(OPENAI_CODEX, &rotated)?;
-    Ok(Some(rotated.access))
+    let access = rotated.access.clone();
+    credentials::write(provider, &StoredCredential::Oauth(rotated))?;
+    Ok(Some(access))
 }
 
 /// One line of the Provider Helper's stdout in `refresh` mode (ADR-0023).
@@ -129,4 +142,107 @@ async fn refresh_via_helper(refresh_token: &str) -> Result<Credentials> {
 
     let _ = child.wait().await;
     bail!("provider helper produced no result line")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::credentials::{OPENAI_CODEX, env_lock};
+
+    /// A static API-key credential resolves to its stored key directly — no
+    /// refresh, no helper spawn (the helper command is unset; if the ApiKey arm
+    /// touched it, this would error). The codex OAuth path stays untouched.
+    #[test]
+    fn api_key_resolves_to_stored_key_without_refresh() {
+        let _guard = env_lock();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path().join("credentials");
+        // SAFETY: single-threaded test guarded by ENV_LOCK.
+        unsafe {
+            std::env::set_var("INKSTONE_CREDENTIALS_DIR", &dir);
+            // No provider-helper command: an accidental refresh would surface.
+            std::env::remove_var("INKSTONE_PROVIDER_HELPER_CMD");
+        }
+
+        credentials::write(
+            "openrouter",
+            &StoredCredential::ApiKey { key: "sk-or-static".to_string() },
+        )
+        .expect("write api key");
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let resolved = rt
+            .block_on(resolve_access_token("openrouter", 0))
+            .expect("resolve");
+        assert_eq!(resolved.as_deref(), Some("sk-or-static"), "static key returned as-is");
+
+        unsafe {
+            std::env::remove_var("INKSTONE_CREDENTIALS_DIR");
+        }
+    }
+
+    /// A valid (non-expired) OAuth credential for codex resolves to its access
+    /// token with no refresh — the existing OAuth fast path, behavior-identical.
+    #[test]
+    fn valid_oauth_resolves_to_access_token() {
+        let _guard = env_lock();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path().join("credentials");
+        // SAFETY: single-threaded test guarded by ENV_LOCK.
+        unsafe {
+            std::env::set_var("INKSTONE_CREDENTIALS_DIR", &dir);
+        }
+
+        credentials::write(
+            OPENAI_CODEX,
+            &StoredCredential::Oauth(Credentials {
+                access: "fresh_access".to_string(),
+                refresh: "refresh_v1".to_string(),
+                expires: 9_999_999_999_999,
+                account_id: "acct_1".to_string(),
+            }),
+        )
+        .expect("write oauth");
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let resolved = rt
+            .block_on(resolve_access_token(OPENAI_CODEX, 0))
+            .expect("resolve");
+        assert_eq!(resolved.as_deref(), Some("fresh_access"), "valid oauth access token");
+
+        unsafe {
+            std::env::remove_var("INKSTONE_CREDENTIALS_DIR");
+        }
+    }
+
+    /// An unconfigured provider (no stored credential) resolves to `None`.
+    #[test]
+    fn unconfigured_provider_resolves_to_none() {
+        let _guard = env_lock();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path().join("credentials");
+        // SAFETY: single-threaded test guarded by ENV_LOCK.
+        unsafe {
+            std::env::set_var("INKSTONE_CREDENTIALS_DIR", &dir);
+        }
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let resolved = rt
+            .block_on(resolve_access_token("openrouter", 0))
+            .expect("resolve");
+        assert_eq!(resolved, None, "no stored credential resolves to None");
+
+        unsafe {
+            std::env::remove_var("INKSTONE_CREDENTIALS_DIR");
+        }
+    }
 }

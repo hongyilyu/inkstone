@@ -41,6 +41,8 @@ function makeRuntime(
 				return result;
 			}),
 		providerLoginStart: () => unused,
+		providerConfigure: () => unused,
+		providerTest: () => unused,
 		modelCatalog: () => unused,
 		settingsGet: () => unused,
 		settingsSet: () => unused,
@@ -65,7 +67,7 @@ function wrapper(runtime: ReturnType<typeof makeRuntime>, client: QueryClient) {
 describe("useProviderStatus", () => {
 	it("anyConnected is false when every provider is disconnected", async () => {
 		const runtime = makeRuntime({
-			providers: [{ id: "openai-codex", connected: false }],
+			providers: [{ id: "openai-codex", connected: false, auth_kind: "oauth" }],
 		});
 		const client = new QueryClient({
 			defaultOptions: { queries: { retry: false } },
@@ -81,7 +83,7 @@ describe("useProviderStatus", () => {
 
 	it("anyConnected is true when at least one provider is connected", async () => {
 		const runtime = makeRuntime({
-			providers: [{ id: "openai-codex", connected: true }],
+			providers: [{ id: "openai-codex", connected: true, auth_kind: "oauth" }],
 		});
 		const client = new QueryClient({
 			defaultOptions: { queries: { retry: false } },
@@ -115,7 +117,11 @@ describe("useProviderStatus", () => {
 		// rather than serve the Infinity-stale global cache.
 		const counter = { calls: 0 };
 		const runtime = makeRuntime(
-			{ providers: [{ id: "openai-codex", connected: false }] },
+			{
+				providers: [
+					{ id: "openai-codex", connected: false, auth_kind: "oauth" },
+				],
+			},
 			counter,
 		);
 		// Replicate the production QueryClient's `staleTime: Infinity` (main.tsx) so

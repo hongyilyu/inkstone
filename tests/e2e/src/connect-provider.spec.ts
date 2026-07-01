@@ -1,4 +1,4 @@
-import { expect, test } from "./fixtures.js";
+import { expect, providerRow, test } from "./fixtures.js";
 import { LOGIN_HELPER_CMD } from "./spawnCore.js";
 
 /**
@@ -40,8 +40,11 @@ test("Settings → Connect ChatGPT flips to Connected after login", async ({
 	await page.getByRole("button", { name: "Settings" }).click();
 	await expect(page.getByRole("heading", { name: "Models" })).toBeVisible();
 
-	// The provider card shows ChatGPT not connected.
-	const status = page.getByTestId("provider-status");
+	// The provider card shows ChatGPT not connected. There are now TWO provider
+	// rows (OpenAI/codex + OpenRouter, ADR-0062), so scope the status to the
+	// OpenAI row (shared `providerRow` helper) — an unscoped getByTestId would
+	// strict-mode-fail across both rows.
+	const status = providerRow(page, "OpenAI").getByTestId("provider-status");
 	await expect(status).toHaveText("Not connected");
 
 	// Click Connect → Core runs provider/login_start (stub helper), the SPA

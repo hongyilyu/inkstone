@@ -17,9 +17,12 @@ import {
 	ProposalGetParams,
 	ProposalGetResult,
 	ProposalPendingNotification,
+	ProviderConfigureParams,
 	ProviderLoginStartParams,
 	ProviderLoginStartResult,
 	ProviderStatusResult,
+	ProviderTestParams,
+	ProviderTestResult,
 	RunCancelParams,
 	RunCancelResult,
 	RunEvent,
@@ -526,6 +529,41 @@ describe("ProviderLoginStartResult", () => {
 describe("ProviderLoginStartParams", () => {
 	it("rejects a missing provider", () => {
 		expect(() => S.decodeUnknownSync(ProviderLoginStartParams)({})).toThrow();
+	});
+});
+
+describe("ProviderConfigureParams", () => {
+	it("rejects a missing api_key", () => {
+		expect(() =>
+			S.decodeUnknownSync(ProviderConfigureParams)({ provider: "openrouter" }),
+		).toThrow();
+	});
+});
+
+describe("ProviderTestParams", () => {
+	it("rejects a missing model", () => {
+		expect(() =>
+			S.decodeUnknownSync(ProviderTestParams)({ provider: "openrouter" }),
+		).toThrow();
+	});
+});
+
+describe("ProviderTestResult", () => {
+	it("decodes an alive result without a message", () => {
+		expect(S.decodeUnknownSync(ProviderTestResult)({ alive: true })).toEqual({
+			alive: true,
+		});
+	});
+
+	it("decodes a failure result with an optional message", () => {
+		const wire = { alive: false, message: "401 Unauthorized" };
+		expect(S.decodeUnknownSync(ProviderTestResult)(wire)).toEqual(wire);
+	});
+
+	it("rejects a non-boolean alive", () => {
+		expect(() =>
+			S.decodeUnknownSync(ProviderTestResult)({ alive: "yes" }),
+		).toThrow();
 	});
 });
 

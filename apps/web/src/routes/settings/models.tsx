@@ -1,4 +1,8 @@
-import type { ProviderModels, ProviderStatusResult } from "@inkstone/protocol";
+import type {
+	ProviderAuthKind,
+	ProviderModels,
+	ProviderStatusResult,
+} from "@inkstone/protocol";
 import {
 	clearNotificationHandler,
 	setNotificationHandler,
@@ -8,6 +12,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { ChevronRight } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { EffortControl } from "@/components/EffortControl";
+import { ProviderConfigureForm } from "@/components/ProviderConfigureForm";
 import { ProviderModelsDetail } from "@/components/ProviderModelsDetail";
 import { Button } from "@/components/ui/button";
 import {
@@ -16,7 +21,12 @@ import {
 } from "@/lib/hooks/useOptimisticSetting";
 import { cn } from "@/lib/utils";
 import { useRuntime } from "@/runtime";
-import { fetchProviderStatus, startLogin } from "@/store/providers";
+import {
+	configure,
+	fetchProviderStatus,
+	startLogin,
+	test as testProvider,
+} from "@/store/providers";
 import { fetchCatalog, fetchSettings, saveSettings } from "@/store/settings";
 
 /** `/settings/models` (ADR-0024): a provider master/detail. The LIST view shows one row per `model/catalog` provider group (label, connection status, model count) plus the global effort control; clicking a provider opens its DETAIL view — that provider's models with the Preferred affordance. Persisted via `settings/*`, read from `model/catalog`. */
@@ -29,6 +39,12 @@ function ModelsSettings() {
 		string,
 		boolean
 	> | null>(null);
+	// Each provider's auth kind (ADR-0062), read off the same provider/status
+	// payload. Drives the Connect (oauth) vs Configure (api_key) affordance — the
+	// wire carries it, so the Web never guesses "not-codex = key".
+	const [authKindById, setAuthKindById] = useState<
+		Record<string, ProviderAuthKind>
+	>({});
 	// Latest in-flight provider/status request — guards refreshConnected's writes
 	// against out-of-order resolution (see the useCallback below).
 	const latestStatusRequest = useRef(0);
@@ -38,6 +54,8 @@ function ModelsSettings() {
 	const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
 	// Whether a provider login failed to start (surfaced in the shared status line).
 	const [connectFailed, setConnectFailed] = useState(false);
+	// The key-provider id whose inline Configure form is open (null = none).
+	const [configuringId, setConfiguringId] = useState<string | null>(null);
 
 	// Effort + preferred model are optimistic, latest-write-wins, roll back to the
 	// last confirmed value (see useOptimisticSetting — closes the rapid-click races).
@@ -87,6 +105,27 @@ function ModelsSettings() {
 				? "saved"
 				: "idle";
 
+	// The shared live-refresh chokepoint (ADR-0049): commit a freshly-read
+	// provider/status into BOTH the per-row map and the ["provider-status"] cache
+	// the chat gate reads. refreshConnected (mount/focus/push) and the configure
+	// success path both route through this, so a stored key flips the row exactly
+	// like a login does — no reload.
+	const applyStatus = useCallback(
+		(status: ProviderStatusResult) => {
+			setConnectedById(
+				Object.fromEntries(status.providers.map((p) => [p.id, p.connected])),
+			);
+			setAuthKindById(
+				Object.fromEntries(status.providers.map((p) => [p.id, p.auth_kind])),
+			);
+			queryClient.setQueryData<ProviderStatusResult>(
+				["provider-status"],
+				status,
+			);
+		},
+		[queryClient],
+	);
+
 	const refreshConnected = useCallback(() => {
 		// Monotonic request id: mount, focus, AND the `provider/connected` push all
 		// call this, so two provider/status round-trips can be in flight at once and
@@ -103,13 +142,11 @@ function ModelsSettings() {
 		fetchProviderStatus(runtime)
 			.then((status) => {
 				if (requestId !== latestStatusRequest.current) return;
-				setConnectedById(
-					Object.fromEntries(status.providers.map((p) => [p.id, p.connected])),
-				);
-				// Write the freshly-read truth into the shared ["provider-status"] cache
-				// the chat gate (connect welcome + composer soft-disable) reads via
-				// useProviderStatus. This is the single chokepoint — mount, focus, and the
-				// `provider/connected` push all route through refreshConnected.
+				// Write the freshly-read truth into both the per-row map and the shared
+				// ["provider-status"] cache the chat gate (connect welcome + composer
+				// soft-disable) reads via useProviderStatus. applyStatus is the single
+				// chokepoint — mount, focus, the `provider/connected` push, AND a
+				// configure success all route through it.
 				//
 				// setQueryData, NOT invalidateQueries: invalidate defaults to
 				// type:"active", so while the chat column is unmounted (the user is over
@@ -119,10 +156,7 @@ function ModelsSettings() {
 				// before the refetch lands, flashing the connect screen at a now-connected
 				// user. Writing the value keeps the cache truthful for that remount AND
 				// notifies a still-mounted chat observer immediately (no refetch needed).
-				queryClient.setQueryData<ProviderStatusResult>(
-					["provider-status"],
-					status,
-				);
+				applyStatus(status);
 			})
 			.catch(() => {
 				if (requestId !== latestStatusRequest.current) return;
@@ -139,7 +173,7 @@ function ModelsSettings() {
 					Object.fromEntries(providers.map((p) => [p.id, false])),
 				);
 			});
-	}, [runtime, queryClient, providers]);
+	}, [runtime, applyStatus, providers]);
 
 	// Clear the transient acknowledgement after a beat (all hooks + the connect flag).
 	const { clearStatus: clearEffortStatus } = effort;
@@ -255,6 +289,24 @@ function ModelsSettings() {
 		[runtime],
 	);
 
+	// Store the pasted key for a key-provider, then flip its row live through the
+	// shared applyStatus chokepoint (the same path login/focus/push use). Rejects
+	// on failure so the form surfaces the error and stays open; resolves + closes
+	// the form on success. The form owns its own pending/error state.
+	const onConfigure = useCallback(
+		async (providerId: string, key: string) => {
+			const status = await configure(runtime, providerId, key);
+			// Bump the monotonic guard BEFORE committing: this invalidates any older
+			// in-flight provider/status (a mount/focus poll carrying pre-configure
+			// disconnected truth), so its resolution becomes a no-op and can't clobber
+			// the just-configured connected value back to disconnected (ADR-0049).
+			++latestStatusRequest.current;
+			applyStatus(status);
+			setConfiguringId(null);
+		},
+		[runtime, applyStatus],
+	);
+
 	const focused = providers.find((p) => p.id === selectedProvider);
 
 	return (
@@ -283,8 +335,12 @@ function ModelsSettings() {
 
 			{focused && enabledModels.value !== null ? (
 				<ProviderModelsDetail
+					providerId={focused.id}
 					label={focused.label}
 					models={focused.models}
+					// A disconnected provider's models can't be set as the default
+					// (they'd run tokenless, ADR-0062) — lock select/toggle with a hint.
+					connected={connectedById?.[focused.id] ?? false}
 					selectedId={model.value}
 					onSelect={model.set}
 					// Only rendered once settings have seeded (`enabledModels.value !==
@@ -296,6 +352,17 @@ function ModelsSettings() {
 					enabledIds={enabledModels.value}
 					onToggleEnabled={onToggleEnabled}
 					onBack={() => setSelectedProvider(null)}
+					// provider/test liveness (ADR-0062), provider-agnostic. Probe the
+					// model the user would actually use — the global default IF it
+					// belongs to this provider, else the provider's first catalog model.
+					// Disable when the provider has no models (nothing to probe).
+					canTest={focused.models.length > 0}
+					onTest={() => {
+						const testModel = focused.models.some((m) => m.id === model.value)
+							? (model.value as string)
+							: focused.models[0]?.id;
+						return testProvider(runtime, focused.id, testModel ?? "");
+					}}
 				/>
 			) : (
 				<>
@@ -311,68 +378,106 @@ function ModelsSettings() {
 											? "Connected"
 											: "Not connected";
 								const count = p.models.length;
+								// Auth kind comes off the provider/status wire row (ADR-0062),
+								// not a client-side id guess. It is absent until a successful
+								// status read supplies it — in particular the fetch-failed
+								// recovery path synthesizes `connected: false` with NO wire auth
+								// kind. Do NOT synthesize one (a defaulted "oauth" would render a
+								// bogus Connect on a key-provider). While it is undefined we render
+								// the row WITHOUT any auth-specific action button (just the neutral
+								// status); the correct Connect/Configure affordance appears on the
+								// next successful status read.
+								const authKind: ProviderAuthKind | undefined =
+									authKindById[p.id];
 								return (
-									<div
-										key={p.id}
-										className="flex items-center gap-2 rounded-md border border-input pr-3"
-									>
-										<button
-											type="button"
-											// The accessible NAME stays connect-free ("Open … models") so it
-											// can't collide with the e2e `getByRole("button",{name:"Connect"})`
-											// query (the status text "Not connected" contains "Connect").
-											// The status + count ride along as the accessible DESCRIPTION via
-											// aria-describedby, so assistive tech hears them too.
-											aria-label={`Open ${p.label} models`}
-											aria-describedby={`provider-meta-${p.id}`}
-											onClick={() => setSelectedProvider(p.id)}
-											className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-md p-3 text-left transition-colors hover:bg-muted/50 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
-										>
-											<div className="flex size-9 shrink-0 items-center justify-center rounded-md bg-secondary font-semibold text-secondary-foreground text-sm">
-												{p.label.slice(0, 1)}
-											</div>
-											<div className="flex min-w-0 flex-col">
-												<span className="truncate font-medium text-sm">
-													{p.label}
-												</span>
-												<span
-													id={`provider-meta-${p.id}`}
-													className="flex items-center gap-1.5 text-xs"
-												>
-													<span
-														data-testid="provider-status"
-														className={cn(
-															connected
-																? "text-foreground"
-																: "text-muted-foreground",
-														)}
-													>
-														{status}
-													</span>
-													<span className="text-muted-foreground">
-														· {count} {count === 1 ? "model" : "models"}
-													</span>
-												</span>
-											</div>
-											<ChevronRight
-												className="ml-auto size-4 shrink-0 text-muted-foreground"
-												aria-hidden
-											/>
-										</button>
-										{/* The connect/onboarding affordance stays reachable per
-										    provider row: a disconnected provider offers Connect
-										    (opens the OAuth tab; credential write is out-of-band,
-										    ADR-0023). */}
-										{connected === false && (
-											<Button
-												variant="chip"
-												size="sm"
-												disabled={busy}
-												onClick={() => onConnect(p.id)}
+									<div key={p.id} className="flex flex-col gap-2">
+										<div className="flex items-center gap-2 rounded-md border border-input pr-3">
+											<button
+												type="button"
+												// The accessible NAME stays connect-free ("Open … models") so it
+												// can't collide with the e2e `getByRole("button",{name:"Connect"})`
+												// query (the status text "Not connected" contains "Connect").
+												// The status + count ride along as the accessible DESCRIPTION via
+												// aria-describedby, so assistive tech hears them too.
+												aria-label={`Open ${p.label} models`}
+												aria-describedby={`provider-meta-${p.id}`}
+												onClick={() => setSelectedProvider(p.id)}
+												className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-md p-3 text-left transition-colors hover:bg-muted/50 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
 											>
-												Connect
-											</Button>
-										)}
+												<div className="flex size-9 shrink-0 items-center justify-center rounded-md bg-secondary font-semibold text-secondary-foreground text-sm">
+													{p.label.slice(0, 1)}
+												</div>
+												<div className="flex min-w-0 flex-col">
+													<span className="truncate font-medium text-sm">
+														{p.label}
+													</span>
+													<span
+														id={`provider-meta-${p.id}`}
+														className="flex items-center gap-1.5 text-xs"
+													>
+														<span
+															data-testid="provider-status"
+															className={cn(
+																connected
+																	? "text-foreground"
+																	: "text-muted-foreground",
+															)}
+														>
+															{status}
+														</span>
+														<span className="text-muted-foreground">
+															· {count} {count === 1 ? "model" : "models"}
+														</span>
+													</span>
+												</div>
+												<ChevronRight
+													className="ml-auto size-4 shrink-0 text-muted-foreground"
+													aria-hidden
+												/>
+											</button>
+											{/* The connect/onboarding affordance stays reachable per
+											    provider row. Branch on auth kind (ADR-0062): an OAuth
+											    provider (codex) offers Connect (opens the OAuth tab;
+											    credential write is out-of-band, ADR-0023); a
+											    key-configurable provider (OpenRouter) offers Configure,
+											    which opens an inline paste-key form below the row. Until
+											    a successful status supplies the auth kind
+											    (`authKind === undefined`, e.g. the fetch-failure path)
+											    render NO action button — a defaulted kind would show the
+											    wrong affordance. */}
+											{connected === false && authKind === "oauth" && (
+												<Button
+													variant="chip"
+													size="sm"
+													disabled={busy}
+													onClick={() => onConnect(p.id)}
+												>
+													Connect
+												</Button>
+											)}
+											{connected === false && authKind === "api_key" && (
+												<Button
+													variant="chip"
+													size="sm"
+													onClick={() =>
+														setConfiguringId((cur) =>
+															cur === p.id ? null : p.id,
+														)
+													}
+												>
+													Configure
+												</Button>
+											)}
+										</div>
+										{connected === false &&
+											authKind === "api_key" &&
+											configuringId === p.id && (
+												<ProviderConfigureForm
+													providerLabel={p.label}
+													onSubmit={(key) => onConfigure(p.id, key)}
+													onCancel={() => setConfiguringId(null)}
+												/>
+											)}
 									</div>
 								);
 							})}

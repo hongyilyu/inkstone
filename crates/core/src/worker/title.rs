@@ -19,9 +19,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use tracing::Instrument;
 use uuid::Uuid;
 
-use crate::protocol::{WorkerManifest, WorkflowManifest};
-
-use super::child::ChildWorker;
+use super::oneshot::{self, OneShotOutcome, OneShotSpec};
 use super::port::WorkerPort;
 
 /// The system prompt for the title Worker, synthesized from the cross-tool
@@ -77,82 +75,55 @@ pub fn spawn_title_generation(
                 return;
             };
 
-            // Bespoke manifest (ADR-0046): empty tools, no Run descriptors, no
-            // skills injection, thinking off.
-            let manifest = WorkerManifest {
-                run_id: corr_id,
-                workflow: WorkflowManifest {
+            // Drive a one-shot Worker through the shared runner (bespoke manifest,
+            // launch resolve, spawn, timed recv-loop, shutdown + drop). The
+            // collector accumulates `text_delta`s and yields `Some(acc)` on a
+            // clean Done/EOF, or `None` to discard and keep the placeholder (an
+            // explicit `error` frame or an unexpected `tool_request` — the titler
+            // has no tools). Any pre-loop failure or timeout keeps the placeholder.
+            let outcome = oneshot::run(
+                corr_id,
+                OneShotSpec {
                     name: "title",
-                    version: "1",
                     provider: &provider,
                     model,
                     system_prompt: TITLE_SYSTEM_PROMPT,
-                    thinking_level: "off",
-                    tools: vec![],
+                    prompt: &prompt,
+                    access_token: Some(&token),
+                    role: crate::launch::Role::Titler,
                 },
-                prompt: &prompt,
-                messages: vec![],
-                mode: None,
-                access_token: Some(&token),
-            };
-            let manifest_line = super::serialize_manifest(&manifest);
-
-            // Resolve the title-Worker launch command (ADR-0041 Titler role); a
-            // resolution failure keeps the placeholder.
-            let Ok(cmd) = crate::launch::resolve(crate::launch::Role::Titler) else {
-                return;
-            };
-
-            // Spawn + collect. A spawn failure keeps the placeholder.
-            let Ok(mut worker) =
-                ChildWorker::spawn(corr_id, &cmd.program, &cmd.args, manifest_line).await
-            else {
-                return;
-            };
-
-            // Time-bound the collector (ADR-0046): a Worker that never finishes
-            // must not hang the titler or leak a child. Only the recv loop is
-            // inside the timed future (borrowing `&mut worker`); on a timeout the
-            // future is dropped — releasing the borrow — and `worker` falls out
-            // of scope at task end, so `kill_on_drop` reaps the hung child.
-            //
-            // The future yields `Some(acc)` for output to sanitize (a clean
-            // Done or EOF), or `None` to discard and keep the placeholder (an
-            // explicit `error` frame or an unexpected `tool_request` — the titler
-            // has no tools). `Err(_elapsed)` likewise keeps the placeholder.
-            let collected = tokio::time::timeout(title_timeout(), async {
-                let mut acc = String::new();
-                loop {
-                    match worker.recv().await {
-                        Some(crate::protocol::WorkerStdout::TextDelta { delta }) => {
-                            acc.push_str(&delta)
+                title_timeout(),
+                |worker| Box::pin(async move {
+                    let mut acc = String::new();
+                    loop {
+                        match worker.recv().await {
+                            Some(crate::protocol::WorkerStdout::TextDelta { delta }) => {
+                                acc.push_str(&delta)
+                            }
+                            // Reasoning deltas (ADR-0045 reasoning amendment, #202)
+                            // are not title text — skip them and keep collecting.
+                            Some(crate::protocol::WorkerStdout::ReasoningDelta { .. }) => {}
+                            Some(crate::protocol::WorkerStdout::Done) => return Some(acc),
+                            // The titler has no tools and an explicit error is a
+                            // failed turn: in both cases discard the partial output
+                            // and keep the placeholder.
+                            Some(crate::protocol::WorkerStdout::Error { .. })
+                            | Some(crate::protocol::WorkerStdout::ToolRequest { .. }) => {
+                                return None;
+                            }
+                            // EOF without `done`: use whatever was accumulated.
+                            None => return Some(acc),
                         }
-                        // Reasoning deltas (ADR-0045 reasoning amendment, #202) are
-                        // not title text — skip them and keep collecting.
-                        Some(crate::protocol::WorkerStdout::ReasoningDelta { .. }) => {}
-                        Some(crate::protocol::WorkerStdout::Done) => return Some(acc),
-                        // The titler has no tools and an explicit error is a
-                        // failed turn: in both cases discard the partial output
-                        // and keep the placeholder.
-                        Some(crate::protocol::WorkerStdout::Error { .. })
-                        | Some(crate::protocol::WorkerStdout::ToolRequest { .. }) => return None,
-                        // EOF without `done`: use whatever was accumulated.
-                        None => return Some(acc),
                     }
-                }
-            })
+                }),
+            )
             .await;
 
-            // Drop stdin → EOF so the Worker exits, then drop the transport so
-            // `kill_on_drop` reaps it. Runs on every path (incl. the timeout,
-            // where the Worker is still alive and hung) so no child is leaked.
-            worker.shutdown().await;
-            drop(worker);
-
-            // Sanitize + persist only on a clean collect. A timeout (`Err`), an
-            // error/tool_request frame (`Ok(None)`), or empty/whitespace output
-            // (`sanitize_title` → `None`) all keep the prompt-derived placeholder.
-            if let Ok(Some(acc)) = collected {
+            // Sanitize + persist only on a clean collect that produced output. A
+            // launch/spawn failure or timeout, an error/tool_request frame
+            // (`Collected(None)`), or empty/whitespace output (`sanitize_title` →
+            // `None`) all keep the prompt-derived placeholder.
+            if let OneShotOutcome::Collected(Some(acc)) = outcome {
                 if let Some(title) = crate::runs::title::sanitize_title(&acc) {
                     match crate::db::update_thread_title(&pool, thread_id, &title).await {
                         // The title was durably written: push it live to the
@@ -178,19 +149,11 @@ pub fn spawn_title_generation(
     );
 }
 
-/// The collector timeout for the title Worker (ADR-0046). Reads
-/// `INKSTONE_TITLE_TIMEOUT_MS` as a `u64` of milliseconds; unset, unparseable,
-/// or `0` falls back to 15s. `0` is rejected because a zero-length timeout fires
-/// instantly, turning every title attempt into a silent no-op. The env seam lets
-/// tests set it low to exercise the timeout without a wall-clock wait.
+/// The collector timeout for the title Worker (ADR-0046), read from
+/// `INKSTONE_TITLE_TIMEOUT_MS` via the shared [`oneshot::timeout_from_env`]
+/// (unset/unparseable/`0` → 15s).
 fn title_timeout() -> std::time::Duration {
-    const DEFAULT_MS: u64 = 15_000;
-    let ms = std::env::var("INKSTONE_TITLE_TIMEOUT_MS")
-        .ok()
-        .and_then(|raw| raw.parse::<u64>().ok())
-        .filter(|ms| *ms > 0)
-        .unwrap_or(DEFAULT_MS);
-    std::time::Duration::from_millis(ms)
+    oneshot::timeout_from_env("INKSTONE_TITLE_TIMEOUT_MS")
 }
 
 #[cfg(test)]

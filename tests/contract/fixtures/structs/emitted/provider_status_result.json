@@ -1,8 +1,14 @@
 {
   "providers": [
     {
+      "auth_kind": "oauth",
       "connected": true,
       "id": "openai-codex"
+    },
+    {
+      "auth_kind": "api_key",
+      "connected": false,
+      "id": "openrouter"
     }
   ]
 }

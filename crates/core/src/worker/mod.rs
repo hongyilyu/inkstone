@@ -7,11 +7,16 @@
 //! any connection, not bound to the issuing socket.
 
 mod child;
+mod liveness;
+mod oneshot;
 mod port;
 mod run;
 mod title;
 
 pub use title::spawn_title_generation;
+// The provider/test handler (`crate::runs::provider`) drives the synchronous
+// liveness probe (ADR-0062) — a one-shot non-Run Worker, sibling to the titler.
+pub(crate) use liveness::probe as probe_liveness;
 
 use sqlx::SqlitePool;
 use tracing::Instrument;

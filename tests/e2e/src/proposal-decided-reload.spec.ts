@@ -39,6 +39,16 @@ test("a decided proposal card survives a page reload and sits above the copy but
 	// durably persisted before the reload.
 	await chat.waitForAssistantText(/done.*added it/i);
 
+	// The copy button mounts only once the assistant message flips to `completed`
+	// (ChatColumn gates it on `status === "completed"`), and that flip LAGS the
+	// text appearing — `waitForAssistantText` matches mid-stream. Wait for the copy
+	// button before the one-shot DOM-order probe below; otherwise the probe can
+	// race a not-yet-mounted button and read "missing" (a pre-existing flake, seen
+	// on master too). `opacity-0` (hover-reveal) still counts as visible here.
+	await expect(
+		chat.page.locator('button[aria-label="Copy"]').last(),
+	).toBeVisible({ timeout: 15_000 });
+
 	// The decided indicator sits ABOVE the copy button (DOCUMENT_POSITION_FOLLOWING
 	// = 4 ⇒ the copy button follows the card in DOM order).
 	const order = await chat.page.evaluate(() => {

@@ -46,10 +46,13 @@ import {
 	ProposalGetParams,
 	ProposalGetResult,
 	ProposalPendingNotification,
+	ProviderConfigureParams,
 	ProviderConnectedNotification,
 	ProviderLoginStartParams,
 	ProviderLoginStartResult,
 	ProviderStatusResult,
+	ProviderTestParams,
+	ProviderTestResult,
 	RecurrencePreviewParams,
 	RecurrencePreviewResult,
 	RunCancelParams,
@@ -311,6 +314,22 @@ export const fixtures: readonly FixtureEntry[] = [
 		message: "ProviderLoginStartParams",
 		file: "provider_login_start_params.json",
 		schema: ProviderLoginStartParams,
+		dir: "authored",
+	},
+	// provider/configure params (ADR-0062): the {provider, api_key} shape Web
+	// sends to store a static key. Result reuses ProviderStatusResult.
+	{
+		message: "ProviderConfigureParams",
+		file: "provider_configure_params.json",
+		schema: ProviderConfigureParams,
+		dir: "authored",
+	},
+	// provider/test params (ADR-0062): the {provider, model} shape Web sends to
+	// probe a provider's liveness.
+	{
+		message: "ProviderTestParams",
+		file: "provider_test_params.json",
+		schema: ProviderTestParams,
 		dir: "authored",
 	},
 	// SettingsSetParams: maximal (both fields) + bare (both omitted).
@@ -590,6 +609,20 @@ export const fixtures: readonly FixtureEntry[] = [
 		schema: SettingsResult,
 		dir: "emitted",
 	},
+	// provider/test result (ADR-0062): alive (message omitted, S.optional) + dead
+	// (message present).
+	{
+		message: "ProviderTestResult",
+		file: "provider_test_result.json",
+		schema: ProviderTestResult,
+		dir: "emitted",
+	},
+	{
+		message: "ProviderTestResult",
+		file: "provider_test_result.dead.json",
+		schema: ProviderTestResult,
+		dir: "emitted",
+	},
 
 	// ── slice 4: worker↔core protocol — the surface ADR-0009 was written about ──
 	// RunEvent (6 variants; tool_call gets one fixture per ToolCallStatus value so
@@ -739,6 +772,8 @@ export const CANONICAL_MESSAGES: readonly string[] = [
 	"ThreadArchiveParams",
 	"ThreadUnarchiveParams",
 	"ProviderLoginStartParams",
+	"ProviderConfigureParams",
+	"ProviderTestParams",
 	"SettingsSetParams",
 	// slice 3 — the 18 results + notifications
 	// + RunRetryResult (run-retry, ADR-0028 amendment, #230) = 19 results.
@@ -770,6 +805,7 @@ export const CANONICAL_MESSAGES: readonly string[] = [
 	"ProviderLoginStartResult",
 	"ModelCatalogResult",
 	"SettingsResult",
+	"ProviderTestResult",
 	// slice 4 — worker↔core protocol (4 messages)
 	"RunEvent",
 	"ToolResult",

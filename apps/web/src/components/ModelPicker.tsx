@@ -1,8 +1,9 @@
 import { Popover } from "@base-ui-components/react/popover";
 import type { ModelInfo } from "@inkstone/protocol";
-import { Brain, Check, ChevronDown, Eye } from "lucide-react";
+import { Brain, Check, ChevronDown, Eye, Lock } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { filterEnabledModels } from "@/lib/enabledModels.js";
+import { useProviderStatus } from "@/lib/hooks/useProviderStatus";
 import { cn } from "@/lib/utils.js";
 import { useRuntime } from "@/runtime";
 import { fetchCatalog, fetchSettings, saveSettings } from "@/store/settings";
@@ -13,6 +14,12 @@ import { SearchField } from "./ui/search-field.js";
 export function ModelPicker() {
 	const runtime = useRuntime();
 	const [models, setModels] = useState<readonly ModelInfo[]>([]);
+	// Which provider each model belongs to, from the catalog groups (ADR-0062) —
+	// the flat `models` list loses the group, so keep the mapping to cross-ref the
+	// provider's connected flag below.
+	const [providerByModel, setProviderByModel] = useState<
+		Record<string, string>
+	>({});
 	const [selectedId, setSelectedId] = useState<string | null>(null);
 	// `null` until settings/get resolves; only then does the empty-vs-curated
 	// distinction become meaningful. Keeping it null pre-load prevents the
@@ -26,7 +33,13 @@ export function ModelPicker() {
 		let alive = true;
 		fetchCatalog(runtime)
 			.then((c) => {
-				if (alive) setModels(c.providers.flatMap((p) => p.models));
+				if (!alive) return;
+				setModels(c.providers.flatMap((p) => p.models));
+				setProviderByModel(
+					Object.fromEntries(
+						c.providers.flatMap((p) => p.models.map((m) => [m.id, p.id])),
+					),
+				);
 			})
 			.catch(() => {});
 		fetchSettings(runtime)
@@ -51,6 +64,35 @@ export function ModelPicker() {
 		[models, selectedId],
 	);
 
+	// Which providers are connected (ADR-0062). A model whose provider has no
+	// credential would run TOKENLESS and fail confusingly, so it is not
+	// selectable here — the composer's `anyConnected` gate passes as long as ANY
+	// provider is connected, which is too coarse for a cross-provider picker.
+	const { data: providerStatus } = useProviderStatus();
+	const connectedProviders = useMemo(
+		() =>
+			new Set(
+				(providerStatus?.providers ?? [])
+					.filter((p) => p.connected)
+					.map((p) => p.id),
+			),
+		[providerStatus],
+	);
+	// A model is selectable only when its provider is CONFIRMED connected. There is
+	// no run-path guard for model *selection* (the #3 gate is web-only), so this must
+	// not fail open. Tri-state on status resolution: while status is unresolved
+	// (`providerStatus === undefined`) a model whose provider group IS known is NOT
+	// yet selectable — locking it until status confirms connectivity rather than
+	// letting a disconnected-provider model be picked in the gap. A model with no
+	// known provider group (shouldn't happen) stays selectable defensively. Once
+	// status resolves, behavior is unchanged (connected → selectable, else locked).
+	const isModelConnected = (id: string) => {
+		const provider = providerByModel[id];
+		if (provider === undefined) return true;
+		if (providerStatus === undefined) return false;
+		return connectedProviders.has(provider);
+	};
+
 	// Scope the catalog to the user's enabled set (ADR-0024). Until settings
 	// load (`enabledIds === null`) show nothing — a curated user must never see
 	// a disabled model, even for one frame. Once loaded, an empty
@@ -70,6 +112,9 @@ export function ModelPicker() {
 	}, [enabled, query]);
 
 	const pick = (id: string) => {
+		// A model whose provider is not connected is not selectable (the row is
+		// disabled below; this guards the code path too).
+		if (!isModelConnected(id)) return;
 		setSelectedId(id); // optimistic
 		setOpen(false);
 		saveSettings(runtime, { model: id })
@@ -105,14 +150,26 @@ export function ModelPicker() {
 							) : (
 								visible.map((m) => {
 									const isSel = m.id === selectedId;
+									// A model whose provider is not connected can't be picked —
+									// selecting it would run tokenless and fail (ADR-0062). Disable
+									// the row and hint the user to connect the provider first.
+									const connected = isModelConnected(m.id);
 									return (
 										<li key={m.id}>
 											<button
 												type="button"
 												onClick={() => pick(m.id)}
+												disabled={!connected}
+												title={
+													connected
+														? undefined
+														: "Connect this model's provider in Settings first."
+												}
 												className={cn(
 													"flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left transition-colors hover:bg-accent",
 													isSel && "bg-accent/60",
+													!connected &&
+														"cursor-not-allowed opacity-50 hover:bg-transparent",
 												)}
 											>
 												<Brain
@@ -126,6 +183,12 @@ export function ModelPicker() {
 													<Eye
 														className="size-3.5 shrink-0 text-muted-foreground"
 														aria-label="Vision"
+													/>
+												) : null}
+												{!connected ? (
+													<Lock
+														className="size-3.5 shrink-0 text-muted-foreground"
+														aria-label="Provider not connected"
 													/>
 												) : null}
 												{isSel ? (

@@ -757,10 +757,18 @@ export type WorkerOutbound = S.Schema.Type<typeof WorkerOutbound>;
 
 // provider/* (ADR-0023, ADR-0014 amendment): LLM-provider connection.
 
-/** One provider's connection state in `provider/status`. */
+/** How a provider authenticates (ADR-0062): OAuth browser login vs a pasted
+ * static API key. Carried on each `provider/status` row so the Web branches
+ * Connect-vs-Configure off the wire rather than guessing from the id. */
+export const ProviderAuthKind = S.Literal("oauth", "api_key");
+export type ProviderAuthKind = S.Schema.Type<typeof ProviderAuthKind>;
+
+/** One provider's connection state in `provider/status`. `auth_kind` (ADR-0062)
+ * comes from Core's provider registry. */
 export const ProviderStatus = S.Struct({
 	id: S.String,
 	connected: S.Boolean,
+	auth_kind: ProviderAuthKind,
 });
 export type ProviderStatus = S.Schema.Type<typeof ProviderStatus>;
 
@@ -769,6 +777,17 @@ export const ProviderStatusResult = S.Struct({
 	providers: S.Array(ProviderStatus),
 });
 export type ProviderStatusResult = S.Schema.Type<typeof ProviderStatusResult>;
+
+/** `provider/configure` params (ADR-0062): store a static API key for a
+ * key-configurable provider (e.g. OpenRouter). The result is the refreshed
+ * {@link ProviderStatusResult}. */
+export const ProviderConfigureParams = S.Struct({
+	provider: S.String,
+	api_key: S.String,
+});
+export type ProviderConfigureParams = S.Schema.Type<
+	typeof ProviderConfigureParams
+>;
 
 /** `provider/login_start` params: which provider to begin an OAuth login for. */
 export const ProviderLoginStartParams = S.Struct({ provider: S.String });
@@ -781,6 +800,20 @@ export const ProviderLoginStartResult = S.Struct({ authorize_url: S.String });
 export type ProviderLoginStartResult = S.Schema.Type<
 	typeof ProviderLoginStartResult
 >;
+
+/** `provider/test` params (ADR-0062): probe whether a provider actually answers, using the given model. Spawns a one-shot ephemeral Worker; nothing is persisted. */
+export const ProviderTestParams = S.Struct({
+	provider: S.String,
+	model: S.String,
+});
+export type ProviderTestParams = S.Schema.Type<typeof ProviderTestParams>;
+
+/** `provider/test` result: whether the provider answered (`alive`), with an optional failure `message` when it did not. */
+export const ProviderTestResult = S.Struct({
+	alive: S.Boolean,
+	message: S.optional(S.String),
+});
+export type ProviderTestResult = S.Schema.Type<typeof ProviderTestResult>;
 
 // model/catalog (ADR-0024): the models available per provider, hand-mirrored from pi-ai's MODELS and guarded by a Worker-side drift test.
 

@@ -64,6 +64,8 @@ function makeRuntime(observationQuery: WsClient["Type"]["observationQuery"]) {
 		retryRun: () => unused,
 		providerStatus: () => unused,
 		providerLoginStart: () => unused,
+		providerConfigure: () => unused,
+		providerTest: () => unused,
 		modelCatalog: () => unused,
 		settingsGet: () => unused,
 		settingsSet: () => unused,
