@@ -195,7 +195,13 @@ function ThreadRow({
 						aria-invalid={rename.isError || undefined}
 						value={draft}
 						disabled={rename.isPending}
-						onChange={(e) => setDraft(e.target.value)}
+						onChange={(e) => {
+							setDraft(e.target.value);
+							// Clear a prior failure as the user corrects the title — the
+							// stale error must not keep gating blur-commit (below) or linger
+							// as a stale alarm over new input.
+							if (rename.isError) rename.reset();
+						}}
 						onKeyDown={(e) => {
 							if (e.key === "Enter") commit();
 							else if (e.key === "Escape") cancel();
@@ -203,6 +209,7 @@ function ThreadRow({
 						// Commit on blur EXCEPT while a rename is in flight or already
 						// failed — a failed rename keeps the input open so the blur that
 						// fires when focus moves to the alert doesn't re-fire the mutation.
+						// (onChange clears isError, so editing then blurring commits again.)
 						onBlur={() => {
 							if (!rename.isPending && !rename.isError) commit();
 						}}

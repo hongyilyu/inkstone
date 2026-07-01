@@ -2458,17 +2458,64 @@ function renderProjectBody({
 	);
 }
 
-function renderCreateTodoBody({
-	payload,
-	nameFor,
-}: ProposalBodyArgs): ReactNode {
-	const todo = objectField(payload, "todo");
+// The Todo scalar-field rows shared by the create and update proposal bodies —
+// title (create only, where "Untitled" is a sensible placeholder; an update omits
+// an unchanged title so a blank row would mislead), note, humanized status,
+// due/defer day, recurrence summary, and the project resolved to a name. Returns a
+// row array so each caller composes it with its own person-ref rows; a display
+// change here lands in both bodies at once (the two used to duplicate this).
+function todoScalarFieldRows(
+	todo: unknown,
+	nameFor: (id: string) => string | null,
+	opts: { includeTitle: boolean },
+): ReactNode[] {
 	const note = textField(todo, "note");
 	const status = textField(todo, "status");
 	const projectId = textField(todo, "project_id");
 	const due = proposalDay(textField(todo, "due_at"));
 	const defer = proposalDay(textField(todo, "defer_at"));
 	const repeats = recurrenceLine(todo);
+	const rows: ReactNode[] = [];
+	if (opts.includeTitle)
+		rows.push(
+			<Field
+				key="title"
+				label="Title"
+				value={textField(todo, "title") || "Untitled"}
+			/>,
+		);
+	if (note) rows.push(<Field key="note" label="Note" value={note} />);
+	// Humanize the raw enum ("active"/"on_hold") to the label the rest of the app
+	// shows; fall back to the raw value for an unknown status.
+	if (status)
+		rows.push(
+			<Field
+				key="status"
+				label="Status"
+				value={statusLabel(status, TODO_STATUS_LABEL)}
+			/>,
+		);
+	if (due) rows.push(<Field key="due" label="Due" value={due} />);
+	if (defer) rows.push(<Field key="defer" label="Defer" value={defer} />);
+	if (repeats)
+		rows.push(<Field key="repeats" label="Repeats" value={repeats} />);
+	// Resolve the project id to its name (not a raw UUID).
+	if (projectId)
+		rows.push(
+			<Field
+				key="project"
+				label="Project"
+				value={displayEntity(projectId, nameFor)}
+			/>,
+		);
+	return rows;
+}
+
+function renderCreateTodoBody({
+	payload,
+	nameFor,
+}: ProposalBodyArgs): ReactNode {
+	const todo = objectField(payload, "todo");
 	return (
 		<div className="flex flex-col gap-3 border-border border-t pt-3">
 			<section className="flex flex-col gap-2">
@@ -2476,23 +2523,7 @@ function renderCreateTodoBody({
 					Todo
 				</p>
 				<dl className="flex flex-col gap-1.5 text-sm">
-					<Field label="Title" value={textField(todo, "title") || "Untitled"} />
-					{note ? <Field label="Note" value={note} /> : null}
-					{/* Humanize the raw enum ("active"/"on_hold") to the label the rest of
-					    the app shows; fall back to the raw value for an unknown status. */}
-					{status ? (
-						<Field
-							label="Status"
-							value={statusLabel(status, TODO_STATUS_LABEL)}
-						/>
-					) : null}
-					{due ? <Field label="Due" value={due} /> : null}
-					{defer ? <Field label="Defer" value={defer} /> : null}
-					{repeats ? <Field label="Repeats" value={repeats} /> : null}
-					{/* Resolve the project id to its name (not a raw UUID). */}
-					{projectId ? (
-						<Field label="Project" value={displayEntity(projectId, nameFor)} />
-					) : null}
+					{todoScalarFieldRows(todo, nameFor, { includeTitle: true })}
 					{personRefFields(payload, "person_refs", "ref", "People", nameFor)}
 				</dl>
 			</section>
@@ -2505,13 +2536,12 @@ function renderUpdateTodoBody({
 	nameFor,
 }: ProposalBodyArgs): ReactNode {
 	const todo = objectField(payload, "todo");
+	// Reuse the create body's scalar rows, minus title: an update omits an
+	// unchanged title, and "Untitled" here would misread as a title change.
+	const scalarRows = todoScalarFieldRows(todo, nameFor, {
+		includeTitle: false,
+	});
 	const title = textField(todo, "title");
-	const note = textField(todo, "note");
-	const status = textField(todo, "status");
-	const projectId = textField(todo, "project_id");
-	const due = proposalDay(textField(todo, "due_at"));
-	const defer = proposalDay(textField(todo, "defer_at"));
-	const repeats = recurrenceLine(todo);
 	const removeIds = arrayField(payload, "remove_person_ids").filter(
 		(id): id is string => typeof id === "string",
 	);
@@ -2534,7 +2564,8 @@ function renderUpdateTodoBody({
 	// than an empty "Changes" section (the diff carries fields we don't surface, or
 	// only clears — the user still needs to know the section isn't broken).
 	const hasVisibleChange =
-		Boolean(title || note || status || projectId || due || defer || repeats) ||
+		Boolean(title) ||
+		scalarRows.length > 0 ||
 		setRows.length > 0 ||
 		addRows.length > 0 ||
 		removeIds.length > 0;
@@ -2548,24 +2579,11 @@ function renderUpdateTodoBody({
 					<dl className="flex flex-col gap-1.5 text-sm">
 						{/* The raw `todo_id` UUID was surfaced here — unreadable to a user
 						    and redundant with the card's "Update Todo" heading. Show only
-						    the fields that actually change. */}
+						    the fields that actually change. A changed title renders here
+						    (verbatim, no "Untitled" placeholder); the rest come from the
+						    shared scalar-row builder. */}
 						{title ? <Field label="Title" value={title} /> : null}
-						{note ? <Field label="Note" value={note} /> : null}
-						{status ? (
-							<Field
-								label="Status"
-								value={statusLabel(status, TODO_STATUS_LABEL)}
-							/>
-						) : null}
-						{due ? <Field label="Due" value={due} /> : null}
-						{defer ? <Field label="Defer" value={defer} /> : null}
-						{repeats ? <Field label="Repeats" value={repeats} /> : null}
-						{projectId ? (
-							<Field
-								label="Project"
-								value={displayEntity(projectId, nameFor)}
-							/>
-						) : null}
+						{scalarRows}
 						{setRows}
 						{addRows}
 						{removeIds.length > 0 ? (

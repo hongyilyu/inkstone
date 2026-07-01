@@ -109,35 +109,30 @@ function TodoStatusGlyph({ todo }: { todo: Todo }) {
 }
 
 /**
- * An interactive status circle that completes an ACTIVE todo in one click via a
- * direct `update_todo` (status=completed + completed_at), per ADR-0033/0034.
- * Lives in the same `w-9` slot as the read-only glyph; its own button so it does
- * not nest inside the row's selecting body button. Optimistic: the circle flips
- * to CircleCheck on success before the `["library-items"]` refetch lands.
+ * The shared inline "complete this todo" circle button (ADR-0033/0034) — a pure
+ * presentational control used by every list that offers one-click completion
+ * (the GTD/Today rows via {@link CompleteCircle}, the Review view's todo rows).
+ * Renders the three states — done (CircleCheck), failed (AlertTriangle, so a
+ * swallowed write is visible and the click retries), and active (Circle) — with a
+ * single source for the glyph switch, aria-label, and title so the two callers
+ * can't drift. The caller owns the mutation; this owns only the look + a11y.
  */
-function CompleteCircle({ todo }: { todo: Todo }) {
-	const mutation = useEntityMutation();
-	const done = todo.status === "completed" || mutation.isSuccess;
-	// A failed write must not be silent: mark the control so the user sees the
-	// completion didn't take. The button stays enabled so the click retries.
-	const failed = mutation.isError;
-
-	const complete = () => {
-		if (done || mutation.isPending) return;
-		mutation.mutate({
-			mutation_kind: "update_todo",
-			payload: {
-				todo_id: todo.id,
-				todo: { status: "completed", completed_at: localNowString() },
-			},
-		});
-	};
-
+export function CompleteTodoCircle({
+	done,
+	failed,
+	pending,
+	onClick,
+}: {
+	done: boolean;
+	failed: boolean;
+	pending: boolean;
+	onClick: () => void;
+}) {
 	return (
 		<button
 			type="button"
-			onClick={complete}
-			disabled={done || mutation.isPending}
+			onClick={onClick}
+			disabled={done || pending}
 			aria-label={
 				done
 					? "Completed"
@@ -162,6 +157,38 @@ function CompleteCircle({ todo }: { todo: Todo }) {
 				/>
 			)}
 		</button>
+	);
+}
+
+/**
+ * An interactive status circle that completes an ACTIVE todo in one click via a
+ * direct `update_todo` (status=completed + completed_at), per ADR-0033/0034.
+ * Lives in the same `w-9` slot as the read-only glyph; its own button so it does
+ * not nest inside the row's selecting body button. Optimistic: the circle flips
+ * to CircleCheck on success before the `["library-items"]` refetch lands.
+ */
+function CompleteCircle({ todo }: { todo: Todo }) {
+	const mutation = useEntityMutation();
+	const done = todo.status === "completed" || mutation.isSuccess;
+
+	const complete = () => {
+		if (done || mutation.isPending) return;
+		mutation.mutate({
+			mutation_kind: "update_todo",
+			payload: {
+				todo_id: todo.id,
+				todo: { status: "completed", completed_at: localNowString() },
+			},
+		});
+	};
+
+	return (
+		<CompleteTodoCircle
+			done={done}
+			failed={mutation.isError}
+			pending={mutation.isPending}
+			onClick={complete}
+		/>
 	);
 }
 

@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import { cn } from "@/lib/utils.js";
 
 /** The six reasoning-effort levels (ADR-0024), mirroring Core's `THINKING_LEVELS` (`off` + pi-ai's five); `off` means non-reasoning. */
@@ -40,9 +41,14 @@ export function EffortControl({
 		EFFORT_LEVELS.indexOf(value as EffortLevel),
 	);
 
+	// Per-radio refs so arrow navigation can move DOM focus to the newly-selected
+	// radio, not just its checked state — in a radiogroup focus and selection move
+	// together, and after the re-render the old radio becomes tabIndex=-1.
+	const radioRefs = useRef<(HTMLButtonElement | null)[]>([]);
+
 	// WAI-ARIA radiogroup keyboard model: Left/Up → previous, Right/Down → next
-	// (wrapping), Home/End → ends. Moving selection also fires onChange (a radio's
-	// focus and checked state move together), matching the ARIA authoring practice.
+	// (wrapping), Home/End → ends. Moving selection fires onChange AND focuses the
+	// newly-selected radio, matching the ARIA authoring practice.
 	const onKeyDown = (e: React.KeyboardEvent) => {
 		if (disabled) return;
 		const last = EFFORT_LEVELS.length - 1;
@@ -56,6 +62,7 @@ export function EffortControl({
 		else return;
 		e.preventDefault();
 		onChange(EFFORT_LEVELS[next]);
+		radioRefs.current[next]?.focus();
 	};
 
 	return (
@@ -70,6 +77,9 @@ export function EffortControl({
 					// biome-ignore lint/a11y/useSemanticElements: radiogroup/radio is the correct WAI-ARIA pattern for this single-select segmented control
 					<button
 						key={level}
+						ref={(el) => {
+							radioRefs.current[i] = el;
+						}}
 						type="button"
 						role="radio"
 						aria-checked={active}

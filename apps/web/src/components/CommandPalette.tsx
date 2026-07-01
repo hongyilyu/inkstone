@@ -135,6 +135,19 @@ export function CommandPalette() {
 
 	const flat = useMemo(() => groups.flatMap((g) => g.items), [groups]);
 
+	// The empty-results line, chosen with flat precedence rather than a nested
+	// ternary in the JSX: prompt → still-settling → search-failed (narrow the
+	// "no matches" claim to thread+library, since messages couldn't be searched)
+	// → genuine no-match.
+	const q = query.trim();
+	const emptyMessage = !q
+		? "Type to search your workspace."
+		: searchSettling
+			? "Searching…"
+			: messageSearchError
+				? `No thread or library matches for "${q}".`
+				: `No matches for "${q}".`;
+
 	// Re-clamp the active index when the result set shrinks (async data settling can
 	// drop rows out from under an arrow-keyed selection). Without this, `active` can
 	// point past the end and Enter silently no-ops on `flat[active] === undefined`.
@@ -261,13 +274,7 @@ export function CommandPalette() {
 						) : null}
 						{flat.length === 0 ? (
 							<p className="px-3 py-10 text-center text-muted-foreground text-sm">
-								{!query.trim()
-									? "Type to search your workspace."
-									: searchSettling
-										? "Searching…"
-										: messageSearchError
-											? `No thread or library matches for "${query.trim()}".`
-											: `No matches for "${query.trim()}".`}
+								{emptyMessage}
 							</p>
 						) : (
 							groups.map((group) => (

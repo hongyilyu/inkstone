@@ -1,12 +1,4 @@
-import {
-	AlertTriangle,
-	CalendarClock,
-	Check,
-	ChevronDown,
-	ChevronUp,
-	Circle,
-	CircleCheck,
-} from "lucide-react";
+import { CalendarClock, Check, ChevronDown, ChevronUp } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -22,6 +14,7 @@ import {
 	todosForProject,
 } from "@/lib/libraryItems";
 import { cn } from "@/lib/utils.js";
+import { CompleteTodoCircle } from "./EntityRow.js";
 import { EntitySkeleton } from "./EntitySkeleton.js";
 
 /**
@@ -387,34 +380,12 @@ function ReviewTodoRow({
 	return (
 		<li className="group flex items-stretch gap-1">
 			<span className="flex w-9 shrink-0 items-center justify-center">
-				<button
-					type="button"
+				<CompleteTodoCircle
+					done={done}
+					failed={failed}
+					pending={mutation.isPending}
 					onClick={toggle}
-					disabled={done || mutation.isPending}
-					aria-label={
-						done
-							? "Completed"
-							: failed
-								? "Couldn't complete todo — try again"
-								: "Mark todo complete"
-					}
-					title={failed ? "Couldn't complete. Try again." : undefined}
-					className="rounded-full focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-default"
-				>
-					{done ? (
-						<CircleCheck className="size-[18px] text-primary" aria-hidden />
-					) : failed ? (
-						<AlertTriangle
-							className="size-[18px] text-destructive transition-colors hover:text-primary"
-							aria-hidden
-						/>
-					) : (
-						<Circle
-							className="size-[18px] text-muted-foreground transition-colors hover:text-primary"
-							aria-hidden
-						/>
-					)}
-				</button>
+				/>
 			</span>
 			<button
 				type="button"

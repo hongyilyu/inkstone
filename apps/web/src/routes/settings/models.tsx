@@ -48,6 +48,10 @@ function ModelsSettings() {
 	// Latest in-flight provider/status request — guards refreshConnected's writes
 	// against out-of-order resolution (see the useCallback below).
 	const latestStatusRequest = useRef(0);
+	// Monotonic token for catalog loads (mount effect + retry button share one
+	// path). Guards the same way latestStatusRequest does: a superseded or
+	// post-unmount response must not overwrite newer state.
+	const latestCatalogRequest = useRef(0);
 	const [busy, setBusy] = useState(false);
 	const [providers, setProviders] = useState<readonly ProviderModels[]>([]);
 	// Whether the model catalog read failed. Distinguishes a genuine empty catalog
@@ -220,12 +224,15 @@ function ModelsSettings() {
 	// than a blank Providers section. Exposed as a callback so the retry button and
 	// the initial effect share one path.
 	const loadCatalog = useCallback(() => {
+		const requestId = ++latestCatalogRequest.current;
 		setCatalogFailed(false);
 		return fetchCatalog(runtime)
 			.then((c) => {
+				if (requestId !== latestCatalogRequest.current) return;
 				setProviders(c.providers);
 			})
 			.catch(() => {
+				if (requestId !== latestCatalogRequest.current) return;
 				setCatalogFailed(true);
 			});
 	}, [runtime]);
@@ -242,6 +249,9 @@ function ModelsSettings() {
 		void loadCatalog();
 		return () => {
 			alive = false;
+			// Invalidate any in-flight catalog load so a response landing after
+			// unmount can't setState (mirrors the `alive` guard on the settings fetch).
+			++latestCatalogRequest.current;
 		};
 	}, [runtime, seedEffort, seedModel, seedEnabled, loadCatalog]);
 
