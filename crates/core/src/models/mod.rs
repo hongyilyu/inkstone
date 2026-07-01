@@ -43,6 +43,18 @@ pub fn is_known_model(model: &str) -> bool {
         .any(|p| p.models.iter().any(|m| m.id == model))
 }
 
+/// The provider id whose catalog group contains `model` (ADR-0062). Backs the
+/// dispatcher's provider derivation: a Run's provider follows the user's selected
+/// model, so an OpenRouter model routes to `openrouter` (and its ApiKey), not the
+/// default `openai-codex`. `None` if no group lists the model.
+pub fn provider_for(model: &str) -> Option<&'static str> {
+    catalog()
+        .providers
+        .iter()
+        .find(|p| p.models.iter().any(|m| m.id == model))
+        .map(|p| p.id.as_str())
+}
+
 /// The default model id for `provider` when the user has not picked one
 /// (ADR-0024). Product policy, not catalog data, so it is authored here rather
 /// than in the drift-tested embedded JSON. Providers other than `openai-codex`

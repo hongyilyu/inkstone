@@ -34,11 +34,13 @@ pub fn dispatch(_thread_id: uuid::Uuid, _prompt: &str) -> &'static Workflow {
 }
 
 /// Build the Workflow a Run actually executes (ADR-0024): clone the dispatched
-/// base and override `model` + `thinking_level` from user settings.
+/// base and override `model` + `thinking_level` from user settings, then derive
+/// `provider` from the resolved model (ADR-0062).
 ///
 /// Resolution order:
-///   - model:  user setting → `models::default_model(provider)` → TOML `model`
-///   - effort: user setting → TOML `thinking_level` → `settings::DEFAULT_EFFORT`
+///   - model:    user setting → `models::default_model(provider)` → TOML `model`
+///   - effort:   user setting → TOML `thinking_level` → `settings::DEFAULT_EFFORT`
+///   - provider: `models::provider_for(resolved model)` → TOML `provider`
 ///
 /// The returned Workflow always carries a concrete `model`/`thinking_level` (the
 /// wire manifest requires them). A settings read error is treated as "unset" so
@@ -58,9 +60,17 @@ pub async fn resolve_effective_workflow(pool: &SqlitePool, base: &Workflow) -> W
         .or_else(|| base.thinking_level.clone())
         .unwrap_or_else(|| settings::DEFAULT_EFFORT.to_string());
 
+    // The provider follows the resolved model: an OpenRouter model routes to the
+    // `openrouter` provider (and its ApiKey), not the base's default `openai-codex`
+    // (ADR-0062). A model in no catalog group falls back to the base provider.
+    let provider = models::provider_for(&model)
+        .map(str::to_string)
+        .unwrap_or_else(|| base.provider.clone());
+
     Workflow {
         model: Some(model),
         thinking_level: Some(thinking_level),
+        provider,
         ..base.clone()
     }
 }

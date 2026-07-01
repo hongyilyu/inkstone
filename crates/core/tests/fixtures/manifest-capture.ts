@@ -4,8 +4,9 @@
 // proving user settings (preferred model + global effort) flow into the Run.
 // Node builtins only.
 //
-// Reads one stdin line (the WorkerManifest), emits "model=<m>|effort=<e>" as a
-// single text_delta (Core persists it to the assistant message), then done.
+// Reads one stdin line (the WorkerManifest), emits
+// "model=<m>|effort=<e>|provider=<p>" as a single text_delta (Core persists it
+// to the assistant message), then done.
 
 function readFirstLine(): Promise<string | null> {
 	return new Promise((resolve) => {
@@ -35,11 +36,15 @@ async function main(): Promise<void> {
 	const line = await readFirstLine();
 	if (line === null) return;
 	const manifest = JSON.parse(line) as {
-		workflow?: { model?: string; thinking_level?: string };
+		workflow?: { model?: string; thinking_level?: string; provider?: string };
 	};
 	const model = manifest.workflow?.model ?? "<none>";
 	const effort = manifest.workflow?.thinking_level ?? "<none>";
-	emit({ kind: "text_delta", delta: `model=${model}|effort=${effort}` });
+	const provider = manifest.workflow?.provider ?? "<none>";
+	emit({
+		kind: "text_delta",
+		delta: `model=${model}|effort=${effort}|provider=${provider}`,
+	});
 	emit({ kind: "done" });
 }
 

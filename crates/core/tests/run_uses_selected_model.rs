@@ -1,7 +1,12 @@
-//! A Run uses the user's selected model and global effort (ADR-0024). After
-//! `settings/set`, a new Run's `runs.model` is the selected model (not the
-//! per-provider default) and the manifest carries the selected model + effort —
-//! observed via a manifest-capture worker that echoes `model=<m>|effort=<e>`.
+//! A Run uses the user's selected model and global effort (ADR-0024), and its
+//! provider is DERIVED from that model (ADR-0062): selecting an OpenRouter model
+//! routes the Run to the `openrouter` provider, not the default `openai-codex`.
+//!
+//! After `settings/set`, a new Run's `runs.model` is the selected model (not the
+//! per-provider default), `runs.provider` is the provider whose catalog group
+//! contains that model, and the manifest carries the selected model + effort +
+//! provider — observed via a manifest-capture worker that echoes
+//! `model=<m>|effort=<e>|provider=<p>`.
 
 use std::time::{Duration, Instant};
 
@@ -22,8 +27,11 @@ async fn request(ws: &mut Ws, id: u64, method: &str, params: serde_json::Value) 
     serde_json::from_str(&body).expect("json response")
 }
 
-#[test]
-fn run_uses_selected_model_and_effort() {
+/// Drive one selection→run and assert the resolved model + provider. Sets the
+/// model (effort "high" — a non-default that proves the selection won, not the
+/// fallback), creates a Run, then polls the DB for `runs.model`/`runs.provider`
+/// and the assistant text echoing the manifest the Worker received.
+fn assert_run_resolves(model: &str, expected_provider: &str) {
     let workspace = Workspace::new();
     let core = workspace.core().worker_fixture("manifest-capture.ts").spawn();
 
@@ -35,17 +43,14 @@ fn run_uses_selected_model_and_effort() {
     let run_id = rt.block_on(async {
         let mut ws = core.connect().await;
 
-        // A non-default effort (the catalog ships a single model, gpt-5.5, which
-        // doubles as the default — so effort "high" vs the default "off" is what
-        // proves the selection won, not the fallback).
         let set = request(
             &mut ws,
             1,
             "settings/set",
-            serde_json::json!({ "model": "gpt-5.5", "effort": "high" }),
+            serde_json::json!({ "model": model, "effort": "high" }),
         )
         .await;
-        assert_eq!(set["result"]["model"], serde_json::json!("gpt-5.5"));
+        assert_eq!(set["result"]["model"], serde_json::json!(model));
 
         let created = request(&mut ws, 2, "thread/create", serde_json::json!({ "prompt": "hi" })).await;
         let run_id = created["result"]["run_id"]
@@ -57,9 +62,9 @@ fn run_uses_selected_model_and_effort() {
         run_id
     });
 
-    // Poll the DB: the run row records the selected model, and once the worker
-    // completes, the assistant text echoes the model + effort the manifest
-    // carried.
+    // Poll the DB: the run row records the selected model + derived provider, and
+    // once the worker completes, the assistant text echoes the model + effort +
+    // provider the manifest carried.
     rt.block_on(async {
         let url = format!("sqlite://{}?mode=ro", workspace.db_path().display());
         let pool = SqlitePoolOptions::new()
@@ -71,7 +76,7 @@ fn run_uses_selected_model_and_effort() {
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             let row = sqlx::query(
-                "SELECT r.model AS model, mp.text AS text \
+                "SELECT r.model AS model, r.provider AS provider, mp.text AS text \
                  FROM runs r \
                  JOIN messages m ON m.run_id = r.id AND m.role = 'assistant' \
                  JOIN message_parts mp ON mp.message_id = m.id AND mp.seq = 0 \
@@ -83,13 +88,19 @@ fn run_uses_selected_model_and_effort() {
             .expect("query run + assistant text");
 
             if let Some(row) = row {
-                let model: String = row.get("model");
+                let db_model: String = row.get("model");
+                let db_provider: String = row.get("provider");
                 let text: String = row.get("text");
-                assert_eq!(model, "gpt-5.5", "runs.model is the SELECTED model");
+                assert_eq!(db_model, model, "runs.model is the SELECTED model");
+                assert_eq!(
+                    db_provider, expected_provider,
+                    "runs.provider is DERIVED from the selected model"
+                );
                 if !text.is_empty() {
                     assert_eq!(
-                        text, "model=gpt-5.5|effort=high",
-                        "manifest carried the selected model + global effort"
+                        text,
+                        format!("model={model}|effort=high|provider={expected_provider}"),
+                        "manifest carried the selected model + global effort + derived provider"
                     );
                     break;
                 }
@@ -100,4 +111,18 @@ fn run_uses_selected_model_and_effort() {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     });
+}
+
+#[test]
+fn run_uses_selected_model_and_effort() {
+    // A codex catalog model derives the default `openai-codex` provider (no
+    // regression from before provider derivation existed).
+    assert_run_resolves("gpt-5.5", "openai-codex");
+}
+
+#[test]
+fn openrouter_model_routes_to_openrouter_provider() {
+    // An OpenRouter catalog model (known after slice 3) derives the `openrouter`
+    // provider — NOT the default `openai-codex` from the Workflow TOML.
+    assert_run_resolves("anthropic/claude-opus-4.8", "openrouter");
 }
