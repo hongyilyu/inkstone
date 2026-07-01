@@ -65,8 +65,12 @@ function makeRuntime(opts: {
 		openrouterConnected = true;
 		return Effect.succeed({
 			providers: [
-				{ id: "openai-codex", connected: opts.connected ?? false },
-				{ id: "openrouter", connected: true },
+				{
+					id: "openai-codex",
+					connected: opts.connected ?? false,
+					auth_kind: "oauth" as const,
+				},
+				{ id: "openrouter", connected: true, auth_kind: "api_key" as const },
 			],
 		});
 	});
@@ -97,9 +101,19 @@ function makeRuntime(opts: {
 		providerStatus: () =>
 			Effect.succeed({
 				providers: [
-					{ id: "openai-codex", connected: opts.connected ?? false },
+					{
+						id: "openai-codex",
+						connected: opts.connected ?? false,
+						auth_kind: "oauth" as const,
+					},
 					...(opts.withOpenRouter
-						? [{ id: "openrouter", connected: openrouterConnected }]
+						? [
+								{
+									id: "openrouter",
+									connected: openrouterConnected,
+									auth_kind: "api_key" as const,
+								},
+							]
 						: []),
 				],
 			}),
@@ -344,7 +358,13 @@ describe("Models settings page (ADR-0024)", () => {
 			retryRun: die,
 			providerStatus: () =>
 				Effect.succeed({
-					providers: [{ id: "openai-codex", connected: false }],
+					providers: [
+						{
+							id: "openai-codex",
+							connected: false,
+							auth_kind: "oauth" as const,
+						},
+					],
 				}),
 			providerLoginStart: die,
 			providerConfigure: die,
@@ -583,7 +603,13 @@ describe("Models settings page (ADR-0024)", () => {
 			retryRun: die,
 			providerStatus: () =>
 				Effect.succeed({
-					providers: [{ id: "openai-codex", connected: true }],
+					providers: [
+						{
+							id: "openai-codex",
+							connected: true,
+							auth_kind: "oauth" as const,
+						},
+					],
 				}),
 			providerLoginStart: die,
 			providerConfigure: die,
@@ -724,8 +750,8 @@ describe("Models settings — key-configurable provider (ADR-0062)", () => {
 		let statusCalls = 0;
 		const disconnectedStatus = {
 			providers: [
-				{ id: "openai-codex", connected: false },
-				{ id: "openrouter", connected: false },
+				{ id: "openai-codex", connected: false, auth_kind: "oauth" as const },
+				{ id: "openrouter", connected: false, auth_kind: "api_key" as const },
 			],
 		};
 		const providerStatus = vi.fn(() => {
@@ -741,8 +767,8 @@ describe("Models settings — key-configurable provider (ADR-0062)", () => {
 		const providerConfigure = vi.fn((_provider: string, _apiKey: string) =>
 			Effect.succeed({
 				providers: [
-					{ id: "openai-codex", connected: false },
-					{ id: "openrouter", connected: true },
+					{ id: "openai-codex", connected: false, auth_kind: "oauth" as const },
+					{ id: "openrouter", connected: true, auth_kind: "api_key" as const },
 				],
 			}),
 		);
@@ -879,8 +905,16 @@ describe("Models settings — key-configurable provider (ADR-0062)", () => {
 			providerStatus: () =>
 				Effect.succeed({
 					providers: [
-						{ id: "openai-codex", connected: false },
-						{ id: "openrouter", connected: false },
+						{
+							id: "openai-codex",
+							connected: false,
+							auth_kind: "oauth" as const,
+						},
+						{
+							id: "openrouter",
+							connected: false,
+							auth_kind: "api_key" as const,
+						},
 					],
 				}),
 			providerLoginStart: die,
@@ -972,8 +1006,16 @@ describe("Models settings — provider liveness Test (ADR-0062)", () => {
 			providerStatus: () =>
 				Effect.succeed({
 					providers: [
-						{ id: "openai-codex", connected: true },
-						{ id: "openrouter", connected: true },
+						{
+							id: "openai-codex",
+							connected: true,
+							auth_kind: "oauth" as const,
+						},
+						{
+							id: "openrouter",
+							connected: true,
+							auth_kind: "api_key" as const,
+						},
 					],
 				}),
 			providerLoginStart: () =>
@@ -1076,7 +1118,9 @@ function makeFlippingRuntime() {
 		const connected = calls > 0;
 		calls += 1;
 		return Effect.succeed({
-			providers: [{ id: "openai-codex", connected }],
+			providers: [
+				{ id: "openai-codex", connected, auth_kind: "oauth" as const },
+			],
 		});
 	});
 	const stub = WsClient.of({
@@ -1222,7 +1266,9 @@ describe("Models settings page — provider/connected live push (ADR-0049)", () 
 			// setQueryData keeps it truthful for the chat column's remount. This is the
 			// regression guard for the cross-engine-caught stale-cache flash.
 			client.setQueryData<ProviderStatusResult>(["provider-status"], {
-				providers: [{ id: "openai-codex", connected: false }],
+				providers: [
+					{ id: "openai-codex", connected: false, auth_kind: "oauth" as const },
+				],
 			});
 
 			const runtime = makeFlippingRuntime();
@@ -1272,8 +1318,8 @@ describe("Models settings page — provider/connected live push (ADR-0049)", () 
 		try {
 			const twoProviderStatus: ProviderStatusResult = {
 				providers: [
-					{ id: "openai-codex", connected: true },
-					{ id: "anthropic", connected: true },
+					{ id: "openai-codex", connected: true, auth_kind: "oauth" as const },
+					{ id: "anthropic", connected: true, auth_kind: "oauth" as const },
 				],
 			};
 			const stub = WsClient.of({

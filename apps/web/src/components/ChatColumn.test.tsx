@@ -85,7 +85,11 @@ function makeStubRuntime(opts: {
 			(() =>
 				Effect.succeed({
 					providers: [
-						{ id: "openai-codex", connected: opts.providerConnected ?? true },
+						{
+							id: "openai-codex",
+							connected: opts.providerConnected ?? true,
+							auth_kind: "oauth",
+						},
 					],
 				})),
 		providerLoginStart: () => unused,
@@ -366,7 +370,7 @@ describe("ChatColumn", () => {
 			},
 		});
 		client.setQueryData<ProviderStatusResult>(["provider-status"], {
-			providers: [{ id: "openai-codex", connected: true }],
+			providers: [{ id: "openai-codex", connected: true, auth_kind: "oauth" }],
 		});
 		const runtime = makeStubRuntime({
 			runId: "run-secondvisit",
@@ -451,7 +455,9 @@ describe("ChatColumn", () => {
 			// ordinary chat surface renders (slice 2's connect gate is off here).
 			providerStatus: () =>
 				Effect.succeed({
-					providers: [{ id: "openai-codex", connected: true }],
+					providers: [
+						{ id: "openai-codex", connected: true, auth_kind: "oauth" },
+					],
 				}),
 			providerLoginStart: () => unused,
 			providerConfigure: () => unused,
@@ -513,7 +519,9 @@ describe("ChatColumn", () => {
 			// ordinary chat surface renders (slice 2's connect gate is off here).
 			providerStatus: () =>
 				Effect.succeed({
-					providers: [{ id: "openai-codex", connected: true }],
+					providers: [
+						{ id: "openai-codex", connected: true, auth_kind: "oauth" },
+					],
 				}),
 			providerLoginStart: () => unused,
 			providerConfigure: () => unused,
@@ -1229,7 +1237,9 @@ describe("ChatColumn", () => {
 			// ordinary chat surface renders (slice 2's connect gate is off here).
 			providerStatus: () =>
 				Effect.succeed({
-					providers: [{ id: "openai-codex", connected: true }],
+					providers: [
+						{ id: "openai-codex", connected: true, auth_kind: "oauth" },
+					],
 				}),
 			providerLoginStart: () => unused,
 			providerConfigure: () => unused,

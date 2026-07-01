@@ -968,11 +968,15 @@ pub enum WorkerStdout {
 }
 
 /// One provider's connection status in `provider/status` (ADR-0023). `connected`
-/// is true when a credential file exists for it.
+/// is true when a credential file exists for it. `auth_kind` (ADR-0062) is the
+/// provider's authentication kind from the [`crate::providers`] registry,
+/// serialized as `"oauth"` / `"api_key"` — the Web branches Connect-vs-Configure
+/// on it rather than guessing from the id.
 #[derive(Debug, Serialize)]
 pub struct ProviderStatus {
     pub id: String,
     pub connected: bool,
+    pub auth_kind: crate::providers::AuthKind,
 }
 
 /// `provider/status` result: the connection state of each known provider.
@@ -2669,10 +2673,12 @@ mod parity_fixtures {
                         ProviderStatus {
                             id: "openai-codex".to_string(),
                             connected: true,
+                            auth_kind: crate::providers::AuthKind::Oauth,
                         },
                         ProviderStatus {
                             id: "openrouter".to_string(),
                             connected: false,
+                            auth_kind: crate::providers::AuthKind::ApiKey,
                         },
                     ],
                 }

@@ -757,10 +757,18 @@ export type WorkerOutbound = S.Schema.Type<typeof WorkerOutbound>;
 
 // provider/* (ADR-0023, ADR-0014 amendment): LLM-provider connection.
 
-/** One provider's connection state in `provider/status`. */
+/** How a provider authenticates (ADR-0062): OAuth browser login vs a pasted
+ * static API key. Carried on each `provider/status` row so the Web branches
+ * Connect-vs-Configure off the wire rather than guessing from the id. */
+export const ProviderAuthKind = S.Literal("oauth", "api_key");
+export type ProviderAuthKind = S.Schema.Type<typeof ProviderAuthKind>;
+
+/** One provider's connection state in `provider/status`. `auth_kind` (ADR-0062)
+ * comes from Core's provider registry. */
 export const ProviderStatus = S.Struct({
 	id: S.String,
 	connected: S.Boolean,
+	auth_kind: ProviderAuthKind,
 });
 export type ProviderStatus = S.Schema.Type<typeof ProviderStatus>;
 

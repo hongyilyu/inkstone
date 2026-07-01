@@ -1,4 +1,8 @@
-import type { ProviderModels, ProviderStatusResult } from "@inkstone/protocol";
+import type {
+	ProviderAuthKind,
+	ProviderModels,
+	ProviderStatusResult,
+} from "@inkstone/protocol";
 import {
 	clearNotificationHandler,
 	setNotificationHandler,
@@ -20,7 +24,6 @@ import { useRuntime } from "@/runtime";
 import {
 	configure,
 	fetchProviderStatus,
-	providerAuthKind,
 	startLogin,
 	test as testProvider,
 } from "@/store/providers";
@@ -36,6 +39,12 @@ function ModelsSettings() {
 		string,
 		boolean
 	> | null>(null);
+	// Each provider's auth kind (ADR-0062), read off the same provider/status
+	// payload. Drives the Connect (oauth) vs Configure (api_key) affordance — the
+	// wire carries it, so the Web never guesses "not-codex = key".
+	const [authKindById, setAuthKindById] = useState<
+		Record<string, ProviderAuthKind>
+	>({});
 	// Latest in-flight provider/status request — guards refreshConnected's writes
 	// against out-of-order resolution (see the useCallback below).
 	const latestStatusRequest = useRef(0);
@@ -105,6 +114,9 @@ function ModelsSettings() {
 		(status: ProviderStatusResult) => {
 			setConnectedById(
 				Object.fromEntries(status.providers.map((p) => [p.id, p.connected])),
+			);
+			setAuthKindById(
+				Object.fromEntries(status.providers.map((p) => [p.id, p.auth_kind])),
 			);
 			queryClient.setQueryData<ProviderStatusResult>(
 				["provider-status"],
@@ -325,6 +337,9 @@ function ModelsSettings() {
 				<ProviderModelsDetail
 					label={focused.label}
 					models={focused.models}
+					// A disconnected provider's models can't be set as the default
+					// (they'd run tokenless, ADR-0062) — lock select/toggle with a hint.
+					connected={connectedById?.[focused.id] ?? false}
 					selectedId={model.value}
 					onSelect={model.set}
 					// Only rendered once settings have seeded (`enabledModels.value !==
@@ -362,7 +377,16 @@ function ModelsSettings() {
 											? "Connected"
 											: "Not connected";
 								const count = p.models.length;
-								const authKind = providerAuthKind(p.id);
+								// Auth kind comes off the provider/status wire row (ADR-0062),
+								// not a client-side id guess. It is only consulted when
+								// `connected === false` (below), which requires status to have
+								// resolved — EXCEPT the fetch-failed recovery path, where
+								// connectedById is synthesized false with no wire auth kind. There
+								// we default to the OAuth Connect affordance (opening a login tab
+								// degrades gracefully); the correct affordance returns on the next
+								// successful status read.
+								const authKind: ProviderAuthKind =
+									authKindById[p.id] ?? "oauth";
 								return (
 									<div key={p.id} className="flex flex-col gap-2">
 										<div className="flex items-center gap-2 rounded-md border border-input pr-3">
@@ -440,7 +464,7 @@ function ModelsSettings() {
 												))}
 										</div>
 										{connected === false &&
-											authKind === "key" &&
+											authKind === "api_key" &&
 											configuringId === p.id && (
 												<ProviderConfigureForm
 													providerLabel={p.label}

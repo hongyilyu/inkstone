@@ -13,17 +13,11 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use super::handler::{self, HandlerError};
 use super::reply;
-use crate::credentials::{self, Credentials, OPENAI_CODEX, OPENROUTER, StoredCredential};
+use crate::credentials::{self, Credentials, OPENAI_CODEX, StoredCredential};
 use crate::protocol::{
     ProviderConfigureParams, ProviderLoginStartParams, ProviderLoginStartResult, ProviderStatus,
     ProviderStatusResult, ProviderTestParams,
 };
-
-/// Every provider `provider/status` enumerates (ADR-0062), each surfaced whether
-/// connected or not so the Client can render a connect/configure affordance. One
-/// source for the status enumeration, the configure allowlist, and the login
-/// allowlist below.
-const KNOWN_PROVIDERS: [&str; 2] = [OPENAI_CODEX, OPENROUTER];
 
 pub(super) async fn handle(
     id: serde_json::Value,
@@ -36,27 +30,25 @@ pub(super) async fn handle(
     .await;
 }
 
-/// The connection state of every [`KNOWN_PROVIDERS`] entry. A corrupt credential
-/// file surfaces as an internal error, not a misleading "connected: false".
-/// Shared by `provider/status` and the `provider/configure` reply.
+/// The connection state of every registered provider ([`crate::providers::all`],
+/// ADR-0062). Each row carries the registry's `auth_kind` so the Client branches
+/// Connect-vs-Configure off the wire. A corrupt credential file surfaces as an
+/// internal error, not a misleading "connected: false". Shared by
+/// `provider/status` and the `provider/configure` reply.
 fn provider_status() -> Result<ProviderStatusResult, HandlerError> {
-    let providers = KNOWN_PROVIDERS
+    let providers = crate::providers::all()
         .iter()
-        .map(|&id| {
+        .map(|entry| {
             Ok(ProviderStatus {
-                id: id.to_string(),
-                connected: credentials::is_connected(id)
+                id: entry.id.to_string(),
+                connected: credentials::is_connected(entry.id)
                     .map_err(|e| HandlerError::Internal(e.into()))?,
+                auth_kind: entry.auth_kind,
             })
         })
         .collect::<Result<Vec<_>, HandlerError>>()?;
     Ok(ProviderStatusResult { providers })
 }
-
-/// The KEY-configurable providers — the ones `provider/configure` accepts
-/// (ADR-0062). OAuth providers (codex) connect via `provider/login_start`, not a
-/// pasted key, so they are NOT here: configuring one is `invalid_params`.
-const CONFIGURABLE_PROVIDERS: [&str; 1] = [OPENROUTER];
 
 pub(super) async fn handle_configure(
     id: serde_json::Value,
@@ -67,10 +59,11 @@ pub(super) async fn handle_configure(
     // keeps the borrow for its own framing (both target the same connection).
     let notify_tx = out_tx.clone();
     handler::handle(id, params, out_tx, |params: ProviderConfigureParams| async move {
-        // Only key-configurable providers accept a pasted key. An unknown
-        // provider AND an OAuth-only one (codex → use login_start) both reject
-        // as invalid_params — configure is for static-key providers.
-        if !CONFIGURABLE_PROVIDERS.contains(&params.provider.as_str()) {
+        // Only key-configurable providers accept a pasted key (registry-derived,
+        // ADR-0062). An unknown provider AND an OAuth-only one (codex → use
+        // login_start) both reject as invalid_params — configure is for
+        // static-key providers.
+        if !crate::providers::is_configurable(&params.provider) {
             return Err(HandlerError::InvalidParams(format!(
                 "provider {:?} is not key-configurable",
                 params.provider
@@ -120,9 +113,9 @@ pub(super) async fn handle_test(
         // Reject an unknown provider BEFORE probing. `provider` reaches
         // `credentials::credential_path` as `credentials/{provider}.json`, so an
         // unvalidated value like "../../secret" would path-traverse to probe an
-        // arbitrary `.json` file. Gate against the known allowlist (invalid_params)
-        // so only real providers ever reach the credential store.
-        if !KNOWN_PROVIDERS.contains(&params.provider.as_str()) {
+        // arbitrary `.json` file. Gate against the registry (invalid_params) so
+        // only real providers ever reach the credential store.
+        if !crate::providers::is_known(&params.provider) {
             return Err(HandlerError::InvalidParams(format!(
                 "unknown provider {:?}",
                 params.provider
@@ -163,7 +156,10 @@ pub(super) async fn handle_login_start(
     out_tx: &UnboundedSender<String>,
 ) {
     handler::handle(id, params, out_tx, |params: ProviderLoginStartParams| async move {
-        if params.provider != OPENAI_CODEX {
+        // Only OAuth (login_allowed) providers begin a browser login (ADR-0062);
+        // an unknown OR key-configurable provider (use provider/configure) is
+        // invalid_params. Registry-derived, not a codex-only branch.
+        if !crate::providers::login_allowed(&params.provider) {
             return Err(HandlerError::InvalidParams(format!(
                 "unknown provider {:?}",
                 params.provider

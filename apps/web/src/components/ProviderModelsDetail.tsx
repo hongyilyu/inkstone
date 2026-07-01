@@ -18,6 +18,10 @@ export interface ProviderModelsDetailProps {
 	onToggleEnabled: (id: string, next: boolean) => void;
 	/** Return to the provider list. */
 	onBack: () => void;
+	/** Whether this provider is connected (ADR-0062). When false, its models
+	 * can't be set as the chat default — picking one would run tokenless — so the
+	 * catalog's select/toggle affordances are disabled with a hint. */
+	connected?: boolean;
 	/** Probe this provider's liveness (ADR-0062). The parent resolves the model to
 	 * test and calls `provider/test`; this component owns the transient verdict UI.
 	 * When absent (or `canTest` is false) the Test button is disabled. */
@@ -45,6 +49,7 @@ export function ProviderModelsDetail({
 	onBack,
 	onTest,
 	canTest = true,
+	connected = true,
 }: ProviderModelsDetailProps) {
 	const [test, setTest] = useState<TestState>({ kind: "idle" });
 
@@ -130,8 +135,9 @@ export function ProviderModelsDetail({
 				</div>
 			</div>
 			<p className="text-muted-foreground text-xs">
-				Toggle which models are available in chat, and set the one new chats use
-				by default.
+				{connected
+					? "Toggle which models are available in chat, and set the one new chats use by default."
+					: "Connect this provider to enable its models and set one as your default."}
 			</p>
 			<ModelCatalogTable
 				models={models}
@@ -139,6 +145,9 @@ export function ProviderModelsDetail({
 				onSelect={onSelect}
 				enabledIds={enabledIds}
 				onToggleEnabled={onToggleEnabled}
+				// Not connected → picking a default would run tokenless, so lock
+				// select/toggle here (ADR-0062); the row above hints why.
+				disabled={!connected}
 			/>
 		</div>
 	);

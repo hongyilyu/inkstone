@@ -15,6 +15,7 @@ mod mutation_target;
 mod observations;
 mod protocol;
 mod provider_auth;
+mod providers;
 mod recurrence;
 mod resume;
 mod runs;

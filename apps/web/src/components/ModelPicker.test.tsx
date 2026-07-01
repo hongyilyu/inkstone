@@ -33,13 +33,40 @@ const CATALOG = {
 				},
 			],
 		},
+		{
+			id: "openrouter",
+			label: "OpenRouter",
+			models: [
+				{
+					id: "anthropic/claude-opus-4.8",
+					name: "Claude Opus 4.8",
+					reasoning: true,
+					input: ["text", "image"],
+				},
+			],
+		},
 	],
 } as const;
 
-/** A stub runtime whose catalog has two models; settings decide which are enabled. */
+/** A stub runtime whose catalog has two models; settings decide which are enabled.
+ * `providers` sets each provider's connected flag (ADR-0062); default is
+ * codex-connected + openrouter-disconnected. */
 function makeRuntime(
 	enabledModels: readonly string[],
-	{ settingsPending = false }: { settingsPending?: boolean } = {},
+	{
+		settingsPending = false,
+		providers = [
+			{ id: "openai-codex", connected: true, auth_kind: "oauth" as const },
+			{ id: "openrouter", connected: false, auth_kind: "api_key" as const },
+		],
+	}: {
+		settingsPending?: boolean;
+		providers?: readonly {
+			id: string;
+			connected: boolean;
+			auth_kind: "oauth" | "api_key";
+		}[];
+	} = {},
 ) {
 	const settingsResult = {
 		provider: "openai-codex",
@@ -66,7 +93,7 @@ function makeRuntime(
 		subscribeRun: dieStream,
 		cancelRun: die,
 		retryRun: die,
-		providerStatus: die,
+		providerStatus: () => Effect.succeed({ providers }),
 		providerLoginStart: die,
 		providerConfigure: die,
 		providerTest: die,
@@ -122,6 +149,45 @@ describe("ModelPicker", () => {
 		const list = await screen.findByRole("list");
 		expect(within(list).getByText("GPT-5.5")).toBeInTheDocument();
 		expect(within(list).getByText("GPT-5.4 Mini")).toBeInTheDocument();
+
+		await runtime.dispose();
+	});
+
+	it("disables a model whose provider is not connected (FIX #3)", async () => {
+		const user = userEvent.setup();
+		// Both models enabled, but openrouter is NOT connected: its model must be
+		// offered-but-locked (a run against it would be tokenless), while the
+		// connected codex model stays selectable.
+		const runtime = makeRuntime(["gpt-5.5", "anthropic/claude-opus-4.8"]);
+		renderWithQuery(
+			<RuntimeProvider runtime={runtime}>
+				<ModelPicker />
+			</RuntimeProvider>,
+		);
+
+		await user.click(screen.getByRole("button", { name: /select model/i }));
+		const list = await screen.findByRole("list");
+
+		// The connected provider's model is a real, enabled choice.
+		const codexRow = within(list).getByText("GPT-5.5").closest("button");
+		expect(codexRow).not.toBeNull();
+		expect(codexRow).not.toBeDisabled();
+
+		// The disconnected provider's model is shown but locked, with a hint.
+		const orRow = within(list).getByText("Claude Opus 4.8").closest("button");
+		expect(orRow).not.toBeNull();
+		expect(orRow).toBeDisabled();
+		expect(orRow).toHaveAttribute(
+			"title",
+			expect.stringMatching(/connect.*provider/i),
+		);
+
+		// Clicking the locked row does NOT change the selection (the trigger still
+		// invites a pick rather than showing the locked model's name).
+		if (orRow) await user.click(orRow);
+		expect(
+			screen.getByRole("button", { name: /select model/i }),
+		).toBeInTheDocument();
 
 		await runtime.dispose();
 	});
