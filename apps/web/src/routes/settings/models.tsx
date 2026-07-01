@@ -22,6 +22,7 @@ import {
 	fetchProviderStatus,
 	providerAuthKind,
 	startLogin,
+	test as testProvider,
 } from "@/store/providers";
 import { fetchCatalog, fetchSettings, saveSettings } from "@/store/settings";
 
@@ -335,6 +336,17 @@ function ModelsSettings() {
 					enabledIds={enabledModels.value}
 					onToggleEnabled={onToggleEnabled}
 					onBack={() => setSelectedProvider(null)}
+					// provider/test liveness (ADR-0062), provider-agnostic. Probe the
+					// model the user would actually use — the global default IF it
+					// belongs to this provider, else the provider's first catalog model.
+					// Disable when the provider has no models (nothing to probe).
+					canTest={focused.models.length > 0}
+					onTest={() => {
+						const testModel = focused.models.some((m) => m.id === model.value)
+							? (model.value as string)
+							: focused.models[0]?.id;
+						return testProvider(runtime, focused.id, testModel ?? "");
+					}}
 				/>
 			) : (
 				<>

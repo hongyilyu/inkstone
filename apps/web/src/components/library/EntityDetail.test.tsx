@@ -98,6 +98,7 @@ function makeRuntime(
 		providerStatus: () => unused,
 		providerLoginStart: () => unused,
 		providerConfigure: () => unused,
+		providerTest: () => unused,
 		modelCatalog: () => unused,
 		settingsGet: () => unused,
 		settingsSet: () => unused,

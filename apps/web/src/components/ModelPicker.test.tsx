@@ -69,6 +69,7 @@ function makeRuntime(
 		providerStatus: die,
 		providerLoginStart: die,
 		providerConfigure: die,
+		providerTest: die,
 		modelCatalog: () => Effect.succeed(CATALOG),
 		// When `settingsPending`, settings/get never resolves — modelling the
 		// async gap where the catalog has loaded but settings have not.

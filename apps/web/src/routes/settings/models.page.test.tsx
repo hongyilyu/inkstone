@@ -41,6 +41,9 @@ function makeRuntime(opts: {
 	// connected flag flips to `true` once providerConfigure is called (mirroring
 	// Core's post-configure provider/status refresh).
 	withOpenRouter?: boolean;
+	// The verdict provider/test resolves to (ADR-0062). When omitted the
+	// providerTest stub dies (it isn't exercised); tests that click "Test" set it.
+	testResult?: { alive: boolean; message?: string };
 }) {
 	// Flips false → true after the first successful provider/configure call, so
 	// the row reflects "Connected" once the key is stored.
@@ -67,6 +70,11 @@ function makeRuntime(opts: {
 			],
 		});
 	});
+	const providerTest = vi.fn((_provider: string, _model: string) =>
+		opts.testResult === undefined
+			? Effect.die("provider/test not exercised")
+			: Effect.succeed(opts.testResult),
+	);
 	const stub = WsClient.of({
 		threadCreate: die,
 		postMessage: die,
@@ -98,6 +106,7 @@ function makeRuntime(opts: {
 		providerLoginStart: () =>
 			Effect.succeed({ authorize_url: "https://auth.example/x" }),
 		providerConfigure,
+		providerTest,
 		modelCatalog: () =>
 			Effect.succeed({
 				providers: [
@@ -126,6 +135,7 @@ function makeRuntime(opts: {
 		runtime: ManagedRuntime.make(Layer.succeed(WsClient, stub)),
 		settingsSet,
 		providerConfigure,
+		providerTest,
 	};
 }
 
@@ -223,6 +233,7 @@ describe("Models settings page (ADR-0024)", () => {
 			providerLoginStart: () =>
 				Effect.succeed({ authorize_url: "https://auth.example/x" }),
 			providerConfigure: die,
+			providerTest: die,
 			modelCatalog: () =>
 				Effect.succeed({
 					providers: [{ id: "openai-codex", label: "OpenAI", models: [] }],
@@ -337,6 +348,7 @@ describe("Models settings page (ADR-0024)", () => {
 				}),
 			providerLoginStart: die,
 			providerConfigure: die,
+			providerTest: die,
 			modelCatalog: () =>
 				Effect.succeed({
 					providers: [{ id: "openai-codex", label: "OpenAI", models: [] }],
@@ -575,6 +587,7 @@ describe("Models settings page (ADR-0024)", () => {
 				}),
 			providerLoginStart: die,
 			providerConfigure: die,
+			providerTest: die,
 			modelCatalog: () =>
 				Effect.succeed({
 					providers: [{ id: "openai-codex", label: "OpenAI", models }],
@@ -756,6 +769,7 @@ describe("Models settings — key-configurable provider (ADR-0062)", () => {
 			providerLoginStart: () =>
 				Effect.succeed({ authorize_url: "https://auth.example/x" }),
 			providerConfigure,
+			providerTest: die,
 			modelCatalog: () =>
 				Effect.succeed({
 					providers: [
@@ -873,6 +887,7 @@ describe("Models settings — key-configurable provider (ADR-0062)", () => {
 			// provider/configure REJECTS (e.g. Core rejected the key) — the form must
 			// surface the failure, not blow up the page.
 			providerConfigure: () => Effect.die("configure failed"),
+			providerTest: () => Effect.die("configure failed"),
 			modelCatalog: () =>
 				Effect.succeed({
 					providers: [
@@ -919,6 +934,138 @@ describe("Models settings — key-configurable provider (ADR-0062)", () => {
 	});
 });
 
+describe("Models settings — provider liveness Test (ADR-0062)", () => {
+	// A runtime whose OpenRouter provider carries real catalog models (so its
+	// detail has something to probe) and whose provider/test resolves to a verdict
+	// the test controls. Both providers are connected so the detail renders.
+	function makeTestRuntime(verdict: { alive: boolean; message?: string }) {
+		const orModels: ModelInfo[] = [
+			{
+				id: "openrouter/auto",
+				name: "Auto",
+				reasoning: false,
+				input: ["text"],
+			},
+		];
+		const providerTest = vi.fn((_provider: string, _model: string) =>
+			Effect.succeed(verdict),
+		);
+		const stub = WsClient.of({
+			threadCreate: die,
+			postMessage: die,
+			threadList: die,
+			getRunHistory: die,
+			recurrencePreview: () => Effect.die("not exercised in this test"),
+			threadGet: die,
+			threadRename: die,
+			threadArchive: die,
+			threadUnarchive: die,
+			threadListArchived: die,
+			listEntities: die,
+			getBacklinks: die,
+			observationQuery: die,
+			observationUpdate: die,
+			entityMutate: die,
+			subscribeRun: dieStream,
+			cancelRun: die,
+			retryRun: die,
+			providerStatus: () =>
+				Effect.succeed({
+					providers: [
+						{ id: "openai-codex", connected: true },
+						{ id: "openrouter", connected: true },
+					],
+				}),
+			providerLoginStart: () =>
+				Effect.succeed({ authorize_url: "https://auth.example/x" }),
+			providerConfigure: die,
+			providerTest,
+			modelCatalog: () =>
+				Effect.succeed({
+					providers: [
+						{ id: "openai-codex", label: "OpenAI", models: [] },
+						{ id: "openrouter", label: "OpenRouter", models: orModels },
+					],
+				}),
+			settingsGet: () =>
+				Effect.succeed({
+					provider: "openai-codex",
+					model: null,
+					effort: "off",
+					enabled_models: [],
+				}),
+			settingsSet: () =>
+				Effect.succeed({
+					provider: "openai-codex",
+					model: null,
+					effort: "off",
+					enabled_models: [],
+				}),
+			proposalGet: die,
+			rescanJournalEntry: die,
+			proposalDecide: die,
+			messageSearch: die,
+			proposalNotifications: () => Stream.empty,
+			connectionStatus: () => Stream.empty,
+		});
+		return {
+			runtime: ManagedRuntime.make(Layer.succeed(WsClient, stub)),
+			providerTest,
+		};
+	}
+
+	/** Drill into the OpenRouter provider detail from the LIST view. */
+	async function openOpenRouterDetail(
+		user: ReturnType<typeof userEvent.setup>,
+	) {
+		await user.click(
+			await screen.findByRole("button", { name: /Open OpenRouter models/i }),
+		);
+	}
+
+	it("clicking Test probes provider/test with (openrouter, one of its models) and shows an alive indicator on {alive:true}", async () => {
+		const user = userEvent.setup();
+		const { runtime, providerTest } = makeTestRuntime({ alive: true });
+		renderPage(runtime);
+
+		await openOpenRouterDetail(user);
+
+		await user.click(await screen.findByRole("button", { name: /^test$/i }));
+
+		// Probes with the OpenRouter id + a model belonging to that provider.
+		await waitFor(() =>
+			expect(providerTest).toHaveBeenCalledWith(
+				"openrouter",
+				"openrouter/auto",
+			),
+		);
+
+		// A positive/working liveness indicator renders.
+		expect(await screen.findByText(/working/i)).toBeInTheDocument();
+
+		await runtime.dispose();
+	});
+
+	it("shows a dead indicator with the failure message on {alive:false, message}", async () => {
+		const user = userEvent.setup();
+		const { runtime, providerTest } = makeTestRuntime({
+			alive: false,
+			message: "401 unauthorized",
+		});
+		renderPage(runtime);
+
+		await openOpenRouterDetail(user);
+		await user.click(await screen.findByRole("button", { name: /^test$/i }));
+
+		await waitFor(() => expect(providerTest).toHaveBeenCalledTimes(1));
+
+		// The dead verdict surfaces the failure message.
+		expect(await screen.findByText(/401 unauthorized/i)).toBeInTheDocument();
+
+		await runtime.dispose();
+	});
+});
+
 // A runtime whose `provider/status` flips false → true across calls: the first
 // poll is "Not connected", every poll after a (re)fetch reports "Connected".
 // Models the credential write that lands between the first mount-poll and the
@@ -955,6 +1102,7 @@ function makeFlippingRuntime() {
 		providerLoginStart: () =>
 			Effect.succeed({ authorize_url: "https://auth.example/x" }),
 		providerConfigure: die,
+		providerTest: die,
 		modelCatalog: () =>
 			Effect.succeed({
 				providers: [{ id: "openai-codex", label: "OpenAI", models: [] }],
@@ -1151,6 +1299,7 @@ describe("Models settings page — provider/connected live push (ADR-0049)", () 
 				providerLoginStart: () =>
 					Effect.succeed({ authorize_url: "https://auth.example/x" }),
 				providerConfigure: die,
+				providerTest: die,
 				modelCatalog: () =>
 					Effect.succeed({
 						providers: [{ id: "openai-codex", label: "OpenAI", models: [] }],

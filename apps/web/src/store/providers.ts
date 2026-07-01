@@ -1,4 +1,7 @@
-import type { ProviderStatusResult } from "@inkstone/protocol";
+import type {
+	ProviderStatusResult,
+	ProviderTestResult,
+} from "@inkstone/protocol";
 import { WsClient } from "@inkstone/ui-sdk";
 import { Effect } from "effect";
 import type { WsRuntime } from "../runtime.js";
@@ -60,6 +63,21 @@ export async function configure(
 	const program = Effect.gen(function* () {
 		const client = yield* WsClient;
 		return yield* client.providerConfigure(provider, apiKey);
+	});
+	return runtime.runPromise(program);
+}
+
+/** Probe a provider's liveness with a specific model via `provider/test`
+ * (ADR-0062). Provider-agnostic and transient — nothing is persisted; the caller
+ * renders the returned `{alive, message?}` verdict as ephemeral UI state. */
+export async function test(
+	runtime: WsRuntime,
+	provider: string,
+	model: string,
+): Promise<ProviderTestResult> {
+	const program = Effect.gen(function* () {
+		const client = yield* WsClient;
+		return yield* client.providerTest(provider, model);
 	});
 	return runtime.runPromise(program);
 }

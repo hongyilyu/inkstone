@@ -19,6 +19,7 @@ import {
 	ProposalPendingNotification,
 	ProviderLoginStartResult,
 	ProviderStatusResult,
+	ProviderTestResult,
 	type RecurrencePreviewParams,
 	RecurrencePreviewResult,
 	RunCancelResult,
@@ -269,6 +270,14 @@ export class WsClient extends Context.Tag("@inkstone/ui-sdk/WsClient")<
 			provider: string,
 			apiKey: string,
 		) => Effect.Effect<ProviderStatusResult, WsError>;
+		// provider/test (ADR-0062): probe whether a provider actually answers, using
+		// the given model. Provider-agnostic (codex + openrouter); spawns a one-shot
+		// ephemeral Worker and persists nothing — the result is a transient liveness
+		// verdict, not stored status.
+		readonly providerTest: (
+			provider: string,
+			model: string,
+		) => Effect.Effect<ProviderTestResult, WsError>;
 		readonly modelCatalog: () => Effect.Effect<ModelCatalogResult, WsError>;
 		readonly settingsGet: () => Effect.Effect<SettingsResult, WsError>;
 		readonly settingsSet: (params: {
@@ -713,6 +722,15 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 					ProviderStatusResult,
 				);
 
+			// provider/test (ADR-0062): a transient liveness probe against a provider
+			// using a specific model. Nothing is persisted; the caller renders the
+			// alive/dead verdict as ephemeral UI state.
+			const providerTest = (
+				provider: string,
+				model: string,
+			): Effect.Effect<ProviderTestResult, WsError> =>
+				request("provider/test", { provider, model }, ProviderTestResult);
+
 			// model/catalog + settings/* (ADR-0024): catalog, preferred model, global effort.
 			const modelCatalog = (): Effect.Effect<ModelCatalogResult, WsError> =>
 				request("model/catalog", {}, ModelCatalogResult);
@@ -772,6 +790,7 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 				providerStatus,
 				providerLoginStart,
 				providerConfigure,
+				providerTest,
 				modelCatalog,
 				settingsGet,
 				settingsSet,
