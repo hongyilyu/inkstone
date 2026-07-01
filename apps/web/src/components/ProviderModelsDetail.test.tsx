@@ -18,6 +18,7 @@ const MODELS: readonly ModelInfo[] = [
 /** Minimal props; each test overrides `label`/`onTest` as needed. */
 function baseProps() {
 	return {
+		providerId: "provider-a",
 		label: "Provider A",
 		models: MODELS,
 		selectedId: null,
@@ -52,9 +53,14 @@ describe("ProviderModelsDetail liveness", () => {
 		expect(screen.getByTestId("liveness-status")).toHaveTextContent("Testing…");
 
 		// Switch to Provider B before the probe settles → verdict clears to idle
-		// (no indicator rendered).
+		// (no indicator rendered). The guard keys on `providerId`, so the id changes.
 		rerender(
-			<ProviderModelsDetail {...props} label="Provider B" onTest={onTest} />,
+			<ProviderModelsDetail
+				{...props}
+				providerId="provider-b"
+				label="Provider B"
+				onTest={onTest}
+			/>,
 		);
 		expect(screen.queryByTestId("liveness-status")).toBeNull();
 

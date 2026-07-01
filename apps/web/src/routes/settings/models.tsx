@@ -335,6 +335,7 @@ function ModelsSettings() {
 
 			{focused && enabledModels.value !== null ? (
 				<ProviderModelsDetail
+					providerId={focused.id}
 					label={focused.label}
 					models={focused.models}
 					// A disconnected provider's models can't be set as the default

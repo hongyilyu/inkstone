@@ -5,6 +5,9 @@ import { ModelCatalogTable } from "./ModelCatalogTable.js";
 import { Button } from "./ui/button.js";
 
 export interface ProviderModelsDetailProps {
+	/** The provider's stable catalog id, e.g. "openrouter". Identity for the
+	 * per-provider verdict guard (unlike `label`, ids can't collide). */
+	providerId: string;
 	/** The provider's display label, e.g. "OpenAI". */
 	label: string;
 	/** That provider's catalog models. */
@@ -40,6 +43,7 @@ type TestState =
 
 /** A single provider's detail (ADR-0024): a header with the provider label, a Back control, and a liveness "Test" button (ADR-0062); below, that provider's models with the existing "Preferred" affordance. Presentational for selection/persistence (the parent owns those); the transient test verdict is owned here. */
 export function ProviderModelsDetail({
+	providerId,
 	label,
 	models,
 	selectedId,
@@ -62,16 +66,17 @@ export function ProviderModelsDetail({
 	const generation = useRef(0);
 
 	// Clear the verdict when the focused provider changes — the indicator is
-	// per-provider and must not bleed across a switch (ADR-0062). Bumping the
+	// per-provider and must not bleed across a switch (ADR-0062). Keyed on the
+	// stable provider id, not the display label (labels could collide). Bumping the
 	// generation also strands any probe still in flight from the prior provider.
-	const prevLabel = useRef(label);
+	const prevId = useRef(providerId);
 	useEffect(() => {
-		if (prevLabel.current !== label) {
-			prevLabel.current = label;
+		if (prevId.current !== providerId) {
+			prevId.current = providerId;
 			generation.current += 1;
 			setTest({ kind: "idle" });
 		}
-	}, [label]);
+	}, [providerId]);
 
 	const runTest = () => {
 		if (onTest === undefined) return;
