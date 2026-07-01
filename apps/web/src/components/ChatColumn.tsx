@@ -34,6 +34,7 @@ import {
 	type ToolCall,
 	useActiveRunId,
 	useHydrationStatus,
+	useProposalForRun,
 	useThreadMessages,
 } from "@/store/chat";
 import { hydrateThread, useHydrateFocusedThread } from "@/store/hydrate";
@@ -593,13 +594,17 @@ function AssistantBubble({
 	const reasoningStreaming =
 		message.status === "streaming" &&
 		message.segments.some((seg) => seg.kind === "reasoning");
-	// A turn that parked on a Proposal keeps `status === "streaming"` (only a
-	// terminal done/error/cancelled flips it), but it is IDLE — waiting on the
-	// user's decision, not generating. Suppress the typing dots when a Proposal
-	// segment is present so a proposal-first (or tool→proposal) turn with no
-	// leading text doesn't show a perpetual "Assistant is typing" beside the card
-	// (parallels the reasoning-segment guard above).
-	const hasProposal = message.segments.some((seg) => seg.kind === "proposal");
+	// A turn PARKED on a Proposal keeps `status === "streaming"` (only a terminal
+	// done/error/cancelled flips it), but it is IDLE — waiting on the user's
+	// decision, not generating. Suppress the typing dots while that decision is
+	// still outstanding so a proposal-first (or tool→proposal) turn with no leading
+	// text doesn't show a perpetual "Assistant is typing" beside the card. Key on
+	// the proposal being UNDECIDED (pending/deciding), NOT merely present: once the
+	// user accepts/rejects, the same run resumes streaming and the dots must return
+	// for the genuine pre-first-token generating window (parallels reasoning guard).
+	const proposal = useProposalForRun(message.run_id);
+	const awaitingDecision =
+		proposal?.status === "pending" || proposal?.status === "deciding";
 	const groups = toRenderGroups(message.segments);
 	return (
 		<li
@@ -647,7 +652,7 @@ function AssistantBubble({
 				text === "" &&
 				!toolRunning &&
 				!reasoningStreaming &&
-				!hasProposal && (
+				!awaitingDecision && (
 					<div
 						data-testid="typing-indicator"
 						role="status"

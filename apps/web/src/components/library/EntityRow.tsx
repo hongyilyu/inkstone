@@ -234,7 +234,12 @@ function QuickDeferMenu({ todo }: { todo: Todo }) {
 			open={open}
 			onOpenChange={(next) => {
 				setOpen(next);
-				if (!next) setPicking(false);
+				if (!next) {
+					setPicking(false);
+					// Clear any failure when the menu closes so reopening it doesn't
+					// show a stale "Couldn't defer" alert from a prior attempt.
+					mutation.reset();
+				}
 			}}
 		>
 			<Popover.Trigger
