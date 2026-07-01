@@ -8,10 +8,15 @@
 
 use std::sync::OnceLock;
 
-use crate::protocol::ModelCatalogResult;
+use crate::protocol::{ModelCatalogResult, ProviderModels};
 
 /// The embedded catalog JSON, generated from `pi-ai`'s `MODELS["openai-codex"]`.
 const CATALOG_JSON: &str = include_str!("openai-codex.json");
+
+/// The embedded openrouter provider group, generated from `pi-ai`'s
+/// `MODELS["openrouter"]` (ADR-0062). One `ProviderModels` group, merged into
+/// [`catalog`] after the openai-codex group.
+const OPENROUTER_JSON: &str = include_str!("openrouter.json");
 
 static CATALOG: OnceLock<ModelCatalogResult> = OnceLock::new();
 
@@ -19,7 +24,12 @@ static CATALOG: OnceLock<ModelCatalogResult> = OnceLock::new();
 /// a build-time bug, so a parse failure panics rather than surfacing per-request.
 pub fn catalog() -> &'static ModelCatalogResult {
     CATALOG.get_or_init(|| {
-        serde_json::from_str(CATALOG_JSON).expect("embedded model catalog JSON is valid")
+        let mut catalog: ModelCatalogResult =
+            serde_json::from_str(CATALOG_JSON).expect("embedded model catalog JSON is valid");
+        let openrouter: ProviderModels =
+            serde_json::from_str(OPENROUTER_JSON).expect("embedded openrouter catalog JSON is valid");
+        catalog.providers.push(openrouter);
+        catalog
     })
 }
 
@@ -40,6 +50,7 @@ pub fn is_known_model(model: &str) -> bool {
 pub fn default_model(provider: &str) -> Option<&'static str> {
     match provider {
         "openai-codex" => Some("gpt-5.5"),
+        "openrouter" => Some("anthropic/claude-opus-4.8"),
         _ => None,
     }
 }
@@ -71,6 +82,33 @@ pub fn title_model_for(provider: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn catalog_includes_openrouter_group() {
+        let openrouter = catalog()
+            .providers
+            .iter()
+            .find(|p| p.id == "openrouter")
+            .expect("openrouter provider present in catalog");
+        assert_eq!(openrouter.label, "OpenRouter");
+        let ids: Vec<&str> = openrouter.models.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec![
+                "anthropic/claude-opus-4.8",
+                "anthropic/claude-haiku-4.5",
+                "moonshotai/kimi-k2.5",
+            ]
+        );
+    }
+
+    #[test]
+    fn default_model_for_openrouter_is_opus() {
+        assert_eq!(
+            default_model("openrouter"),
+            Some("anthropic/claude-opus-4.8")
+        );
+    }
 
     #[test]
     fn default_title_model_is_codex_only() {

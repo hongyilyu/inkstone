@@ -52,6 +52,31 @@ fn model_catalog_returns_openai_codex_models() {
             "gpt-5.5 is reasoning-capable"
         );
 
+        // The openrouter group is the second embedded provider (ADR-0062). Its
+        // three curated models are drift-tested field-for-field against pi-ai in
+        // `packages/worker/src/models-catalog.test.ts`; here we assert only that
+        // the group ships with the expected ids.
+        let openrouter = providers
+            .iter()
+            .find(|p| p["id"] == serde_json::json!("openrouter"))
+            .expect("openrouter provider present");
+        assert_eq!(openrouter["label"], serde_json::json!("OpenRouter"));
+
+        let or_models = openrouter["models"].as_array().expect("models array");
+        let ids: Vec<&str> = or_models
+            .iter()
+            .filter_map(|m| m["id"].as_str())
+            .collect();
+        assert_eq!(
+            ids,
+            vec![
+                "anthropic/claude-opus-4.8",
+                "anthropic/claude-haiku-4.5",
+                "moonshotai/kimi-k2.5",
+            ],
+            "openrouter ships the three curated models"
+        );
+
         ws.close(None).await.ok();
     });
 }

@@ -74,4 +74,74 @@ describe("model catalog drift", () => {
 			).toEqual(upstream);
 		}
 	});
+
+	it("crates/core/src/models/openrouter.json is a subset of pi-ai MODELS['openrouter'], field-exact on each retained model", async () => {
+		const mainUrl = import.meta.resolve("@earendil-works/pi-ai");
+		const genUrl = new URL("./models.generated.js", mainUrl);
+		const { MODELS } = (await import(genUrl.href)) as {
+			MODELS: Record<
+				string,
+				Record<
+					string,
+					{
+						id: string;
+						name: string;
+						reasoning?: boolean;
+						input: string[];
+						cost: { input: number; output: number };
+					}
+				>
+			>;
+		};
+
+		// Index pi-ai's openrouter models by id, projected to the retained
+		// ModelInfo subset (`cost` was dropped in the feature-cut sweep — see
+		// docs/design/worker-tests.md).
+		const fromPi = new Map(
+			Object.values(MODELS.openrouter).map((m) => [
+				m.id,
+				{ id: m.id, name: m.name, reasoning: !!m.reasoning, input: m.input },
+			]),
+		);
+
+		// The embedded openrouter group is a bare `ProviderModels` (`{ id, label,
+		// models }`), NOT wrapped in `{ providers: [...] }` like openai-codex.json —
+		// Core's `catalog()` pushes it onto the merged providers array. Parse it as
+		// the group directly.
+		const jsonUrl = new URL(
+			"../../../crates/core/src/models/openrouter.json",
+			import.meta.url,
+		);
+		const provider = JSON.parse(readFileSync(jsonUrl, "utf8")) as {
+			id: string;
+			label: string;
+			models: {
+				id: string;
+				name: string;
+				reasoning: boolean;
+				input: string[];
+			}[];
+		};
+		expect(provider.id, "openrouter group id").toBe("openrouter");
+		expect(
+			provider.models.length,
+			"openrouter group has embedded models",
+		).toBeGreaterThan(0);
+
+		// Same curated-subset drift invariant as openai-codex: every embedded model
+		// id still exists in pi-ai's (much larger) openrouter set, and each retained
+		// entry's {id,name,reasoning,input} matches pi-ai EXACTLY. Curation (we ship
+		// only 3 of pi-ai's openrouter models) is intentional and NOT enforced.
+		for (const model of provider.models) {
+			const upstream = fromPi.get(model.id);
+			expect(
+				upstream,
+				`embedded model ${model.id} still present in pi-ai MODELS['openrouter']`,
+			).toBeDefined();
+			expect(
+				model,
+				`embedded model ${model.id} matches pi-ai field-for-field`,
+			).toEqual(upstream);
+		}
+	});
 });
