@@ -101,6 +101,7 @@ const stub = WsClient.of({
 	retryRun: die,
 	providerStatus: die,
 	providerLoginStart: die,
+	providerConfigure: die,
 	modelCatalog: die,
 	settingsGet: die,
 	settingsSet: die,

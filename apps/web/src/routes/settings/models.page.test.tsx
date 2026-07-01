@@ -36,7 +36,15 @@ function makeRuntime(opts: {
 	models?: readonly ModelInfo[];
 	model?: string | null;
 	enabledModels?: readonly string[];
+	// When set, a second provider row (OpenRouter) rides in provider/status +
+	// model/catalog so the key-Configure affordance can be exercised. Its
+	// connected flag flips to `true` once providerConfigure is called (mirroring
+	// Core's post-configure provider/status refresh).
+	withOpenRouter?: boolean;
 }) {
+	// Flips false → true after the first successful provider/configure call, so
+	// the row reflects "Connected" once the key is stored.
+	let openrouterConnected = false;
 	const settingsSet = vi.fn(
 		(params: {
 			model?: string;
@@ -50,6 +58,15 @@ function makeRuntime(opts: {
 				enabled_models: params.enabled_models ?? [],
 			}),
 	);
+	const providerConfigure = vi.fn((_provider: string, _apiKey: string) => {
+		openrouterConnected = true;
+		return Effect.succeed({
+			providers: [
+				{ id: "openai-codex", connected: opts.connected ?? false },
+				{ id: "openrouter", connected: true },
+			],
+		});
+	});
 	const stub = WsClient.of({
 		threadCreate: die,
 		postMessage: die,
@@ -71,14 +88,23 @@ function makeRuntime(opts: {
 		retryRun: die,
 		providerStatus: () =>
 			Effect.succeed({
-				providers: [{ id: "openai-codex", connected: opts.connected ?? false }],
+				providers: [
+					{ id: "openai-codex", connected: opts.connected ?? false },
+					...(opts.withOpenRouter
+						? [{ id: "openrouter", connected: openrouterConnected }]
+						: []),
+				],
 			}),
 		providerLoginStart: () =>
 			Effect.succeed({ authorize_url: "https://auth.example/x" }),
+		providerConfigure,
 		modelCatalog: () =>
 			Effect.succeed({
 				providers: [
 					{ id: "openai-codex", label: "OpenAI", models: opts.models ?? [] },
+					...(opts.withOpenRouter
+						? [{ id: "openrouter", label: "OpenRouter", models: [] }]
+						: []),
 				],
 			}),
 		settingsGet: () =>
@@ -99,6 +125,7 @@ function makeRuntime(opts: {
 	return {
 		runtime: ManagedRuntime.make(Layer.succeed(WsClient, stub)),
 		settingsSet,
+		providerConfigure,
 	};
 }
 
@@ -195,6 +222,7 @@ describe("Models settings page (ADR-0024)", () => {
 			providerStatus: () => Effect.die("status fetch failed"),
 			providerLoginStart: () =>
 				Effect.succeed({ authorize_url: "https://auth.example/x" }),
+			providerConfigure: die,
 			modelCatalog: () =>
 				Effect.succeed({
 					providers: [{ id: "openai-codex", label: "OpenAI", models: [] }],
@@ -308,6 +336,7 @@ describe("Models settings page (ADR-0024)", () => {
 					providers: [{ id: "openai-codex", connected: false }],
 				}),
 			providerLoginStart: die,
+			providerConfigure: die,
 			modelCatalog: () =>
 				Effect.succeed({
 					providers: [{ id: "openai-codex", label: "OpenAI", models: [] }],
@@ -545,6 +574,7 @@ describe("Models settings page (ADR-0024)", () => {
 					providers: [{ id: "openai-codex", connected: true }],
 				}),
 			providerLoginStart: die,
+			providerConfigure: die,
 			modelCatalog: () =>
 				Effect.succeed({
 					providers: [{ id: "openai-codex", label: "OpenAI", models }],
@@ -615,6 +645,280 @@ describe("Models settings page (ADR-0024)", () => {
 	});
 });
 
+describe("Models settings — key-configurable provider (ADR-0062)", () => {
+	it("shows a 'Configure' affordance (not 'Connect') for OpenRouter while the OAuth codex row keeps 'Connect'", async () => {
+		const { runtime } = makeRuntime({ connected: false, withOpenRouter: true });
+		renderPage(runtime);
+
+		// The disconnected OAuth provider (codex) still offers the OAuth "Connect".
+		await waitFor(() =>
+			expect(
+				screen.getByRole("button", { name: /^connect$/i }),
+			).toBeInTheDocument(),
+		);
+		// The key-configurable provider (OpenRouter) offers "Configure" instead —
+		// no OAuth "Connect" for it.
+		expect(
+			await screen.findByRole("button", { name: /^configure$/i }),
+		).toBeInTheDocument();
+	});
+
+	it("submits the pasted key via provider/configure and flips the OpenRouter row to Connected live", async () => {
+		const user = userEvent.setup();
+		const { runtime, providerConfigure } = makeRuntime({
+			connected: false,
+			withOpenRouter: true,
+		});
+		renderPage(runtime);
+
+		// Open the key-entry form.
+		await user.click(
+			await screen.findByRole("button", { name: /^configure$/i }),
+		);
+
+		// Paste a key and save.
+		const key = "sk-or-v1-testkey";
+		const input = await screen.findByLabelText(/api key/i);
+		await user.type(input, key);
+		await user.click(screen.getByRole("button", { name: /^save$/i }));
+
+		// provider/configure is called with the OpenRouter id + the entered key.
+		await waitFor(() =>
+			expect(providerConfigure).toHaveBeenCalledWith("openrouter", key),
+		);
+
+		// The row reflects Connected once the key is stored (the returned status
+		// routes through the refreshConnected / setQueryData chokepoint).
+		await waitFor(() => {
+			const rows = screen.getAllByTestId("provider-status");
+			expect(rows.some((r) => /^connected$/i.test(r.textContent ?? ""))).toBe(
+				true,
+			);
+		});
+	});
+
+	it("a stale in-flight provider/status resolving AFTER configure does not clobber the just-configured Connected row (ADR-0049 guard)", async () => {
+		const user = userEvent.setup();
+		// The mount poll resolves promptly (disconnected → the Configure affordance
+		// renders). A SECOND poll (a focus-return we dispatch) is GATED — it stays in
+		// flight carrying PRE-configure disconnected truth. We then configure
+		// OpenRouter (resolves synchronously → connected), and only AFTER release the
+		// stale second poll. That out-of-order resolution is exactly what the
+		// monotonic guard must absorb: without onConfigure bumping latestStatusRequest,
+		// the stale resolution passes its own guard (requestId still latest) and
+		// overwrites connected → disconnected (the flash ADR-0049 prevents).
+		const gatedReleases: Array<() => void> = [];
+		let statusCalls = 0;
+		const disconnectedStatus = {
+			providers: [
+				{ id: "openai-codex", connected: false },
+				{ id: "openrouter", connected: false },
+			],
+		};
+		const providerStatus = vi.fn(() => {
+			statusCalls += 1;
+			// First call (mount) resolves immediately → rows render Configure/Connect.
+			// Every later call (the focus-return) is GATED so we control when its
+			// PRE-configure disconnected payload lands.
+			if (statusCalls === 1) return Effect.succeed(disconnectedStatus);
+			return Effect.promise(
+				() => new Promise<void>((resolve) => gatedReleases.push(resolve)),
+			).pipe(Effect.as(disconnectedStatus));
+		});
+		const providerConfigure = vi.fn((_provider: string, _apiKey: string) =>
+			Effect.succeed({
+				providers: [
+					{ id: "openai-codex", connected: false },
+					{ id: "openrouter", connected: true },
+				],
+			}),
+		);
+		const stub = WsClient.of({
+			threadCreate: die,
+			postMessage: die,
+			threadList: die,
+			getRunHistory: die,
+			recurrencePreview: () => Effect.die("not exercised in this test"),
+			threadGet: die,
+			threadRename: die,
+			threadArchive: die,
+			threadUnarchive: die,
+			threadListArchived: die,
+			listEntities: die,
+			getBacklinks: die,
+			observationQuery: die,
+			observationUpdate: die,
+			entityMutate: die,
+			subscribeRun: dieStream,
+			cancelRun: die,
+			retryRun: die,
+			providerStatus,
+			providerLoginStart: () =>
+				Effect.succeed({ authorize_url: "https://auth.example/x" }),
+			providerConfigure,
+			modelCatalog: () =>
+				Effect.succeed({
+					providers: [
+						{ id: "openai-codex", label: "OpenAI", models: [] },
+						{ id: "openrouter", label: "OpenRouter", models: [] },
+					],
+				}),
+			settingsGet: () =>
+				Effect.succeed({
+					provider: "openai-codex",
+					model: null,
+					effort: "off",
+					enabled_models: [],
+				}),
+			settingsSet: () =>
+				Effect.succeed({
+					provider: "openai-codex",
+					model: null,
+					effort: "off",
+					enabled_models: [],
+				}),
+			proposalGet: die,
+			rescanJournalEntry: die,
+			proposalDecide: die,
+			messageSearch: die,
+			proposalNotifications: () => Stream.empty,
+			connectionStatus: () => Stream.empty,
+		});
+		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
+		renderPage(runtime);
+
+		// Mount poll landed disconnected → the Configure affordance is present.
+		const configureBtn = await screen.findByRole("button", {
+			name: /^configure$/i,
+		});
+
+		// Dispatch a focus-return: issues a SECOND provider/status poll that we've
+		// gated. It's now in flight carrying pre-configure disconnected truth.
+		window.dispatchEvent(new Event("focus"));
+		await waitFor(() => expect(gatedReleases.length).toBeGreaterThanOrEqual(1));
+
+		// Configure OpenRouter: paste a key + save. configure resolves synchronously
+		// and writes connected:true through applyStatus (which now bumps the guard).
+		await user.click(configureBtn);
+		await user.type(await screen.findByLabelText(/api key/i), "sk-or-v1-key");
+		await user.click(screen.getByRole("button", { name: /^save$/i }));
+
+		await waitFor(() =>
+			expect(providerConfigure).toHaveBeenCalledWith(
+				"openrouter",
+				"sk-or-v1-key",
+			),
+		);
+
+		// The OpenRouter row is now Connected.
+		await waitFor(() => {
+			const rows = screen.getAllByTestId("provider-status");
+			expect(rows.some((r) => /^connected$/i.test(r.textContent ?? ""))).toBe(
+				true,
+			);
+		});
+
+		// NOW release the STALE focus poll(s) (pre-configure: OpenRouter disconnected).
+		// onConfigure must have bumped latestStatusRequest, so each resolution's
+		// requestId is no longer latest → it's dropped. The row STAYS Connected.
+		for (const release of gatedReleases) release();
+
+		// Give the stale resolution ample chance to (wrongly) land, then assert it
+		// didn't clobber the connected row.
+		await waitFor(() => {
+			const rows = screen.getAllByTestId("provider-status");
+			expect(rows.some((r) => /^connected$/i.test(r.textContent ?? ""))).toBe(
+				true,
+			);
+		});
+		// Flush microtasks and re-assert: the row is still Connected (no flash back).
+		await Promise.resolve();
+		const finalRows = screen.getAllByTestId("provider-status");
+		expect(
+			finalRows.some((r) => /^connected$/i.test(r.textContent ?? "")),
+		).toBe(true);
+
+		await runtime.dispose();
+	});
+
+	it("surfaces a provider/configure error without crashing", async () => {
+		const user = userEvent.setup();
+		const stub = WsClient.of({
+			threadCreate: die,
+			postMessage: die,
+			threadList: die,
+			getRunHistory: die,
+			recurrencePreview: () => Effect.die("not exercised in this test"),
+			threadGet: die,
+			threadRename: die,
+			threadArchive: die,
+			threadUnarchive: die,
+			threadListArchived: die,
+			listEntities: die,
+			getBacklinks: die,
+			observationQuery: die,
+			observationUpdate: die,
+			entityMutate: die,
+			subscribeRun: dieStream,
+			cancelRun: die,
+			retryRun: die,
+			providerStatus: () =>
+				Effect.succeed({
+					providers: [
+						{ id: "openai-codex", connected: false },
+						{ id: "openrouter", connected: false },
+					],
+				}),
+			providerLoginStart: die,
+			// provider/configure REJECTS (e.g. Core rejected the key) — the form must
+			// surface the failure, not blow up the page.
+			providerConfigure: () => Effect.die("configure failed"),
+			modelCatalog: () =>
+				Effect.succeed({
+					providers: [
+						{ id: "openai-codex", label: "OpenAI", models: [] },
+						{ id: "openrouter", label: "OpenRouter", models: [] },
+					],
+				}),
+			settingsGet: () =>
+				Effect.succeed({
+					provider: "openai-codex",
+					model: null,
+					effort: "off",
+					enabled_models: [],
+				}),
+			settingsSet: () =>
+				Effect.succeed({
+					provider: "openai-codex",
+					model: null,
+					effort: "off",
+					enabled_models: [],
+				}),
+			proposalGet: die,
+			rescanJournalEntry: die,
+			proposalDecide: die,
+			messageSearch: die,
+			proposalNotifications: () => Stream.empty,
+			connectionStatus: () => Stream.empty,
+		});
+		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
+		renderPage(runtime);
+
+		await user.click(
+			await screen.findByRole("button", { name: /^configure$/i }),
+		);
+		await user.type(await screen.findByLabelText(/api key/i), "sk-bad");
+		await user.click(screen.getByRole("button", { name: /^save$/i }));
+
+		// An error is shown; the OpenRouter row stays Not connected (never crashes).
+		expect(
+			await screen.findByText(/couldn't|could not|failed/i),
+		).toBeInTheDocument();
+
+		await runtime.dispose();
+	});
+});
+
 // A runtime whose `provider/status` flips false → true across calls: the first
 // poll is "Not connected", every poll after a (re)fetch reports "Connected".
 // Models the credential write that lands between the first mount-poll and the
@@ -650,6 +954,7 @@ function makeFlippingRuntime() {
 		providerStatus,
 		providerLoginStart: () =>
 			Effect.succeed({ authorize_url: "https://auth.example/x" }),
+		providerConfigure: die,
 		modelCatalog: () =>
 			Effect.succeed({
 				providers: [{ id: "openai-codex", label: "OpenAI", models: [] }],
@@ -845,6 +1150,7 @@ describe("Models settings page — provider/connected live push (ADR-0049)", () 
 				providerStatus: () => Effect.succeed(twoProviderStatus),
 				providerLoginStart: () =>
 					Effect.succeed({ authorize_url: "https://auth.example/x" }),
+				providerConfigure: die,
 				modelCatalog: () =>
 					Effect.succeed({
 						providers: [{ id: "openai-codex", label: "OpenAI", models: [] }],

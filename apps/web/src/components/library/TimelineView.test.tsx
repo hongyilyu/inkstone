@@ -39,6 +39,7 @@ function makeRuntime(journalEntries: Rows) {
 		retryRun: () => unused,
 		providerStatus: () => unused,
 		providerLoginStart: () => unused,
+		providerConfigure: () => unused,
 		modelCatalog: () => unused,
 		settingsGet: () => unused,
 		settingsSet: () => unused,

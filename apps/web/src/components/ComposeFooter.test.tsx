@@ -36,6 +36,7 @@ function makeRuntime() {
 		retryRun: die,
 		providerStatus: die,
 		providerLoginStart: die,
+		providerConfigure: die,
 		modelCatalog: () =>
 			Effect.succeed({
 				providers: [

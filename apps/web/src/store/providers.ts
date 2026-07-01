@@ -6,6 +6,17 @@ import type { WsRuntime } from "../runtime.js";
 // Thin imperative bridge between the settings UI and the SDK provider/* methods (ADR-0023); no store state of its own.
 export const PROVIDER_OPENAI_CODEX = "openai-codex";
 
+/** How a provider is connected (ADR-0062): OAuth (browser login) vs a pasted
+ * static API key. `provider/status` carries no auth-kind field, so the web
+ * decides Connect-vs-Configure from the provider id. openai-codex is the sole
+ * OAuth provider; every other id (OpenRouter and any future key provider)
+ * configures with a key. */
+export type ProviderAuthKind = "oauth" | "key";
+
+export function providerAuthKind(id: string): ProviderAuthKind {
+	return id === PROVIDER_OPENAI_CODEX ? "oauth" : "key";
+}
+
 /** Read the full `provider/status` payload (all providers + their connected flags). */
 export async function fetchProviderStatus(
 	runtime: WsRuntime,
@@ -36,4 +47,19 @@ export async function startLogin(
 	});
 	const { authorize_url } = await runtime.runPromise(program);
 	openUrl(authorize_url);
+}
+
+/** Configure a key-provider: store the pasted API key via `provider/configure`
+ * (ADR-0062). Resolves to the refreshed `provider/status`, so the caller flips
+ * the row through the same live-refresh chokepoint a login uses. */
+export async function configure(
+	runtime: WsRuntime,
+	provider: string,
+	apiKey: string,
+): Promise<ProviderStatusResult> {
+	const program = Effect.gen(function* () {
+		const client = yield* WsClient;
+		return yield* client.providerConfigure(provider, apiKey);
+	});
+	return runtime.runPromise(program);
 }

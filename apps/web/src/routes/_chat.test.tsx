@@ -74,6 +74,7 @@ describe("_chat layout route (ADR-0061)", () => {
 			retryRun: () => unused,
 			providerStatus: () => unused,
 			providerLoginStart: () => unused,
+			providerConfigure: () => unused,
 			modelCatalog: () => unused,
 			settingsGet: () => unused,
 			settingsSet: () => unused,

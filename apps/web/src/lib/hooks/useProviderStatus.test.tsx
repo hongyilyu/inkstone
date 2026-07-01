@@ -41,6 +41,7 @@ function makeRuntime(
 				return result;
 			}),
 		providerLoginStart: () => unused,
+		providerConfigure: () => unused,
 		modelCatalog: () => unused,
 		settingsGet: () => unused,
 		settingsSet: () => unused,
