@@ -13,7 +13,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use super::handler::{self, HandlerError};
 use super::reply;
-use crate::credentials::{self, Credentials, OPENAI_CODEX, StoredCredential};
+use crate::credentials::{self, Credentials, StoredCredential};
 use crate::protocol::{
     ProviderConfigureParams, ProviderLoginStartParams, ProviderLoginStartResult, ProviderStatus,
     ProviderStatusResult, ProviderTestParams,
@@ -255,18 +255,23 @@ pub(super) async fn handle_login_start(
         // the waiting Settings → Models card flips live; the focus-refetch
         // (ADR-0023) remains the fallback if the push is missed (dead `out_tx`).
         let out_tx = out_tx.clone();
+        // Persist under (and push for) the provider the login was started for,
+        // not a codex constant — the eligibility gate above is registry-driven
+        // (`login_allowed`), so a second OAuth provider must not overwrite the
+        // openai-codex credential file.
+        let provider = params.provider;
         tokio::spawn(async move {
             let result = read_login_credentials(&mut lines).await;
             match result {
                 Ok(Some(creds)) => {
                     if let Err(e) =
-                        credentials::write(OPENAI_CODEX, &StoredCredential::Oauth(creds))
+                        credentials::write(&provider, &StoredCredential::Oauth(creds))
                     {
                         eprintln!("provider login: persisting credentials failed: {e}");
                     } else {
                         // Persist succeeded — credentials are durable. Push the
                         // live signal; a dead `out_tx` makes it a silent no-op.
-                        reply::send_provider_connected(&out_tx, OPENAI_CODEX);
+                        reply::send_provider_connected(&out_tx, &provider);
                     }
                 }
                 Ok(None) => {
