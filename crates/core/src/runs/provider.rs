@@ -16,7 +16,7 @@ use super::reply;
 use crate::credentials::{self, Credentials, OPENAI_CODEX, OPENROUTER, StoredCredential};
 use crate::protocol::{
     ProviderConfigureParams, ProviderLoginStartParams, ProviderLoginStartResult, ProviderStatus,
-    ProviderStatusResult,
+    ProviderStatusResult, ProviderTestParams,
 };
 
 /// Every provider `provider/status` enumerates (ADR-0062), each surfaced whether
@@ -99,6 +99,24 @@ pub(super) async fn handle_configure(
         reply::send_provider_connected(&notify_tx, &params.provider);
 
         provider_status()
+    })
+    .await;
+}
+
+pub(super) async fn handle_test(
+    id: serde_json::Value,
+    params: serde_json::Value,
+    out_tx: &UnboundedSender<String>,
+) {
+    // The liveness probe (ADR-0062) resolves the credential and spawns a one-shot
+    // ephemeral Worker; it NEVER touches the pool (no Thread, no Run row). An
+    // unknown or unconfigured provider just resolves to no credential inside the
+    // probe → `{ alive: false, message: "<provider> is not configured" }`, so no
+    // provider-validity rejection is needed here — the probe result is always the
+    // response. It is infallible at the handler layer (dead is a normal result,
+    // not a JSON-RPC error), so the body is `Ok`.
+    handler::handle(id, params, out_tx, |params: ProviderTestParams| async move {
+        Ok::<_, HandlerError>(crate::worker::probe_liveness(&params.provider, &params.model).await)
     })
     .await;
 }

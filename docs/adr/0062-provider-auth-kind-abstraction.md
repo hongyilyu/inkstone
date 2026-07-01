@@ -77,6 +77,21 @@ enum vs. a second parallel store).
    `OPENROUTER_API_KEY` env var without an explicit configure is deferred — see
    Consequences.)
 
+6. **A `provider/test` verb probes liveness with a one-shot ephemeral Worker.**
+   `provider/test` (params `{ provider, model }`, result `{ alive, message? }`)
+   answers "does this provider actually respond?" for any auth kind. It resolves
+   the credential through the same `resolve_access_token` dispatch (item 2), then
+   spawns a **synchronous** one-shot Worker following the `title.rs` /
+   [ADR-0046](./0046-generated-thread-title.md) precedent — a bespoke `ping`
+   manifest (empty tools, thinking off, throwaway `run_id`), driven through the
+   `ChildWorker`/`WorkerPort` transport with a `tokio::time::timeout` collector,
+   returning `alive` on the first token/`done` and `alive:false + message` on an
+   error/EOF/timeout. It creates **no Thread, Run, or Message row** (the
+   load-bearing invariant, pinned by a before/after row-count test) and reuses
+   `launch::Role::Worker` rather than minting a dedicated role (the probe runs the
+   same program; it is not independently env-injectable, which costs nothing
+   today). An unconfigured provider returns `alive:false` without spawning.
+
 ## Consequences
 
 - **Core owns bytes for every provider, uniformly.** The 0600 single-writer

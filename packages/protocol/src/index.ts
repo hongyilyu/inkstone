@@ -793,6 +793,20 @@ export type ProviderLoginStartResult = S.Schema.Type<
 	typeof ProviderLoginStartResult
 >;
 
+/** `provider/test` params (ADR-0062): probe whether a provider actually answers, using the given model. Spawns a one-shot ephemeral Worker; nothing is persisted. */
+export const ProviderTestParams = S.Struct({
+	provider: S.String,
+	model: S.String,
+});
+export type ProviderTestParams = S.Schema.Type<typeof ProviderTestParams>;
+
+/** `provider/test` result: whether the provider answered (`alive`), with an optional failure `message` when it did not. */
+export const ProviderTestResult = S.Struct({
+	alive: S.Boolean,
+	message: S.optional(S.String),
+});
+export type ProviderTestResult = S.Schema.Type<typeof ProviderTestResult>;
+
 // model/catalog (ADR-0024): the models available per provider, hand-mirrored from pi-ai's MODELS and guarded by a Worker-side drift test.
 
 /** One model in `model/catalog`. `input` is the modality list (`text`/`image`). */

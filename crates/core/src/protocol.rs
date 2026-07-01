@@ -993,6 +993,28 @@ pub struct ProviderConfigureParams {
     pub api_key: String,
 }
 
+/// `provider/test` params (ADR-0062): probe a provider's liveness with the
+/// given `model` — Core resolves the credential, spawns a one-shot ephemeral
+/// Worker with a fixed ping prompt, and reports whether it answered. Rust mirror
+/// of the TS `ProviderTestParams`. Provider-agnostic: works for an openrouter
+/// static key AND a codex OAuth credential.
+#[derive(Debug, Deserialize)]
+pub struct ProviderTestParams {
+    pub provider: String,
+    pub model: String,
+}
+
+/// `provider/test` result (ADR-0062): whether the provider answered (`alive`),
+/// with an optional failure `message` when it did not (an error frame's text, a
+/// timeout, or a "not configured" note). `message` is omitted (not `null`,
+/// matching the TS `S.optional`) on the alive path.
+#[derive(Debug, Serialize)]
+pub struct ProviderTestResult {
+    pub alive: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
 /// `provider/login_start` params: which provider to begin an OAuth login for.
 /// Malformed/unknown → `invalid_params`.
 #[derive(Debug, Deserialize)]
@@ -1627,6 +1649,36 @@ mod mirror_tests {
         let p: ProviderConfigureParams = serde_json::from_value(wire).unwrap();
         assert_eq!(p.provider, "openrouter");
         assert_eq!(p.api_key, "sk-or-secret");
+    }
+
+    #[test]
+    fn provider_test_params_decodes_provider_and_model() {
+        let wire = json!({ "provider": "openrouter", "model": "anthropic/claude-opus-4.8" });
+        let p: ProviderTestParams = serde_json::from_value(wire).unwrap();
+        assert_eq!(p.provider, "openrouter");
+        assert_eq!(p.model, "anthropic/claude-opus-4.8");
+    }
+
+    #[test]
+    fn provider_test_result_encodes_alive_and_dead() {
+        // Alive: message omitted (skip_serializing_if None), matching S.optional.
+        let alive = ProviderTestResult {
+            alive: true,
+            message: None,
+        };
+        let v = serde_json::to_value(&alive).unwrap();
+        assert_eq!(v, json!({ "alive": true }));
+        assert!(v.get("message").is_none());
+
+        // Dead: message present.
+        let dead = ProviderTestResult {
+            alive: false,
+            message: Some("provider rejected the request".to_string()),
+        };
+        assert_eq!(
+            serde_json::to_value(&dead).unwrap(),
+            json!({ "alive": false, "message": "provider rejected the request" }),
+        );
     }
 
     #[test]
@@ -2670,6 +2722,23 @@ mod parity_fixtures {
                     enabled_models: vec![],
                 }
             ),
+            // ── provider/test (ADR-0062): the liveness result, alive + dead. The
+            // alive fixture omits `message` (skip_serializing_if None, matching the
+            // TS S.optional); the dead fixture carries it. ──
+            fx!(
+                "provider_test_result.json",
+                ProviderTestResult {
+                    alive: true,
+                    message: None,
+                }
+            ),
+            fx!(
+                "provider_test_result.dead.json",
+                ProviderTestResult {
+                    alive: false,
+                    message: Some("provider rejected the request".to_string()),
+                }
+            ),
             // ── slice 4: worker↔core protocol (the surface ADR-0009 was written
             // about). RunEvent (ser+deser) emitted per variant; the tool_call
             // variant gets one fixture per ToolCallStatus value (started carries an
@@ -2904,6 +2973,8 @@ mod parity_fixtures {
             "model_catalog_result.json",
             "settings_result.json",
             "settings_result.bare.json",
+            "provider_test_result.json",
+            "provider_test_result.dead.json",
             "run_event.text_delta.json",
             "run_event.tool_call.started.json",
             "run_event.tool_call.completed.json",
@@ -3019,6 +3090,7 @@ mod parity_fixtures {
         parses!(ThreadUnarchiveParams, "thread_unarchive_params.json");
         parses!(ProviderLoginStartParams, "provider_login_start_params.json");
         parses!(ProviderConfigureParams, "provider_configure_params.json");
+        parses!(ProviderTestParams, "provider_test_params.json");
         parses!(SettingsSetParams, "settings_set_params.json");
         parses!(SettingsSetParams, "settings_set_params.bare.json");
 
