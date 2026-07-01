@@ -378,15 +378,16 @@ function ModelsSettings() {
 											: "Not connected";
 								const count = p.models.length;
 								// Auth kind comes off the provider/status wire row (ADR-0062),
-								// not a client-side id guess. It is only consulted when
-								// `connected === false` (below), which requires status to have
-								// resolved — EXCEPT the fetch-failed recovery path, where
-								// connectedById is synthesized false with no wire auth kind. There
-								// we default to the OAuth Connect affordance (opening a login tab
-								// degrades gracefully); the correct affordance returns on the next
-								// successful status read.
-								const authKind: ProviderAuthKind =
-									authKindById[p.id] ?? "oauth";
+								// not a client-side id guess. It is absent until a successful
+								// status read supplies it — in particular the fetch-failed
+								// recovery path synthesizes `connected: false` with NO wire auth
+								// kind. Do NOT synthesize one (a defaulted "oauth" would render a
+								// bogus Connect on a key-provider). While it is undefined we render
+								// the row WITHOUT any auth-specific action button (just the neutral
+								// status); the correct Connect/Configure affordance appears on the
+								// next successful status read.
+								const authKind: ProviderAuthKind | undefined =
+									authKindById[p.id];
 								return (
 									<div key={p.id} className="flex flex-col gap-2">
 										<div className="flex items-center gap-2 rounded-md border border-input pr-3">
@@ -438,30 +439,34 @@ function ModelsSettings() {
 											    provider (codex) offers Connect (opens the OAuth tab;
 											    credential write is out-of-band, ADR-0023); a
 											    key-configurable provider (OpenRouter) offers Configure,
-											    which opens an inline paste-key form below the row. */}
-											{connected === false &&
-												(authKind === "oauth" ? (
-													<Button
-														variant="chip"
-														size="sm"
-														disabled={busy}
-														onClick={() => onConnect(p.id)}
-													>
-														Connect
-													</Button>
-												) : (
-													<Button
-														variant="chip"
-														size="sm"
-														onClick={() =>
-															setConfiguringId((cur) =>
-																cur === p.id ? null : p.id,
-															)
-														}
-													>
-														Configure
-													</Button>
-												))}
+											    which opens an inline paste-key form below the row. Until
+											    a successful status supplies the auth kind
+											    (`authKind === undefined`, e.g. the fetch-failure path)
+											    render NO action button — a defaulted kind would show the
+											    wrong affordance. */}
+											{connected === false && authKind === "oauth" && (
+												<Button
+													variant="chip"
+													size="sm"
+													disabled={busy}
+													onClick={() => onConnect(p.id)}
+												>
+													Connect
+												</Button>
+											)}
+											{connected === false && authKind === "api_key" && (
+												<Button
+													variant="chip"
+													size="sm"
+													onClick={() =>
+														setConfiguringId((cur) =>
+															cur === p.id ? null : p.id,
+														)
+													}
+												>
+													Configure
+												</Button>
+											)}
 										</div>
 										{connected === false &&
 											authKind === "api_key" &&

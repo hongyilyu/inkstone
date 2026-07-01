@@ -217,11 +217,14 @@ describe("Models settings page (ADR-0024)", () => {
 		expect(screen.queryByRole("row", { name: /GPT-5\.5/ })).toBeNull();
 	});
 
-	it("keeps the provider row actionable when provider/status fetch FAILS: Not connected + Connect (not a permanent Checking…)", async () => {
+	it("on a provider/status fetch FAILURE shows Not connected with NO action button (no synthesized auth kind → no bogus Connect/Configure)", async () => {
 		// settings/get and model/catalog succeed (so the row renders), but
-		// provider/status REJECTS. The pre-slice behavior was an actionable
-		// "Not connected" + Connect; the regression left every row stuck on
-		// "Checking…" with no Connect button (connectedById={} → null per row).
+		// provider/status REJECTS. connectedById is synthesized `false` (so the row
+		// leaves "Checking…" for an honest "Not connected"), but there is NO wire
+		// auth_kind — so we must render NEITHER a Connect (oauth) NOR a Configure
+		// (api_key) button. A defaulted "oauth" would show a bogus Connect on a
+		// key-provider; the correct affordance only appears on the next SUCCESSFUL
+		// status read.
 		const stub = WsClient.of({
 			threadCreate: die,
 			postMessage: die,
@@ -276,7 +279,7 @@ describe("Models settings page (ADR-0024)", () => {
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 		renderPage(runtime);
 
-		// The row settles to an actionable "Not connected" — never permanent "Checking…".
+		// The row settles to an honest "Not connected" — never permanent "Checking…".
 		await waitFor(() =>
 			expect(screen.getByTestId("provider-status")).toHaveTextContent(
 				/not connected/i,
@@ -285,12 +288,12 @@ describe("Models settings page (ADR-0024)", () => {
 		expect(screen.getByTestId("provider-status")).not.toHaveTextContent(
 			/checking/i,
 		);
-		// And the Connect affordance is present (the actionable recovery path).
-		// Match the exact "Connect" chip — the row's own button name also contains
-		// "connect" (from "Not connected"), so anchor the name.
-		expect(
-			screen.getByRole("button", { name: /^connect$/i }),
-		).toBeInTheDocument();
+		// But with no wire auth_kind, NEITHER auth-specific action button renders —
+		// no bogus Connect (which a defaulted "oauth" would have shown) and no
+		// Configure. (Anchor the names: the row's own button name contains "connect"
+		// from the status text "Not connected".)
+		expect(screen.queryByRole("button", { name: /^connect$/i })).toBeNull();
+		expect(screen.queryByRole("button", { name: /^configure$/i })).toBeNull();
 
 		await runtime.dispose();
 	});

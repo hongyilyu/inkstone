@@ -78,15 +78,19 @@ export function ModelPicker() {
 			),
 		[providerStatus],
 	);
-	// A model is selectable only when its provider is connected. Until status
-	// resolves (`providerStatus === undefined`) treat models as selectable rather
-	// than lock the whole list — the run path still guards, and the gate is a
-	// convenience, not the sole enforcement.
+	// A model is selectable only when its provider is CONFIRMED connected. There is
+	// no run-path guard for model *selection* (the #3 gate is web-only), so this must
+	// not fail open. Tri-state on status resolution: while status is unresolved
+	// (`providerStatus === undefined`) a model whose provider group IS known is NOT
+	// yet selectable — locking it until status confirms connectivity rather than
+	// letting a disconnected-provider model be picked in the gap. A model with no
+	// known provider group (shouldn't happen) stays selectable defensively. Once
+	// status resolves, behavior is unchanged (connected → selectable, else locked).
 	const isModelConnected = (id: string) => {
-		if (providerStatus === undefined) return true;
 		const provider = providerByModel[id];
-		// A model with no known provider group (shouldn't happen) stays selectable.
-		return provider === undefined || connectedProviders.has(provider);
+		if (provider === undefined) return true;
+		if (providerStatus === undefined) return false;
+		return connectedProviders.has(provider);
 	};
 
 	// Scope the catalog to the user's enabled set (ADR-0024). Until settings
