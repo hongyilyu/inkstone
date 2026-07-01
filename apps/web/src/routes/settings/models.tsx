@@ -48,8 +48,16 @@ function ModelsSettings() {
 	// Latest in-flight provider/status request — guards refreshConnected's writes
 	// against out-of-order resolution (see the useCallback below).
 	const latestStatusRequest = useRef(0);
+	// Monotonic token for catalog loads (mount effect + retry button share one
+	// path). Guards the same way latestStatusRequest does: a superseded or
+	// post-unmount response must not overwrite newer state.
+	const latestCatalogRequest = useRef(0);
 	const [busy, setBusy] = useState(false);
 	const [providers, setProviders] = useState<readonly ProviderModels[]>([]);
+	// Whether the model catalog read failed. Distinguishes a genuine empty catalog
+	// from an unreachable Core so the Providers section shows an honest error + a
+	// retry instead of a blank list of dead-clickable rows.
+	const [catalogFailed, setCatalogFailed] = useState(false);
 	// Master/detail: null = provider list, otherwise the focused provider's id.
 	const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
 	// Whether a provider login failed to start (surfaced in the shared status line).
@@ -212,6 +220,26 @@ function ModelsSettings() {
 	const { seed: seedEffort } = effort;
 	const { seed: seedModel } = model;
 	const { seed: seedEnabled } = enabledModels;
+	// Load the catalog, tracking failure so the list can show an error+retry rather
+	// than a blank Providers section. Exposed as a callback so the retry button and
+	// the initial effect share one path.
+	const loadCatalog = useCallback(() => {
+		const requestId = ++latestCatalogRequest.current;
+		return fetchCatalog(runtime)
+			.then((c) => {
+				if (requestId !== latestCatalogRequest.current) return;
+				setProviders(c.providers);
+				// Clear the failure only ON SUCCESS. Clearing it at call start would
+				// swap the error+retry panel for the empty-list branch (nothing
+				// rendered) the instant "Try again" is clicked — a blank flash until
+				// the fetch settles, worse if the retry also fails.
+				setCatalogFailed(false);
+			})
+			.catch(() => {
+				if (requestId !== latestCatalogRequest.current) return;
+				setCatalogFailed(true);
+			});
+	}, [runtime]);
 	useEffect(() => {
 		let alive = true;
 		fetchSettings(runtime)
@@ -222,16 +250,14 @@ function ModelsSettings() {
 				seedEnabled(s.enabled_models);
 			})
 			.catch(() => {});
-		fetchCatalog(runtime)
-			.then((c) => {
-				if (!alive) return;
-				setProviders(c.providers);
-			})
-			.catch(() => {});
+		void loadCatalog();
 		return () => {
 			alive = false;
+			// Invalidate any in-flight catalog load so a response landing after
+			// unmount can't setState (mirrors the `alive` guard on the settings fetch).
+			++latestCatalogRequest.current;
 		};
-	}, [runtime, seedEffort, seedModel, seedEnabled]);
+	}, [runtime, seedEffort, seedModel, seedEnabled, loadCatalog]);
 
 	// Full catalog ids across all providers — the materialized baseline when the
 	// stored enabled set is empty(=all) and the user makes a first toggle (so the
@@ -327,7 +353,12 @@ function ModelsSettings() {
 						}
 					>
 						{saveStatus === "error"
-							? "Something didn't go through. Check that Inkstone is running and try again."
+							? // A failed connect (login couldn't start) needs its own copy —
+								// the generic save-failed line misdirects the user to the wrong
+								// cause. connectFailed wins the shared error slot when set.
+								connectFailed
+								? "Couldn't start the connection. Try Connect again."
+								: "Something didn't go through. Check that Inkstone is running and try again."
 							: "Saved."}
 					</p>
 				)}
@@ -368,74 +399,90 @@ function ModelsSettings() {
 				<>
 					<div className="flex flex-col gap-3">
 						<h3 className="font-semibold text-sm">Providers</h3>
-						<div className="flex flex-col gap-2">
-							{providers.map((p) => {
-								const connected = connectedById?.[p.id] ?? null;
-								const status =
-									connected === null
-										? "Checking…"
-										: connected
-											? "Connected"
-											: "Not connected";
-								const count = p.models.length;
-								// Auth kind comes off the provider/status wire row (ADR-0062),
-								// not a client-side id guess. It is absent until a successful
-								// status read supplies it — in particular the fetch-failed
-								// recovery path synthesizes `connected: false` with NO wire auth
-								// kind. Do NOT synthesize one (a defaulted "oauth" would render a
-								// bogus Connect on a key-provider). While it is undefined we render
-								// the row WITHOUT any auth-specific action button (just the neutral
-								// status); the correct Connect/Configure affordance appears on the
-								// next successful status read.
-								const authKind: ProviderAuthKind | undefined =
-									authKindById[p.id];
-								return (
-									<div key={p.id} className="flex flex-col gap-2">
-										<div className="flex items-center gap-2 rounded-md border border-input pr-3">
-											<button
-												type="button"
-												// The accessible NAME stays connect-free ("Open … models") so it
-												// can't collide with the e2e `getByRole("button",{name:"Connect"})`
-												// query (the status text "Not connected" contains "Connect").
-												// The status + count ride along as the accessible DESCRIPTION via
-												// aria-describedby, so assistive tech hears them too.
-												aria-label={`Open ${p.label} models`}
-												aria-describedby={`provider-meta-${p.id}`}
-												onClick={() => setSelectedProvider(p.id)}
-												className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-md p-3 text-left transition-colors hover:bg-muted/50 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
-											>
-												<div className="flex size-9 shrink-0 items-center justify-center rounded-md bg-secondary font-semibold text-secondary-foreground text-sm">
-													{p.label.slice(0, 1)}
-												</div>
-												<div className="flex min-w-0 flex-col">
-													<span className="truncate font-medium text-sm">
-														{p.label}
-													</span>
-													<span
-														id={`provider-meta-${p.id}`}
-														className="flex items-center gap-1.5 text-xs"
-													>
+						{catalogFailed && providers.length === 0 ? (
+							// An unreachable catalog must not read as "no providers" — show an
+							// honest error with a retry rather than a blank, dead list.
+							<div className="flex flex-col items-start gap-2 rounded-md border border-input p-4">
+								<p className="text-muted-foreground text-sm">
+									Couldn't load providers. Check that Inkstone is running.
+								</p>
+								<Button
+									variant="chip"
+									size="sm"
+									onClick={() => void loadCatalog()}
+								>
+									Try again
+								</Button>
+							</div>
+						) : (
+							<div className="flex flex-col gap-2">
+								{providers.map((p) => {
+									const connected = connectedById?.[p.id] ?? null;
+									const status =
+										connected === null
+											? "Checking…"
+											: connected
+												? "Connected"
+												: "Not connected";
+									const count = p.models.length;
+									// Auth kind comes off the provider/status wire row (ADR-0062),
+									// not a client-side id guess. It is absent until a successful
+									// status read supplies it — in particular the fetch-failed
+									// recovery path synthesizes `connected: false` with NO wire auth
+									// kind. Do NOT synthesize one (a defaulted "oauth" would render a
+									// bogus Connect on a key-provider). While it is undefined we render
+									// the row WITHOUT any auth-specific action button (just the neutral
+									// status); the correct Connect/Configure affordance appears on the
+									// next successful status read.
+									const authKind: ProviderAuthKind | undefined =
+										authKindById[p.id];
+									return (
+										<div key={p.id} className="flex flex-col gap-2">
+											<div className="flex items-center gap-2 rounded-md border border-input pr-3">
+												<button
+													type="button"
+													// The accessible NAME stays connect-free ("Open … models") so it
+													// can't collide with the e2e `getByRole("button",{name:"Connect"})`
+													// query (the status text "Not connected" contains "Connect").
+													// The status + count ride along as the accessible DESCRIPTION via
+													// aria-describedby, so assistive tech hears them too.
+													aria-label={`Open ${p.label} models`}
+													aria-describedby={`provider-meta-${p.id}`}
+													onClick={() => setSelectedProvider(p.id)}
+													className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-md p-3 text-left transition-colors hover:bg-muted/50 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+												>
+													<div className="flex size-9 shrink-0 items-center justify-center rounded-md bg-secondary font-semibold text-secondary-foreground text-sm">
+														{p.label.slice(0, 1)}
+													</div>
+													<div className="flex min-w-0 flex-col">
+														<span className="truncate font-medium text-sm">
+															{p.label}
+														</span>
 														<span
-															data-testid="provider-status"
-															className={cn(
-																connected
-																	? "text-foreground"
-																	: "text-muted-foreground",
-															)}
+															id={`provider-meta-${p.id}`}
+															className="flex items-center gap-1.5 text-xs"
 														>
-															{status}
+															<span
+																data-testid="provider-status"
+																className={cn(
+																	connected
+																		? "text-foreground"
+																		: "text-muted-foreground",
+																)}
+															>
+																{status}
+															</span>
+															<span className="text-muted-foreground">
+																· {count} {count === 1 ? "model" : "models"}
+															</span>
 														</span>
-														<span className="text-muted-foreground">
-															· {count} {count === 1 ? "model" : "models"}
-														</span>
-													</span>
-												</div>
-												<ChevronRight
-													className="ml-auto size-4 shrink-0 text-muted-foreground"
-													aria-hidden
-												/>
-											</button>
-											{/* The connect/onboarding affordance stays reachable per
+													</div>
+													<ChevronRight
+														className="ml-auto size-4 shrink-0 text-muted-foreground"
+														aria-hidden
+													/>
+												</button>
+												{/* The connect/onboarding affordance stays reachable per
 											    provider row. Branch on auth kind (ADR-0062): an OAuth
 											    provider (codex) offers Connect (opens the OAuth tab;
 											    credential write is out-of-band, ADR-0023); a
@@ -445,43 +492,44 @@ function ModelsSettings() {
 											    (`authKind === undefined`, e.g. the fetch-failure path)
 											    render NO action button — a defaulted kind would show the
 											    wrong affordance. */}
-											{connected === false && authKind === "oauth" && (
-												<Button
-													variant="chip"
-													size="sm"
-													disabled={busy}
-													onClick={() => onConnect(p.id)}
-												>
-													Connect
-												</Button>
-											)}
-											{connected === false && authKind === "api_key" && (
-												<Button
-													variant="chip"
-													size="sm"
-													onClick={() =>
-														setConfiguringId((cur) =>
-															cur === p.id ? null : p.id,
-														)
-													}
-												>
-													Configure
-												</Button>
-											)}
+												{connected === false && authKind === "oauth" && (
+													<Button
+														variant="chip"
+														size="sm"
+														disabled={busy}
+														onClick={() => onConnect(p.id)}
+													>
+														Connect
+													</Button>
+												)}
+												{connected === false && authKind === "api_key" && (
+													<Button
+														variant="chip"
+														size="sm"
+														onClick={() =>
+															setConfiguringId((cur) =>
+																cur === p.id ? null : p.id,
+															)
+														}
+													>
+														Configure
+													</Button>
+												)}
+											</div>
+											{connected === false &&
+												authKind === "api_key" &&
+												configuringId === p.id && (
+													<ProviderConfigureForm
+														providerLabel={p.label}
+														onSubmit={(key) => onConfigure(p.id, key)}
+														onCancel={() => setConfiguringId(null)}
+													/>
+												)}
 										</div>
-										{connected === false &&
-											authKind === "api_key" &&
-											configuringId === p.id && (
-												<ProviderConfigureForm
-													providerLabel={p.label}
-													onSubmit={(key) => onConfigure(p.id, key)}
-													onCancel={() => setConfiguringId(null)}
-												/>
-											)}
-									</div>
-								);
-							})}
-						</div>
+									);
+								})}
+							</div>
+						)}
 					</div>
 
 					<div className="flex flex-col gap-3">

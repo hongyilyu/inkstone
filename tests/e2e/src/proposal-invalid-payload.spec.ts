@@ -29,7 +29,7 @@ test("invalid Journal Entry proposal must be edited before applying", async ({
 	await expect(card).toContainText("Untitled entry");
 	await expect(card).toContainText("2026-06-10");
 	await expect(card).toContainText("Empty");
-	await expect(card).toContainText(/edit required fields/i);
+	await expect(card).toContainText(/fix before saving/i);
 
 	const add = card.getByRole("button", { name: /add journal entry/i });
 	await expect(add).toBeDisabled();

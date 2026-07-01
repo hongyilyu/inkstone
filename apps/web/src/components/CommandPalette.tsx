@@ -75,8 +75,11 @@ export function CommandPalette() {
 	// Debounce keystrokes so server message search fires once typing settles; the
 	// query is disabled for an empty input, so an empty palette makes no server call.
 	const debouncedQuery = useDebounced(query, 180);
-	const { data: messageData, isFetching: searchFetching } =
-		useMessageSearch(debouncedQuery);
+	const {
+		data: messageData,
+		isFetching: searchFetching,
+		isError: messageSearchError,
+	} = useMessageSearch(debouncedQuery);
 
 	// The message search is still resolving when the user is mid-debounce (the
 	// typed query hasn't reached the debounced one yet) OR the query is in flight.
@@ -131,6 +134,21 @@ export function CommandPalette() {
 	}, [libraryItems, threadData, messageData, query, debouncedQuery]);
 
 	const flat = useMemo(() => groups.flatMap((g) => g.items), [groups]);
+
+	// The empty-results line, chosen by ordered precedence out of the JSX: prompt →
+	// still-settling → narrow the "no matches" claim to the sources that ACTUALLY
+	// searched (a failed message or library read must not be folded into a blanket
+	// "No matches", which would falsely imply a complete search) → genuine no-match.
+	const q = query.trim();
+	const emptyMessage = (() => {
+		if (!q) return "Type to search your workspace.";
+		if (searchSettling) return "Searching…";
+		if (messageSearchError && libraryError)
+			return `No thread matches for "${q}".`;
+		if (messageSearchError) return `No thread or library matches for "${q}".`;
+		if (libraryError) return `No thread or message matches for "${q}".`;
+		return `No matches for "${q}".`;
+	})();
 
 	// Re-clamp the active index when the result set shrinks (async data settling can
 	// drop rows out from under an arrow-keyed selection). Without this, `active` can
@@ -248,13 +266,17 @@ export function CommandPalette() {
 								searchable right now.
 							</p>
 						) : null}
+						{/* Message search failed — say so rather than folding it into a
+						    "No matches" that lies (the query might match plenty; the read
+						    just failed). Threads and Library search independently. */}
+						{messageSearchError ? (
+							<p className="px-3 pt-2 pb-1 text-destructive text-xs">
+								Couldn't search messages — check that Inkstone is running.
+							</p>
+						) : null}
 						{flat.length === 0 ? (
 							<p className="px-3 py-10 text-center text-muted-foreground text-sm">
-								{!query.trim()
-									? "Type to search your workspace."
-									: searchSettling
-										? "Searching…"
-										: `No matches for "${query.trim()}".`}
+								{emptyMessage}
 							</p>
 						) : (
 							groups.map((group) => (

@@ -1,5 +1,5 @@
 import { useParams } from "@tanstack/react-router";
-import { Archive, Library, Plus, Search } from "lucide-react";
+import { Archive, Library, Pencil, Plus, Search } from "lucide-react";
 import { useState } from "react";
 import { Input } from "@/components/ui/input.js";
 import { NavShell, navRow } from "@/components/ui/nav-shell";
@@ -140,88 +140,156 @@ function ThreadRow({
 
 	const beginEdit = () => {
 		setDraft(item.title);
+		// Clear any stale rename OR archive failure — both feed `rowError`, so a
+		// prior archive error would otherwise linger under the rename input.
+		rename.reset();
+		archive.reset();
 		setEditing(true);
 	};
 
 	const commit = () => {
-		setEditing(false);
 		const trimmed = draft.trim();
 		// Empty or unchanged is a no-op (Core rejects an empty title anyway).
-		if (trimmed && trimmed !== item.title) {
-			rename.mutate({ threadId: item.id, title: trimmed });
+		if (!trimmed || trimmed === item.title) {
+			setEditing(false);
+			return;
 		}
+		// Keep the row in edit mode until the write succeeds: on failure the typed
+		// title must NOT be silently discarded (the row would re-render the old
+		// `item.title`). onSuccess closes; onError leaves the input open with its
+		// value intact so the inline alert below explains why and the user retries.
+		rename.mutate(
+			{ threadId: item.id, title: trimmed },
+			{ onSuccess: () => setEditing(false) },
+		);
 	};
 
-	const cancel = () => setEditing(false);
+	const cancel = () => {
+		rename.reset();
+		setEditing(false);
+	};
+
+	// A failed rename/archive must not be silent: surface the squashed WsError
+	// message inline (this app has no toast surface by design — mirror the inline
+	// error pattern useEntityMutation callers use).
+	const rowError =
+		(rename.isError && "Couldn't rename this conversation. Try again.") ||
+		(archive.isError && "Couldn't archive this conversation. Try again.") ||
+		null;
 
 	return (
 		<li
 			className={cn(
-				"group relative flex h-10 items-center rounded-lg pr-1 transition-colors",
+				"group relative flex flex-col rounded-lg transition-colors",
 				isCurrent ? "bg-secondary/70" : "hover:bg-primary/10",
 			)}
 		>
-			{isCurrent && (
-				<span
-					aria-hidden="true"
-					className="pointer-events-none absolute top-1/2 left-2 size-[5px] -translate-y-1/2 rounded-full bg-primary"
-				/>
-			)}
-			{editing ? (
-				<Input
-					autoFocus
-					aria-label={`Rename thread ${item.title}`}
-					value={draft}
-					onChange={(e) => setDraft(e.target.value)}
-					onKeyDown={(e) => {
-						if (e.key === "Enter") commit();
-						else if (e.key === "Escape") cancel();
-					}}
-					onBlur={commit}
-					className="h-full min-w-0 flex-1 rounded-lg py-0 pr-3 pl-[18px] text-sm focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
-				/>
-			) : (
-				<button
-					type="button"
-					onClick={() => onOpenThread?.(item.id)}
-					onDoubleClick={beginEdit}
-					aria-current={isCurrent ? "true" : undefined}
-					// Long titles clip with CSS `truncate`; a native tooltip
-					// reveals the full title (a generated title, or the
-					// prompt-derived fallback slug — ADR-0048) on hover
-					// without a layout shift.
-					title={item.title}
-					className={cn(
-						"h-full min-w-0 flex-1 cursor-pointer truncate rounded-lg py-0 pr-3 pl-[18px] text-left text-sm focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring",
-						isCurrent
-							? "font-semibold text-secondary-foreground"
-							: "text-sidebar-foreground",
-					)}
-				>
-					{item.title}
-				</button>
-			)}
-			{!editing && (
-				<>
-					<ArchiveThreadButton
-						title={item.title}
-						onArchive={() =>
-							// Reselect fires on the mutation's SUCCESS, not synchronously:
-							// archiving the focused Thread (ADR-0061 — focus IS the route)
-							// must drop us off `/thread/$id`. Reuse `onNewChat` (wired to
-							// navigate({to:"/"}) in _chat.tsx) — landing on the welcome route
-							// is exactly the reselect we want, so no extra nav prop.
-							archive.mutate(item.id, {
-								onSuccess: () => {
-									if (isCurrent) onReselect?.();
-								},
-							})
-						}
+			<div className="relative flex h-10 items-center pr-1">
+				{isCurrent && (
+					<span
+						aria-hidden="true"
+						className="pointer-events-none absolute top-1/2 left-2 size-[5px] -translate-y-1/2 rounded-full bg-primary"
 					/>
-					<CopyThreadIdButton id={item.id} title={item.title} />
-				</>
+				)}
+				{editing ? (
+					<Input
+						autoFocus
+						aria-label={`Rename thread ${item.title}`}
+						aria-invalid={rename.isError || undefined}
+						value={draft}
+						disabled={rename.isPending}
+						onChange={(e) => {
+							setDraft(e.target.value);
+							// Clear a prior failure as the user corrects the title — the
+							// stale error must not keep gating blur-commit (below) or linger
+							// as a stale alarm over new input.
+							if (rename.isError) rename.reset();
+						}}
+						onKeyDown={(e) => {
+							if (e.key === "Enter") commit();
+							else if (e.key === "Escape") cancel();
+						}}
+						// Commit on blur EXCEPT while a rename is in flight or already
+						// failed — a failed rename keeps the input open so the blur that
+						// fires when focus moves to the alert doesn't re-fire the mutation.
+						// (onChange clears isError, so editing then blurring commits again.)
+						onBlur={() => {
+							if (!rename.isPending && !rename.isError) commit();
+						}}
+						className="h-full min-w-0 flex-1 rounded-lg py-0 pr-3 pl-[18px] text-sm focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+					/>
+				) : (
+					<button
+						type="button"
+						onClick={() => onOpenThread?.(item.id)}
+						onDoubleClick={beginEdit}
+						aria-current={isCurrent ? "true" : undefined}
+						// Long titles clip with CSS `truncate`; a native tooltip
+						// reveals the full title (a generated title, or the
+						// prompt-derived fallback slug — ADR-0048) on hover
+						// without a layout shift.
+						title={item.title}
+						className={cn(
+							"h-full min-w-0 flex-1 cursor-pointer truncate rounded-lg py-0 pr-3 pl-[18px] text-left text-sm focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring",
+							isCurrent
+								? "font-semibold text-secondary-foreground"
+								: "text-sidebar-foreground",
+						)}
+					>
+						{item.title}
+					</button>
+				)}
+				{!editing && (
+					<>
+						<RenameThreadButton title={item.title} onRename={beginEdit} />
+						<ArchiveThreadButton
+							title={item.title}
+							onArchive={() =>
+								// Reselect fires on the mutation's SUCCESS, not synchronously:
+								// archiving the focused Thread (ADR-0061 — focus IS the route)
+								// must drop us off `/thread/$id`. Reuse `onNewChat` (wired to
+								// navigate({to:"/"}) in _chat.tsx) — landing on the welcome route
+								// is exactly the reselect we want, so no extra nav prop.
+								archive.mutate(item.id, {
+									onSuccess: () => {
+										if (isCurrent) onReselect?.();
+									},
+								})
+							}
+						/>
+						<CopyThreadIdButton id={item.id} title={item.title} />
+					</>
+				)}
+			</div>
+			{rowError && (
+				<p role="alert" className="px-[18px] pb-1.5 text-destructive text-xs">
+					{rowError}
+				</p>
 			)}
 		</li>
+	);
+}
+
+/** The per-row hover-reveal rename control — a keyboard- and touch-reachable path
+ * to inline rename (double-click is a mouse-only affordance; ADR-0052). Mirrors
+ * {@link ArchiveThreadButton}'s slot + reveal treatment. */
+function RenameThreadButton({
+	title,
+	onRename,
+}: {
+	title: string;
+	onRename: () => void;
+}) {
+	return (
+		<button
+			type="button"
+			aria-label={`Rename thread ${title}`}
+			title="Rename"
+			onClick={onRename}
+			className="flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-sidebar-foreground/80 opacity-0 transition-opacity hover:bg-foreground/10 hover:text-foreground focus-visible:opacity-100 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring group-hover:opacity-100"
+		>
+			<Pencil className="size-4" aria-hidden />
+		</button>
 	);
 }
 
@@ -280,10 +348,17 @@ function groupByRecency(
 	threads: readonly Thread[],
 	now: number = Date.now(),
 ): { label: string; threads: Thread[] }[] {
+	// Compute each boundary as an actual local calendar day (subtract N days on a
+	// Date, not N * 86.4M ms). A fixed-ms step lands an hour off across a DST
+	// transition, which can misbucket a thread near midnight into the wrong day.
 	const startOfToday = new Date(now).setHours(0, 0, 0, 0);
-	const dayMs = 86_400_000;
-	const startOfYesterday = startOfToday - dayMs;
-	const startOfWeek = startOfToday - 6 * dayMs;
+	const dayStart = (daysAgo: number) => {
+		const d = new Date(startOfToday);
+		d.setDate(d.getDate() - daysAgo);
+		return d.getTime();
+	};
+	const startOfYesterday = dayStart(1);
+	const startOfWeek = dayStart(6);
 
 	const groups: { label: string; threads: Thread[] }[] = [
 		{ label: "Today", threads: [] },

@@ -273,4 +273,24 @@ describe("TimelineView", () => {
 			await screen.findByText("Nothing on the timeline yet"),
 		).toBeInTheDocument();
 	});
+
+	it("distinguishes a filter that hid every entry from a truly empty timeline", async () => {
+		// One entry, touching no person. Under All it shows; under People the filter
+		// hides it, leaving zero visible days — but the timeline is NOT empty, so the
+		// empty state must say "no entries match this filter", not "nothing yet".
+		renderTimeline([
+			je("je_solo", "2026-06-10T09:00:00", "Heads-down, no one mentioned"),
+		]);
+		await screen.findByText("Heads-down, no one mentioned");
+
+		await userEvent.click(screen.getByRole("button", { name: /people/i }));
+
+		expect(
+			screen.getByText("No entries match this filter"),
+		).toBeInTheDocument();
+		// Must NOT claim the timeline is empty when it has an entry.
+		expect(
+			screen.queryByText("Nothing on the timeline yet"),
+		).not.toBeInTheDocument();
+	});
 });

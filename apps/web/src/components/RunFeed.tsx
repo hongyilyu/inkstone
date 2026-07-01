@@ -53,7 +53,11 @@ export function RunFeed({
 			<div className="flex flex-1 flex-col overflow-y-auto pb-3">
 				{isPending ? (
 					<FeedSkeleton />
-				) : isError ? (
+				) : isError && groups.length === 0 ? (
+					// Only surface the read-failure when there's nothing cached to show.
+					// A background refetch that fails while we still hold usable rows must
+					// NOT blank the feed — keep the stale-but-usable list (mirrors the
+					// Sidebar / EntityCollection isError-with-no-data guard).
 					<FeedError onRetry={() => void refetch()} />
 				) : groups.length === 0 ? (
 					<FeedEmpty />
