@@ -139,14 +139,20 @@ export function TodoEditor({ allEntities, onDone, onCancel, ...m }: Props) {
 	// is invalid, so it never overrides a deliberate valid choice.
 	const setDate = (which: "dueDay" | "deferDay", value: string) =>
 		setDraft((d) => {
-			const anchorOf = which === "dueDay" ? "due_at" : "defer_at";
-			const anchorDateEmpty =
-				d.recurAnchor === "due_at" ? d.dueDay === "" : d.deferDay === "";
-			const retrack = d.recurs && value !== "" && anchorDateEmpty;
+			const next = { ...d, [which]: value };
+			// Retrack the anchor to the date just filled only when Repeats is on and
+			// the CURRENT anchor's date is still empty (the rule is unsavable and the
+			// hint reads "set the <other> date"). Reuses `recurAnchorDatePresent` —
+			// the same anchor-date check the save-block guard uses — so the two can't
+			// drift. Never overrides a deliberate valid choice (fires only when invalid).
+			const retrack = d.recurs && value !== "" && !recurAnchorDatePresent(d);
 			return {
-				...d,
-				[which]: value,
-				recurAnchor: retrack ? anchorOf : d.recurAnchor,
+				...next,
+				recurAnchor: retrack
+					? which === "dueDay"
+						? "due_at"
+						: "defer_at"
+					: d.recurAnchor,
 			};
 		});
 

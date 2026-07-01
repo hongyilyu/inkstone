@@ -140,7 +140,10 @@ function ThreadRow({
 
 	const beginEdit = () => {
 		setDraft(item.title);
-		rename.reset(); // clear any stale failure from a prior attempt
+		// Clear any stale rename OR archive failure — both feed `rowError`, so a
+		// prior archive error would otherwise linger under the rename input.
+		rename.reset();
+		archive.reset();
 		setEditing(true);
 	};
 

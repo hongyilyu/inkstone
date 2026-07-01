@@ -580,11 +580,15 @@ describe("Sidebar", () => {
 		renderChatRoute(<Sidebar />, { runtime });
 
 		await screen.findByRole("button", { name: "Standup digest" });
-		// A dedicated Rename button (revealed on hover/focus) opens the editor without
-		// a double-click — reachable by keyboard and touch (ADR-0052 a11y).
-		await user.click(
-			screen.getByRole("button", { name: "Rename thread Standup digest" }),
-		);
+		// A dedicated Rename button opens the editor without a double-click. Drive it
+		// by KEYBOARD (focus + Enter), not a click, so the test actually proves the
+		// keyboard path the affordance exists for (ADR-0052 a11y).
+		const renameButton = screen.getByRole("button", {
+			name: "Rename thread Standup digest",
+		});
+		renameButton.focus();
+		expect(renameButton).toHaveFocus();
+		await user.keyboard("{Enter}");
 		expect(screen.getByRole("textbox", { name: /rename thread/i })).toHaveValue(
 			"Standup digest",
 		);

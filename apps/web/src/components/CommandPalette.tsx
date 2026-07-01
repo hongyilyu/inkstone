@@ -136,13 +136,17 @@ export function CommandPalette() {
 	const flat = useMemo(() => groups.flatMap((g) => g.items), [groups]);
 
 	// The empty-results line, chosen by ordered precedence out of the JSX: prompt →
-	// still-settling → search-failed (narrow the "no matches" claim to thread+library,
-	// since messages couldn't be searched) → genuine no-match.
+	// still-settling → narrow the "no matches" claim to the sources that ACTUALLY
+	// searched (a failed message or library read must not be folded into a blanket
+	// "No matches", which would falsely imply a complete search) → genuine no-match.
 	const q = query.trim();
 	const emptyMessage = (() => {
 		if (!q) return "Type to search your workspace.";
 		if (searchSettling) return "Searching…";
+		if (messageSearchError && libraryError)
+			return `No thread matches for "${q}".`;
 		if (messageSearchError) return `No thread or library matches for "${q}".`;
+		if (libraryError) return `No thread or message matches for "${q}".`;
 		return `No matches for "${q}".`;
 	})();
 

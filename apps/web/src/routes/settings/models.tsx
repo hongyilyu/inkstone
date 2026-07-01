@@ -225,11 +225,15 @@ function ModelsSettings() {
 	// the initial effect share one path.
 	const loadCatalog = useCallback(() => {
 		const requestId = ++latestCatalogRequest.current;
-		setCatalogFailed(false);
 		return fetchCatalog(runtime)
 			.then((c) => {
 				if (requestId !== latestCatalogRequest.current) return;
 				setProviders(c.providers);
+				// Clear the failure only ON SUCCESS. Clearing it at call start would
+				// swap the error+retry panel for the empty-list branch (nothing
+				// rendered) the instant "Try again" is clicked — a blank flash until
+				// the fetch settles, worse if the retry also fails.
+				setCatalogFailed(false);
 			})
 			.catch(() => {
 				if (requestId !== latestCatalogRequest.current) return;
