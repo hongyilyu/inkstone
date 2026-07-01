@@ -40,8 +40,14 @@ test("Settings → Connect ChatGPT flips to Connected after login", async ({
 	await page.getByRole("button", { name: "Settings" }).click();
 	await expect(page.getByRole("heading", { name: "Models" })).toBeVisible();
 
-	// The provider card shows ChatGPT not connected.
-	const status = page.getByTestId("provider-status");
+	// The provider card shows ChatGPT not connected. There are now TWO provider
+	// rows (OpenAI/codex + OpenRouter, ADR-0062), so scope the status to the
+	// OpenAI row (its drill-in button is named "Open OpenAI models") — an
+	// unscoped getByTestId would strict-mode-fail across both rows.
+	const status = page
+		.getByRole("button", { name: "Open OpenAI models" })
+		.locator("xpath=..")
+		.getByTestId("provider-status");
 	await expect(status).toHaveText("Not connected");
 
 	// Click Connect → Core runs provider/login_start (stub helper), the SPA
