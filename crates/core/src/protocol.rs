@@ -982,6 +982,17 @@ pub struct ProviderStatusResult {
     pub providers: Vec<ProviderStatus>,
 }
 
+/// `provider/configure` params (ADR-0062): store a static API key for a
+/// key-configurable provider (OpenRouter). Rust mirror of the TS
+/// `ProviderConfigureParams`; the result reuses `ProviderStatusResult` (the
+/// refreshed status). A non-key-configurable provider (codex is OAuth-only) or an
+/// unknown provider → `invalid_params`, decided in the handler.
+#[derive(Debug, Deserialize)]
+pub struct ProviderConfigureParams {
+    pub provider: String,
+    pub api_key: String,
+}
+
 /// `provider/login_start` params: which provider to begin an OAuth login for.
 /// Malformed/unknown → `invalid_params`.
 #[derive(Debug, Deserialize)]
@@ -1608,6 +1619,14 @@ mod mirror_tests {
             serde_json::to_value(&n).unwrap(),
             json!({ "provider": "openai-codex" }),
         );
+    }
+
+    #[test]
+    fn provider_configure_params_decodes_provider_and_api_key() {
+        let wire = json!({ "provider": "openrouter", "api_key": "sk-or-secret" });
+        let p: ProviderConfigureParams = serde_json::from_value(wire).unwrap();
+        assert_eq!(p.provider, "openrouter");
+        assert_eq!(p.api_key, "sk-or-secret");
     }
 
     #[test]
@@ -2588,13 +2607,22 @@ mod parity_fixtures {
                 }
             ),
             // ── provider/status, provider/login_start ──
+            // provider/status enumerates BOTH known providers (ADR-0062): the
+            // OAuth codex (connected) and the key-configurable openrouter
+            // (disconnected), covering both `connected` values.
             fx!(
                 "provider_status_result.json",
                 ProviderStatusResult {
-                    providers: vec![ProviderStatus {
-                        id: "openai-codex".to_string(),
-                        connected: true,
-                    }],
+                    providers: vec![
+                        ProviderStatus {
+                            id: "openai-codex".to_string(),
+                            connected: true,
+                        },
+                        ProviderStatus {
+                            id: "openrouter".to_string(),
+                            connected: false,
+                        },
+                    ],
                 }
             ),
             fx!(
@@ -2990,6 +3018,7 @@ mod parity_fixtures {
         parses!(ThreadArchiveParams, "thread_archive_params.json");
         parses!(ThreadUnarchiveParams, "thread_unarchive_params.json");
         parses!(ProviderLoginStartParams, "provider_login_start_params.json");
+        parses!(ProviderConfigureParams, "provider_configure_params.json");
         parses!(SettingsSetParams, "settings_set_params.json");
         parses!(SettingsSetParams, "settings_set_params.bare.json");
 

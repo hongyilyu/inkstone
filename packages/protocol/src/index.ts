@@ -770,6 +770,17 @@ export const ProviderStatusResult = S.Struct({
 });
 export type ProviderStatusResult = S.Schema.Type<typeof ProviderStatusResult>;
 
+/** `provider/configure` params (ADR-0062): store a static API key for a
+ * key-configurable provider (e.g. OpenRouter). The result is the refreshed
+ * {@link ProviderStatusResult}. */
+export const ProviderConfigureParams = S.Struct({
+	provider: S.String,
+	api_key: S.String,
+});
+export type ProviderConfigureParams = S.Schema.Type<
+	typeof ProviderConfigureParams
+>;
+
 /** `provider/login_start` params: which provider to begin an OAuth login for. */
 export const ProviderLoginStartParams = S.Struct({ provider: S.String });
 export type ProviderLoginStartParams = S.Schema.Type<

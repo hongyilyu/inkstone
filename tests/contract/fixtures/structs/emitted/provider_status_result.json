@@ -3,6 +3,10 @@
     {
       "connected": true,
       "id": "openai-codex"
+    },
+    {
+      "connected": false,
+      "id": "openrouter"
     }
   ]
 }

@@ -17,6 +17,7 @@ import {
 	ProposalGetParams,
 	ProposalGetResult,
 	ProposalPendingNotification,
+	ProviderConfigureParams,
 	ProviderLoginStartParams,
 	ProviderLoginStartResult,
 	ProviderStatusResult,
@@ -526,6 +527,14 @@ describe("ProviderLoginStartResult", () => {
 describe("ProviderLoginStartParams", () => {
 	it("rejects a missing provider", () => {
 		expect(() => S.decodeUnknownSync(ProviderLoginStartParams)({})).toThrow();
+	});
+});
+
+describe("ProviderConfigureParams", () => {
+	it("rejects a missing api_key", () => {
+		expect(() =>
+			S.decodeUnknownSync(ProviderConfigureParams)({ provider: "openrouter" }),
+		).toThrow();
 	});
 });
 

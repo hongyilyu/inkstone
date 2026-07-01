@@ -13,10 +13,17 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use super::handler::{self, HandlerError};
 use super::reply;
-use crate::credentials::{self, Credentials, OPENAI_CODEX, StoredCredential};
+use crate::credentials::{self, Credentials, OPENAI_CODEX, OPENROUTER, StoredCredential};
 use crate::protocol::{
-    ProviderLoginStartParams, ProviderLoginStartResult, ProviderStatus, ProviderStatusResult,
+    ProviderConfigureParams, ProviderLoginStartParams, ProviderLoginStartResult, ProviderStatus,
+    ProviderStatusResult,
 };
+
+/// Every provider `provider/status` enumerates (ADR-0062), each surfaced whether
+/// connected or not so the Client can render a connect/configure affordance. One
+/// source for the status enumeration, the configure allowlist, and the login
+/// allowlist below.
+const KNOWN_PROVIDERS: [&str; 2] = [OPENAI_CODEX, OPENROUTER];
 
 pub(super) async fn handle(
     id: serde_json::Value,
@@ -24,17 +31,74 @@ pub(super) async fn handle(
     out_tx: &UnboundedSender<String>,
 ) {
     handler::handle(id, params, out_tx, |_p: serde_json::Value| async move {
-        // ChatGPT/Codex is the only supported provider. A corrupt credential
-        // file surfaces as an internal error, not a misleading "connected: false".
-        let connected =
-            credentials::is_connected(OPENAI_CODEX).map_err(|e| HandlerError::Internal(e.into()))?;
+        provider_status()
+    })
+    .await;
+}
 
-        Ok(ProviderStatusResult {
-            providers: vec![ProviderStatus {
-                id: OPENAI_CODEX.to_string(),
-                connected,
-            }],
+/// The connection state of every [`KNOWN_PROVIDERS`] entry. A corrupt credential
+/// file surfaces as an internal error, not a misleading "connected: false".
+/// Shared by `provider/status` and the `provider/configure` reply.
+fn provider_status() -> Result<ProviderStatusResult, HandlerError> {
+    let providers = KNOWN_PROVIDERS
+        .iter()
+        .map(|&id| {
+            Ok(ProviderStatus {
+                id: id.to_string(),
+                connected: credentials::is_connected(id)
+                    .map_err(|e| HandlerError::Internal(e.into()))?,
+            })
         })
+        .collect::<Result<Vec<_>, HandlerError>>()?;
+    Ok(ProviderStatusResult { providers })
+}
+
+/// The KEY-configurable providers — the ones `provider/configure` accepts
+/// (ADR-0062). OAuth providers (codex) connect via `provider/login_start`, not a
+/// pasted key, so they are NOT here: configuring one is `invalid_params`.
+const CONFIGURABLE_PROVIDERS: [&str; 1] = [OPENROUTER];
+
+pub(super) async fn handle_configure(
+    id: serde_json::Value,
+    params: serde_json::Value,
+    out_tx: &UnboundedSender<String>,
+) {
+    // The closure moves a clone to push `provider/connected`; `handler::handle`
+    // keeps the borrow for its own framing (both target the same connection).
+    let notify_tx = out_tx.clone();
+    handler::handle(id, params, out_tx, |params: ProviderConfigureParams| async move {
+        // Only key-configurable providers accept a pasted key. An unknown
+        // provider AND an OAuth-only one (codex → use login_start) both reject
+        // as invalid_params — configure is for static-key providers.
+        if !CONFIGURABLE_PROVIDERS.contains(&params.provider.as_str()) {
+            return Err(HandlerError::InvalidParams(format!(
+                "provider {:?} is not key-configurable",
+                params.provider
+            )));
+        }
+
+        // Reject-before-write (ADR-0014): an empty/whitespace key would persist a
+        // credential that reports connected:true yet fails at request time. Guard
+        // AFTER the provider check so provider-validity still reports first.
+        if params.api_key.trim().is_empty() {
+            return Err(HandlerError::InvalidParams(
+                "api_key must not be empty".to_string(),
+            ));
+        }
+
+        credentials::write(
+            &params.provider,
+            &StoredCredential::ApiKey {
+                key: params.api_key,
+            },
+        )
+        .map_err(|e| HandlerError::Internal(e.into()))?;
+
+        // The key is durable — push the live signal (ADR-0049) so the Settings
+        // card flips to Connected without a focus refetch, exactly like login.
+        reply::send_provider_connected(&notify_tx, &params.provider);
+
+        provider_status()
     })
     .await;
 }

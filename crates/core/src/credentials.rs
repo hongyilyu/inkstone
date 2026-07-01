@@ -8,9 +8,13 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-/// The only provider this feature supports (ChatGPT/Codex). One source for both
-/// the wire `id` and the on-disk filename.
+/// The OAuth provider (ChatGPT/Codex). One source for both the wire `id` and
+/// the on-disk filename.
 pub const OPENAI_CODEX: &str = "openai-codex";
+
+/// The static-API-key provider (OpenRouter, ADR-0062). One source for both the
+/// wire `id` and the on-disk filename, mirroring [`OPENAI_CODEX`].
+pub const OPENROUTER: &str = "openrouter";
 
 /// Stored OAuth credentials for a provider (ADR-0023), mirroring the shape
 /// `pi-ai`'s pure OAuth functions use. `Debug` is hand-implemented to redact the

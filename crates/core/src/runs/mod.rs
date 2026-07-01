@@ -149,6 +149,9 @@ pub async fn dispatch(
         "provider/login_start" => {
             provider::handle_login_start(req.id, req.params, out_tx).await;
         }
+        "provider/configure" => {
+            provider::handle_configure(req.id, req.params, out_tx).await;
+        }
         // Other methods: drop silently for the skeleton.
         _ => {}
     }

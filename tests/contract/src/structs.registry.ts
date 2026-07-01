@@ -46,6 +46,7 @@ import {
 	ProposalGetParams,
 	ProposalGetResult,
 	ProposalPendingNotification,
+	ProviderConfigureParams,
 	ProviderConnectedNotification,
 	ProviderLoginStartParams,
 	ProviderLoginStartResult,
@@ -311,6 +312,14 @@ export const fixtures: readonly FixtureEntry[] = [
 		message: "ProviderLoginStartParams",
 		file: "provider_login_start_params.json",
 		schema: ProviderLoginStartParams,
+		dir: "authored",
+	},
+	// provider/configure params (ADR-0062): the {provider, api_key} shape Web
+	// sends to store a static key. Result reuses ProviderStatusResult.
+	{
+		message: "ProviderConfigureParams",
+		file: "provider_configure_params.json",
+		schema: ProviderConfigureParams,
 		dir: "authored",
 	},
 	// SettingsSetParams: maximal (both fields) + bare (both omitted).
@@ -739,6 +748,7 @@ export const CANONICAL_MESSAGES: readonly string[] = [
 	"ThreadArchiveParams",
 	"ThreadUnarchiveParams",
 	"ProviderLoginStartParams",
+	"ProviderConfigureParams",
 	"SettingsSetParams",
 	// slice 3 — the 18 results + notifications
 	// + RunRetryResult (run-retry, ADR-0028 amendment, #230) = 19 results.
