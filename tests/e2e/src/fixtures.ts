@@ -1,4 +1,4 @@
-import { type Locator, type Page, test as base } from "@playwright/test";
+import { test as base, type Locator, type Page } from "@playwright/test";
 import { ChatPage } from "./page-objects/ChatPage.js";
 import {
 	type SpawnCoreOptions,
