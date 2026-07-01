@@ -142,8 +142,7 @@ export function CommandPalette() {
 	const emptyMessage = (() => {
 		if (!q) return "Type to search your workspace.";
 		if (searchSettling) return "Searching…";
-		if (messageSearchError)
-			return `No thread or library matches for "${q}".`;
+		if (messageSearchError) return `No thread or library matches for "${q}".`;
 		return `No matches for "${q}".`;
 	})();
 
