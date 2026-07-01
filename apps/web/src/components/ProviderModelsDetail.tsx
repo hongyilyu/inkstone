@@ -1,8 +1,8 @@
 import type { ModelInfo, ProviderTestResult } from "@inkstone/protocol";
 import { ChevronLeft, CircleCheck, Loader2, TriangleAlert } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { Button } from "./ui/button.js";
 import { ModelCatalogTable } from "./ModelCatalogTable.js";
+import { Button } from "./ui/button.js";
 
 export interface ProviderModelsDetailProps {
 	/** The provider's display label, e.g. "OpenAI". */

@@ -73,9 +73,7 @@ test("Settings → configure OpenRouter flips to Connected, then Test shows Work
 
 	// Drill into OpenRouter's detail (now configured) and run the liveness Test.
 	await page.getByRole("button", { name: "Open OpenRouter models" }).click();
-	await expect(
-		page.getByRole("heading", { name: "OpenRouter" }),
-	).toBeVisible();
+	await expect(page.getByRole("heading", { name: "OpenRouter" })).toBeVisible();
 
 	// Test → Core resolves the ApiKey credential, spawns a one-shot faux Worker
 	// with the fixed "ping" prompt; the faux provider emits "pong" (a text token),
