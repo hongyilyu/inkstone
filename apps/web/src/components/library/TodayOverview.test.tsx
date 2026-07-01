@@ -177,10 +177,10 @@ describe("TodayOverview", () => {
 	it("renders honest digest copy (no fabricated stats)", async () => {
 		renderToday([todo("t_due", "Pay rent", { due_at: PAST })]);
 		await screen.findByRole("link", { name: /health/i });
-		// Health is still a stub ("coming soon"); Media is now live (ADR-0059), so its
-		// card names what the topic holds. Neither invents a count (ADR-0054 dec.5).
-		expect(screen.getAllByText(/coming soon/i).length).toBe(1);
-		expect(screen.getByText(/tracking — coming soon/i)).toBeInTheDocument();
+		// Health and Media are both live now; each card names what its topic holds
+		// without a stale "coming soon" or any fabricated count (ADR-0054 dec.5).
+		expect(screen.queryByText(/coming soon/i)).not.toBeInTheDocument();
+		expect(screen.getByText(/your recorded observations/i)).toBeInTheDocument();
 		expect(screen.getByText(/your read & watch queue/i)).toBeInTheDocument();
 	});
 

@@ -267,7 +267,9 @@ export function journalEntryBodyText(body: JournalEntryBodyNode[]): string {
 export function libraryItemSubtitle(e: LibraryItem): string {
 	switch (e.kind) {
 		case "journal_entry":
-			return e.occurredAt;
+			// A friendly date, not the raw `YYYY-MM-DDTHH:MM:SS` wire string (a bare-T
+			// timestamp reads as a machine value in a search-result subtitle).
+			return formatDay(e.occurredAt);
 		case "person":
 			return e.note ?? "Person";
 		case "project":

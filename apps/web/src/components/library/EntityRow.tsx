@@ -118,6 +118,9 @@ function TodoStatusGlyph({ todo }: { todo: Todo }) {
 function CompleteCircle({ todo }: { todo: Todo }) {
 	const mutation = useEntityMutation();
 	const done = todo.status === "completed" || mutation.isSuccess;
+	// A failed write must not be silent: mark the control so the user sees the
+	// completion didn't take. The button stays enabled so the click retries.
+	const failed = mutation.isError;
 
 	const complete = () => {
 		if (done || mutation.isPending) return;
@@ -135,11 +138,23 @@ function CompleteCircle({ todo }: { todo: Todo }) {
 			type="button"
 			onClick={complete}
 			disabled={done || mutation.isPending}
-			aria-label={done ? "Completed" : "Mark todo complete"}
+			aria-label={
+				done
+					? "Completed"
+					: failed
+						? "Couldn't complete todo — try again"
+						: "Mark todo complete"
+			}
+			title={failed ? "Couldn't complete. Try again." : undefined}
 			className="rounded-full focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-default"
 		>
 			{done ? (
 				<CircleCheck className="size-[18px] text-primary" aria-hidden />
+			) : failed ? (
+				<AlertTriangle
+					className="size-[18px] text-destructive transition-colors hover:text-primary"
+					aria-hidden
+				/>
 			) : (
 				<Circle
 					className="size-[18px] text-muted-foreground transition-colors hover:text-primary"
@@ -170,9 +185,21 @@ function QuickDeferMenu({ todo }: { todo: Todo }) {
 			baseline: todoDraftFromVm(todo),
 			draft: { ...todoDraftFromVm(todo), deferDay: day },
 		});
-		if (params) mutation.mutate(params);
-		setOpen(false);
-		setPicking(false);
+		// No diff (deferring to the date it already carries) is a genuine no-op —
+		// just close, nothing to write. Otherwise write and close only on success,
+		// so a failed defer keeps the menu open with a visible error rather than
+		// silently swallowing the failure.
+		if (!params) {
+			setOpen(false);
+			setPicking(false);
+			return;
+		}
+		mutation.mutate(params, {
+			onSuccess: () => {
+				setOpen(false);
+				setPicking(false);
+			},
+		});
 	};
 
 	return (
@@ -237,6 +264,14 @@ function QuickDeferMenu({ todo }: { todo: Todo }) {
 								)}
 							</li>
 						</ul>
+						{mutation.isError ? (
+							<p
+								role="alert"
+								className="px-3 pt-1 pb-1 text-destructive text-xs"
+							>
+								Couldn't defer. Try again.
+							</p>
+						) : null}
 					</Popover.Popup>
 				</Popover.Positioner>
 			</Popover.Portal>

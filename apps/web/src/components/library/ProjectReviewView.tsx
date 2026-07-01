@@ -1,4 +1,5 @@
 import {
+	AlertTriangle,
 	CalendarClock,
 	Check,
 	ChevronDown,
@@ -57,7 +58,10 @@ export function ProjectReviewView({
 			</ReviewFrame>
 		);
 	}
-	if (isError) {
+	// Only surface the read-failure when there's nothing cached to review. A
+	// background refetch that fails while we still hold usable rows must NOT blank
+	// the queue (mirrors EntityCollection's isError-with-no-data guard).
+	if (isError && items.length === 0) {
 		return (
 			<ReviewFrame count={null}>
 				<EmptyState
@@ -363,6 +367,8 @@ function ReviewTodoRow({
 	// lifted `sessionDone`). Together: VISIBLE (parent filter) + CHECKED (grill Q13).
 	const done =
 		todo.status === "completed" || mutation.isSuccess || doneThisSession;
+	// A failed completion must not be silent — mark the circle; it stays enabled to retry.
+	const failed = mutation.isError;
 
 	const toggle = () => {
 		if (done || mutation.isPending) return;
@@ -385,11 +391,23 @@ function ReviewTodoRow({
 					type="button"
 					onClick={toggle}
 					disabled={done || mutation.isPending}
-					aria-label={done ? "Completed" : "Mark todo complete"}
+					aria-label={
+						done
+							? "Completed"
+							: failed
+								? "Couldn't complete todo — try again"
+								: "Mark todo complete"
+					}
+					title={failed ? "Couldn't complete. Try again." : undefined}
 					className="rounded-full focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-default"
 				>
 					{done ? (
 						<CircleCheck className="size-[18px] text-primary" aria-hidden />
+					) : failed ? (
+						<AlertTriangle
+							className="size-[18px] text-destructive transition-colors hover:text-primary"
+							aria-hidden
+						/>
 					) : (
 						<Circle
 							className="size-[18px] text-muted-foreground transition-colors hover:text-primary"

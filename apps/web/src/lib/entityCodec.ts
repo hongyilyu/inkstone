@@ -212,7 +212,7 @@ function asString(value: unknown): string | undefined {
  * so this is parsing not validation: it returns undefined unless the required
  * fields are present and well-typed, and never throws on a partial/missing shape.
  */
-function asRecurrence(value: unknown): RecurrenceRule | undefined {
+export function asRecurrence(value: unknown): RecurrenceRule | undefined {
 	if (!value || typeof value !== "object") return undefined;
 	const r = value as Record<string, unknown>;
 	if (

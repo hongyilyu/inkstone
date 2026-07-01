@@ -30,6 +30,14 @@ function ArchivedView() {
 				</p>
 			</header>
 
+			{unarchive.isError && (
+				// A failed restore must not look like a dead click — surface the failure.
+				<p role="alert" className="text-destructive text-sm">
+					Couldn't restore that conversation. Check that Inkstone is running and
+					try again.
+				</p>
+			)}
+
 			{isError && threads.length === 0 ? (
 				// A failed read with NO cached rows must not read as a genuinely empty
 				// archive — show an honest load-failure (mirrors Sidebar.tsx).

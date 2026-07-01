@@ -306,7 +306,7 @@ describe("ProposalCard", () => {
 			screen.getByRole("button", { name: /add journal entry/i }),
 		).toBeDisabled();
 		expect(screen.getByRole("button", { name: /edit/i })).not.toBeDisabled();
-		expect(screen.getByText(/edit required fields/i)).toBeInTheDocument();
+		expect(screen.getByText(/fix before saving/i)).toBeInTheDocument();
 	});
 
 	it("keeps Edit available when an invalid proposal is in the error state", () => {
@@ -829,7 +829,8 @@ describe("ProposalCard", () => {
 				screen.getAllByText("Ship API v2 migration").length,
 			).toBeGreaterThan(0);
 			expect(screen.getByText("All clients on v2 by Q3.")).toBeInTheDocument();
-			expect(screen.getByText("active")).toBeInTheDocument();
+			// Status renders as its humanized label, not the raw enum.
+			expect(screen.getByText("Active")).toBeInTheDocument();
 			// create_project now offers inline Edit at the gate (slice 2).
 			expect(
 				screen.getByRole("button", { name: /^edit$/i }),
@@ -1074,7 +1075,8 @@ describe("ProposalCard", () => {
 			// heading); only the fields that actually change are shown.
 			expect(screen.queryByText(/todo-7/)).toBeNull();
 			expect(screen.getByText("Email Alice (done)")).toBeInTheDocument();
-			expect(screen.getByText("completed")).toBeInTheDocument();
+			// Status renders as its humanized label, not the raw enum.
+			expect(screen.getByText("Completed")).toBeInTheDocument();
 			// set_person_refs renders under the "Set" label — distinct from add/remove,
 			// so a dropped or mis-keyed set branch is caught, not just a missing line.
 			expect(screen.getByText("Set")).toBeInTheDocument();
@@ -1357,7 +1359,8 @@ describe("ProposalCard", () => {
 			).not.toBeInTheDocument();
 			expect(screen.getAllByText("Ship API v2").length).toBeGreaterThan(0);
 			expect(screen.getByText("All clients on v2 by Q3.")).toBeInTheDocument();
-			expect(screen.getByText("active")).toBeInTheDocument();
+			// Status renders as its humanized label, not the raw enum.
+			expect(screen.getByText("Active")).toBeInTheDocument();
 			expect(
 				screen.getByRole("button", { name: /update project/i }),
 			).toBeInTheDocument();

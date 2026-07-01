@@ -131,6 +131,25 @@ export function TodoEditor({ allEntities, onDone, onCancel, ...m }: Props) {
 		value: EditableDraft[K],
 	) => setDraft((d) => ({ ...d, [key]: value }));
 
+	// Setting a date (due/defer) while Repeats is on: if the CURRENT anchor's date
+	// is still empty (so the rule is unsavable and the hint reads "set the <other>
+	// date"), retrack the anchor to the date just filled. This mirrors the toggle's
+	// auto-default so a user who turns on Repeats and *then* picks a date isn't left
+	// on a stale anchor pointing at the empty field. It only fires when the anchor
+	// is invalid, so it never overrides a deliberate valid choice.
+	const setDate = (which: "dueDay" | "deferDay", value: string) =>
+		setDraft((d) => {
+			const anchorOf = which === "dueDay" ? "due_at" : "defer_at";
+			const anchorDateEmpty =
+				d.recurAnchor === "due_at" ? d.dueDay === "" : d.deferDay === "";
+			const retrack = d.recurs && value !== "" && anchorDateEmpty;
+			return {
+				...d,
+				[which]: value,
+				recurAnchor: retrack ? anchorOf : d.recurAnchor,
+			};
+		});
+
 	// A new row defaults to `related` and no person yet; the user picks the person.
 	const addPersonRow = () =>
 		setPersonRows((rows) => [
@@ -283,7 +302,7 @@ export function TodoEditor({ allEntities, onDone, onCancel, ...m }: Props) {
 					id={ids.due}
 					type="date"
 					value={draft.dueDay}
-					onChange={(e) => set("dueDay", e.target.value)}
+					onChange={(e) => setDate("dueDay", e.target.value)}
 				/>
 			</EditorField>
 
@@ -292,7 +311,7 @@ export function TodoEditor({ allEntities, onDone, onCancel, ...m }: Props) {
 					id={ids.defer}
 					type="date"
 					value={draft.deferDay}
-					onChange={(e) => set("deferDay", e.target.value)}
+					onChange={(e) => setDate("deferDay", e.target.value)}
 				/>
 			</EditorField>
 

@@ -56,7 +56,7 @@ export function ObservationField({
 			<dt className="w-20 shrink-0 text-xs font-medium text-muted-foreground">
 				{label}
 			</dt>
-			<dd className="min-w-0 text-card-foreground">{value}</dd>
+			<dd className="min-w-0 break-words text-card-foreground">{value}</dd>
 		</div>
 	);
 }
@@ -212,7 +212,7 @@ export function ObservationEditForm({
 			</EditorField>
 			{parsed.error ? (
 				<p role="alert" className="text-sm text-destructive">
-					Edit required fields: {parsed.error}.
+					Fix before saving: {parsed.error}.
 				</p>
 			) : null}
 			<footer className="flex items-center gap-2 pt-1">

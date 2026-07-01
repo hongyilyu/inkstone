@@ -75,8 +75,11 @@ export function CommandPalette() {
 	// Debounce keystrokes so server message search fires once typing settles; the
 	// query is disabled for an empty input, so an empty palette makes no server call.
 	const debouncedQuery = useDebounced(query, 180);
-	const { data: messageData, isFetching: searchFetching } =
-		useMessageSearch(debouncedQuery);
+	const {
+		data: messageData,
+		isFetching: searchFetching,
+		isError: messageSearchError,
+	} = useMessageSearch(debouncedQuery);
 
 	// The message search is still resolving when the user is mid-debounce (the
 	// typed query hasn't reached the debounced one yet) OR the query is in flight.
@@ -248,13 +251,23 @@ export function CommandPalette() {
 								searchable right now.
 							</p>
 						) : null}
+						{/* Message search failed — say so rather than folding it into a
+						    "No matches" that lies (the query might match plenty; the read
+						    just failed). Threads and Library search independently. */}
+						{messageSearchError ? (
+							<p className="px-3 pt-2 pb-1 text-destructive text-xs">
+								Couldn't search messages — check that Inkstone is running.
+							</p>
+						) : null}
 						{flat.length === 0 ? (
 							<p className="px-3 py-10 text-center text-muted-foreground text-sm">
 								{!query.trim()
 									? "Type to search your workspace."
 									: searchSettling
 										? "Searching…"
-										: `No matches for "${query.trim()}".`}
+										: messageSearchError
+											? `No thread or library matches for "${query.trim()}".`
+											: `No matches for "${query.trim()}".`}
 							</p>
 						) : (
 							groups.map((group) => (

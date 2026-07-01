@@ -33,6 +33,10 @@ export function DerivedTodoView({
 }) {
 	const { data, isPending, isError } = useLibraryItems();
 	const items = select(data ?? []);
+	// Only show the read-failure when there's nothing to show. A background
+	// refetch that fails while we still hold usable rows must NOT blank the list
+	// (mirrors EntityCollection's `showError = isError && ofKind.length === 0`).
+	const showError = isError && items.length === 0;
 
 	return (
 		<section aria-label={title} className="flex h-full min-h-0 flex-col">
@@ -42,7 +46,7 @@ export function DerivedTodoView({
 						<h1 className="font-bold text-2xl text-foreground tracking-tight">
 							{title}
 						</h1>
-						{!isPending && !isError ? (
+						{!isPending && !showError ? (
 							<span className="text-muted-foreground text-sm">
 								{items.length}
 							</span>
@@ -56,7 +60,7 @@ export function DerivedTodoView({
 				<div className="mx-auto w-full max-w-3xl">
 					{isPending ? (
 						<EntitySkeleton rows={6} />
-					) : isError ? (
+					) : showError ? (
 						<EmptyState
 							icon={icon}
 							tone="danger"

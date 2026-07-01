@@ -593,6 +593,13 @@ function AssistantBubble({
 	const reasoningStreaming =
 		message.status === "streaming" &&
 		message.segments.some((seg) => seg.kind === "reasoning");
+	// A turn that parked on a Proposal keeps `status === "streaming"` (only a
+	// terminal done/error/cancelled flips it), but it is IDLE — waiting on the
+	// user's decision, not generating. Suppress the typing dots when a Proposal
+	// segment is present so a proposal-first (or tool→proposal) turn with no
+	// leading text doesn't show a perpetual "Assistant is typing" beside the card
+	// (parallels the reasoning-segment guard above).
+	const hasProposal = message.segments.some((seg) => seg.kind === "proposal");
 	const groups = toRenderGroups(message.segments);
 	return (
 		<li
@@ -639,7 +646,8 @@ function AssistantBubble({
 			{message.status === "streaming" &&
 				text === "" &&
 				!toolRunning &&
-				!reasoningStreaming && (
+				!reasoningStreaming &&
+				!hasProposal && (
 					<div
 						data-testid="typing-indicator"
 						role="status"

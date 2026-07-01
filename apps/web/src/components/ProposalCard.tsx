@@ -26,6 +26,7 @@ import {
 	useRef,
 	useState,
 } from "react";
+import { asRecurrence } from "@/lib/entityCodec";
 import {
 	PROJECT_STATUS_OPTIONS,
 	type ProjectStatus,
@@ -61,6 +62,9 @@ import {
 	type LibraryItemKind,
 	libraryItemSubtitle,
 	libraryItemTitle,
+	PROJECT_STATUS_LABEL,
+	recurrenceSummary,
+	TODO_STATUS_LABEL,
 } from "@/lib/libraryItems";
 import {
 	type CreatePersonDraft,
@@ -121,6 +125,10 @@ type ProposalKind =
 interface ProposalBodyArgs {
 	payload: unknown;
 	reviewContext: ProposalReviewContext | undefined;
+	/** Resolve an entity id to its display name via the warm library cache (the
+	 * same cache the decided-card link reads). Returns null when the id isn't in
+	 * cache yet, so the caller can fall back to a short id rather than a raw UUID. */
+	nameFor: (id: string) => string | null;
 }
 
 type ProposalEditPolicy = "journal" | "gtd" | "observation" | "readonly";
@@ -579,6 +587,17 @@ function SingleEntityProposalCard({
 	const occurredAtInputId = `${editFormId}-proposal-edit-occurred-at`;
 	const endedAtInputId = `${editFormId}-proposal-edit-ended-at`;
 	const bodyInputId = `${editFormId}-proposal-edit-body`;
+	// Resolve referenced entity ids (project_id, person_id) to names for the review
+	// body via the warm library cache — the same cache the decided-card link and the
+	// intent-graph candidate subtitles read. Avoids surfacing raw UUIDs a user can't
+	// read. A cache miss falls back to a short id (see `nameFor`).
+	const { data: libraryItems } = useLibraryItems();
+	const nameFor = useMemo(() => {
+		const byId = new Map<string, string>();
+		for (const item of libraryItems ?? [])
+			byId.set(item.id, libraryItemTitle(item));
+		return (id: string) => byId.get(id) ?? null;
+	}, [libraryItems]);
 	const { status, payload, rationale, mutation_kind } = proposal;
 	const proposalErrorMessage = proposal.error_message;
 	const occurredAt = textField(payload, "occurred_at");
@@ -785,7 +804,7 @@ function SingleEntityProposalCard({
 						</EditorField>
 						{editIssue ? (
 							<p role="alert" className="text-sm text-destructive">
-								Edit required fields: {editIssue}.
+								Fix before saving: {editIssue}.
 							</p>
 						) : null}
 						<footer className="flex items-center gap-2 pt-1">
@@ -819,6 +838,7 @@ function SingleEntityProposalCard({
 					{view.renderBody({
 						payload,
 						reviewContext: proposal.review_context,
+						nameFor,
 					})}
 
 					{rationale ? (
@@ -830,12 +850,12 @@ function SingleEntityProposalCard({
 					{isError ? (
 						<p role="alert" className="text-sm text-destructive">
 							{payloadIssue
-								? `Edit required fields: ${payloadIssue}.`
+								? `Fix before saving: ${payloadIssue}.`
 								: proposalErrorMessage || "Couldn't apply. Try again."}
 						</p>
 					) : payloadIssue ? (
 						<p role="alert" className="text-sm text-destructive">
-							Edit required fields: {payloadIssue}.
+							Fix before saving: {payloadIssue}.
 						</p>
 					) : null}
 
@@ -1657,7 +1677,14 @@ function IntentGraphReviewCard({
 						</>
 					) : (
 						<>
-							<Check className="size-4" aria-hidden />
+							{/* When every node is rejected the commit IS a dismiss, so a
+							    check glyph (implying "confirm/apply") contradicts the
+							    "Dismiss" label; show an X instead. */}
+							{everythingRejected ? (
+								<X className="size-4" aria-hidden />
+							) : (
+								<Check className="size-4" aria-hidden />
+							)}
 							{commitLabel}
 						</>
 					)}
@@ -2214,20 +2241,54 @@ function Field({ label, value }: { label: string; value: string }) {
 			<dt className="w-20 shrink-0 text-xs font-medium text-muted-foreground">
 				{label}
 			</dt>
-			<dd className="min-w-0 text-card-foreground">{value}</dd>
+			<dd className="min-w-0 break-words text-card-foreground">{value}</dd>
 		</div>
 	);
 }
 
+// Resolve an entity id to a human label for the review body: the cached name if
+// known, else a short id (first 8 chars) so a not-yet-cached ref still reads as an
+// abbreviated handle rather than a full raw UUID.
+function displayEntity(
+	id: string,
+	nameFor: (id: string) => string | null,
+): string {
+	return nameFor(id) ?? `${id.slice(0, 8)}…`;
+}
+
+// A datetime the model proposed, shown as its day slice (the review body is a
+// glance, not a to-the-second audit). Empty → null so the caller skips the row.
+function proposalDay(value: string): string | null {
+	return value ? value.slice(0, 10) : null;
+}
+
+// Humanize a raw (unvalidated) status enum against a label map, falling back to
+// the raw value for a status the map doesn't cover. Empty → empty.
+function statusLabel(value: string, labels: Record<string, string>): string {
+	return labels[value] ?? value;
+}
+
+// A one-line recurrence summary from a raw (snake_case, unvalidated) recurrence
+// payload, reusing the same formatter the Library inspector uses. Null when the
+// payload carries no well-formed rule so the caller skips the row.
+function recurrenceLine(todo: unknown): string | null {
+	const rule = asRecurrence(objectField(todo, "recurrence"));
+	return rule ? recurrenceSummary(rule) : null;
+}
+
 // A person ref is itself unvalidated; read its id/role defensively. Returns null
 // when there is no usable person_id so the caller can skip rendering a blank row.
-function personRefLine(ref: unknown): string | null {
+// `nameFor` resolves the id to a display name (falling back to a short id) so the
+// row never surfaces a raw UUID.
+function personRefLine(
+	ref: unknown,
+	nameFor: (id: string) => string | null,
+): string | null {
 	const personId = textField(ref, "person_id");
 	if (!personId) return null;
 	const role = textField(ref, "role");
-	return role === "waiting_on"
-		? `Waiting on: ${personId}`
-		: `Related: ${personId}`;
+	const who = displayEntity(personId, nameFor);
+	return role === "waiting_on" ? `Waiting on: ${who}` : `Related: ${who}`;
 }
 
 // Map an array field of (unvalidated) person refs to rendered rows. Rows are
@@ -2239,13 +2300,14 @@ function personRefFields(
 	key: string,
 	prefix: string,
 	label: string,
+	nameFor: (id: string) => string | null,
 ) {
 	// Key by the row's own value plus a per-value occurrence counter rather than a
 	// bare array index (Biome noArrayIndexKey): stable across payload reordering,
 	// and still unique when two unvalidated refs render the identical line.
 	const seen = new Map<string, number>();
 	return arrayField(payload, key)
-		.map((ref) => personRefLine(ref))
+		.map((ref) => personRefLine(ref, nameFor))
 		.filter((line): line is string => line !== null)
 		.map((line) => {
 			const nth = seen.get(line) ?? 0;
@@ -2364,7 +2426,13 @@ function projectSection(title: string, body: unknown): ReactNode {
 			<dl className="flex flex-col gap-1.5 text-sm">
 				<Field label="Name" value={textField(body, "name") || "Unknown"} />
 				{outcome ? <Field label="Outcome" value={outcome} /> : null}
-				{status ? <Field label="Status" value={status} /> : null}
+				{/* Humanize the raw enum ("on_hold") to its label; fall back to raw. */}
+				{status ? (
+					<Field
+						label="Status"
+						value={statusLabel(status, PROJECT_STATUS_LABEL)}
+					/>
+				) : null}
 				{note ? <Field label="Note" value={note} /> : null}
 			</dl>
 		</section>
@@ -2390,11 +2458,17 @@ function renderProjectBody({
 	);
 }
 
-function renderCreateTodoBody({ payload }: ProposalBodyArgs): ReactNode {
+function renderCreateTodoBody({
+	payload,
+	nameFor,
+}: ProposalBodyArgs): ReactNode {
 	const todo = objectField(payload, "todo");
 	const note = textField(todo, "note");
 	const status = textField(todo, "status");
 	const projectId = textField(todo, "project_id");
+	const due = proposalDay(textField(todo, "due_at"));
+	const defer = proposalDay(textField(todo, "defer_at"));
+	const repeats = recurrenceLine(todo);
 	return (
 		<div className="flex flex-col gap-3 border-border border-t pt-3">
 			<section className="flex flex-col gap-2">
@@ -2404,44 +2478,110 @@ function renderCreateTodoBody({ payload }: ProposalBodyArgs): ReactNode {
 				<dl className="flex flex-col gap-1.5 text-sm">
 					<Field label="Title" value={textField(todo, "title") || "Untitled"} />
 					{note ? <Field label="Note" value={note} /> : null}
-					{status ? <Field label="Status" value={status} /> : null}
-					{projectId ? <Field label="Project" value={projectId} /> : null}
-					{personRefFields(payload, "person_refs", "ref", "People")}
+					{/* Humanize the raw enum ("active"/"on_hold") to the label the rest of
+					    the app shows; fall back to the raw value for an unknown status. */}
+					{status ? (
+						<Field
+							label="Status"
+							value={statusLabel(status, TODO_STATUS_LABEL)}
+						/>
+					) : null}
+					{due ? <Field label="Due" value={due} /> : null}
+					{defer ? <Field label="Defer" value={defer} /> : null}
+					{repeats ? <Field label="Repeats" value={repeats} /> : null}
+					{/* Resolve the project id to its name (not a raw UUID). */}
+					{projectId ? (
+						<Field label="Project" value={displayEntity(projectId, nameFor)} />
+					) : null}
+					{personRefFields(payload, "person_refs", "ref", "People", nameFor)}
 				</dl>
 			</section>
 		</div>
 	);
 }
 
-function renderUpdateTodoBody({ payload }: ProposalBodyArgs): ReactNode {
+function renderUpdateTodoBody({
+	payload,
+	nameFor,
+}: ProposalBodyArgs): ReactNode {
 	const todo = objectField(payload, "todo");
 	const title = textField(todo, "title");
 	const note = textField(todo, "note");
 	const status = textField(todo, "status");
 	const projectId = textField(todo, "project_id");
+	const due = proposalDay(textField(todo, "due_at"));
+	const defer = proposalDay(textField(todo, "defer_at"));
+	const repeats = recurrenceLine(todo);
 	const removeIds = arrayField(payload, "remove_person_ids").filter(
 		(id): id is string => typeof id === "string",
 	);
+	const setRows = personRefFields(
+		payload,
+		"set_person_refs",
+		"set",
+		"Set",
+		nameFor,
+	);
+	const addRows = personRefFields(
+		payload,
+		"add_person_refs",
+		"add",
+		"Add",
+		nameFor,
+	);
+	// An update whose only changed fields are ones we render (date/recurrence
+	// included) shows those rows; if NOTHING renders, show an explicit note rather
+	// than an empty "Changes" section (the diff carries fields we don't surface, or
+	// only clears — the user still needs to know the section isn't broken).
+	const hasVisibleChange =
+		Boolean(title || note || status || projectId || due || defer || repeats) ||
+		setRows.length > 0 ||
+		addRows.length > 0 ||
+		removeIds.length > 0;
 	return (
 		<div className="flex flex-col gap-3 border-border border-t pt-3">
 			<section className="flex flex-col gap-2">
 				<p className="text-xs font-medium tracking-normal text-muted-foreground">
 					Changes
 				</p>
-				<dl className="flex flex-col gap-1.5 text-sm">
-					{/* The raw `todo_id` UUID was surfaced here — unreadable to a user
-					    and redundant with the card's "Update Todo" heading. Show only
-					    the fields that actually change. */}
-					{title ? <Field label="Title" value={title} /> : null}
-					{note ? <Field label="Note" value={note} /> : null}
-					{status ? <Field label="Status" value={status} /> : null}
-					{projectId ? <Field label="Project" value={projectId} /> : null}
-					{personRefFields(payload, "set_person_refs", "set", "Set")}
-					{personRefFields(payload, "add_person_refs", "add", "Add")}
-					{removeIds.length > 0 ? (
-						<Field label="Remove" value={removeIds.join(", ")} />
-					) : null}
-				</dl>
+				{hasVisibleChange ? (
+					<dl className="flex flex-col gap-1.5 text-sm">
+						{/* The raw `todo_id` UUID was surfaced here — unreadable to a user
+						    and redundant with the card's "Update Todo" heading. Show only
+						    the fields that actually change. */}
+						{title ? <Field label="Title" value={title} /> : null}
+						{note ? <Field label="Note" value={note} /> : null}
+						{status ? (
+							<Field
+								label="Status"
+								value={statusLabel(status, TODO_STATUS_LABEL)}
+							/>
+						) : null}
+						{due ? <Field label="Due" value={due} /> : null}
+						{defer ? <Field label="Defer" value={defer} /> : null}
+						{repeats ? <Field label="Repeats" value={repeats} /> : null}
+						{projectId ? (
+							<Field
+								label="Project"
+								value={displayEntity(projectId, nameFor)}
+							/>
+						) : null}
+						{setRows}
+						{addRows}
+						{removeIds.length > 0 ? (
+							<Field
+								label="Remove"
+								value={removeIds
+									.map((id) => displayEntity(id, nameFor))
+									.join(", ")}
+							/>
+						) : null}
+					</dl>
+				) : (
+					<p className="text-muted-foreground text-sm">
+						Updates fields not shown here.
+					</p>
+				)}
 			</section>
 		</div>
 	);
