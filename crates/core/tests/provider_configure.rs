@@ -249,3 +249,47 @@ fn provider_configure_rejects_empty_api_key() {
         ws.close(None).await.ok();
     });
 }
+
+/// A pasted key with surrounding whitespace/newlines is TRIMMED before it is
+/// stored, so the persisted credential holds the exact key bytes (not "  sk…\n"
+/// which would be sent as invalid auth at request time while reporting connected).
+#[test]
+fn provider_configure_trims_the_api_key() {
+    let workspace = Workspace::new();
+    let creds_dir = workspace.path().join("credentials");
+
+    let core = workspace
+        .core()
+        .env("INKSTONE_CREDENTIALS_DIR", &creds_dir)
+        .spawn();
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime builds");
+
+    rt.block_on(async {
+        let mut ws = core.connect().await;
+
+        let v = rpc(
+            &mut ws,
+            1,
+            "provider/configure",
+            serde_json::json!({ "provider": "openrouter", "api_key": "  sk-or-secret\n" }),
+        )
+        .await;
+        assert!(v.get("result").is_some(), "configure succeeded — {v}");
+
+        let stored: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(creds_dir.join("openrouter.json")).expect("read credential"),
+        )
+        .expect("credential json");
+        assert_eq!(
+            stored["key"],
+            serde_json::json!("sk-or-secret"),
+            "the stored key is trimmed, not the raw padded input"
+        );
+
+        ws.close(None).await.ok();
+    });
+}

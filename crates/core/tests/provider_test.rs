@@ -293,3 +293,57 @@ fn provider_test_alive_for_codex_oauth() {
         ws.close(None).await.ok();
     });
 }
+
+/// An unknown provider id — including a path-traversal attempt — is rejected with
+/// invalid_params BEFORE any credential-store read, so `provider/test` can never
+/// be used to probe an arbitrary `.json` file via `credentials/{provider}.json`.
+#[test]
+fn provider_test_rejects_unknown_provider_id() {
+    let workspace = Workspace::new();
+    let creds_dir = workspace.path().join("credentials");
+
+    let core = workspace
+        .core()
+        .worker_fixture("liveness-worker.ts")
+        .env("INKSTONE_CREDENTIALS_DIR", &creds_dir)
+        .spawn();
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime builds");
+
+    rt.block_on(async {
+        let mut ws = core.connect().await;
+
+        // A path-traversal provider must be rejected, not resolved into a file read.
+        let v = rpc(
+            &mut ws,
+            1,
+            "provider/test",
+            serde_json::json!({ "provider": "../../secret", "model": "x" }),
+        )
+        .await;
+        assert_eq!(
+            v["error"]["code"],
+            serde_json::json!(-32602),
+            "a path-traversal provider id is invalid_params, not a probe — {v}"
+        );
+
+        // A plain unknown provider is likewise invalid_params.
+        let v2 = rpc(
+            &mut ws,
+            2,
+            "provider/test",
+            serde_json::json!({ "provider": "acme", "model": "x" }),
+        )
+        .await;
+        assert_eq!(
+            v2["error"]["code"],
+            serde_json::json!(-32602),
+            "an unknown provider is invalid_params — {v2}"
+        );
+
+        ws.close(None).await.ok();
+    });
+}

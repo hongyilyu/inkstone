@@ -87,6 +87,17 @@ fn credentials_dir() -> Result<PathBuf> {
 }
 
 fn credential_path(provider: &str) -> Result<PathBuf> {
+    // Defense-in-depth: `provider` becomes a filename, so a value containing a
+    // path separator or `..` could escape the credentials dir. Handlers gate
+    // against the known-provider allowlist, but reject traversal here too so no
+    // caller can probe/overwrite an arbitrary `.json` file.
+    if provider.is_empty()
+        || provider.contains('/')
+        || provider.contains('\\')
+        || provider.contains("..")
+    {
+        anyhow::bail!("invalid provider id {provider:?}");
+    }
     Ok(credentials_dir()?.join(format!("{provider}.json")))
 }
 

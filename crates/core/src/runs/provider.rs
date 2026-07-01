@@ -80,16 +80,20 @@ pub(super) async fn handle_configure(
         // Reject-before-write (ADR-0014): an empty/whitespace key would persist a
         // credential that reports connected:true yet fails at request time. Guard
         // AFTER the provider check so provider-validity still reports first.
-        if params.api_key.trim().is_empty() {
+        let key = params.api_key.trim();
+        if key.is_empty() {
             return Err(HandlerError::InvalidParams(
                 "api_key must not be empty".to_string(),
             ));
         }
 
+        // Persist the TRIMMED key: surrounding whitespace/newlines (e.g. a pasted
+        // "  sk-or-…\n") would otherwise be stored verbatim and sent as invalid
+        // auth bytes at request time, reporting connected but failing every call.
         credentials::write(
             &params.provider,
             &StoredCredential::ApiKey {
-                key: params.api_key,
+                key: key.to_string(),
             },
         )
         .map_err(|e| HandlerError::Internal(e.into()))?;
@@ -109,13 +113,21 @@ pub(super) async fn handle_test(
     out_tx: &UnboundedSender<String>,
 ) {
     // The liveness probe (ADR-0062) resolves the credential and spawns a one-shot
-    // ephemeral Worker; it NEVER touches the pool (no Thread, no Run row). An
-    // unknown or unconfigured provider just resolves to no credential inside the
-    // probe → `{ alive: false, message: "<provider> is not configured" }`, so no
-    // provider-validity rejection is needed here — the probe result is always the
-    // response. It is infallible at the handler layer (dead is a normal result,
-    // not a JSON-RPC error), so the body is `Ok`.
+    // ephemeral Worker; it NEVER touches the pool (no Thread, no Run row). A dead
+    // result (unconfigured / no reply) is a normal response, not a JSON-RPC error,
+    // so the body is `Ok`.
     handler::handle(id, params, out_tx, |params: ProviderTestParams| async move {
+        // Reject an unknown provider BEFORE probing. `provider` reaches
+        // `credentials::credential_path` as `credentials/{provider}.json`, so an
+        // unvalidated value like "../../secret" would path-traverse to probe an
+        // arbitrary `.json` file. Gate against the known allowlist (invalid_params)
+        // so only real providers ever reach the credential store.
+        if !KNOWN_PROVIDERS.contains(&params.provider.as_str()) {
+            return Err(HandlerError::InvalidParams(format!(
+                "unknown provider {:?}",
+                params.provider
+            )));
+        }
         Ok::<_, HandlerError>(crate::worker::probe_liveness(&params.provider, &params.model).await)
     })
     .await;
