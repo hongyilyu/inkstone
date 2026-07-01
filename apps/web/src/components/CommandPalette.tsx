@@ -135,18 +135,17 @@ export function CommandPalette() {
 
 	const flat = useMemo(() => groups.flatMap((g) => g.items), [groups]);
 
-	// The empty-results line, chosen with flat precedence rather than a nested
-	// ternary in the JSX: prompt → still-settling → search-failed (narrow the
-	// "no matches" claim to thread+library, since messages couldn't be searched)
-	// → genuine no-match.
+	// The empty-results line, chosen by ordered precedence out of the JSX: prompt →
+	// still-settling → search-failed (narrow the "no matches" claim to thread+library,
+	// since messages couldn't be searched) → genuine no-match.
 	const q = query.trim();
-	const emptyMessage = !q
-		? "Type to search your workspace."
-		: searchSettling
-			? "Searching…"
-			: messageSearchError
-				? `No thread or library matches for "${q}".`
-				: `No matches for "${q}".`;
+	const emptyMessage = (() => {
+		if (!q) return "Type to search your workspace.";
+		if (searchSettling) return "Searching…";
+		if (messageSearchError)
+			return `No thread or library matches for "${q}".`;
+		return `No matches for "${q}".`;
+	})();
 
 	// Re-clamp the active index when the result set shrinks (async data settling can
 	// drop rows out from under an arrow-keyed selection). Without this, `active` can
