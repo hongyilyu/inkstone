@@ -53,12 +53,22 @@ export function ProviderModelsDetail({
 }: ProviderModelsDetailProps) {
 	const [test, setTest] = useState<TestState>({ kind: "idle" });
 
+	// A generation token strands an in-flight probe when the focused provider
+	// changes. The parent reuses this one component instance across providers (no
+	// `key`), so an `onTest()` promise started for provider A can settle AFTER a
+	// switch to B — clearing `test` (the effect below) can't cancel that promise,
+	// so without this guard A's verdict would paint on B's detail. (A same-provider
+	// re-test can't race: the Test button is disabled while `kind === "pending"`.)
+	const generation = useRef(0);
+
 	// Clear the verdict when the focused provider changes — the indicator is
-	// per-provider and must not bleed across a switch (ADR-0062).
+	// per-provider and must not bleed across a switch (ADR-0062). Bumping the
+	// generation also strands any probe still in flight from the prior provider.
 	const prevLabel = useRef(label);
 	useEffect(() => {
 		if (prevLabel.current !== label) {
 			prevLabel.current = label;
+			generation.current += 1;
 			setTest({ kind: "idle" });
 		}
 	}, [label]);
@@ -66,16 +76,19 @@ export function ProviderModelsDetail({
 	const runTest = () => {
 		if (onTest === undefined) return;
 		// Re-test clears the prior verdict first (see above: no stale indicator).
+		const mine = generation.current;
 		setTest({ kind: "pending" });
 		onTest()
-			.then((r) =>
+			.then((r) => {
+				if (generation.current !== mine) return;
 				setTest(
 					r.alive ? { kind: "alive" } : { kind: "dead", message: r.message },
-				),
-			)
-			.catch(() =>
-				setTest({ kind: "dead", message: "Couldn't reach the provider." }),
-			);
+				);
+			})
+			.catch(() => {
+				if (generation.current !== mine) return;
+				setTest({ kind: "dead", message: "Couldn't reach the provider." });
+			});
 	};
 
 	return (
