@@ -175,6 +175,22 @@ pub(crate) fn env_lock() -> std::sync::MutexGuard<'static, ()> {
 mod tests {
     use super::*;
 
+    /// `credential_path` rejects empty and traversal-shaped provider ids directly
+    /// (defense-in-depth against path traversal — the round-trip tests only
+    /// exercise it with valid ids like `openrouter`, so assert the guard here).
+    #[test]
+    fn credential_path_rejects_traversal_and_empty_ids() {
+        for bad in ["", "..", "../secret", "a/b", "a\\b"] {
+            assert!(
+                credential_path(bad).is_err(),
+                "credential_path should reject the malicious id {bad:?}"
+            );
+        }
+        // A real provider id still resolves.
+        assert!(credential_path(OPENAI_CODEX).is_ok());
+        assert!(credential_path(OPENROUTER).is_ok());
+    }
+
     /// `write()` round-trips through `read()` and lands the file at mode 0600
     /// in a 0700 dir (ADR-0023). Serialized via a process-global lock because
     /// the `INKSTONE_CREDENTIALS_DIR` env var is global.

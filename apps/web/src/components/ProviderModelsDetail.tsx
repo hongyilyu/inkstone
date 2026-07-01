@@ -94,6 +94,7 @@ export function ProviderModelsDetail({
 					{test.kind !== "idle" && (
 						<span
 							role="status"
+							data-testid="liveness-status"
 							className={
 								test.kind === "alive"
 									? "flex items-center gap-1 text-emerald-600 text-xs dark:text-emerald-400"

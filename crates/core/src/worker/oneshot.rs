@@ -1,8 +1,8 @@
 //! Shared one-shot Worker runner (ADR-0046 / ADR-0062). A one-shot Worker is a
 //! non-Run turn: a bespoke manifest (throwaway `run_id`, empty history, empty
 //! tools, thinking off), spawned once, driven through a single timed recv-loop
-//! over the [`WorkerPort`] seam (ADR-0026), then shut down and reaped on every
-//! path so `kill_on_drop` never leaks a hung child.
+//! over the [`super::port::WorkerPort`] seam (ADR-0026), then shut down and
+//! reaped on every path so `kill_on_drop` never leaks a hung child.
 //!
 //! Both the thread titler ([`super::title`]) and the provider liveness probe
 //! ([`super::liveness`]) are exactly this shape; they differ ONLY in the manifest
@@ -23,6 +23,8 @@ use crate::launch::Role;
 use crate::protocol::{WorkerManifest, WorkflowManifest};
 
 use super::child::ChildWorker;
+// `WorkerPort` is brought into scope for its trait methods (`recv`/`shutdown`)
+// called on the spawned `ChildWorker` below — NOT merely for the rustdoc link.
 use super::port::WorkerPort;
 
 /// The caller-supplied inputs that shape a one-shot Worker's manifest + launch.

@@ -1,4 +1,4 @@
-import { expect, test } from "./fixtures.js";
+import { expect, providerRow, test } from "./fixtures.js";
 import { FAUX_WORKER_CMD } from "./spawnCore.js";
 
 /**
@@ -46,10 +46,8 @@ test("Settings → configure OpenRouter flips to Connected, then Test shows Work
 
 	// The OpenRouter row is present and Not connected. There are now TWO provider
 	// rows (the seeded OpenAI/codex + OpenRouter), so scope the status assertion
-	// to OpenRouter's row (its drill-in button is named "Open OpenRouter models").
-	const openrouterRow = page
-		.getByRole("button", { name: "Open OpenRouter models" })
-		.locator("xpath=..");
+	// to OpenRouter's row (shared `providerRow` helper).
+	const openrouterRow = providerRow(page, "OpenRouter");
 	await expect(openrouterRow.getByTestId("provider-status")).toHaveText(
 		"Not connected",
 	);
@@ -79,7 +77,10 @@ test("Settings → configure OpenRouter flips to Connected, then Test shows Work
 	// with the fixed "ping" prompt; the faux provider emits "pong" (a text token),
 	// which the probe collects as alive → the indicator shows "Working".
 	await page.getByRole("button", { name: "Test" }).click();
-	await expect(page.getByRole("status")).toHaveText(/Working/, {
+	// Scope to the detail panel's liveness indicator: /settings/models also
+	// renders a transient save-banner role="status", so a bare getByRole("status")
+	// could match the wrong element.
+	await expect(page.getByTestId("liveness-status")).toHaveText(/Working/, {
 		timeout: 15_000,
 	});
 
