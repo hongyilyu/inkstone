@@ -319,13 +319,12 @@ fn no_credential_rejects_thread_create() {
     let creds_dir = workspace.path().join("credentials");
     std::fs::create_dir_all(&creds_dir).expect("create empty credentials dir");
 
+    // No worker/titler fixtures needed: thread/create is rejected up front, so
+    // neither the Run's Worker nor the titler ever spawns.
     let core = workspace
         .core()
         .no_seeded_credential()
-        .worker_fixture("slow-worker.ts")
         .env("INKSTONE_CREDENTIALS_DIR", &creds_dir)
-        .env("INKSTONE_TITLE_WORKER_CMD", fixture_cmd("title-worker.ts", &[]))
-        .env("INKSTONE_TITLE_FIXTURE_OUTPUT", "Should Never Be Applied")
         .spawn();
 
     let rt = tokio::runtime::Builder::new_current_thread()

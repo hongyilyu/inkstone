@@ -149,7 +149,7 @@ pub struct CoreBuilder<'a> {
     worker_cmd: Option<String>,
     envs: Vec<(OsString, OsString)>,
     listen_timeout: Duration,
-    seed_codex_credential: bool,
+    seed_provider_credentials: bool,
 }
 
 impl<'a> CoreBuilder<'a> {
@@ -159,11 +159,12 @@ impl<'a> CoreBuilder<'a> {
             worker_cmd: None,
             envs: Vec::new(),
             listen_timeout: DEFAULT_TIMEOUT,
-            // Default: seed a connected openai-codex credential so the run-creation
-            // provider gate (ADR-0062) passes. A test that asserts the DISCONNECTED
-            // state (provider_status/configure/test/login/refresh) opts out via
+            // Default: seed connected credentials for every provider a Run can
+            // route to so the run-creation provider gate (ADR-0062) passes. A test
+            // that asserts the DISCONNECTED state
+            // (provider_status/configure/test/login/refresh) opts out via
             // `no_seeded_credential()` and manages its own credentials dir.
-            seed_codex_credential: true,
+            seed_provider_credentials: true,
         }
     }
 
@@ -172,7 +173,7 @@ impl<'a> CoreBuilder<'a> {
     /// themselves call this so the harness does not seed a credential underneath
     /// them.
     pub fn no_seeded_credential(mut self) -> Self {
-        self.seed_codex_credential = false;
+        self.seed_provider_credentials = false;
         self
     }
 
@@ -254,7 +255,7 @@ impl<'a> CoreBuilder<'a> {
         // (`faux`, used by custom test workflows) get a credential so either
         // resolved provider is "connected". Mirrors the fixture shape
         // provider_status.rs writes (kind:"oauth", far-future expiry).
-        if self.seed_codex_credential {
+        if self.seed_provider_credentials {
             let creds_dir = self
                 .envs
                 .iter()

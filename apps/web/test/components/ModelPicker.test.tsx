@@ -1,6 +1,13 @@
 import { stubWsClient, WsClient } from "@inkstone/ui-sdk";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderWithQuery } from "@test/test-utils/renderWithQuery";
-import { cleanup, screen, waitFor, within } from "@testing-library/react";
+import {
+	cleanup,
+	render,
+	screen,
+	waitFor,
+	within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Effect, Layer, ManagedRuntime } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
@@ -177,23 +184,55 @@ describe("ModelPicker", () => {
 		await runtime.dispose();
 	});
 
-	it("drops a persisted selection whose provider disconnects — the trigger falls back to 'Select model' so the user must re-pick (ADR-0062)", async () => {
-		// The stored default is gpt-5.5 (codex), but status reports codex DISCONNECTED.
-		// The picker must clear the stale selection to null rather than keep showing an
-		// unusable model as the current choice.
-		const runtime = makeRuntime(["gpt-5.5"], {
-			providers: [
-				{ id: "openai-codex", connected: false, auth_kind: "oauth" as const },
-			],
+	it("drops a persisted selection whose provider disconnects — asserts the PRESENT→ABSENT transition, not just the end state (ADR-0062)", async () => {
+		// The stored default is gpt-5.5 (codex). provider/status resolves CONNECTED
+		// first (so the trigger shows "GPT-5.5"), then a refetch reports codex
+		// DISCONNECTED. The picker must then clear the stale selection. Asserting the
+		// label is PRESENT first and only THEN cleared proves the drop-effect ran —
+		// a bare end-state `toBeNull()` would pass vacuously (it holds during the
+		// pre-render gap too, so it can't tell "cleared" from "never shown").
+		let codexConnected = true;
+		const settingsResult = {
+			provider: "openai-codex",
+			model: "gpt-5.5",
+			effort: "off",
+			enabled_models: ["gpt-5.5"],
+		};
+		const stub = stubWsClient({
+			providerStatus: () =>
+				Effect.succeed({
+					providers: [
+						{
+							id: "openai-codex",
+							connected: codexConnected,
+							auth_kind: "oauth" as const,
+						},
+					],
+				}),
+			modelCatalog: () => Effect.succeed(CATALOG),
+			settingsGet: () => Effect.succeed(settingsResult),
+			settingsSet: () => Effect.succeed(settingsResult),
 		});
-		renderWithQuery(
-			<RuntimeProvider runtime={runtime}>
-				<ModelPicker />
-			</RuntimeProvider>,
+		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
+		const client = new QueryClient({
+			defaultOptions: { queries: { retry: false } },
+		});
+		render(
+			<QueryClientProvider client={client}>
+				<RuntimeProvider runtime={runtime}>
+					<ModelPicker />
+				</RuntimeProvider>
+			</QueryClientProvider>,
 		);
 
-		// The trigger drops the stale "GPT-5.5" label (its aria-label is always
-		// "Select model", so assert on the visible TEXT clearing, not the role name).
+		// Connected first → the trigger shows the selected model's name.
+		expect(await screen.findByText("GPT-5.5")).toBeInTheDocument();
+
+		// Provider disconnects; refetch the shared status query so the picker sees it.
+		codexConnected = false;
+		await client.invalidateQueries({ queryKey: ["provider-status"] });
+
+		// The stale selection is dropped — "GPT-5.5" clears from the trigger.
 		await waitFor(() => expect(screen.queryByText("GPT-5.5")).toBeNull());
 
 		await runtime.dispose();
