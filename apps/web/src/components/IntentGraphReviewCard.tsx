@@ -748,7 +748,12 @@ function GraphCandidatePicker({
 	disabled: boolean;
 	onPick: (entityId: string) => void;
 }) {
-	const groupName = `candidate-${node.handle}`;
+	// Prefix with a mount-unique id: `node.handle` is a graph-local ephemeral label
+	// that collides across extractions, so two co-mounted graph cards (one per parked
+	// Run) sharing a handle would emit the same radio `name` and, by native HTML
+	// same-name grouping, behave as ONE radio group across cards. `useId` scopes it.
+	const groupId = useId();
+	const groupName = `${groupId}-candidate-${node.handle}`;
 	return (
 		<fieldset
 			className="flex flex-col gap-1 border-0 p-0"

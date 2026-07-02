@@ -91,10 +91,18 @@ pub(super) fn join_with_separator(
     if body.is_empty() {
         return;
     }
+    // Whether the prose already ends in whitespace: the boundary is then ALREADY
+    // separated, so neither side should add a space (a clause-side prepend would
+    // double it). Read before the clause-side branch, which cannot see the body.
+    let body_ends_with_whitespace = body
+        .last()
+        .and_then(|node| node.get("text").and_then(serde_json::Value::as_str))
+        .is_some_and(|text| text.ends_with(char::is_whitespace));
     if let Some(first) = clause.first_mut() {
         if let Some(text) = first.get("text").and_then(serde_json::Value::as_str) {
-            // Skip if the clause already opens with whitespace (no double space).
-            if !text.starts_with(char::is_whitespace) {
+            // Add the separating space on the clause side, UNLESS the clause already
+            // opens with whitespace or the body already ends with it (no double space).
+            if !body_ends_with_whitespace && !text.starts_with(char::is_whitespace) {
                 first["text"] = serde_json::Value::String(format!(" {text}"));
             }
             return;
@@ -171,6 +179,65 @@ pub(super) fn splice_entity_ref_into_body(
 mod tests {
     use super::*;
     use uuid::Uuid;
+
+    // join_with_separator folds exactly ONE space onto the body↔clause boundary,
+    // never zero and never two, across every boundary shape (ADR-0042 #221).
+    fn boundary(
+        body: &[serde_json::Value],
+        clause: &[serde_json::Value],
+    ) -> (Vec<serde_json::Value>, Vec<serde_json::Value>) {
+        let mut b = body.to_vec();
+        let mut c = clause.to_vec();
+        join_with_separator(&mut b, &mut c);
+        (b, c)
+    }
+
+    #[test]
+    fn separator_prepends_one_space_when_neither_side_has_it() {
+        // Common case: prose ends without a space, clause opens with text → the
+        // separating space rides on the clause side.
+        let (_b, c) = boundary(
+            &[serde_json::json!({ "type": "text", "text": "…Lead Ads." })],
+            &[serde_json::json!({ "type": "text", "text": "Followed up." })],
+        );
+        assert_eq!(c[0]["text"], serde_json::json!(" Followed up."));
+    }
+
+    #[test]
+    fn separator_no_double_space_when_body_already_ends_in_whitespace() {
+        // Regression guard: a stored body ending in a space must NOT get a second
+        // space prepended onto the clause (the boundary is already separated).
+        let (_b, c) = boundary(
+            &[serde_json::json!({ "type": "text", "text": "…Lead Ads. " })],
+            &[serde_json::json!({ "type": "text", "text": "Followed up." })],
+        );
+        assert_eq!(
+            c[0]["text"],
+            serde_json::json!("Followed up."),
+            "body already ends in whitespace → clause is left untouched"
+        );
+    }
+
+    #[test]
+    fn separator_no_double_space_when_clause_already_opens_with_whitespace() {
+        let (_b, c) = boundary(
+            &[serde_json::json!({ "type": "text", "text": "…Lead Ads." })],
+            &[serde_json::json!({ "type": "text", "text": " Followed up." })],
+        );
+        assert_eq!(c[0]["text"], serde_json::json!(" Followed up."));
+    }
+
+    #[test]
+    fn separator_falls_to_body_side_when_clause_opens_with_a_chip() {
+        // A label-leading clause (opens with an entity_ref, no text) can't carry the
+        // space, so it appends onto the body's trailing text node instead.
+        let ref_id = Uuid::now_v7().to_string();
+        let (b, _c) = boundary(
+            &[serde_json::json!({ "type": "text", "text": "…Lead Ads." })],
+            &[serde_json::json!({ "type": "entity_ref", "ref_id": ref_id })],
+        );
+        assert_eq!(b[0]["text"], serde_json::json!("…Lead Ads. "));
+    }
 
     // weave_journal_body pins all three placeholder outcomes in isolation, including
     // the two collapse arms a decide-level test can't easily distinguish: a
