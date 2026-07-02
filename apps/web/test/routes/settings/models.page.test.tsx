@@ -189,14 +189,16 @@ describe("Models settings page (ADR-0024)", () => {
 		expect(screen.queryByRole("row", { name: /GPT-5\.5/ })).toBeNull();
 	});
 
-	it("on a provider/status fetch FAILURE shows Not connected with NO action button (no synthesized auth kind → no bogus Connect/Configure)", async () => {
+	it("on a provider/status fetch FAILURE shows Not connected with NO action button but DOES surface a 'couldn't check' banner + retry (no silent strand)", async () => {
 		// settings/get and model/catalog succeed (so the row renders), but
 		// provider/status REJECTS. connectedById is synthesized `false` (so the row
 		// leaves "Checking…" for an honest "Not connected"), but there is NO wire
 		// auth_kind — so we must render NEITHER a Connect (oauth) NOR a Configure
 		// (api_key) button. A defaulted "oauth" would show a bogus Connect on a
 		// key-provider; the correct affordance only appears on the next SUCCESSFUL
-		// status read.
+		// status read. Because that buttonless "Not connected" row is indistinct from
+		// a genuine disconnect, the section ALSO raises a "couldn't check connections"
+		// banner + a Try-again retry rather than silently stranding the user.
 		// provider/status REJECTS (the factory default `Effect.die` for an un-stubbed
 		// verb) — runPromise rejects, hitting refreshConnected's .catch. The error
 		// value is irrelevant (the catch ignores it).
@@ -240,6 +242,89 @@ describe("Models settings page (ADR-0024)", () => {
 		// from the status text "Not connected".)
 		expect(screen.queryByRole("button", { name: /^connect$/i })).toBeNull();
 		expect(screen.queryByRole("button", { name: /^configure$/i })).toBeNull();
+
+		// And the user is NOT silently stranded: a "couldn't check connections"
+		// banner + a Try-again retry surface the read failure (the retry re-runs
+		// refreshConnected, which clears the banner on its own success).
+		expect(
+			screen.getByText(/couldn't check provider connections/i),
+		).toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: /try again/i }),
+		).toBeInTheDocument();
+
+		await runtime.dispose();
+	});
+
+	it("recovers from a provider/status failure: 'Try again' re-reads status, clears the banner, and reveals the real Connect affordance", async () => {
+		const user = userEvent.setup();
+		// provider/status REJECTS until we flip `shouldFail` right before the retry
+		// click, then SUCCEEDS — modelling a transient unreachable-Core that recovers.
+		// Gated on a boolean (not a call count) because refreshConnected auto-refires
+		// when the catalog load changes its `providers` dep, so several polls fire
+		// before any user interaction; ALL of them must fail so the banner is stable
+		// to click. The success payload carries the codex auth_kind, so the retry both
+		// clears the banner and lets the correct Connect (oauth) affordance appear.
+		let shouldFail = true;
+		const providerStatus = vi.fn(() =>
+			shouldFail
+				? Effect.die("provider/status unreachable")
+				: Effect.succeed({
+						providers: [
+							{
+								id: "openai-codex",
+								connected: false,
+								auth_kind: "oauth" as const,
+							},
+						],
+					}),
+		);
+		const stub = stubWsClient({
+			providerStatus,
+			providerLoginStart: () =>
+				Effect.succeed({ authorize_url: "https://auth.example/x" }),
+			modelCatalog: () =>
+				Effect.succeed({
+					providers: [{ id: "openai-codex", label: "OpenAI", models: [] }],
+				}),
+			settingsGet: () =>
+				Effect.succeed({
+					provider: "openai-codex",
+					model: null,
+					effort: "off",
+					enabled_models: [],
+				}),
+			settingsSet: () =>
+				Effect.succeed({
+					provider: "openai-codex",
+					model: null,
+					effort: "off",
+					enabled_models: [],
+				}),
+		});
+		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
+		renderPage(runtime);
+
+		// Mount poll failed → banner + retry, no action button yet.
+		const retry = await screen.findByRole("button", { name: /try again/i });
+		expect(
+			screen.getByText(/couldn't check provider connections/i),
+		).toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: /^connect$/i })).toBeNull();
+
+		// Let status reads succeed from here, then retry: the read now resolves, so
+		// the banner clears and the real oauth Connect affordance renders.
+		shouldFail = false;
+		await user.click(retry);
+
+		await waitFor(() =>
+			expect(
+				screen.getByRole("button", { name: /^connect$/i }),
+			).toBeInTheDocument(),
+		);
+		expect(
+			screen.queryByText(/couldn't check provider connections/i),
+		).toBeNull();
 
 		await runtime.dispose();
 	});

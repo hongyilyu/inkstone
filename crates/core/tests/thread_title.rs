@@ -165,6 +165,7 @@ fn generated_title_overwrites_placeholder() {
 
     let core = workspace
         .core()
+        .no_seeded_credential()
         .worker_fixture("slow-worker.ts")
         .env("INKSTONE_CREDENTIALS_DIR", &creds_dir)
         .env("INKSTONE_TITLE_WORKER_CMD", fixture_cmd("title-worker.ts", &[]))
@@ -220,6 +221,7 @@ fn whitespace_output_keeps_placeholder() {
 
     let core = workspace
         .core()
+        .no_seeded_credential()
         .worker_fixture("slow-worker.ts")
         .env("INKSTONE_CREDENTIALS_DIR", &creds_dir)
         .env("INKSTONE_TITLE_WORKER_CMD", fixture_cmd("title-worker.ts", &[]))
@@ -265,6 +267,7 @@ fn timeout_keeps_placeholder() {
 
     let core = workspace
         .core()
+        .no_seeded_credential()
         .worker_fixture("slow-worker.ts")
         .env("INKSTONE_CREDENTIALS_DIR", &creds_dir)
         .env("INKSTONE_TITLE_WORKER_CMD", fixture_cmd("title-worker.ts", &[]))
@@ -303,18 +306,22 @@ fn timeout_keeps_placeholder() {
     });
 }
 
-/// With no credential the strict token gate returns before spawning the titler,
-/// so the placeholder stays.
+/// With no credential the run-creation provider gate (ADR-0062) rejects
+/// `thread/create` up front with `-32004` — no Thread is minted, no Run, no titler.
+/// (This supersedes the old "create succeeds, placeholder stays" behavior: a
+/// thread create IS a run start, so a disconnected provider fails it loud rather
+/// than birthing a thread whose Run will only 401.)
 #[test]
-fn no_credential_keeps_placeholder() {
+fn no_credential_rejects_thread_create() {
     let workspace = Workspace::new();
     // Point the credentials dir at an empty (existing) dir so `read` → None and
-    // the token gate returns without spawning the titler.
+    // the run-creation gate rejects before any Thread/Run is written.
     let creds_dir = workspace.path().join("credentials");
     std::fs::create_dir_all(&creds_dir).expect("create empty credentials dir");
 
     let core = workspace
         .core()
+        .no_seeded_credential()
         .worker_fixture("slow-worker.ts")
         .env("INKSTONE_CREDENTIALS_DIR", &creds_dir)
         .env("INKSTONE_TITLE_WORKER_CMD", fixture_cmd("title-worker.ts", &[]))
@@ -329,18 +336,49 @@ fn no_credential_keeps_placeholder() {
     rt.block_on(async {
         let mut ws = core.connect().await;
 
-        let prompt = "summarize the launch retro";
-        let thread_id = create_thread(&mut ws, 1, prompt).await;
-
-        // No credential → no titler spawn → placeholder is durable. Wait, then
-        // assert it never changed.
-        tokio::time::sleep(Duration::from_millis(600)).await;
-        let title = title_of(&mut ws, 100, &thread_id)
+        // thread/create is rejected with -32004 (provider not connected); no thread
+        // is minted, so thread/list stays empty.
+        let create = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "thread/create",
+            "params": { "prompt": "summarize the launch retro" },
+        })
+        .to_string();
+        ws.send(Message::Text(create.into()))
             .await
-            .expect("created thread is in the feed");
+            .expect("send thread/create frame");
+        let body = next_text(&mut ws).await;
+        let v: serde_json::Value = serde_json::from_str(&body)
+            .unwrap_or_else(|e| panic!("create response is JSON: {e} — body: {body}"));
         assert_eq!(
-            title, prompt,
-            "no credential → titler never spawns → placeholder kept"
+            v["error"]["code"].as_i64(),
+            Some(-32004),
+            "thread/create with no credential is rejected as provider-not-connected — body: {body}"
+        );
+        assert!(
+            v.get("result").is_none(),
+            "a rejected create returns no result — body: {body}"
+        );
+
+        // Nothing was persisted: the thread feed is empty.
+        let list = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "thread/list",
+            "params": {},
+        })
+        .to_string();
+        ws.send(Message::Text(list.into()))
+            .await
+            .expect("send thread/list frame");
+        let body = next_text(&mut ws).await;
+        let v: serde_json::Value = serde_json::from_str(&body)
+            .unwrap_or_else(|e| panic!("list response is JSON: {e} — body: {body}"));
+        assert_eq!(
+            v["result"]["threads"].as_array().map(Vec::len),
+            Some(0),
+            "no Thread was minted by the rejected create — body: {body}"
         );
 
         ws.close(None).await.ok();
@@ -360,6 +398,7 @@ fn generated_title_pushes_notification() {
 
     let core = workspace
         .core()
+        .no_seeded_credential()
         .worker_fixture("slow-worker.ts")
         .env("INKSTONE_CREDENTIALS_DIR", &creds_dir)
         .env("INKSTONE_TITLE_WORKER_CMD", fixture_cmd("title-worker.ts", &[]))
@@ -415,6 +454,7 @@ fn empty_generation_pushes_no_notification() {
 
     let core = workspace
         .core()
+        .no_seeded_credential()
         .worker_fixture("slow-worker.ts")
         .env("INKSTONE_CREDENTIALS_DIR", &creds_dir)
         .env("INKSTONE_TITLE_WORKER_CMD", fixture_cmd("title-worker.ts", &[]))

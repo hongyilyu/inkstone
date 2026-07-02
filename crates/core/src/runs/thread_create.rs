@@ -57,6 +57,10 @@ pub(super) async fn handle(
         // user settings (ADR-0024) — one shared seam.
         let workflow = dispatcher::dispatch_and_resolve(pool, thread_id, &params.prompt).await;
 
+        // Reject BEFORE minting the Thread if the resolved model's provider has no
+        // credential (ADR-0062) — no Thread/Run rows, no doomed tokenless Worker.
+        handler::ensure_provider_connected(&workflow.provider)?;
+
         db::persist_thread_with_first_run(
             pool,
             thread_id,

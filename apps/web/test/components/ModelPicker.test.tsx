@@ -127,11 +127,11 @@ describe("ModelPicker", () => {
 		await runtime.dispose();
 	});
 
-	it("disables a model whose provider is not connected (FIX #3)", async () => {
+	it("HIDES a model whose provider is not connected — only connected-provider models are listed (ADR-0062)", async () => {
 		const user = userEvent.setup();
-		// Both models enabled, but openrouter is NOT connected: its model must be
-		// offered-but-locked (a run against it would be tokenless), while the
-		// connected codex model stays selectable.
+		// Both models enabled, but openrouter is NOT connected: its model must not be
+		// OFFERED at all (a run against it would be tokenless — Core now rejects it),
+		// while the connected codex model is the only listed choice.
 		const runtime = makeRuntime(["gpt-5.5", "anthropic/claude-opus-4.8"]);
 		renderWithQuery(
 			<RuntimeProvider runtime={runtime}>
@@ -142,37 +142,23 @@ describe("ModelPicker", () => {
 		await user.click(screen.getByRole("button", { name: /select model/i }));
 		const list = await screen.findByRole("list");
 
-		// The connected provider's model is a real, enabled choice.
+		// The connected provider's model is a real, selectable choice.
 		const codexRow = within(list).getByText("GPT-5.5").closest("button");
 		expect(codexRow).not.toBeNull();
 		expect(codexRow).not.toBeDisabled();
 
-		// The disconnected provider's model is shown but locked, with a hint.
-		const orRow = within(list).getByText("Claude Opus 4.8").closest("button");
-		expect(orRow).not.toBeNull();
-		expect(orRow).toBeDisabled();
-		expect(orRow).toHaveAttribute(
-			"title",
-			expect.stringMatching(/connect.*provider/i),
-		);
-
-		// Clicking the locked row does NOT change the selection (the trigger still
-		// invites a pick rather than showing the locked model's name).
-		if (orRow) await user.click(orRow);
-		expect(
-			screen.getByRole("button", { name: /select model/i }),
-		).toBeInTheDocument();
+		// The disconnected provider's model is NOT shown at all — no locked row.
+		expect(within(list).queryByText("Claude Opus 4.8")).toBeNull();
 
 		await runtime.dispose();
 	});
 
-	it("does NOT let a known-provider model be selected while provider/status is unresolved (no fail-open)", async () => {
+	it("shows NO model while provider/status is unresolved (no fail-open — connectivity unknown means hide)", async () => {
 		const user = userEvent.setup();
 		// Catalog + settings resolve, but provider/status never does: connectivity is
-		// unknown. A known-provider model must NOT be selectable in this gap — the
-		// picker is the only gate on selection (the #3 run-path guard is web-only), so
-		// failing open would let a disconnected-provider model be picked before status
-		// confirms it. gpt-5.5 belongs to a KNOWN provider group (openai-codex).
+		// unknown. A known-provider model must NOT be offered in this gap — showing an
+		// unusable model would dead-end the send. gpt-5.5 belongs to a KNOWN provider
+		// group (openai-codex), so it is hidden until status confirms connectivity.
 		const runtime = makeRuntime(["gpt-5.5"], { statusPending: true });
 		renderWithQuery(
 			<RuntimeProvider runtime={runtime}>
@@ -183,21 +169,32 @@ describe("ModelPicker", () => {
 		await user.click(screen.getByRole("button", { name: /select model/i }));
 		const list = await screen.findByRole("list");
 
-		// The model is shown but LOCKED (disabled + connect hint) while status is
-		// unresolved — not selectable.
-		const row = within(list).getByText("GPT-5.5").closest("button");
-		expect(row).not.toBeNull();
-		expect(row).toBeDisabled();
-		expect(row).toHaveAttribute(
-			"title",
-			expect.stringMatching(/connect.*provider/i),
+		// The model is NOT listed while status is unresolved — the empty-state copy
+		// shows instead.
+		expect(within(list).queryByText("GPT-5.5")).toBeNull();
+		expect(within(list).getByText(/no models available/i)).toBeInTheDocument();
+
+		await runtime.dispose();
+	});
+
+	it("drops a persisted selection whose provider disconnects — the trigger falls back to 'Select model' so the user must re-pick (ADR-0062)", async () => {
+		// The stored default is gpt-5.5 (codex), but status reports codex DISCONNECTED.
+		// The picker must clear the stale selection to null rather than keep showing an
+		// unusable model as the current choice.
+		const runtime = makeRuntime(["gpt-5.5"], {
+			providers: [
+				{ id: "openai-codex", connected: false, auth_kind: "oauth" as const },
+			],
+		});
+		renderWithQuery(
+			<RuntimeProvider runtime={runtime}>
+				<ModelPicker />
+			</RuntimeProvider>,
 		);
 
-		// Clicking it does NOT change the selection.
-		if (row) await user.click(row);
-		expect(
-			screen.getByRole("button", { name: /select model/i }),
-		).toBeInTheDocument();
+		// The trigger drops the stale "GPT-5.5" label (its aria-label is always
+		// "Select model", so assert on the visible TEXT clearing, not the role name).
+		await waitFor(() => expect(screen.queryByText("GPT-5.5")).toBeNull());
 
 		await runtime.dispose();
 	});

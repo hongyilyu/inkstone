@@ -35,6 +35,12 @@ pub(super) enum HandlerError {
     /// `-32003`: a provider login could not start or complete. Carries a
     /// sanitized message (not internal detail) for the settings UI (ADR-0014).
     ProviderLoginFailed(String),
+    /// `-32004`: the LLM provider the resolved model belongs to has no stored
+    /// credential (ADR-0062). A fresh Run is rejected BEFORE spawning a doomed
+    /// tokenless Worker, so the send fails loud with "connect it" rather than
+    /// streaming into an opaque provider 401. Carries the provider id (the Web
+    /// renders friendlier copy off the code; the id is the sanitized fallback).
+    ProviderNotConnected { provider: String },
     /// `-32603`: an internal fault. The full error is logged server-side; the
     /// client gets a generic message so SQL/internal detail never leaks.
     Internal(anyhow::Error),
@@ -48,6 +54,7 @@ impl HandlerError {
             HandlerError::UnknownThread(_) => -32001,
             HandlerError::ProposalNotPending(_) => -32002,
             HandlerError::ProviderLoginFailed(_) => -32003,
+            HandlerError::ProviderNotConnected { .. } => -32004,
             HandlerError::Internal(_) => -32603,
         }
     }
@@ -60,8 +67,32 @@ impl HandlerError {
             HandlerError::UnknownThread(id) => format!("unknown thread_id {id}"),
             HandlerError::ProposalNotPending(m) => m.clone(),
             HandlerError::ProviderLoginFailed(m) => m.clone(),
+            // Reuse the liveness phrasing (worker/liveness.rs) so a rejected send
+            // and a failed provider/test speak the same words.
+            HandlerError::ProviderNotConnected { provider } => {
+                format!("{provider} is not configured")
+            }
             HandlerError::Internal(_) => "internal error".to_string(),
         }
+    }
+}
+
+/// Gate a fresh Run on its resolved provider being connected (ADR-0062): reject
+/// BEFORE spawning a doomed tokenless Worker so the send fails loud with a typed
+/// [`HandlerError::ProviderNotConnected`] ("connect it") instead of streaming into
+/// an opaque provider 401. Shared by every Run-creation site (post_message,
+/// thread_create, journal_entry, retry).
+///
+/// A missing credential is `ProviderNotConnected`; a present-but-UNPARSEABLE
+/// credential file is `Internal` (fail loud on a corrupt store, matching
+/// `credentials::read`'s contract), never a misleading "not connected".
+pub(super) fn ensure_provider_connected(provider: &str) -> Result<(), HandlerError> {
+    match crate::credentials::is_connected(provider) {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(HandlerError::ProviderNotConnected {
+            provider: provider.to_string(),
+        }),
+        Err(e) => Err(HandlerError::Internal(e)),
     }
 }
 
@@ -214,6 +245,67 @@ mod tests {
             v["error"]["message"],
             json!("provider login failed: account locked")
         );
+    }
+
+    #[test]
+    fn ensure_provider_connected_maps_missing_present_and_corrupt() {
+        use crate::credentials::{self, StoredCredential};
+
+        let _guard = credentials::env_lock();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path().join("credentials");
+        // SAFETY: single-threaded test guarded by the credentials env lock.
+        unsafe {
+            std::env::set_var("INKSTONE_CREDENTIALS_DIR", &dir);
+        }
+
+        // No credential file → ProviderNotConnected carrying the provider id.
+        match ensure_provider_connected("openai-codex") {
+            Err(HandlerError::ProviderNotConnected { provider }) => {
+                assert_eq!(provider, "openai-codex");
+            }
+            other => panic!("expected ProviderNotConnected, got {other:?}"),
+        }
+
+        // A stored credential → Ok.
+        credentials::write(
+            "openai-codex",
+            &StoredCredential::ApiKey {
+                key: "sk-test".to_string(),
+            },
+        )
+        .expect("write credential");
+        assert!(ensure_provider_connected("openai-codex").is_ok());
+
+        // A present-but-UNPARSEABLE file → Internal (fail loud on a corrupt store),
+        // never a misleading ProviderNotConnected.
+        std::fs::write(dir.join("openrouter.json"), b"{ not valid json")
+            .expect("write corrupt file");
+        match ensure_provider_connected("openrouter") {
+            Err(HandlerError::Internal(_)) => {}
+            other => panic!("expected Internal for a corrupt store, got {other:?}"),
+        }
+
+        // SAFETY: restore.
+        unsafe {
+            std::env::remove_var("INKSTONE_CREDENTIALS_DIR");
+        }
+    }
+
+    #[tokio::test]
+    async fn provider_not_connected_frames_minus_32004_with_provider_name() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        handle(json!(1), json!({ "id": Uuid::nil() }), &tx, |_p: TestParams| async move {
+            Err::<Value, _>(HandlerError::ProviderNotConnected {
+                provider: "openai-codex".to_string(),
+            })
+        })
+        .await;
+        let v = recv_json(&mut rx);
+        assert_eq!(v["error"]["code"], json!(-32004));
+        // The sanitized "not configured" message reaches the client (like the
+        // liveness probe's phrasing), carrying the provider name for fallback copy.
+        assert_eq!(v["error"]["message"], json!("openai-codex is not configured"));
     }
 
     #[tokio::test]

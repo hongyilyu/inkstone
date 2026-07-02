@@ -1,7 +1,7 @@
 import { Popover } from "@base-ui-components/react/popover";
 import type { ModelInfo } from "@inkstone/protocol";
-import { Brain, Check, ChevronDown, Eye, Lock } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { Brain, Check, ChevronDown, Eye } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { filterEnabledModels } from "@/lib/enabledModels.js";
 import { useProviderStatus } from "@/lib/hooks/useProviderStatus";
 import { cn } from "@/lib/utils.js";
@@ -65,9 +65,10 @@ export function ModelPicker() {
 	);
 
 	// Which providers are connected (ADR-0062). A model whose provider has no
-	// credential would run TOKENLESS and fail confusingly, so it is not
-	// selectable here — the composer's `anyConnected` gate passes as long as ANY
-	// provider is connected, which is too coarse for a cross-provider picker.
+	// credential would run TOKENLESS and fail (Core now rejects such a send with a
+	// typed -32004), so it is not OFFERED here at all — the picker lists only models
+	// under a connected provider. The composer's `anyConnected` gate is too coarse
+	// for a cross-provider picker (it passes as long as ANY provider is connected).
 	const { data: providerStatus } = useProviderStatus();
 	const connectedProviders = useMemo(
 		() =>
@@ -78,30 +79,48 @@ export function ModelPicker() {
 			),
 		[providerStatus],
 	);
-	// A model is selectable only when its provider is CONFIRMED connected. There is
-	// no run-path guard for model *selection* (the #3 gate is web-only), so this must
-	// not fail open. Tri-state on status resolution: while status is unresolved
-	// (`providerStatus === undefined`) a model whose provider group IS known is NOT
-	// yet selectable — locking it until status confirms connectivity rather than
-	// letting a disconnected-provider model be picked in the gap. A model with no
-	// known provider group (shouldn't happen) stays selectable defensively. Once
-	// status resolves, behavior is unchanged (connected → selectable, else locked).
-	const isModelConnected = (id: string) => {
-		const provider = providerByModel[id];
-		if (provider === undefined) return true;
-		if (providerStatus === undefined) return false;
-		return connectedProviders.has(provider);
-	};
+	// Whether a model's provider is CONFIRMED connected. This must not fail open:
+	// there IS a Core run-path guard now, but showing an unusable model still dead-
+	// ends the send. Tri-state on status resolution — while status is unresolved
+	// (`providerStatus === undefined`) a model with a KNOWN provider group is NOT
+	// yet treated as connected (hidden until status confirms), rather than flashing
+	// a model that can't be used. A model with no known provider group (shouldn't
+	// happen) is kept defensively.
+	const isModelConnected = useCallback(
+		(id: string) => {
+			const provider = providerByModel[id];
+			if (provider === undefined) return true;
+			if (providerStatus === undefined) return false;
+			return connectedProviders.has(provider);
+		},
+		[providerByModel, providerStatus, connectedProviders],
+	);
 
-	// Scope the catalog to the user's enabled set (ADR-0024). Until settings
-	// load (`enabledIds === null`) show nothing — a curated user must never see
-	// a disabled model, even for one frame. Once loaded, an empty
-	// `enabled_models` means "no curation → show all" (matches Core's
-	// unset→full-catalog default); a non-empty set lists only those ids.
+	// Drop a persisted selection whose provider is no longer connected (ADR-0062):
+	// the credential can vanish out from under a stored default (e.g. the stale-
+	// credential case), so once status resolves, a selected model under a
+	// disconnected provider is cleared to null — the trigger falls back to "Select
+	// model" and the user must consciously re-pick from what's available, rather
+	// than silently keeping a model that can't be used. Local-only: does NOT persist
+	// the clear (Core still owns the stored default and now rejects the doomed send);
+	// this is purely the composer's view so it never presents an unusable choice.
+	useEffect(() => {
+		if (providerStatus === undefined || selectedId === null) return;
+		if (!isModelConnected(selectedId)) setSelectedId(null);
+	}, [providerStatus, selectedId, isModelConnected]);
+
+	// Scope the catalog to the user's enabled set (ADR-0024), THEN to connected
+	// providers (ADR-0062). Until settings load (`enabledIds === null`) show nothing
+	// — a curated user must never see a disabled model, even for one frame. Once
+	// loaded, an empty `enabled_models` means "no curation → show all" (matches
+	// Core's unset→full-catalog default); a non-empty set lists only those ids. The
+	// connected filter then hides any model whose provider isn't wired up.
 	const enabled = useMemo(() => {
 		if (enabledIds === null) return [];
-		return filterEnabledModels(models, enabledIds);
-	}, [models, enabledIds]);
+		return filterEnabledModels(models, enabledIds).filter((m) =>
+			isModelConnected(m.id),
+		);
+	}, [models, enabledIds, isModelConnected]);
 
 	const visible = useMemo(() => {
 		const q = query.trim().toLowerCase();
@@ -112,9 +131,6 @@ export function ModelPicker() {
 	}, [enabled, query]);
 
 	const pick = (id: string) => {
-		// A model whose provider is not connected is not selectable (the row is
-		// disabled below; this guards the code path too).
-		if (!isModelConnected(id)) return;
 		setSelectedId(id); // optimistic
 		setOpen(false);
 		saveSettings(runtime, { model: id })
@@ -145,31 +161,23 @@ export function ModelPicker() {
 						<ul className="mt-1 flex flex-col gap-0.5 overflow-y-auto pr-1">
 							{visible.length === 0 ? (
 								<li className="px-3 py-6 text-center text-muted-foreground text-sm">
-									No models available.
+									{query.trim()
+										? "No models available."
+										: "No models available. Connect a provider in Settings."}
 								</li>
 							) : (
 								visible.map((m) => {
 									const isSel = m.id === selectedId;
-									// A model whose provider is not connected can't be picked —
-									// selecting it would run tokenless and fail (ADR-0062). Disable
-									// the row and hint the user to connect the provider first.
-									const connected = isModelConnected(m.id);
+									// Only connected-provider models are listed (filtered above),
+									// so every row here is selectable — no lock/disabled state.
 									return (
 										<li key={m.id}>
 											<button
 												type="button"
 												onClick={() => pick(m.id)}
-												disabled={!connected}
-												title={
-													connected
-														? undefined
-														: "Connect this model's provider in Settings first."
-												}
 												className={cn(
 													"flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left transition-colors hover:bg-accent",
 													isSel && "bg-accent/60",
-													!connected &&
-														"cursor-not-allowed opacity-50 hover:bg-transparent",
 												)}
 											>
 												<Brain
@@ -183,12 +191,6 @@ export function ModelPicker() {
 													<Eye
 														className="size-3.5 shrink-0 text-muted-foreground"
 														aria-label="Vision"
-													/>
-												) : null}
-												{!connected ? (
-													<Lock
-														className="size-3.5 shrink-0 text-muted-foreground"
-														aria-label="Provider not connected"
 													/>
 												) : null}
 												{isSel ? (

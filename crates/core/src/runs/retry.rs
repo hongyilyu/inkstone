@@ -58,6 +58,16 @@ pub(super) async fn handle_retry(
         }
     };
 
+    // A resolved provider with no credential is a typed ERROR frame (-32004),
+    // not a normal outcome string — mirrors the fresh-send gate so "switch to a
+    // disconnected model, then retry" fails loud with "connect it" instead of
+    // re-driving into an opaque 401. Framed BEFORE any spawn; the flip already
+    // did not happen (prepare gates before it).
+    if let Outcome::ProviderNotConnected { provider } = outcome {
+        handler::frame_error(out_tx, id, HandlerError::ProviderNotConnected { provider });
+        return;
+    }
+
     // Frame the Response BEFORE the post-response Worker spawn (cancel's ordering).
     match serde_json::to_value(RunRetryResult {
         outcome: outcome.label().to_string(),
@@ -91,6 +101,12 @@ enum Outcome {
     Accepted(Box<Spawn>),
     NotErrored,
     UnknownRun,
+    /// The re-resolved model's provider has no credential (ADR-0062). Framed by
+    /// the handler as a `-32004` ERROR (never a `label()` outcome string), so it
+    /// has no wire label — `label()` panics if reached, guarding the gap.
+    ProviderNotConnected {
+        provider: String,
+    },
 }
 
 impl Outcome {
@@ -99,6 +115,11 @@ impl Outcome {
             Outcome::Accepted(_) => "accepted",
             Outcome::NotErrored => "not_errored",
             Outcome::UnknownRun => "unknown_run",
+            // Framed as an error frame by the caller, not a success outcome — it
+            // must never reach here.
+            Outcome::ProviderNotConnected { .. } => {
+                unreachable!("ProviderNotConnected is framed as an error, not a labeled outcome")
+            }
         }
     }
 }
@@ -126,6 +147,20 @@ async fn prepare(pool: &SqlitePool, hubs: &Hubs, run_id: uuid::Uuid) -> anyhow::
     // Re-resolve the Workflow from LIVE settings (NOT the snapshot), so a model
     // switch before retry takes effect (ADR-0024 contrast with resume).
     let workflow = dispatcher::dispatch_and_resolve(pool, thread_id, &prompt).await;
+
+    // Gate on the re-resolved provider's credential BEFORE the errored→running
+    // flip (ADR-0062): a disconnected provider must fail loud with "connect it",
+    // not re-drive a tokenless Worker into another 401. A missing credential is
+    // ProviderNotConnected; a corrupt store surfaces as the Err below (Internal).
+    match crate::credentials::is_connected(&workflow.provider) {
+        Ok(true) => {}
+        Ok(false) => {
+            return Ok(Outcome::ProviderNotConnected {
+                provider: workflow.provider,
+            });
+        }
+        Err(e) => return Err(e),
+    }
 
     // The reused assistant Message id — the bubble identity stays stable. Read it
     // BEFORE the committing flip + hub::create: the id is immutable, so reading it
@@ -262,12 +297,43 @@ mod tests {
         serde_json::from_str(&line).expect("frame is JSON")
     }
 
+    /// Point the credential store at a fresh temp dir holding a CONNECTED
+    /// openai-codex credential, so the run-creation provider gate
+    /// (`handler::ensure_provider_connected`, added for ADR-0062) passes in these
+    /// Worker-free tests. Returns the env guard + tempdir; keep BOTH alive for the
+    /// test (dropping the dir removes the credential, releasing the guard lets
+    /// another test remap the process-global `INKSTONE_CREDENTIALS_DIR`).
+    #[must_use]
+    fn connect_codex() -> (std::sync::MutexGuard<'static, ()>, tempfile::TempDir) {
+        let guard = crate::credentials::env_lock();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path().join("credentials");
+        // SAFETY: serialized by the credentials env lock held in `guard`.
+        unsafe {
+            std::env::set_var("INKSTONE_CREDENTIALS_DIR", &dir);
+        }
+        crate::credentials::write(
+            "openai-codex",
+            &crate::credentials::StoredCredential::Oauth(crate::credentials::Credentials {
+                access: "tok".to_string(),
+                refresh: "ref".to_string(),
+                expires: 9_999_999_999_999,
+                account_id: "acct".to_string(),
+            }),
+        )
+        .expect("write credential");
+        (guard, tmp)
+    }
+
     /// The accepted happy-arm of `prepare` (the testable unit — `handle_retry`'s
     /// spawn needs a real Worker binary). An ERRORED Run flips to `running`, yields
     /// `Outcome::Accepted` (label "accepted"), creates a hub, and the carried Spawn
     /// reuses the SAME assistant_message_id + the original prompt.
     #[tokio::test]
     async fn errored_run_prepares_accepted_with_reused_ids() {
+        // The resolved provider (default openai-codex) must be connected or the
+        // ADR-0062 gate would return ProviderNotConnected before the flip.
+        let _cred = connect_codex();
         let pool = memory_pool().await;
         let hubs = hub::new_hubs();
         let (run_id, assistant_message_id) = seed_errored_run(&pool).await;
@@ -294,6 +360,9 @@ mod tests {
     /// stays `running`, and spawns NOTHING (the guarded flip lost; nothing cleared).
     #[tokio::test]
     async fn non_errored_run_is_not_errored_no_spawn() {
+        // Connected provider so the not_errored path is reached (the ADR-0062 gate
+        // runs after dispatch_and_resolve, before the flip).
+        let _cred = connect_codex();
         let pool = memory_pool().await;
         let hubs = hub::new_hubs();
         let (tx, mut rx) = mpsc::unbounded_channel();
@@ -317,6 +386,53 @@ mod tests {
         );
         // No hub was created (no spawn) for a not_errored outcome.
         assert!(hub::get(&hubs, run_id).is_none(), "no hub → no Worker spawned");
+    }
+
+    /// Retrying an errored Run whose re-resolved provider is DISCONNECTED frames a
+    /// `-32004` ProviderNotConnected ERROR (not an outcome string), does NOT flip the
+    /// Run to running, and spawns nothing — the ADR-0062 gate before the flip.
+    #[tokio::test]
+    async fn disconnected_provider_frames_minus_32004_and_no_flip() {
+        // Empty credential dir → the default openai-codex provider is not connected.
+        let _guard = crate::credentials::env_lock();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        // SAFETY: serialized by the credentials env lock.
+        unsafe {
+            std::env::set_var(
+                "INKSTONE_CREDENTIALS_DIR",
+                tmp.path().join("credentials"),
+            );
+        }
+
+        let pool = memory_pool().await;
+        let hubs = hub::new_hubs();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (run_id, _assistant_message_id) = seed_errored_run(&pool).await;
+
+        super::handle_retry(
+            &pool,
+            &hubs,
+            json!(4),
+            json!({ "run_id": run_id.to_string() }),
+            &tx,
+        )
+        .await;
+
+        let v = recv_json(&mut rx);
+        assert_eq!(v["error"]["code"], json!(-32004));
+        assert!(v.get("result").is_none());
+        // The Run stayed errored — the gate ran BEFORE the errored→running flip.
+        assert_eq!(
+            db::run_status(&pool, run_id).await.unwrap().map(db::RunStatus::as_str),
+            Some("errored"),
+            "a disconnected-provider retry must not flip the Run to running"
+        );
+        assert!(hub::get(&hubs, run_id).is_none(), "no hub → no Worker spawned");
+
+        // SAFETY: restore.
+        unsafe {
+            std::env::remove_var("INKSTONE_CREDENTIALS_DIR");
+        }
     }
 
     /// An unknown run id frames `unknown_run` and spawns nothing.

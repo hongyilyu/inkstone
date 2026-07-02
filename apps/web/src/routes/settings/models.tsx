@@ -58,6 +58,12 @@ function ModelsSettings() {
 	// from an unreachable Core so the Providers section shows an honest error + a
 	// retry instead of a blank list of dead-clickable rows.
 	const [catalogFailed, setCatalogFailed] = useState(false);
+	// Whether the provider/status read failed. Distinguishes "couldn't reach Core to
+	// CHECK connection" from a genuine all-disconnected state — the catch below
+	// synthesizes `connected: false` (so rows stay readable) but that reads exactly
+	// like a real disconnect. This flag raises an honest "couldn't check" banner +
+	// retry so the user is never silently stranded (mirrors `catalogFailed`).
+	const [statusFailed, setStatusFailed] = useState(false);
 	// Master/detail: null = provider list, otherwise the focused provider's id.
 	const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
 	// Whether a provider login failed to start (surfaced in the shared status line).
@@ -165,14 +171,22 @@ function ModelsSettings() {
 				// user. Writing the value keeps the cache truthful for that remount AND
 				// notifies a still-mounted chat observer immediately (no refetch needed).
 				applyStatus(status);
+				// A read that succeeds clears any prior failure banner (mirror of
+				// loadCatalog clearing catalogFailed only on success).
+				setStatusFailed(false);
 			})
 			.catch(() => {
 				if (requestId !== latestStatusRequest.current) return;
-				// Status fetch failed: keep every KNOWN provider row actionable.
-				// Resolve each loaded-catalog provider id to `connected: false` so the
-				// row renders "Not connected" + a working Connect button — the
-				// pre-slice recovery path — instead of a permanent "Checking…" (which
-				// an empty map produced, since every id then resolved to null).
+				// Status fetch failed: resolve each loaded-catalog provider id to
+				// `connected: false` so rows read an honest "Not connected" instead of a
+				// permanent "Checking…" (which an empty map produced, since every id then
+				// resolved to null). This path carries NO wire `auth_kind` (that's only
+				// populated by applyStatus on a successful read), so the rows render with
+				// no Connect/Configure button — a synthesized "oauth" would show a bogus
+				// Connect on a key-provider. That leaves the rows silently indistinct from
+				// a genuine disconnect, so we ALSO raise `statusFailed` to surface a
+				// "couldn't check connections" banner + retry (below) rather than strand
+				// the user with buttonless, look-alike-disconnected rows.
 				// Local-only: do NOT write a synthesized all-disconnected snapshot into
 				// the shared ["provider-status"] cache — the chat gate derives
 				// anyConnected across it, and a fake disconnect would falsely gate a
@@ -180,6 +194,7 @@ function ModelsSettings() {
 				setConnectedById(
 					Object.fromEntries(providers.map((p) => [p.id, false])),
 				);
+				setStatusFailed(true);
 			});
 	}, [runtime, applyStatus, providers]);
 
@@ -416,6 +431,27 @@ function ModelsSettings() {
 							</div>
 						) : (
 							<div className="flex flex-col gap-2">
+								{statusFailed && (
+									// provider/status couldn't be read — the rows below fell back
+									// to a look-alike "Not connected" with no action button, so
+									// surface an honest "couldn't check" notice + a retry (same
+									// shape as the catalog-failure panel above). Retrying just
+									// re-runs the stable refreshConnected, which clears this on
+									// its own success.
+									<div className="flex flex-col items-start gap-2 rounded-md border border-input p-4">
+										<p className="text-muted-foreground text-sm">
+											Couldn't check provider connections. Check that Inkstone
+											is running.
+										</p>
+										<Button
+											variant="chip"
+											size="sm"
+											onClick={() => refreshConnected()}
+										>
+											Try again
+										</Button>
+									</div>
+								)}
 								{providers.map((p) => {
 									const connected = connectedById?.[p.id] ?? null;
 									const status =

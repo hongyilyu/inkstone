@@ -149,6 +149,7 @@ pub struct CoreBuilder<'a> {
     worker_cmd: Option<String>,
     envs: Vec<(OsString, OsString)>,
     listen_timeout: Duration,
+    seed_codex_credential: bool,
 }
 
 impl<'a> CoreBuilder<'a> {
@@ -158,7 +159,21 @@ impl<'a> CoreBuilder<'a> {
             worker_cmd: None,
             envs: Vec::new(),
             listen_timeout: DEFAULT_TIMEOUT,
+            // Default: seed a connected openai-codex credential so the run-creation
+            // provider gate (ADR-0062) passes. A test that asserts the DISCONNECTED
+            // state (provider_status/configure/test/login/refresh) opts out via
+            // `no_seeded_credential()` and manages its own credentials dir.
+            seed_codex_credential: true,
         }
+    }
+
+    /// Opt OUT of the default connected-provider credential (ADR-0062). Tests that
+    /// exercise the disconnected state or manage `INKSTONE_CREDENTIALS_DIR`
+    /// themselves call this so the harness does not seed a credential underneath
+    /// them.
+    pub fn no_seeded_credential(mut self) -> Self {
+        self.seed_codex_credential = false;
+        self
     }
 
     /// Point `INKSTONE_WORKER_CMD` at a worker fixture in `tests/fixtures/`.
@@ -228,6 +243,41 @@ impl<'a> CoreBuilder<'a> {
         }
         for (key, value) in &self.envs {
             cmd.env(key, value);
+        }
+
+        // Seed connected credentials so the run-creation provider gate (ADR-0062)
+        // passes for the many tests that post a message / create a thread. Skipped
+        // when a test opted out (`no_seeded_credential`). Written into the
+        // credentials dir Core will resolve: the per-test `INKSTONE_CREDENTIALS_DIR`
+        // if the test set one, else the default `<db parent>/credentials`. Both the
+        // production default provider (`openai-codex`) AND the offline test provider
+        // (`faux`, used by custom test workflows) get a credential so either
+        // resolved provider is "connected". Mirrors the fixture shape
+        // provider_status.rs writes (kind:"oauth", far-future expiry).
+        if self.seed_codex_credential {
+            let creds_dir = self
+                .envs
+                .iter()
+                .find(|(k, _)| k == "INKSTONE_CREDENTIALS_DIR")
+                .map(|(_, v)| PathBuf::from(v))
+                .unwrap_or_else(|| {
+                    self.ws
+                        .db_path()
+                        .parent()
+                        .map(|p| p.join("credentials"))
+                        .expect("db path has a parent")
+                });
+            std::fs::create_dir_all(&creds_dir).expect("create seeded credentials dir");
+            const CRED: &str = r#"{"kind":"oauth","access":"tok","refresh":"ref","expires":9999999999999,"account_id":"acct"}"#;
+            // Every provider a resolved Run might route to: the production default
+            // (`openai-codex`), the second real provider (`openrouter`, for the
+            // model-routing test), and the offline test provider (`faux`, used by
+            // custom test workflows). is_connected only checks file presence, so an
+            // oauth-shaped file satisfies the gate for the api_key provider too.
+            for provider in ["openai-codex", "openrouter", "faux"] {
+                std::fs::write(creds_dir.join(format!("{provider}.json")), CRED)
+                    .expect("write seeded credential");
+            }
         }
 
         let mut child = cmd.spawn().map_err(SpawnError::Spawn)?;

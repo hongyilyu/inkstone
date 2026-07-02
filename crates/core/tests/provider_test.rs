@@ -70,6 +70,7 @@ fn provider_test_alive_on_reply_persists_nothing() {
 
     let core = workspace
         .core()
+        .no_seeded_credential()
         .worker_fixture("liveness-worker.ts")
         .env("INKSTONE_CREDENTIALS_DIR", &creds_dir)
         .spawn();
@@ -131,6 +132,7 @@ fn provider_test_dead_on_error_frame() {
 
     let core = workspace
         .core()
+        .no_seeded_credential()
         .worker_fixture("liveness-worker.ts")
         .env("INKSTONE_CREDENTIALS_DIR", &creds_dir)
         .env("INKSTONE_LIVENESS_ERROR", "provider rejected the key")
@@ -192,6 +194,7 @@ fn provider_test_unconfigured_is_dead_without_spawning() {
 
     let core = workspace
         .core()
+        .no_seeded_credential()
         // If the probe spawned for an unconfigured provider, this command would
         // fail — but it must never be reached (Ok(None) short-circuits).
         .worker_cmd("/nonexistent/liveness-worker-should-not-run")
@@ -260,6 +263,7 @@ fn provider_test_alive_for_codex_oauth() {
 
     let core = workspace
         .core()
+        .no_seeded_credential()
         .worker_fixture("liveness-worker.ts")
         .env("INKSTONE_CREDENTIALS_DIR", &creds_dir)
         .spawn();
@@ -304,6 +308,7 @@ fn provider_test_rejects_unknown_provider_id() {
 
     let core = workspace
         .core()
+        .no_seeded_credential()
         .worker_fixture("liveness-worker.ts")
         .env("INKSTONE_CREDENTIALS_DIR", &creds_dir)
         .spawn();

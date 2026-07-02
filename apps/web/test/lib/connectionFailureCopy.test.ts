@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
 	CONNECTION_SEND_FAILURE,
 	connectionFailureCopy,
+	PROVIDER_NOT_CONNECTED_SEND_FAILURE,
 } from "@/lib/connectionFailureCopy.js";
 
 describe("connectionFailureCopy", () => {
@@ -22,6 +23,30 @@ describe("connectionFailureCopy", () => {
 		expect(
 			connectionFailureCopy(new WsRequestError({ reason: "decode_failed" })),
 		).toBeNull();
+	});
+
+	it("returns the provider-not-connected copy for a -32004 WsRequestError (ADR-0062)", () => {
+		// Core rejects a send whose resolved model's provider has no credential with
+		// code -32004; the SDK preserves it on `code`, so the copy branches on the
+		// code (not the message text).
+		expect(
+			connectionFailureCopy(
+				new WsRequestError({
+					reason: "openai-codex is not configured",
+					code: -32004,
+				}),
+			),
+		).toBe(PROVIDER_NOT_CONNECTED_SEND_FAILURE);
+	});
+
+	it("never surfaces the raw provider message as the -32004 copy", () => {
+		const copy = connectionFailureCopy(
+			new WsRequestError({
+				reason: "openai-codex is not configured",
+				code: -32004,
+			}),
+		);
+		expect(copy).not.toContain("openai-codex");
 	});
 
 	it("returns null for a plain Error", () => {
