@@ -9,14 +9,104 @@
 			"input": ["text", "image"]
 		},
 		{
+			"id": "anthropic/claude-sonnet-4.6",
+			"name": "Anthropic: Claude Sonnet 4.6",
+			"reasoning": true,
+			"input": ["text", "image"]
+		},
+		{
 			"id": "anthropic/claude-haiku-4.5",
 			"name": "Anthropic: Claude Haiku 4.5",
 			"reasoning": true,
 			"input": ["text", "image"]
 		},
 		{
+			"id": "openai/gpt-5.5",
+			"name": "OpenAI: GPT-5.5",
+			"reasoning": true,
+			"input": ["text", "image"]
+		},
+		{
+			"id": "openai/gpt-5.5-pro",
+			"name": "OpenAI: GPT-5.5 Pro",
+			"reasoning": true,
+			"input": ["text", "image"]
+		},
+		{
+			"id": "openai/gpt-5.4-mini",
+			"name": "OpenAI: GPT-5.4 Mini",
+			"reasoning": true,
+			"input": ["text", "image"]
+		},
+		{
+			"id": "google/gemini-3.1-pro-preview",
+			"name": "Google: Gemini 3.1 Pro Preview",
+			"reasoning": true,
+			"input": ["text", "image"]
+		},
+		{
+			"id": "google/gemini-3.5-flash",
+			"name": "Google: Gemini 3.5 Flash",
+			"reasoning": true,
+			"input": ["text", "image"]
+		},
+		{
+			"id": "x-ai/grok-4.3",
+			"name": "xAI: Grok 4.3",
+			"reasoning": true,
+			"input": ["text", "image"]
+		},
+		{
+			"id": "deepseek/deepseek-v4-pro",
+			"name": "DeepSeek: DeepSeek V4 Pro",
+			"reasoning": true,
+			"input": ["text"]
+		},
+		{
+			"id": "deepseek/deepseek-v3.2",
+			"name": "DeepSeek: DeepSeek V3.2",
+			"reasoning": true,
+			"input": ["text"]
+		},
+		{
 			"id": "moonshotai/kimi-k2.5",
 			"name": "MoonshotAI: Kimi K2.5",
+			"reasoning": true,
+			"input": ["text", "image"]
+		},
+		{
+			"id": "moonshotai/kimi-k2.7-code",
+			"name": "MoonshotAI: Kimi K2.7 Code",
+			"reasoning": true,
+			"input": ["text", "image"]
+		},
+		{
+			"id": "qwen/qwen3.7-max",
+			"name": "Qwen: Qwen3.7 Max",
+			"reasoning": true,
+			"input": ["text"]
+		},
+		{
+			"id": "qwen/qwen3-max",
+			"name": "Qwen: Qwen3 Max",
+			"reasoning": false,
+			"input": ["text"]
+		},
+		{
+			"id": "z-ai/glm-5.2",
+			"name": "Z.ai: GLM 5.2",
+			"reasoning": true,
+			"input": ["text"]
+		},
+		{
+			"id": "z-ai/glm-4.7",
+			"name": "Z.ai: GLM 4.7",
+			"reasoning": true,
+			"input": ["text"]
+		},
+		{
+			"id": "minimax/minimax-m3",
+			"name": "MiniMax: MiniMax M3",
 			"reasoning": true,
 			"input": ["text", "image"]
 		}

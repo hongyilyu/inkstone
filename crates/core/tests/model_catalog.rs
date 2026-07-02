@@ -1,6 +1,6 @@
 //! `model/catalog` serves the embedded `openai-codex` model catalog over the
 //! WebSocket (read-only, no params; ADR-0024). Catalog content is drift-tested
-//! against `pi-ai` in `packages/worker/src/models-catalog.test.ts`.
+//! against `pi-ai` in `packages/worker/test/models-catalog.test.ts`.
 
 use futures_util::SinkExt;
 use tokio_tungstenite::tungstenite::Message;
@@ -52,10 +52,10 @@ fn model_catalog_returns_openai_codex_models() {
             "gpt-5.5 is reasoning-capable"
         );
 
-        // The openrouter group is the second embedded provider (ADR-0062). Its
-        // three curated models are drift-tested field-for-field against pi-ai in
-        // `packages/worker/src/models-catalog.test.ts`; here we assert only that
-        // the group ships with the expected ids.
+        // The openrouter group is the second embedded provider (ADR-0062). Each
+        // shipped model is drift-tested field-for-field against pi-ai in
+        // `packages/worker/test/models-catalog.test.ts`; here we assert only that
+        // the group loaded and ships a multi-vendor set including the default.
         let openrouter = providers
             .iter()
             .find(|p| p["id"] == serde_json::json!("openrouter"))
@@ -67,14 +67,15 @@ fn model_catalog_returns_openai_codex_models() {
             .iter()
             .filter_map(|m| m["id"].as_str())
             .collect();
-        assert_eq!(
-            ids,
-            vec![
-                "anthropic/claude-opus-4.8",
-                "anthropic/claude-haiku-4.5",
-                "moonshotai/kimi-k2.5",
-            ],
-            "openrouter ships the three curated models"
+        assert!(
+            ids.contains(&"anthropic/claude-opus-4.8"),
+            "openrouter ships its default model"
+        );
+        let vendors: std::collections::HashSet<&str> =
+            ids.iter().filter_map(|id| id.split('/').next()).collect();
+        assert!(
+            ids.len() > 3 && vendors.len() >= 2,
+            "openrouter ships an expanded multi-vendor catalog, not just the original three"
         );
 
         ws.close(None).await.ok();

@@ -1,6 +1,6 @@
 //! The model catalog (ADR-0024): models available per provider, hand-mirrored
 //! from `pi-ai`'s `MODELS` and embedded as JSON. A Worker-side drift test
-//! (`packages/worker/src/models-catalog.test.ts`) guards the JSON against
+//! (`packages/worker/test/models-catalog.test.ts`) guards the JSON against
 //! `pi-ai` (ADR-0009 hand-mirror discipline).
 //!
 //! Connectable providers: `openai-codex` (OAuth, ADR-0023) and `openrouter`
@@ -105,13 +105,19 @@ mod tests {
             .expect("openrouter provider present in catalog");
         assert_eq!(openrouter.label, "OpenRouter");
         let ids: Vec<&str> = openrouter.models.iter().map(|m| m.id.as_str()).collect();
-        assert_eq!(
-            ids,
-            vec![
-                "anthropic/claude-opus-4.8",
-                "anthropic/claude-haiku-4.5",
-                "moonshotai/kimi-k2.5",
-            ]
+        // Each shipped model is drift-tested field-for-field against pi-ai in
+        // `packages/worker/test/models-catalog.test.ts` (membership itself — the
+        // curated subset — is intentionally not enforced); here we pin only that
+        // the group loaded with the default and an expanded multi-vendor set.
+        assert!(
+            ids.contains(&"anthropic/claude-opus-4.8"),
+            "openrouter ships its default model"
+        );
+        let vendors: std::collections::HashSet<&str> =
+            ids.iter().filter_map(|id| id.split('/').next()).collect();
+        assert!(
+            ids.len() > 3 && vendors.len() >= 2,
+            "openrouter ships an expanded multi-vendor catalog, not just the original three"
         );
     }
 
