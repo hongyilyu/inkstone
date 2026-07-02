@@ -131,7 +131,7 @@ describe("model catalog drift", () => {
 		// Same curated-subset drift invariant as openai-codex: every embedded model
 		// id still exists in pi-ai's (much larger) openrouter set, and each retained
 		// entry's {id,name,reasoning,input} matches pi-ai EXACTLY. Curation (we ship
-		// only 3 of pi-ai's openrouter models) is intentional and NOT enforced.
+		// a curated subset of pi-ai's openrouter models) is intentional and NOT enforced.
 		for (const model of provider.models) {
 			const upstream = fromPi.get(model.id);
 			expect(

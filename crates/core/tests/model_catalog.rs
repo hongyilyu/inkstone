@@ -52,9 +52,9 @@ fn model_catalog_returns_openai_codex_models() {
             "gpt-5.5 is reasoning-capable"
         );
 
-        // The openrouter group is the second embedded provider (ADR-0062). Its
-        // curated models are drift-tested field-for-field against pi-ai in
-        // `packages/worker/src/models-catalog.test.ts`; here we assert only that
+        // The openrouter group is the second embedded provider (ADR-0062). Each
+        // shipped model is drift-tested field-for-field against pi-ai in
+        // `packages/worker/test/models-catalog.test.ts`; here we assert only that
         // the group loaded and ships a multi-vendor set including the default.
         let openrouter = providers
             .iter()
@@ -71,8 +71,10 @@ fn model_catalog_returns_openai_codex_models() {
             ids.contains(&"anthropic/claude-opus-4.8"),
             "openrouter ships its default model"
         );
+        let vendors: std::collections::HashSet<&str> =
+            ids.iter().filter_map(|id| id.split('/').next()).collect();
         assert!(
-            ids.len() > 3 && ids.iter().any(|id| id.starts_with("openai/")),
+            ids.len() > 3 && vendors.len() >= 2,
             "openrouter ships an expanded multi-vendor catalog, not just the original three"
         );
 

@@ -105,11 +105,14 @@ mod tests {
             .expect("openrouter provider present in catalog");
         assert_eq!(openrouter.label, "OpenRouter");
         let ids: Vec<&str> = openrouter.models.iter().map(|m| m.id.as_str()).collect();
-        // The exact membership is drift-tested against pi-ai in
-        // `packages/worker/src/models-catalog.test.ts`; here we pin only that the
-        // group loaded with the default and an expanded multi-vendor set.
+        // Each shipped model is drift-tested field-for-field against pi-ai in
+        // `packages/worker/test/models-catalog.test.ts` (membership itself — the
+        // curated subset — is intentionally not enforced); here we pin only that
+        // the group loaded with the default and an expanded multi-vendor set.
         assert!(ids.contains(&"anthropic/claude-opus-4.8"));
-        assert!(ids.len() > 3 && ids.iter().any(|id| id.starts_with("openai/")));
+        let vendors: std::collections::HashSet<&str> =
+            ids.iter().filter_map(|id| id.split('/').next()).collect();
+        assert!(ids.len() > 3 && vendors.len() >= 2);
     }
 
     #[test]
