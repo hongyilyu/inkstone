@@ -98,12 +98,13 @@ export function ModelPicker() {
 
 	// Drop a persisted selection whose provider is no longer connected (ADR-0062):
 	// the credential can vanish out from under a stored default (e.g. the stale-
-	// credential case), so once status resolves, a selected model under a
+	// credential case), so ONCE STATUS RESOLVES, a selected model under a
 	// disconnected provider is cleared to null — the trigger falls back to "Select
 	// model" and the user must consciously re-pick from what's available, rather
-	// than silently keeping a model that can't be used. Local-only: does NOT persist
-	// the clear (Core still owns the stored default and now rejects the doomed send);
-	// this is purely the composer's view so it never presents an unusable choice.
+	// than silently keeping a model that can't be used. Until status resolves (or if
+	// it fails), the trigger still shows the stored selection optimistically; the
+	// backstop is Core, which rejects a send to a disconnected provider with -32004.
+	// Local-only: does NOT persist the clear (Core still owns the stored default).
 	useEffect(() => {
 		if (providerStatus === undefined || selectedId === null) return;
 		if (!isModelConnected(selectedId)) setSelectedId(null);

@@ -251,13 +251,9 @@ mod tests {
     fn ensure_provider_connected_maps_missing_present_and_corrupt() {
         use crate::credentials::{self, StoredCredential};
 
-        let _guard = credentials::env_lock();
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let dir = tmp.path().join("credentials");
-        // SAFETY: single-threaded test guarded by the credentials env lock.
-        unsafe {
-            std::env::set_var("INKSTONE_CREDENTIALS_DIR", &dir);
-        }
+        // Shared panic-safe fixture: sets INKSTONE_CREDENTIALS_DIR and restores it
+        // on drop (no manual set/remove_var that would leak on an assert panic).
+        let env = credentials::test_credentials_env();
 
         // No credential file → ProviderNotConnected carrying the provider id.
         match ensure_provider_connected("openai-codex") {
@@ -279,16 +275,11 @@ mod tests {
 
         // A present-but-UNPARSEABLE file → Internal (fail loud on a corrupt store),
         // never a misleading ProviderNotConnected.
-        std::fs::write(dir.join("openrouter.json"), b"{ not valid json")
+        std::fs::write(env.dir().join("openrouter.json"), b"{ not valid json")
             .expect("write corrupt file");
         match ensure_provider_connected("openrouter") {
             Err(HandlerError::Internal(_)) => {}
             other => panic!("expected Internal for a corrupt store, got {other:?}"),
-        }
-
-        // SAFETY: restore.
-        unsafe {
-            std::env::remove_var("INKSTONE_CREDENTIALS_DIR");
         }
     }
 

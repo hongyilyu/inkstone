@@ -136,6 +136,11 @@ function ModelsSettings() {
 				["provider-status"],
 				status,
 			);
+			// Any fresh, valid status clears the "couldn't check" banner — at the
+			// chokepoint, so BOTH a successful refresh AND a provider/configure success
+			// dismiss it. (Clearing only in refreshConnected's .then would leave the
+			// banner stuck if a poll failed while a configure submit was in flight.)
+			setStatusFailed(false);
 		},
 		[queryClient],
 	);
@@ -170,10 +175,9 @@ function ModelsSettings() {
 				// before the refetch lands, flashing the connect screen at a now-connected
 				// user. Writing the value keeps the cache truthful for that remount AND
 				// notifies a still-mounted chat observer immediately (no refetch needed).
+				// applyStatus also clears the statusFailed banner (the chokepoint), so a
+				// successful read here dismisses it — no separate reset needed.
 				applyStatus(status);
-				// A read that succeeds clears any prior failure banner (mirror of
-				// loadCatalog clearing catalogFailed only on success).
-				setStatusFailed(false);
 			})
 			.catch(() => {
 				if (requestId !== latestStatusRequest.current) return;

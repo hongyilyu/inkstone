@@ -171,6 +171,56 @@ pub(crate) fn env_lock() -> std::sync::MutexGuard<'static, ()> {
     ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner())
 }
 
+/// RAII test fixture: hold [`env_lock`] and point `INKSTONE_CREDENTIALS_DIR` at a
+/// fresh tempdir for the duration, removing the var on drop. Panic-safe — a manual
+/// `set_var`/`remove_var` pair leaks the var to the next test if an assertion
+/// panics between them; this cleans up on every unwind. Callers seed whatever
+/// credential shape they need under [`dir`](Self::dir) (or leave it empty for a
+/// disconnected provider). Keep the guard bound for the whole test.
+#[cfg(test)]
+pub(crate) struct CredentialsEnvGuard {
+    // Drop order: `Drop::drop` runs FIRST (removes the var while the lock is still
+    // held), THEN fields drop in declaration order — so `_lock` outlives the
+    // removal and no other env-mutating test can race it.
+    _lock: std::sync::MutexGuard<'static, ()>,
+    tmp: tempfile::TempDir,
+}
+
+#[cfg(test)]
+impl CredentialsEnvGuard {
+    /// The credentials dir `INKSTONE_CREDENTIALS_DIR` points at — write fixture
+    /// files here (it need not exist yet; [`write`] creates it).
+    pub(crate) fn dir(&self) -> std::path::PathBuf {
+        self.tmp.path().join("credentials")
+    }
+}
+
+#[cfg(test)]
+impl Drop for CredentialsEnvGuard {
+    fn drop(&mut self) {
+        // SAFETY: `_lock` is still alive (fields drop after this body), so no other
+        // env-mutating test races this removal.
+        unsafe {
+            std::env::remove_var("INKSTONE_CREDENTIALS_DIR");
+        }
+    }
+}
+
+/// Point `INKSTONE_CREDENTIALS_DIR` at a fresh tempdir for one test, returning a
+/// [`CredentialsEnvGuard`] that restores it on drop (see there). The dir starts
+/// empty — the caller seeds credentials via [`write`] or leaves it empty for a
+/// disconnected provider.
+#[cfg(test)]
+pub(crate) fn test_credentials_env() -> CredentialsEnvGuard {
+    let lock = env_lock();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    // SAFETY: serialized by the env lock just acquired.
+    unsafe {
+        std::env::set_var("INKSTONE_CREDENTIALS_DIR", tmp.path().join("credentials"));
+    }
+    CredentialsEnvGuard { _lock: lock, tmp }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

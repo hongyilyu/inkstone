@@ -310,22 +310,15 @@ mod tests {
         serde_json::from_str(&line).expect("frame is JSON")
     }
 
-    /// Point `INKSTONE_CREDENTIALS_DIR` at a fresh temp dir for one test, returning
-    /// an RAII guard that holds the env lock AND removes the var on drop — so the
-    /// mutation can never strand a stale dir for a later test, even if the test
-    /// panics mid-assert (the manual set/remove pattern leaks on a panic). When
-    /// `connected`, seeds an openai-codex credential so the run-creation provider
-    /// gate (`handler::ensure_provider_connected`, ADR-0062) passes; when not, the
-    /// dir stays empty (a disconnected provider). Keep the guard bound for the test.
+    /// A panic-safe credentials-dir fixture (shared [`crate::credentials::
+    /// test_credentials_env`]) for these Worker-free retry tests. When `connected`,
+    /// seeds an openai-codex credential so the run-creation provider gate
+    /// (`handler::ensure_provider_connected`, ADR-0062) passes; when not, the dir
+    /// stays empty (a disconnected provider). Keep the returned guard bound for the
+    /// whole test — it restores `INKSTONE_CREDENTIALS_DIR` on drop.
     #[must_use]
-    fn credentials_env(connected: bool) -> CredentialGuard {
-        let guard = crate::credentials::env_lock();
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let dir = tmp.path().join("credentials");
-        // SAFETY: serialized by the credentials env lock held in `guard`.
-        unsafe {
-            std::env::set_var("INKSTONE_CREDENTIALS_DIR", &dir);
-        }
+    fn credentials_env(connected: bool) -> crate::credentials::CredentialsEnvGuard {
+        let guard = crate::credentials::test_credentials_env();
         if connected {
             crate::credentials::write(
                 "openai-codex",
@@ -338,25 +331,7 @@ mod tests {
             )
             .expect("write credential");
         }
-        CredentialGuard { _guard: guard, _tmp: tmp }
-    }
-
-    /// RAII cleanup for [`credentials_env`]: removes `INKSTONE_CREDENTIALS_DIR` and
-    /// releases the env lock + tempdir on drop, so the mutation can't strand a
-    /// stale dir for a later test (fields are drop-order sinks, read via `_`).
-    struct CredentialGuard {
-        _guard: std::sync::MutexGuard<'static, ()>,
-        _tmp: tempfile::TempDir,
-    }
-
-    impl Drop for CredentialGuard {
-        fn drop(&mut self) {
-            // SAFETY: the env lock (held in `_guard`) is still alive here — Drop
-            // fields drop after this body — so no other test races this removal.
-            unsafe {
-                std::env::remove_var("INKSTONE_CREDENTIALS_DIR");
-            }
-        }
+        guard
     }
 
     /// The accepted happy-arm of `prepare` (the testable unit — `handle_retry`'s
