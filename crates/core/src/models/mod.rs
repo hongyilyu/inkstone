@@ -105,14 +105,11 @@ mod tests {
             .expect("openrouter provider present in catalog");
         assert_eq!(openrouter.label, "OpenRouter");
         let ids: Vec<&str> = openrouter.models.iter().map(|m| m.id.as_str()).collect();
-        assert_eq!(
-            ids,
-            vec![
-                "anthropic/claude-opus-4.8",
-                "anthropic/claude-haiku-4.5",
-                "moonshotai/kimi-k2.5",
-            ]
-        );
+        // The exact membership is drift-tested against pi-ai in
+        // `packages/worker/src/models-catalog.test.ts`; here we pin only that the
+        // group loaded with the default and an expanded multi-vendor set.
+        assert!(ids.contains(&"anthropic/claude-opus-4.8"));
+        assert!(ids.len() > 3 && ids.iter().any(|id| id.starts_with("openai/")));
     }
 
     #[test]
