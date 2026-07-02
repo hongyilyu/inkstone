@@ -180,13 +180,13 @@ function ModelsSettings() {
 				// Status fetch failed: resolve each loaded-catalog provider id to
 				// `connected: false` so rows read an honest "Not connected" instead of a
 				// permanent "Checking…" (which an empty map produced, since every id then
-				// resolved to null). This path carries NO wire `auth_kind` (that's only
-				// populated by applyStatus on a successful read), so the rows render with
-				// no Connect/Configure button — a synthesized "oauth" would show a bogus
-				// Connect on a key-provider. That leaves the rows silently indistinct from
-				// a genuine disconnect, so we ALSO raise `statusFailed` to surface a
-				// "couldn't check connections" banner + retry (below) rather than strand
-				// the user with buttonless, look-alike-disconnected rows.
+				// resolved to null). This path has NO wire `auth_kind`, and we CLEAR any
+				// prior one so the rows render with no Connect/Configure button — a
+				// STALE kind from an earlier successful read would otherwise still paint a
+				// (now-unverifiable) Connect/Configure button alongside the failure banner.
+				// With no button, the rows are silently indistinct from a genuine
+				// disconnect, so we ALSO raise `statusFailed` to surface a "couldn't check
+				// connections" banner + retry (below) rather than strand the user.
 				// Local-only: do NOT write a synthesized all-disconnected snapshot into
 				// the shared ["provider-status"] cache — the chat gate derives
 				// anyConnected across it, and a fake disconnect would falsely gate a
@@ -194,6 +194,7 @@ function ModelsSettings() {
 				setConnectedById(
 					Object.fromEntries(providers.map((p) => [p.id, false])),
 				);
+				setAuthKindById({});
 				setStatusFailed(true);
 			});
 	}, [runtime, applyStatus, providers]);

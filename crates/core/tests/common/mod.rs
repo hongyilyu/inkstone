@@ -269,14 +269,19 @@ impl<'a> CoreBuilder<'a> {
                         .expect("db path has a parent")
                 });
             std::fs::create_dir_all(&creds_dir).expect("create seeded credentials dir");
-            const CRED: &str = r#"{"kind":"oauth","access":"tok","refresh":"ref","expires":9999999999999,"account_id":"acct"}"#;
-            // Every provider a resolved Run might route to: the production default
-            // (`openai-codex`), the second real provider (`openrouter`, for the
-            // model-routing test), and the offline test provider (`faux`, used by
-            // custom test workflows). is_connected only checks file presence, so an
-            // oauth-shaped file satisfies the gate for the api_key provider too.
-            for provider in ["openai-codex", "openrouter", "faux"] {
-                std::fs::write(creds_dir.join(format!("{provider}.json")), CRED)
+            // Seed the credential SHAPE each provider actually uses (ADR-0062), not a
+            // blanket oauth blob: `openai-codex`/`faux` are OAuth, `openrouter` is a
+            // static api_key. is_connected only checks file presence today, but
+            // seeding the true shape keeps the fixture honest against any future
+            // shape-sensitive path. Every provider a resolved Run can route to gets one.
+            const OAUTH: &str = r#"{"kind":"oauth","access":"tok","refresh":"ref","expires":9999999999999,"account_id":"acct"}"#;
+            const API_KEY: &str = r#"{"kind":"api_key","key":"sk-test"}"#;
+            for (provider, cred) in [
+                ("openai-codex", OAUTH),
+                ("openrouter", API_KEY),
+                ("faux", OAUTH),
+            ] {
+                std::fs::write(creds_dir.join(format!("{provider}.json")), cred)
                     .expect("write seeded credential");
             }
         }

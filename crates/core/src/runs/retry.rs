@@ -141,6 +141,15 @@ async fn prepare(
     // flip below is still the authoritative race-safe transition. A missing Run
     // was already handled above, so `None` here would be a TOCTOU delete — treat it
     // as not-errored (the flip would lose anyway).
+    //
+    // The advisory read and the authoritative flip can't produce a WRONG state: the
+    // CAS in `prepare_retry` self-guards on `WHERE status='errored'`, so a Run that
+    // races out of `errored` after this read still yields `not_errored` (below).
+    // The only observable effect of a concurrent double-retry of the SAME errored
+    // Run against a disconnected provider is which truthful message wins the tie
+    // (`-32004` vs `not_errored`) — not reachable from one client (the retry
+    // affordance disappears once the bubble leaves `errored`), so we do not pay the
+    // cost of folding the credential gate into the flip transaction.
     let status = db::run_status(pool, run_id)
         .await
         .map_err(|e| HandlerError::Internal(e.into()))?;
@@ -301,14 +310,15 @@ mod tests {
         serde_json::from_str(&line).expect("frame is JSON")
     }
 
-    /// Point the credential store at a fresh temp dir holding a CONNECTED
-    /// openai-codex credential, so the run-creation provider gate
-    /// (`handler::ensure_provider_connected`, added for ADR-0062) passes in these
-    /// Worker-free tests. Returns an RAII guard that holds the env lock AND removes
-    /// `INKSTONE_CREDENTIALS_DIR` on drop, so the process-global var never leaks to
-    /// a later test that expects it unset. Keep it bound for the whole test.
+    /// Point `INKSTONE_CREDENTIALS_DIR` at a fresh temp dir for one test, returning
+    /// an RAII guard that holds the env lock AND removes the var on drop — so the
+    /// mutation can never strand a stale dir for a later test, even if the test
+    /// panics mid-assert (the manual set/remove pattern leaks on a panic). When
+    /// `connected`, seeds an openai-codex credential so the run-creation provider
+    /// gate (`handler::ensure_provider_connected`, ADR-0062) passes; when not, the
+    /// dir stays empty (a disconnected provider). Keep the guard bound for the test.
     #[must_use]
-    fn connect_codex() -> CredentialGuard {
+    fn credentials_env(connected: bool) -> CredentialGuard {
         let guard = crate::credentials::env_lock();
         let tmp = tempfile::tempdir().expect("tempdir");
         let dir = tmp.path().join("credentials");
@@ -316,20 +326,22 @@ mod tests {
         unsafe {
             std::env::set_var("INKSTONE_CREDENTIALS_DIR", &dir);
         }
-        crate::credentials::write(
-            "openai-codex",
-            &crate::credentials::StoredCredential::Oauth(crate::credentials::Credentials {
-                access: "tok".to_string(),
-                refresh: "ref".to_string(),
-                expires: 9_999_999_999_999,
-                account_id: "acct".to_string(),
-            }),
-        )
-        .expect("write credential");
+        if connected {
+            crate::credentials::write(
+                "openai-codex",
+                &crate::credentials::StoredCredential::Oauth(crate::credentials::Credentials {
+                    access: "tok".to_string(),
+                    refresh: "ref".to_string(),
+                    expires: 9_999_999_999_999,
+                    account_id: "acct".to_string(),
+                }),
+            )
+            .expect("write credential");
+        }
         CredentialGuard { _guard: guard, _tmp: tmp }
     }
 
-    /// RAII cleanup for [`connect_codex`]: removes `INKSTONE_CREDENTIALS_DIR` and
+    /// RAII cleanup for [`credentials_env`]: removes `INKSTONE_CREDENTIALS_DIR` and
     /// releases the env lock + tempdir on drop, so the mutation can't strand a
     /// stale dir for a later test (fields are drop-order sinks, read via `_`).
     struct CredentialGuard {
@@ -355,7 +367,7 @@ mod tests {
     async fn errored_run_prepares_accepted_with_reused_ids() {
         // The resolved provider (default openai-codex) must be connected or the
         // ADR-0062 gate would return ProviderNotConnected before the flip.
-        let _cred = connect_codex();
+        let _cred = credentials_env(true);
         let pool = memory_pool().await;
         let hubs = hub::new_hubs();
         let (run_id, assistant_message_id) = seed_errored_run(&pool).await;
@@ -387,13 +399,8 @@ mod tests {
     /// the ordering bug (a connected-credential seed here would mask it).
     #[tokio::test]
     async fn non_errored_run_is_not_errored_no_spawn() {
-        let _guard = crate::credentials::env_lock();
-        let tmp = tempfile::tempdir().expect("tempdir");
-        // SAFETY: serialized by the credentials env lock; disconnected provider.
-        unsafe {
-            std::env::set_var("INKSTONE_CREDENTIALS_DIR", tmp.path().join("credentials"));
-        }
-
+        // NO credential (empty creds dir) on purpose — see the doc comment.
+        let _cred = credentials_env(false);
         let pool = memory_pool().await;
         let hubs = hub::new_hubs();
         let (tx, mut rx) = mpsc::unbounded_channel();
@@ -422,11 +429,6 @@ mod tests {
         );
         // No hub was created (no spawn) for a not_errored outcome.
         assert!(hub::get(&hubs, run_id).is_none(), "no hub → no Worker spawned");
-
-        // SAFETY: restore.
-        unsafe {
-            std::env::remove_var("INKSTONE_CREDENTIALS_DIR");
-        }
     }
 
     /// Retrying an errored Run whose re-resolved provider is DISCONNECTED frames a
@@ -435,16 +437,7 @@ mod tests {
     #[tokio::test]
     async fn disconnected_provider_frames_minus_32004_and_no_flip() {
         // Empty credential dir → the default openai-codex provider is not connected.
-        let _guard = crate::credentials::env_lock();
-        let tmp = tempfile::tempdir().expect("tempdir");
-        // SAFETY: serialized by the credentials env lock.
-        unsafe {
-            std::env::set_var(
-                "INKSTONE_CREDENTIALS_DIR",
-                tmp.path().join("credentials"),
-            );
-        }
-
+        let _cred = credentials_env(false);
         let pool = memory_pool().await;
         let hubs = hub::new_hubs();
         let (tx, mut rx) = mpsc::unbounded_channel();
@@ -469,11 +462,6 @@ mod tests {
             "a disconnected-provider retry must not flip the Run to running"
         );
         assert!(hub::get(&hubs, run_id).is_none(), "no hub → no Worker spawned");
-
-        // SAFETY: restore.
-        unsafe {
-            std::env::remove_var("INKSTONE_CREDENTIALS_DIR");
-        }
     }
 
     /// An unknown run id frames `unknown_run` and spawns nothing.

@@ -85,8 +85,9 @@ pub(super) async fn handle(
         // `worker::spawn` below. `out_tx.clone()` is this connection's outbound
         // channel: on a successful generation the titler frames a `thread/titled`
         // notification onto it (ADR-0047) so the creating tab's sidebar updates
-        // live. With no credential, or empty/whitespace output, it silently keeps
-        // the prompt-derived placeholder and pushes nothing.
+        // live. On empty/whitespace output it silently keeps the prompt-derived
+        // placeholder and pushes nothing. (The provider is guaranteed connected
+        // here: the gate above rejects a disconnected one before this point.)
         worker::spawn_title_generation(
             thread_id,
             params.prompt.clone(),
