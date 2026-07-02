@@ -1,6 +1,6 @@
 //! `model/catalog` serves the embedded `openai-codex` model catalog over the
 //! WebSocket (read-only, no params; ADR-0024). Catalog content is drift-tested
-//! against `pi-ai` in `packages/worker/src/models-catalog.test.ts`.
+//! against `pi-ai` in `packages/worker/test/models-catalog.test.ts`.
 
 use futures_util::SinkExt;
 use tokio_tungstenite::tungstenite::Message;

@@ -1,6 +1,6 @@
 //! The model catalog (ADR-0024): models available per provider, hand-mirrored
 //! from `pi-ai`'s `MODELS` and embedded as JSON. A Worker-side drift test
-//! (`packages/worker/src/models-catalog.test.ts`) guards the JSON against
+//! (`packages/worker/test/models-catalog.test.ts`) guards the JSON against
 //! `pi-ai` (ADR-0009 hand-mirror discipline).
 //!
 //! Connectable providers: `openai-codex` (OAuth, ADR-0023) and `openrouter`
@@ -112,7 +112,10 @@ mod tests {
         assert!(ids.contains(&"anthropic/claude-opus-4.8"));
         let vendors: std::collections::HashSet<&str> =
             ids.iter().filter_map(|id| id.split('/').next()).collect();
-        assert!(ids.len() > 3 && vendors.len() >= 2);
+        assert!(
+            ids.len() > 3 && vendors.len() >= 2,
+            "openrouter ships an expanded multi-vendor catalog, not just the original three"
+        );
     }
 
     #[test]
