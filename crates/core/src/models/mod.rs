@@ -109,7 +109,10 @@ mod tests {
         // `packages/worker/test/models-catalog.test.ts` (membership itself — the
         // curated subset — is intentionally not enforced); here we pin only that
         // the group loaded with the default and an expanded multi-vendor set.
-        assert!(ids.contains(&"anthropic/claude-opus-4.8"));
+        assert!(
+            ids.contains(&"anthropic/claude-opus-4.8"),
+            "openrouter ships its default model"
+        );
         let vendors: std::collections::HashSet<&str> =
             ids.iter().filter_map(|id| id.split('/').next()).collect();
         assert!(

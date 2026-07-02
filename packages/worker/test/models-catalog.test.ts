@@ -128,6 +128,14 @@ describe("model catalog drift", () => {
 			"openrouter group has embedded models",
 		).toBeGreaterThan(0);
 
+		// Ids are unique within the group. The per-model field-exact loop below
+		// checks each row against pi-ai independently, so it would not catch a
+		// duplicated id on its own.
+		const ids = provider.models.map((m) => m.id);
+		expect(new Set(ids).size, "openrouter model ids are unique").toBe(
+			ids.length,
+		);
+
 		// Same curated-subset drift invariant as openai-codex: every embedded model
 		// id still exists in pi-ai's (much larger) openrouter set, and each retained
 		// entry's {id,name,reasoning,input} matches pi-ai EXACTLY. Curation (we ship
