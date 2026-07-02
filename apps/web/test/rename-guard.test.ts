@@ -14,9 +14,10 @@ const BANNED = [
 	'data-role="agent"',
 ];
 
-// vitest runs with cwd = apps/web, so the source tree is <cwd>/src.
+// vitest runs with cwd = apps/web, so the source tree is <cwd>/src. This guard
+// lives in test/ (outside src/), so it never scans itself despite naming the
+// banned tokens as literals — no self-exclusion needed.
 const SRC_DIR = join(process.cwd(), "src");
-const SELF = join(SRC_DIR, "rename-guard.test.ts");
 
 function sourceFiles(dir: string): string[] {
 	const out: string[] = [];
@@ -24,7 +25,7 @@ function sourceFiles(dir: string): string[] {
 		const full = join(dir, entry.name);
 		if (entry.isDirectory()) {
 			out.push(...sourceFiles(full));
-		} else if (/\.(ts|tsx)$/.test(entry.name) && full !== SELF) {
+		} else if (/\.(ts|tsx)$/.test(entry.name)) {
 			out.push(full);
 		}
 	}
