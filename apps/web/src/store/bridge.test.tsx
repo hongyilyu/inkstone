@@ -3,6 +3,7 @@ import * as sdk from "@inkstone/ui-sdk";
 import {
 	type RunEventValue,
 	type RunId,
+	stubWsClient,
 	WsClient,
 	type WsError,
 	WsRequestError,
@@ -35,39 +36,8 @@ import {
 
 // Stub WsClient whose threadCreate fails; only that runs on the sendNewThread path.
 function makeFailingThreadCreateRuntime() {
-	const unused = Effect.die("not exercised in this test");
-	const stub = WsClient.of({
+	const stub = stubWsClient({
 		threadCreate: () => Effect.fail(new WsRequestError({ reason: "boom" })),
-		postMessage: () => unused,
-		threadList: () => unused,
-		getRunHistory: () => unused,
-		recurrencePreview: () => Effect.die("not exercised in this test"),
-		threadGet: () => unused,
-		threadRename: () => unused,
-		threadArchive: () => unused,
-		threadUnarchive: () => unused,
-		threadListArchived: () => unused,
-		listEntities: () => unused,
-		getBacklinks: () => unused,
-		observationQuery: () => unused,
-		observationUpdate: () => unused,
-		entityMutate: () => unused,
-		subscribeRun: () => unused,
-		cancelRun: () => unused,
-		retryRun: () => unused,
-		providerStatus: () => unused,
-		providerLoginStart: () => unused,
-		providerConfigure: () => unused,
-		providerTest: () => unused,
-		modelCatalog: () => unused,
-		settingsGet: () => unused,
-		settingsSet: () => unused,
-		proposalGet: () => unused,
-		rescanJournalEntry: () => unused,
-		proposalDecide: () => unused,
-		messageSearch: () => unused,
-		proposalNotifications: () => unused,
-		connectionStatus: () => Stream.empty,
 	});
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 }
@@ -94,38 +64,8 @@ describe("sendNewThread failure handling", () => {
 describe("onRunSettled (terminal seam → recent-Runs refresh)", () => {
 	/** A stub whose subscribeRun replays a fixed event sequence then closes. */
 	function makeRuntime(events: RunEventValue[]) {
-		const stub = WsClient.of({
-			threadCreate: () => Effect.die("unused"),
-			postMessage: () => Effect.die("unused"),
-			threadList: () => Effect.die("unused"),
-			getRunHistory: () => Effect.die("unused"),
-			recurrencePreview: () => Effect.die("not exercised in this test"),
-			threadGet: () => Effect.die("unused"),
-			threadRename: () => Effect.die("unused"),
-			threadArchive: () => Effect.die("unused"),
-			threadUnarchive: () => Effect.die("unused"),
-			threadListArchived: () => Effect.die("unused"),
-			listEntities: () => Effect.die("unused"),
-			getBacklinks: () => Effect.die("unused"),
-			observationQuery: () => Effect.die("unused"),
-			observationUpdate: () => Effect.die("unused"),
-			entityMutate: () => Effect.die("unused"),
+		const stub = stubWsClient({
 			subscribeRun: () => Stream.fromIterable<RunEventValue>(events),
-			cancelRun: () => Effect.die("unused"),
-			retryRun: () => Effect.die("unused"),
-			providerStatus: () => Effect.die("unused"),
-			providerLoginStart: () => Effect.die("unused"),
-			providerConfigure: () => Effect.die("unused"),
-			providerTest: () => Effect.die("unused"),
-			modelCatalog: () => Effect.die("unused"),
-			settingsGet: () => Effect.die("unused"),
-			settingsSet: () => Effect.die("unused"),
-			proposalGet: () => Effect.die("unused"),
-			rescanJournalEntry: () => Effect.die("unused"),
-			proposalDecide: () => Effect.die("unused"),
-			messageSearch: () => Effect.die("unused"),
-			proposalNotifications: () => Stream.empty,
-			connectionStatus: () => Stream.empty,
 		});
 		return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 	}
@@ -163,22 +103,7 @@ describe("onRunSettled (terminal seam → recent-Runs refresh)", () => {
 		const settled = vi.fn();
 		setOnRunSettled(settled);
 		// A stream that fails mid-flight rather than emitting a terminal event.
-		const stub = WsClient.of({
-			threadCreate: () => Effect.die("unused"),
-			postMessage: () => Effect.die("unused"),
-			threadList: () => Effect.die("unused"),
-			getRunHistory: () => Effect.die("unused"),
-			recurrencePreview: () => Effect.die("not exercised in this test"),
-			threadGet: () => Effect.die("unused"),
-			threadRename: () => Effect.die("unused"),
-			threadArchive: () => Effect.die("unused"),
-			threadUnarchive: () => Effect.die("unused"),
-			threadListArchived: () => Effect.die("unused"),
-			listEntities: () => Effect.die("unused"),
-			getBacklinks: () => Effect.die("unused"),
-			observationQuery: () => Effect.die("unused"),
-			observationUpdate: () => Effect.die("unused"),
-			entityMutate: () => Effect.die("unused"),
+		const stub = stubWsClient({
 			subscribeRun: (): Stream.Stream<RunEventValue, WsError> =>
 				Stream.fromIterable<RunEventValue>([
 					{ kind: "text_delta", delta: "partial" },
@@ -187,21 +112,6 @@ describe("onRunSettled (terminal seam → recent-Runs refresh)", () => {
 						Stream.fail(new WsRequestError({ reason: "socket closed" })),
 					),
 				),
-			cancelRun: () => Effect.die("unused"),
-			retryRun: () => Effect.die("unused"),
-			providerStatus: () => Effect.die("unused"),
-			providerLoginStart: () => Effect.die("unused"),
-			providerConfigure: () => Effect.die("unused"),
-			providerTest: () => Effect.die("unused"),
-			modelCatalog: () => Effect.die("unused"),
-			settingsGet: () => Effect.die("unused"),
-			settingsSet: () => Effect.die("unused"),
-			proposalGet: () => Effect.die("unused"),
-			rescanJournalEntry: () => Effect.die("unused"),
-			proposalDecide: () => Effect.die("unused"),
-			messageSearch: () => Effect.die("unused"),
-			proposalNotifications: () => Stream.empty,
-			connectionStatus: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 		const runId = "run-drop" as RunId;
@@ -218,39 +128,9 @@ describe("onRunSettled (terminal seam → recent-Runs refresh)", () => {
 		const settled = vi.fn();
 		setOnRunSettled(settled);
 		// A stream that never terminates — the fiber ends only via interruption.
-		const stub = WsClient.of({
-			threadCreate: () => Effect.die("unused"),
-			postMessage: () => Effect.die("unused"),
-			threadList: () => Effect.die("unused"),
-			getRunHistory: () => Effect.die("unused"),
-			recurrencePreview: () => Effect.die("not exercised in this test"),
-			threadGet: () => Effect.die("unused"),
-			threadRename: () => Effect.die("unused"),
-			threadArchive: () => Effect.die("unused"),
-			threadUnarchive: () => Effect.die("unused"),
-			threadListArchived: () => Effect.die("unused"),
-			listEntities: () => Effect.die("unused"),
-			getBacklinks: () => Effect.die("unused"),
-			observationQuery: () => Effect.die("unused"),
-			observationUpdate: () => Effect.die("unused"),
-			entityMutate: () => Effect.die("unused"),
+		const stub = stubWsClient({
 			subscribeRun: (): Stream.Stream<RunEventValue, WsError> =>
 				Stream.fromQueue(Effect.runSync(Queue.unbounded<RunEventValue>())),
-			cancelRun: () => Effect.die("unused"),
-			retryRun: () => Effect.die("unused"),
-			providerStatus: () => Effect.die("unused"),
-			providerLoginStart: () => Effect.die("unused"),
-			providerConfigure: () => Effect.die("unused"),
-			providerTest: () => Effect.die("unused"),
-			modelCatalog: () => Effect.die("unused"),
-			settingsGet: () => Effect.die("unused"),
-			settingsSet: () => Effect.die("unused"),
-			proposalGet: () => Effect.die("unused"),
-			rescanJournalEntry: () => Effect.die("unused"),
-			proposalDecide: () => Effect.die("unused"),
-			messageSearch: () => Effect.die("unused"),
-			proposalNotifications: () => Stream.empty,
-			connectionStatus: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 		const runId = "run-interrupt" as RunId;
@@ -276,39 +156,10 @@ describe("decideProposal resume fiber tracking (M2)", () => {
 			(_runId: RunId): Stream.Stream<RunEventValue, WsError> =>
 				Stream.fromQueue(Effect.runSync(Queue.unbounded<RunEventValue>())),
 		);
-		const stub = WsClient.of({
-			threadCreate: () => Effect.die("unused"),
-			postMessage: () => Effect.die("unused"),
-			threadList: () => Effect.die("unused"),
-			getRunHistory: () => Effect.die("unused"),
-			recurrencePreview: () => Effect.die("not exercised in this test"),
-			threadGet: () => Effect.die("unused"),
-			threadRename: () => Effect.die("unused"),
-			threadArchive: () => Effect.die("unused"),
-			threadUnarchive: () => Effect.die("unused"),
-			threadListArchived: () => Effect.die("unused"),
-			listEntities: () => Effect.die("unused"),
-			getBacklinks: () => Effect.die("unused"),
-			observationQuery: () => Effect.die("unused"),
-			observationUpdate: () => Effect.die("unused"),
-			entityMutate: () => Effect.die("unused"),
+		const stub = stubWsClient({
 			subscribeRun,
-			cancelRun: () => Effect.die("unused"),
-			retryRun: () => Effect.die("unused"),
-			providerStatus: () => Effect.die("unused"),
-			providerLoginStart: () => Effect.die("unused"),
-			providerConfigure: () => Effect.die("unused"),
-			providerTest: () => Effect.die("unused"),
-			modelCatalog: () => Effect.die("unused"),
-			settingsGet: () => Effect.die("unused"),
-			settingsSet: () => Effect.die("unused"),
-			proposalGet: () => Effect.die("unused"),
-			rescanJournalEntry: () => Effect.die("unused"),
 			proposalDecide: () =>
 				Effect.succeed({ status: "accepted" as const, entity_id: "e1" }),
-			messageSearch: () => Effect.die("unused"),
-			proposalNotifications: () => Stream.empty,
-			connectionStatus: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
@@ -366,39 +217,7 @@ describe("cancelRun (ADR-0014)", () => {
 			(_runId: RunId): Stream.Stream<RunEventValue, WsError> =>
 				Stream.fromQueue(Effect.runSync(Queue.unbounded<RunEventValue>())),
 		);
-		const stub = WsClient.of({
-			threadCreate: () => Effect.die("unused"),
-			postMessage: () => Effect.die("unused"),
-			threadList: () => Effect.die("unused"),
-			getRunHistory: () => Effect.die("unused"),
-			recurrencePreview: () => Effect.die("not exercised in this test"),
-			threadGet: () => Effect.die("unused"),
-			threadRename: () => Effect.die("unused"),
-			threadArchive: () => Effect.die("unused"),
-			threadUnarchive: () => Effect.die("unused"),
-			threadListArchived: () => Effect.die("unused"),
-			listEntities: () => Effect.die("unused"),
-			getBacklinks: () => Effect.die("unused"),
-			observationQuery: () => Effect.die("unused"),
-			observationUpdate: () => Effect.die("unused"),
-			entityMutate: () => Effect.die("unused"),
-			subscribeRun,
-			cancelRun,
-			retryRun: () => Effect.die("unused"),
-			providerStatus: () => Effect.die("unused"),
-			providerLoginStart: () => Effect.die("unused"),
-			providerConfigure: () => Effect.die("unused"),
-			providerTest: () => Effect.die("unused"),
-			modelCatalog: () => Effect.die("unused"),
-			settingsGet: () => Effect.die("unused"),
-			settingsSet: () => Effect.die("unused"),
-			proposalGet: () => Effect.die("unused"),
-			rescanJournalEntry: () => Effect.die("unused"),
-			proposalDecide: () => Effect.die("unused"),
-			messageSearch: () => Effect.die("unused"),
-			proposalNotifications: () => Stream.empty,
-			connectionStatus: () => Stream.empty,
-		});
+		const stub = stubWsClient({ subscribeRun, cancelRun });
 		return {
 			runtime: ManagedRuntime.make(Layer.succeed(WsClient, stub)),
 			cancelRun,
@@ -534,38 +353,10 @@ describe("cancelRun (ADR-0014)", () => {
 			(_runId: RunId): Stream.Stream<RunEventValue, WsError> =>
 				Stream.fromQueue(Effect.runSync(Queue.unbounded<RunEventValue>())),
 		);
-		const stub = WsClient.of({
-			threadCreate: () => Effect.die("unused"),
-			postMessage: () => Effect.die("unused"),
-			threadList: () => Effect.die("unused"),
-			getRunHistory: () => Effect.die("unused"),
-			recurrencePreview: () => Effect.die("not exercised in this test"),
-			threadGet: () => Effect.die("unused"),
-			threadRename: () => Effect.die("unused"),
-			threadArchive: () => Effect.die("unused"),
-			threadUnarchive: () => Effect.die("unused"),
-			threadListArchived: () => Effect.die("unused"),
-			listEntities: () => Effect.die("unused"),
-			getBacklinks: () => Effect.die("unused"),
-			observationQuery: () => Effect.die("unused"),
-			observationUpdate: () => Effect.die("unused"),
-			entityMutate: () => Effect.die("unused"),
+		const stub = stubWsClient({
 			subscribeRun,
 			cancelRun: () => Effect.fail(new WsRequestError({ reason: "boom" })),
 			retryRun: () => Effect.fail(new WsRequestError({ reason: "boom" })),
-			providerStatus: () => Effect.die("unused"),
-			providerLoginStart: () => Effect.die("unused"),
-			providerConfigure: () => Effect.die("unused"),
-			providerTest: () => Effect.die("unused"),
-			modelCatalog: () => Effect.die("unused"),
-			settingsGet: () => Effect.die("unused"),
-			settingsSet: () => Effect.die("unused"),
-			proposalGet: () => Effect.die("unused"),
-			rescanJournalEntry: () => Effect.die("unused"),
-			proposalDecide: () => Effect.die("unused"),
-			messageSearch: () => Effect.die("unused"),
-			proposalNotifications: () => Stream.empty,
-			connectionStatus: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 		const runId = "run-fail" as RunId;
@@ -597,41 +388,14 @@ describe("cancelRun (ADR-0014)", () => {
 			(_runId: RunId): Stream.Stream<RunEventValue, WsError> =>
 				Stream.fromQueue(Effect.runSync(Queue.unbounded<RunEventValue>())),
 		);
-		const stub = WsClient.of({
-			threadCreate: () => Effect.die("unused"),
-			postMessage: () => Effect.die("unused"),
-			threadList: () => Effect.die("unused"),
-			getRunHistory: () => Effect.die("unused"),
-			recurrencePreview: () => Effect.die("not exercised in this test"),
-			threadGet: () => Effect.die("unused"),
-			threadRename: () => Effect.die("unused"),
-			threadArchive: () => Effect.die("unused"),
-			threadUnarchive: () => Effect.die("unused"),
-			threadListArchived: () => Effect.die("unused"),
-			listEntities: () => Effect.die("unused"),
-			getBacklinks: () => Effect.die("unused"),
-			observationQuery: () => Effect.die("unused"),
-			observationUpdate: () => Effect.die("unused"),
-			entityMutate: () => Effect.die("unused"),
+		const stub = stubWsClient({
 			subscribeRun,
 			cancelRun: () => Effect.succeed({ outcome: "accepted" as const }),
 			retryRun: () => Effect.succeed({ outcome: "accepted" as const }),
-			providerStatus: () => Effect.die("unused"),
-			providerLoginStart: () => Effect.die("unused"),
-			providerConfigure: () => Effect.die("unused"),
-			providerTest: () => Effect.die("unused"),
-			modelCatalog: () => Effect.die("unused"),
-			settingsGet: () => Effect.die("unused"),
-			settingsSet: () => Effect.die("unused"),
-			proposalGet: () => Effect.die("unused"),
-			rescanJournalEntry: () => Effect.die("unused"),
 			proposalDecide: () =>
 				Effect.promise(() => decideGate).pipe(
 					Effect.as({ status: "accepted" as const, entity_id: "e1" }),
 				),
-			messageSearch: () => Effect.die("unused"),
-			proposalNotifications: () => Stream.empty,
-			connectionStatus: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 		const runId = "run-race" as RunId;

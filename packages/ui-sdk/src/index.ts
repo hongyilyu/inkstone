@@ -300,6 +300,73 @@ export class WsClient extends Context.Tag("@inkstone/ui-sdk/WsClient")<
 	}
 >() {}
 
+/** The full WsClient service shape — every verb + stream member. */
+export type WsClientService = Context.Tag.Service<typeof WsClient>;
+
+/**
+ * Build a WsClient test double: `overrides` replaces exactly the members a test
+ * exercises; every other member gets a safe default. The two default kinds encode
+ * the members' distinct failure semantics:
+ *
+ * - The 31 request VERBS default to `Effect.die("WsClient.<method> not stubbed")`.
+ *   A verb returns a value the code under test asserts on, so an un-stubbed call
+ *   must fail LOUD with a named cause — never silently return a wrong value.
+ * - The 3 STREAM members (`subscribeRun`, `proposalNotifications`,
+ *   `connectionStatus`) default to `Stream.empty`. These are subscribed passively
+ *   at mount (the connection pill, the proposal channel, a run's event feed); an
+ *   empty stream is the honest "no events" quiescent state, so a component mounts
+ *   cleanly without the test having to hand-stub a stream it does not drive. A
+ *   test that DOES drive events overrides the member with a real stream.
+ *
+ * The `Partial<WsClientService>` spread stays compiler-checked, so a NEW verb
+ * added to the tag makes this factory (and thus the whole suite) fail typecheck
+ * until handled — the same safety the old hand-listed stubs gave, minus the
+ * ~1000-line, 37-file stub blast on every verb addition.
+ *
+ * Test-only: it lives in the shipped `@inkstone/ui-sdk` surface (so web specs can
+ * import it) but constructs nothing live and is never used by production code.
+ */
+export function stubWsClient(
+	overrides: Partial<WsClientService> = {},
+): WsClientService {
+	const die = (method: string) => () =>
+		Effect.die(`WsClient.${method} not stubbed`);
+	return WsClient.of({
+		threadCreate: die("threadCreate"),
+		postMessage: die("postMessage"),
+		threadList: die("threadList"),
+		getRunHistory: die("getRunHistory"),
+		recurrencePreview: die("recurrencePreview"),
+		threadGet: die("threadGet"),
+		threadRename: die("threadRename"),
+		threadArchive: die("threadArchive"),
+		threadUnarchive: die("threadUnarchive"),
+		threadListArchived: die("threadListArchived"),
+		listEntities: die("listEntities"),
+		getBacklinks: die("getBacklinks"),
+		observationQuery: die("observationQuery"),
+		observationUpdate: die("observationUpdate"),
+		entityMutate: die("entityMutate"),
+		rescanJournalEntry: die("rescanJournalEntry"),
+		messageSearch: die("messageSearch"),
+		subscribeRun: () => Stream.empty,
+		cancelRun: die("cancelRun"),
+		retryRun: die("retryRun"),
+		providerStatus: die("providerStatus"),
+		providerLoginStart: die("providerLoginStart"),
+		providerConfigure: die("providerConfigure"),
+		providerTest: die("providerTest"),
+		modelCatalog: die("modelCatalog"),
+		settingsGet: die("settingsGet"),
+		settingsSet: die("settingsSet"),
+		proposalGet: die("proposalGet"),
+		proposalDecide: die("proposalDecide"),
+		proposalNotifications: () => Stream.empty,
+		connectionStatus: () => Stream.empty,
+		...overrides,
+	});
+}
+
 export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 	Layer.scoped(
 		WsClient,

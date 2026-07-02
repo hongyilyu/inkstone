@@ -1,17 +1,13 @@
-import { WsClient, type WsError } from "@inkstone/ui-sdk";
+import { stubWsClient, WsClient } from "@inkstone/ui-sdk";
 import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Effect, Layer, ManagedRuntime, Stream } from "effect";
+import { Effect, Layer, ManagedRuntime } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 import { RuntimeProvider } from "@/runtime";
 import { renderWithQuery } from "@/test-utils/renderWithQuery";
 import { ModelPicker } from "./ModelPicker.js";
 
 afterEach(cleanup);
-
-const die = (): Effect.Effect<never, never> => Effect.die("unused");
-const dieStream = (): Stream.Stream<never, WsError> =>
-	Stream.fromEffect(Effect.die("unused")) as Stream.Stream<never, WsError>;
 
 const CATALOG = {
 	providers: [
@@ -78,42 +74,15 @@ function makeRuntime(
 		effort: "off",
 		enabled_models: enabledModels,
 	};
-	const stub = WsClient.of({
-		threadCreate: die,
-		postMessage: die,
-		threadList: die,
-		getRunHistory: die,
-		recurrencePreview: () => Effect.die("not exercised in this test"),
-		threadGet: die,
-		threadRename: die,
-		threadArchive: die,
-		threadUnarchive: die,
-		threadListArchived: die,
-		listEntities: die,
-		getBacklinks: die,
-		observationQuery: die,
-		observationUpdate: die,
-		entityMutate: die,
-		subscribeRun: dieStream,
-		cancelRun: die,
-		retryRun: die,
+	const stub = stubWsClient({
 		providerStatus: () =>
 			statusPending ? Effect.never : Effect.succeed({ providers }),
-		providerLoginStart: die,
-		providerConfigure: die,
-		providerTest: die,
 		modelCatalog: () => Effect.succeed(CATALOG),
 		// When `settingsPending`, settings/get never resolves — modelling the
 		// async gap where the catalog has loaded but settings have not.
 		settingsGet: () =>
 			settingsPending ? Effect.never : Effect.succeed(settingsResult),
 		settingsSet: () => Effect.succeed(settingsResult),
-		proposalGet: die,
-		rescanJournalEntry: die,
-		proposalDecide: die,
-		messageSearch: die,
-		proposalNotifications: () => Stream.empty,
-		connectionStatus: () => Stream.empty,
 	});
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 }

@@ -1,5 +1,5 @@
 import type { ObservationRow } from "@inkstone/protocol";
-import { WsClient, WsRequestError } from "@inkstone/ui-sdk";
+import { stubWsClient, WsClient, WsRequestError } from "@inkstone/ui-sdk";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderHook, waitFor } from "@testing-library/react";
 import { Effect, Layer, ManagedRuntime } from "effect";
@@ -42,40 +42,7 @@ describe("assembleObservationItems", () => {
 
 // A WsClient stub whose `observationQuery` runs the supplied handler; the rest die.
 function makeRuntime(observationQuery: WsClient["Type"]["observationQuery"]) {
-	const unused = Effect.die("not exercised in this test");
-	const stub = WsClient.of({
-		threadCreate: () => unused,
-		postMessage: () => unused,
-		threadList: () => unused,
-		getRunHistory: () => unused,
-		recurrencePreview: () => unused,
-		threadGet: () => unused,
-		threadRename: () => unused,
-		threadArchive: () => unused,
-		threadUnarchive: () => unused,
-		threadListArchived: () => unused,
-		listEntities: () => unused,
-		getBacklinks: () => unused,
-		observationQuery,
-		observationUpdate: () => unused,
-		entityMutate: () => unused,
-		subscribeRun: () => unused,
-		cancelRun: () => unused,
-		retryRun: () => unused,
-		providerStatus: () => unused,
-		providerLoginStart: () => unused,
-		providerConfigure: () => unused,
-		providerTest: () => unused,
-		modelCatalog: () => unused,
-		settingsGet: () => unused,
-		settingsSet: () => unused,
-		proposalGet: () => unused,
-		rescanJournalEntry: () => unused,
-		proposalDecide: () => unused,
-		messageSearch: () => unused,
-		proposalNotifications: () => unused,
-		connectionStatus: () => unused,
-	});
+	const stub = stubWsClient({ observationQuery });
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 }
 

@@ -2,6 +2,7 @@ import type { RunRetryResult } from "@inkstone/protocol";
 import {
 	type RunEventValue,
 	type RunId,
+	stubWsClient,
 	WsClient,
 	WsRequestError,
 } from "@inkstone/ui-sdk";
@@ -31,42 +32,12 @@ function makeStubRuntime(
 	queue: Queue.Queue<RunEventValue>,
 	retryOutcome: RunRetryResult["outcome"],
 ) {
-	const unused = Effect.die("not used in this test");
 	const retrySpy = vi.fn((_runId: RunId) =>
 		Effect.succeed({ outcome: retryOutcome }),
 	);
-	const stub = WsClient.of({
-		threadCreate: () => unused,
-		postMessage: () => unused,
-		threadList: () => unused,
-		getRunHistory: () => unused,
-		recurrencePreview: () => unused,
-		threadGet: () => unused,
-		listEntities: () => unused,
-		getBacklinks: () => unused,
-		observationQuery: () => unused,
-		observationUpdate: () => unused,
-		entityMutate: () => unused,
+	const stub = stubWsClient({
 		subscribeRun: () => Stream.fromQueue(queue),
-		cancelRun: () => unused,
 		retryRun: retrySpy,
-		providerStatus: () => unused,
-		providerLoginStart: () => unused,
-		providerConfigure: () => unused,
-		providerTest: () => unused,
-		modelCatalog: () => unused,
-		settingsGet: () => unused,
-		settingsSet: () => unused,
-		proposalGet: () => unused,
-		rescanJournalEntry: () => unused,
-		proposalDecide: () => unused,
-		messageSearch: () => unused,
-		threadRename: () => unused,
-		threadArchive: () => unused,
-		threadUnarchive: () => unused,
-		threadListArchived: () => unused,
-		proposalNotifications: () => Stream.empty,
-		connectionStatus: () => Stream.empty,
 	});
 	return {
 		runtime: ManagedRuntime.make(Layer.succeed(WsClient, stub)),
@@ -283,40 +254,9 @@ describe("retryRun bridge — re-drives the SAME Run, no seeded turn", () => {
 		const runId = "run-down" as RunId;
 		seedErroredTurn(runId);
 
-		const unused = Effect.die("not used in this test");
-		const stub = WsClient.of({
-			threadCreate: () => unused,
-			postMessage: () => unused,
-			threadList: () => unused,
-			getRunHistory: () => unused,
-			recurrencePreview: () => unused,
-			threadGet: () => unused,
-			listEntities: () => unused,
-			getBacklinks: () => unused,
-			observationQuery: () => unused,
-			observationUpdate: () => unused,
-			entityMutate: () => unused,
-			subscribeRun: () => Stream.empty,
-			cancelRun: () => unused,
+		const stub = stubWsClient({
 			retryRun: () =>
 				Effect.fail(new WsRequestError({ reason: "connection_lost" })),
-			providerStatus: () => unused,
-			providerLoginStart: () => unused,
-			providerConfigure: () => unused,
-			providerTest: () => unused,
-			modelCatalog: () => unused,
-			settingsGet: () => unused,
-			settingsSet: () => unused,
-			proposalGet: () => unused,
-			rescanJournalEntry: () => unused,
-			proposalDecide: () => unused,
-			messageSearch: () => unused,
-			threadRename: () => unused,
-			threadArchive: () => unused,
-			threadUnarchive: () => unused,
-			threadListArchived: () => unused,
-			proposalNotifications: () => Stream.empty,
-			connectionStatus: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
@@ -348,40 +288,10 @@ describe("retryRun bridge — re-drives the SAME Run, no seeded turn", () => {
  * prior stream fiber rather than leaving two fibers on the same runId.
  */
 function makePerCallStubRuntime(queues: Queue.Queue<RunEventValue>[]) {
-	const unused = Effect.die("not used in this test");
 	let call = 0;
-	const stub = WsClient.of({
-		threadCreate: () => unused,
-		postMessage: () => unused,
-		threadList: () => unused,
-		getRunHistory: () => unused,
-		recurrencePreview: () => unused,
-		threadGet: () => unused,
-		listEntities: () => unused,
-		getBacklinks: () => unused,
-		observationQuery: () => unused,
-		observationUpdate: () => unused,
-		entityMutate: () => unused,
+	const stub = stubWsClient({
 		subscribeRun: () => Stream.fromQueue(queues[call++]),
-		cancelRun: () => unused,
 		retryRun: () => Effect.succeed({ outcome: "accepted" as const }),
-		providerStatus: () => unused,
-		providerLoginStart: () => unused,
-		providerConfigure: () => unused,
-		providerTest: () => unused,
-		modelCatalog: () => unused,
-		settingsGet: () => unused,
-		settingsSet: () => unused,
-		proposalGet: () => unused,
-		rescanJournalEntry: () => unused,
-		proposalDecide: () => unused,
-		messageSearch: () => unused,
-		threadRename: () => unused,
-		threadArchive: () => unused,
-		threadUnarchive: () => unused,
-		threadListArchived: () => unused,
-		proposalNotifications: () => Stream.empty,
-		connectionStatus: () => Stream.empty,
 	});
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 }

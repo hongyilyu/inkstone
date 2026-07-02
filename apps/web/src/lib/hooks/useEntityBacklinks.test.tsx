@@ -1,8 +1,13 @@
 import type { EntityBacklinksResult } from "@inkstone/protocol";
-import { WsClient, type WsError, WsRequestError } from "@inkstone/ui-sdk";
+import {
+	stubWsClient,
+	WsClient,
+	type WsError,
+	WsRequestError,
+} from "@inkstone/ui-sdk";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderHook, waitFor } from "@testing-library/react";
-import { Effect, Layer, ManagedRuntime, Stream } from "effect";
+import { Effect, Layer, ManagedRuntime } from "effect";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RuntimeProvider } from "@/runtime";
@@ -99,40 +104,7 @@ function makeRuntime(
 		entityId: string,
 	) => Effect.Effect<EntityBacklinksResult, WsError>,
 ) {
-	const unused = Effect.die("not exercised in this test");
-	const stub = WsClient.of({
-		threadCreate: () => unused,
-		postMessage: () => unused,
-		threadList: () => unused,
-		getRunHistory: () => unused,
-		recurrencePreview: () => Effect.die("not exercised in this test"),
-		threadGet: () => unused,
-		threadRename: () => unused,
-		threadArchive: () => unused,
-		threadUnarchive: () => unused,
-		threadListArchived: () => unused,
-		listEntities: () => unused,
-		getBacklinks,
-		observationQuery: () => unused,
-		observationUpdate: () => unused,
-		entityMutate: () => unused,
-		subscribeRun: () => unused,
-		cancelRun: () => unused,
-		retryRun: () => unused,
-		providerStatus: () => unused,
-		providerLoginStart: () => unused,
-		providerConfigure: () => unused,
-		providerTest: () => unused,
-		modelCatalog: () => unused,
-		settingsGet: () => unused,
-		settingsSet: () => unused,
-		proposalGet: () => unused,
-		rescanJournalEntry: () => unused,
-		proposalDecide: () => unused,
-		messageSearch: () => unused,
-		proposalNotifications: () => unused,
-		connectionStatus: () => Stream.empty,
-	});
+	const stub = stubWsClient({ getBacklinks });
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 }
 

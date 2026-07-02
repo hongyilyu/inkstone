@@ -1,4 +1,4 @@
-import { WsClient, type WsError } from "@inkstone/ui-sdk";
+import { stubWsClient, WsClient } from "@inkstone/ui-sdk";
 import {
 	createMemoryHistory,
 	createRouter,
@@ -6,7 +6,7 @@ import {
 } from "@tanstack/react-router";
 import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Effect, Layer, Stream } from "effect";
+import { Effect, Layer } from "effect";
 import { act } from "react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { routeTree } from "@/routeTree.gen";
@@ -14,23 +14,10 @@ import { RuntimeProvider } from "@/runtime";
 import { openCommand, resetCommandStore } from "@/store/command";
 import { renderWithQuery } from "@/test-utils/renderWithQuery";
 
-const die = (): Effect.Effect<never, never> => Effect.die("unused");
-const dieStream = (): Stream.Stream<never, WsError> =>
-	Stream.fromEffect(Effect.die("unused")) as Stream.Stream<never, WsError>;
-
 // Stub: empty threadList so the open-triggered query resolves; Alice (person)
 // and a matching daycare todo seeded as stable live entity/list results.
-const stub = WsClient.of({
-	threadCreate: die,
-	postMessage: die,
+const stub = stubWsClient({
 	threadList: () => Effect.succeed({ threads: [] }),
-	getRunHistory: () => Effect.die("not exercised"),
-	recurrencePreview: () => Effect.die("not exercised in this test"),
-	threadGet: die,
-	threadRename: die,
-	threadArchive: die,
-	threadUnarchive: die,
-	threadListArchived: die,
 	listEntities: (type) => {
 		if (type === "person") {
 			return Effect.succeed({
@@ -76,10 +63,6 @@ const stub = WsClient.of({
 		}
 		return Effect.succeed({ entities: [] });
 	},
-	getBacklinks: die,
-	observationQuery: die,
-	observationUpdate: die,
-	entityMutate: die,
 	messageSearch: (query) =>
 		query.trim().toLowerCase().includes("daycare")
 			? Effect.succeed({
@@ -96,21 +79,6 @@ const stub = WsClient.of({
 					],
 				})
 			: Effect.succeed({ hits: [] }),
-	subscribeRun: dieStream,
-	cancelRun: die,
-	retryRun: die,
-	providerStatus: die,
-	providerLoginStart: die,
-	providerConfigure: die,
-	providerTest: die,
-	modelCatalog: die,
-	settingsGet: die,
-	settingsSet: die,
-	proposalGet: die,
-	rescanJournalEntry: die,
-	proposalDecide: die,
-	proposalNotifications: () => Stream.empty,
-	connectionStatus: () => Stream.empty,
 });
 
 function renderApp() {

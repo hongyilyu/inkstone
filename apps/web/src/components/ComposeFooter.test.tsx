@@ -1,7 +1,7 @@
-import { WsClient, type WsError } from "@inkstone/ui-sdk";
+import { stubWsClient, WsClient } from "@inkstone/ui-sdk";
 import { cleanup, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Effect, Layer, ManagedRuntime, Stream } from "effect";
+import { Effect, Layer, ManagedRuntime } from "effect";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RuntimeProvider } from "@/runtime";
 import { renderWithQuery } from "@/test-utils/renderWithQuery";
@@ -9,35 +9,9 @@ import { ComposeFooter } from "./ComposeFooter.js";
 
 afterEach(cleanup);
 
-const die = (): Effect.Effect<never, never> => Effect.die("unused");
-const dieStream = (): Stream.Stream<never, WsError> =>
-	Stream.fromEffect(Effect.die("unused")) as Stream.Stream<never, WsError>;
-
 /** A stub runtime whose catalog + settings feed the composer's ModelPicker. */
 function makeRuntime() {
-	const stub = WsClient.of({
-		threadCreate: die,
-		postMessage: die,
-		threadList: die,
-		getRunHistory: die,
-		recurrencePreview: () => Effect.die("not exercised in this test"),
-		threadGet: die,
-		threadRename: die,
-		threadArchive: die,
-		threadUnarchive: die,
-		threadListArchived: die,
-		listEntities: die,
-		getBacklinks: die,
-		observationQuery: die,
-		observationUpdate: die,
-		entityMutate: die,
-		subscribeRun: dieStream,
-		cancelRun: die,
-		retryRun: die,
-		providerStatus: die,
-		providerLoginStart: die,
-		providerConfigure: die,
-		providerTest: die,
+	const stub = stubWsClient({
 		modelCatalog: () =>
 			Effect.succeed({
 				providers: [
@@ -69,12 +43,6 @@ function makeRuntime() {
 				effort: "off",
 				enabled_models: [],
 			}),
-		proposalGet: die,
-		rescanJournalEntry: die,
-		proposalDecide: die,
-		messageSearch: die,
-		proposalNotifications: () => Stream.empty,
-		connectionStatus: () => Stream.empty,
 	});
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 }

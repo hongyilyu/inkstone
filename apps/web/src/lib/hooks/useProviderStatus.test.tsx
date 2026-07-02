@@ -1,5 +1,5 @@
 import type { ProviderStatusResult } from "@inkstone/protocol";
-import { WsClient } from "@inkstone/ui-sdk";
+import { stubWsClient, WsClient } from "@inkstone/ui-sdk";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderHook, waitFor } from "@testing-library/react";
 import { Effect, Layer, ManagedRuntime } from "effect";
@@ -15,43 +15,12 @@ function makeRuntime(
 	result: ProviderStatusResult,
 	counter?: { calls: number },
 ) {
-	const unused = Effect.die("not exercised in this test");
-	const stub = WsClient.of({
-		threadCreate: () => unused,
-		postMessage: () => unused,
-		threadList: () => unused,
-		getRunHistory: () => unused,
-		recurrencePreview: () => unused,
-		threadGet: () => unused,
-		threadRename: () => unused,
-		threadArchive: () => unused,
-		threadUnarchive: () => unused,
-		threadListArchived: () => unused,
-		listEntities: () => unused,
-		getBacklinks: () => unused,
-		observationQuery: () => unused,
-		observationUpdate: () => unused,
-		entityMutate: () => unused,
-		subscribeRun: () => unused,
-		cancelRun: () => unused,
-		retryRun: () => unused,
+	const stub = stubWsClient({
 		providerStatus: () =>
 			Effect.sync(() => {
 				if (counter) counter.calls += 1;
 				return result;
 			}),
-		providerLoginStart: () => unused,
-		providerConfigure: () => unused,
-		providerTest: () => unused,
-		modelCatalog: () => unused,
-		settingsGet: () => unused,
-		settingsSet: () => unused,
-		proposalGet: () => unused,
-		rescanJournalEntry: () => unused,
-		proposalDecide: () => unused,
-		messageSearch: () => unused,
-		proposalNotifications: () => unused,
-		connectionStatus: () => unused,
 	});
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 }

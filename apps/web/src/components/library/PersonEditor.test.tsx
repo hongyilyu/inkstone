@@ -2,11 +2,16 @@ import type {
 	EntityMutateParams,
 	EntityMutateResult,
 } from "@inkstone/protocol";
-import { WsClient, type WsError, WsRequestError } from "@inkstone/ui-sdk";
+import {
+	stubWsClient,
+	WsClient,
+	type WsError,
+	WsRequestError,
+} from "@inkstone/ui-sdk";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Effect, Layer, ManagedRuntime, Stream } from "effect";
+import { Effect, Layer, ManagedRuntime } from "effect";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Person } from "@/lib/libraryItems";
@@ -19,40 +24,7 @@ function makeRuntime(
 		params: EntityMutateParams,
 	) => Effect.Effect<EntityMutateResult, WsError>,
 ) {
-	const unused = Effect.die("not exercised in this test");
-	const stub = WsClient.of({
-		threadCreate: () => unused,
-		postMessage: () => unused,
-		threadList: () => unused,
-		getRunHistory: () => unused,
-		recurrencePreview: () => Effect.die("not exercised in this test"),
-		threadGet: () => unused,
-		threadRename: () => unused,
-		threadArchive: () => unused,
-		threadUnarchive: () => unused,
-		threadListArchived: () => unused,
-		listEntities: () => unused,
-		getBacklinks: () => unused,
-		observationQuery: () => unused,
-		observationUpdate: () => unused,
-		entityMutate,
-		subscribeRun: () => unused,
-		cancelRun: () => unused,
-		retryRun: () => unused,
-		providerStatus: () => unused,
-		providerLoginStart: () => unused,
-		providerConfigure: () => unused,
-		providerTest: () => unused,
-		modelCatalog: () => unused,
-		settingsGet: () => unused,
-		settingsSet: () => unused,
-		proposalGet: () => unused,
-		rescanJournalEntry: () => unused,
-		proposalDecide: () => unused,
-		messageSearch: () => unused,
-		proposalNotifications: () => unused,
-		connectionStatus: () => Stream.empty,
-	});
+	const stub = stubWsClient({ entityMutate });
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 }
 

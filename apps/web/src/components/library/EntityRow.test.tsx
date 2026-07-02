@@ -3,7 +3,7 @@ import type {
 	EntityMutateParams,
 	EntityMutateResult,
 } from "@inkstone/protocol";
-import { WsClient, type WsError } from "@inkstone/ui-sdk";
+import { stubWsClient, WsClient, type WsError } from "@inkstone/ui-sdk";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
 	cleanup,
@@ -44,39 +44,9 @@ function renderTodoRow(
 	node: ReactNode,
 	entityMutate: EntityMutate = () => Effect.die("entityMutate not exercised"),
 ) {
-	const unused = Effect.die("not exercised in this test");
-	const stub = WsClient.of({
-		threadCreate: () => unused,
-		postMessage: () => unused,
-		threadList: () => unused,
-		getRunHistory: () => unused,
-		recurrencePreview: () => unused,
-		threadGet: () => unused,
-		threadRename: () => unused,
-		threadArchive: () => unused,
-		threadUnarchive: () => unused,
-		threadListArchived: () => unused,
+	const stub = stubWsClient({
 		listEntities: () => Effect.succeed({ entities: [] as Rows }),
-		getBacklinks: () => unused,
-		observationQuery: () => unused,
-		observationUpdate: () => unused,
 		entityMutate,
-		subscribeRun: () => unused,
-		cancelRun: () => unused,
-		retryRun: () => unused,
-		providerStatus: () => unused,
-		providerLoginStart: () => unused,
-		providerConfigure: () => unused,
-		providerTest: () => unused,
-		modelCatalog: () => unused,
-		settingsGet: () => unused,
-		settingsSet: () => unused,
-		proposalGet: () => unused,
-		rescanJournalEntry: () => unused,
-		proposalDecide: () => unused,
-		messageSearch: () => unused,
-		proposalNotifications: () => unused,
-		connectionStatus: () => unused,
 	});
 	const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 	const client = new QueryClient({

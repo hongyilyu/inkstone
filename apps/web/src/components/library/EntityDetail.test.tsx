@@ -4,7 +4,12 @@ import type {
 	EntityMutateResult,
 	JournalEntryRescanResult,
 } from "@inkstone/protocol";
-import { WsClient, type WsError, WsRequestError } from "@inkstone/ui-sdk";
+import {
+	stubWsClient,
+	WsClient,
+	type WsError,
+	WsRequestError,
+} from "@inkstone/ui-sdk";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
 	cleanup,
@@ -15,7 +20,7 @@ import {
 	within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Effect, Layer, ManagedRuntime, Stream } from "effect";
+import { Effect, Layer, ManagedRuntime } from "effect";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -74,39 +79,10 @@ function makeRuntime(
 	) => Effect.Effect<JournalEntryRescanResult, WsError> = () =>
 		Effect.die("rescan not exercised in this test"),
 ) {
-	const unused = Effect.die("not exercised in this test");
-	const stub = WsClient.of({
-		threadCreate: () => unused,
-		postMessage: () => unused,
-		threadList: () => unused,
-		getRunHistory: () => unused,
-		recurrencePreview: () => Effect.die("not exercised in this test"),
-		threadGet: () => unused,
-		threadRename: () => unused,
-		threadArchive: () => unused,
-		threadUnarchive: () => unused,
-		threadListArchived: () => unused,
-		listEntities: () => unused,
+	const stub = stubWsClient({
 		getBacklinks,
-		observationQuery: () => unused,
-		observationUpdate: () => unused,
 		entityMutate,
 		rescanJournalEntry,
-		subscribeRun: () => unused,
-		cancelRun: () => unused,
-		retryRun: () => unused,
-		providerStatus: () => unused,
-		providerLoginStart: () => unused,
-		providerConfigure: () => unused,
-		providerTest: () => unused,
-		modelCatalog: () => unused,
-		settingsGet: () => unused,
-		settingsSet: () => unused,
-		proposalGet: () => unused,
-		proposalDecide: () => unused,
-		messageSearch: () => unused,
-		proposalNotifications: () => unused,
-		connectionStatus: () => Stream.empty,
 	});
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 }
