@@ -44,7 +44,10 @@ export function TodayOverview() {
 		);
 	}
 
-	if (isError) {
+	// Only surface the read-failure when there's nothing cached to show. A
+	// background refetch that fails while we still hold usable rows must NOT blank
+	// Today (mirrors EntityCollection's isError-with-no-data guard).
+	if (isError && (data?.length ?? 0) === 0) {
 		return (
 			<Shell>
 				<EmptyState
@@ -58,7 +61,11 @@ export function TodayOverview() {
 		);
 	}
 
-	if (data.length === 0) {
+	// `data` is defined here (isPending returned above); the weakened isError guard
+	// keeps a stale cache usable, so read through a defined local.
+	const items = data ?? [];
+
+	if (items.length === 0) {
 		return (
 			<Shell>
 				<EmptyState
@@ -81,10 +88,15 @@ export function TodayOverview() {
 		);
 	}
 
-	const due = dueSoonTodos(data);
-	const recent = recentlyCapturedItems(data, 6);
-	const projects = activeProjectItems(data).slice(0, 4);
-	const reviewable = projectsForReview(data);
+	const due = dueSoonTodos(items);
+	const recent = recentlyCapturedItems(items, 6);
+	// "In focus" means genuinely active — on-hold projects are paused, not in
+	// focus, so exclude them here even though activeProjectItems keeps them (it
+	// backs count contexts where on-hold still belongs).
+	const projects = activeProjectItems(items)
+		.filter((p) => p.status === "active")
+		.slice(0, 4);
+	const reviewable = projectsForReview(items);
 
 	const summary = due.length > 0 ? `${due.length} due soon` : "";
 
@@ -147,7 +159,7 @@ export function TodayOverview() {
 							<TodoRow
 								key={todo.id}
 								todo={todo}
-								allItems={data}
+								allItems={items}
 								onSelect={open}
 								onComplete={() => {}}
 								onQuickDefer={() => {}}
@@ -161,7 +173,7 @@ export function TodayOverview() {
 				<Section title="In focus" count={projects.length} delay={180}>
 					<div className="-mx-2 flex flex-col">
 						{projects.map((project) => {
-							const { done, total } = projectProgress(data, project);
+							const { done, total } = projectProgress(items, project);
 							const pct = total === 0 ? 0 : Math.round((done / total) * 100);
 							return (
 								<button
@@ -211,7 +223,7 @@ export function TodayOverview() {
 						to="/library/health"
 						icon={HeartPulse}
 						label="Health"
-						blurb="Tracking — coming soon"
+						blurb="Your recorded observations"
 					/>
 					<TopicDigest
 						to="/library/media"
@@ -226,8 +238,8 @@ export function TodayOverview() {
 }
 
 /** One entry card in the cross-topic digest strip: a labelled link into a topic.
- * Honest copy only — `blurb` names what the topic holds (or, for the Health stub,
- * what it WILL hold) without inventing any stats (ADR-0054 dec.5). */
+ * Honest copy only — `blurb` names what the topic holds without inventing any
+ * stats (ADR-0054 dec.5). */
 function TopicDigest({
 	to,
 	icon: Icon,

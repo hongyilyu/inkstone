@@ -623,6 +623,42 @@ describe("ChatColumn", () => {
 		expect(screen.queryByTestId("typing-indicator")).toBeNull();
 	});
 
+	it("suppresses the typing indicator while a turn is parked on a Proposal", async () => {
+		// A proposal-first (or tool→proposal) turn parks with no leading text but
+		// KEEPS status "streaming" (only a terminal event flips it). The run is idle,
+		// waiting on the user's decision — the "Assistant is typing" dots must not show.
+		const runtime = makeStubRuntime({ runId: "run-parked", events: [] });
+		seedAssistantMessage("threadA", {
+			id: "a-parked",
+			role: "assistant",
+			status: "streaming",
+			run_id: "r-parked",
+			segments: [
+				{
+					kind: "tool_call",
+					call: {
+						id: "tc",
+						name: "propose_workspace_mutation",
+						status: "completed",
+					},
+				},
+				{ kind: "proposal", runId: "r-parked" },
+			],
+		});
+		setPendingProposal({
+			proposal_id: "p-parked",
+			run_id: "r-parked",
+			mutation_kind: "create_todo",
+			payload: { todo: { title: "Draft" } },
+			rationale: null,
+			status: "pending",
+		});
+
+		await renderFocused(runtime, "threadA");
+
+		expect(screen.queryByTestId("typing-indicator")).toBeNull();
+	});
+
 	it("copies the message text and swaps to the Check icon on a completed assistant message", async () => {
 		const user = userEvent.setup();
 		const writeText = vi.fn().mockResolvedValue(undefined);

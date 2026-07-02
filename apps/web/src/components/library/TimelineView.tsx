@@ -60,12 +60,18 @@ export function TimelineView({
 }) {
 	const { data, isPending, isError } = useLibraryItems();
 	const items = data ?? [];
-	const days = buildTimeline(items)
+	const allDays = buildTimeline(items);
+	const days = allDays
 		.map((day) => ({
 			...day,
 			events: day.events.filter((e) => eventMatchesFilter(e.chips, filter)),
 		}))
 		.filter((day) => day.events.length > 0);
+	// Distinguish "no journal entries at all" from "the active People/Projects
+	// filter hid every entry" — the same empty copy for both would lie ("nothing
+	// here yet") when the timeline actually has entries, just none touching that
+	// kind. `filter !== "all"` narrows the message to the filter.
+	const filteredEmpty = days.length === 0 && allDays.length > 0;
 
 	return (
 		<div className="flex h-full min-h-0">
@@ -112,8 +118,16 @@ export function TimelineView({
 						) : days.length === 0 ? (
 							<EmptyState
 								icon={History}
-								title="Nothing on the timeline yet"
-								description="Journal Entries show up here in time order, with the people and projects each one touches."
+								title={
+									filteredEmpty
+										? "No entries match this filter"
+										: "Nothing on the timeline yet"
+								}
+								description={
+									filteredEmpty
+										? "No Journal Entries touch a matching item. Switch to All to see the full timeline."
+										: "Journal Entries show up here in time order, with the people and projects each one touches."
+								}
 							/>
 						) : (
 							<ol className="flex flex-col gap-6">
@@ -128,7 +142,7 @@ export function TimelineView({
 													key={event.entry.id}
 													className="rounded-lg border border-border/60 px-4 py-3"
 												>
-													<p className="text-pretty text-foreground text-sm leading-relaxed">
+													<p className="break-words text-pretty text-foreground text-sm leading-relaxed">
 														{event.excerpt}
 													</p>
 													{(() => {

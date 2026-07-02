@@ -109,6 +109,58 @@ function TodoStatusGlyph({ todo }: { todo: Todo }) {
 }
 
 /**
+ * The shared inline "complete this todo" circle button (ADR-0033/0034) — a pure
+ * presentational control used by every list that offers one-click completion
+ * (the GTD/Today rows via {@link CompleteCircle}, the Review view's todo rows).
+ * Renders the three states — done (CircleCheck), failed (AlertTriangle, so a
+ * swallowed write is visible and the click retries), and active (Circle) — with a
+ * single source for the glyph switch, aria-label, and title so the two callers
+ * can't drift. The caller owns the mutation; this owns only the look + a11y.
+ */
+export function CompleteTodoCircle({
+	done,
+	failed,
+	pending,
+	onClick,
+}: {
+	done: boolean;
+	failed: boolean;
+	pending: boolean;
+	onClick: () => void;
+}) {
+	return (
+		<button
+			type="button"
+			onClick={onClick}
+			disabled={done || pending}
+			aria-label={
+				done
+					? "Completed"
+					: failed
+						? "Couldn't complete todo — try again"
+						: "Mark todo complete"
+			}
+			title={failed ? "Couldn't complete. Try again." : undefined}
+			className="rounded-full focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-default"
+		>
+			{done ? (
+				<CircleCheck className="size-[18px] text-primary" aria-hidden />
+			) : failed ? (
+				<AlertTriangle
+					className="size-[18px] text-destructive transition-colors hover:text-primary"
+					aria-hidden
+				/>
+			) : (
+				<Circle
+					className="size-[18px] text-muted-foreground transition-colors hover:text-primary"
+					aria-hidden
+				/>
+			)}
+		</button>
+	);
+}
+
+/**
  * An interactive status circle that completes an ACTIVE todo in one click via a
  * direct `update_todo` (status=completed + completed_at), per ADR-0033/0034.
  * Lives in the same `w-9` slot as the read-only glyph; its own button so it does
@@ -131,22 +183,12 @@ function CompleteCircle({ todo }: { todo: Todo }) {
 	};
 
 	return (
-		<button
-			type="button"
+		<CompleteTodoCircle
+			done={done}
+			failed={mutation.isError}
+			pending={mutation.isPending}
 			onClick={complete}
-			disabled={done || mutation.isPending}
-			aria-label={done ? "Completed" : "Mark todo complete"}
-			className="rounded-full focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-default"
-		>
-			{done ? (
-				<CircleCheck className="size-[18px] text-primary" aria-hidden />
-			) : (
-				<Circle
-					className="size-[18px] text-muted-foreground transition-colors hover:text-primary"
-					aria-hidden
-				/>
-			)}
-		</button>
+		/>
 	);
 }
 
@@ -170,9 +212,21 @@ function QuickDeferMenu({ todo }: { todo: Todo }) {
 			baseline: todoDraftFromVm(todo),
 			draft: { ...todoDraftFromVm(todo), deferDay: day },
 		});
-		if (params) mutation.mutate(params);
-		setOpen(false);
-		setPicking(false);
+		// No diff (deferring to the date it already carries) is a genuine no-op —
+		// just close, nothing to write. Otherwise write and close only on success,
+		// so a failed defer keeps the menu open with a visible error rather than
+		// silently swallowing the failure.
+		if (!params) {
+			setOpen(false);
+			setPicking(false);
+			return;
+		}
+		mutation.mutate(params, {
+			onSuccess: () => {
+				setOpen(false);
+				setPicking(false);
+			},
+		});
 	};
 
 	return (
@@ -180,7 +234,12 @@ function QuickDeferMenu({ todo }: { todo: Todo }) {
 			open={open}
 			onOpenChange={(next) => {
 				setOpen(next);
-				if (!next) setPicking(false);
+				if (!next) {
+					setPicking(false);
+					// Clear any failure when the menu closes so reopening it doesn't
+					// show a stale "Couldn't defer" alert from a prior attempt.
+					mutation.reset();
+				}
 			}}
 		>
 			<Popover.Trigger
@@ -237,6 +296,14 @@ function QuickDeferMenu({ todo }: { todo: Todo }) {
 								)}
 							</li>
 						</ul>
+						{mutation.isError ? (
+							<p
+								role="alert"
+								className="px-3 pt-1 pb-1 text-destructive text-xs"
+							>
+								Couldn't defer. Try again.
+							</p>
+						) : null}
 					</Popover.Popup>
 				</Popover.Positioner>
 			</Popover.Portal>

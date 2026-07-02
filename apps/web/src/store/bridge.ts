@@ -469,6 +469,11 @@ export function startProposalStream(runtime: WsRuntime): void {
 						resolved_plan: p.resolved_plan,
 						status: "pending",
 					});
+					// Parking is a Run milestone the feed reflects (Running → Waiting).
+					// Refresh the recent-Runs feed so it doesn't sit on a stale "Running"
+					// until the next terminal/decide (the feed refresh hook is fired for
+					// any milestone the feed shows, not only terminals).
+					onRunSettled?.();
 				} else {
 					setProposalStatus(n.run_id, n.status);
 				}

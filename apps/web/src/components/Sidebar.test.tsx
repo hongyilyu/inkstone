@@ -1,4 +1,4 @@
-import { type RunEventValue, WsClient } from "@inkstone/ui-sdk";
+import { type RunEventValue, WsClient, type WsError } from "@inkstone/ui-sdk";
 import { cleanup, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Effect, Layer, ManagedRuntime, Stream } from "effect";
@@ -113,6 +113,56 @@ function makeRecordingRuntime() {
 		threadRename,
 		threadArchive,
 	};
+}
+
+// Stub whose `threadRename` FAILS, so the row's failure surface (inline alert +
+// stays in edit mode with the typed title intact) can be asserted.
+function makeFailingRenameRuntime() {
+	const unused = Effect.die("not exercised in this test");
+	const stub = WsClient.of({
+		threadCreate: () => unused,
+		postMessage: () => unused,
+		threadList: () =>
+			Effect.succeed({
+				threads: [
+					{ id: "t-1", title: "Standup digest", last_activity_at: 2 },
+					{ id: "t-2", title: "API rename plan", last_activity_at: 1 },
+				],
+			}),
+		threadGet: () => unused,
+		threadRename: () =>
+			Effect.fail({
+				_tag: "WsRequestError",
+				reason: "connection_lost",
+			} as WsError),
+		threadArchive: () => unused,
+		threadUnarchive: () => unused,
+		threadListArchived: () => unused,
+		getRunHistory: () => Effect.die("not exercised"),
+		recurrencePreview: () => Effect.die("not exercised in this test"),
+		listEntities: () => unused,
+		getBacklinks: () => unused,
+		observationQuery: () => unused,
+		observationUpdate: () => unused,
+		entityMutate: () => unused,
+		subscribeRun: () => unused,
+		cancelRun: () => unused,
+		retryRun: () => unused,
+		providerStatus: () => unused,
+		providerLoginStart: () => unused,
+		providerConfigure: () => unused,
+		providerTest: () => unused,
+		modelCatalog: () => unused,
+		settingsGet: () => unused,
+		settingsSet: () => unused,
+		proposalGet: () => unused,
+		rescanJournalEntry: () => unused,
+		proposalDecide: () => unused,
+		messageSearch: () => unused,
+		proposalNotifications: () => unused,
+		connectionStatus: () => Stream.empty,
+	});
+	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 }
 
 // Stub whose thread list grows on `threadCreate`, so a fresh read after creation includes the new thread.
@@ -494,6 +544,54 @@ describe("Sidebar", () => {
 		expect(
 			screen.queryByRole("textbox", { name: /rename thread/i }),
 		).not.toBeInTheDocument();
+
+		await runtime.dispose();
+	});
+
+	it("surfaces a failed rename inline and keeps the typed title editable", async () => {
+		const user = userEvent.setup();
+		const runtime = makeFailingRenameRuntime();
+
+		renderChatRoute(<Sidebar />, { runtime });
+
+		await user.dblClick(
+			await screen.findByRole("button", { name: "Standup digest" }),
+		);
+		const input = screen.getByRole("textbox", { name: /rename thread/i });
+		await user.clear(input);
+		await user.type(input, "Daily standup{Enter}");
+
+		// The rename failed: an inline alert appears, and the input STAYS open with
+		// the typed title intact (never silently discarded back to the old title).
+		expect(await screen.findByRole("alert")).toHaveTextContent(
+			/couldn't rename/i,
+		);
+		expect(screen.getByRole("textbox", { name: /rename thread/i })).toHaveValue(
+			"Daily standup",
+		);
+
+		await runtime.dispose();
+	});
+
+	it("offers a keyboard-reachable rename affordance (not double-click only)", async () => {
+		const user = userEvent.setup();
+		const { runtime } = makeRecordingRuntime();
+
+		renderChatRoute(<Sidebar />, { runtime });
+
+		await screen.findByRole("button", { name: "Standup digest" });
+		// A dedicated Rename button opens the editor without a double-click. Drive it
+		// by KEYBOARD (focus + Enter), not a click, so the test actually proves the
+		// keyboard path the affordance exists for (ADR-0052 a11y).
+		const renameButton = screen.getByRole("button", {
+			name: "Rename thread Standup digest",
+		});
+		renameButton.focus();
+		expect(renameButton).toHaveFocus();
+		await user.keyboard("{Enter}");
+		expect(screen.getByRole("textbox", { name: /rename thread/i })).toHaveValue(
+			"Standup digest",
+		);
 
 		await runtime.dispose();
 	});

@@ -1027,7 +1027,14 @@ function MediaBody({ media }: { media: Media }) {
 				<Badge variant="secondary">{MEDIA_MEDIUM_LABEL[media.medium]}</Badge>
 				<Badge>{MEDIA_STATE_LABEL[media.state]}</Badge>
 				{media.rating != null ? (
-					<Badge variant="secondary">{"★".repeat(media.rating)}</Badge>
+					// The stars are decorative; the accessible name carries the number so
+					// a screen reader announces "Rated 4 out of 5", not "star star star…".
+					<Badge
+						variant="secondary"
+						aria-label={`Rated ${media.rating} out of 5`}
+					>
+						<span aria-hidden>{"★".repeat(media.rating)}</span>
+					</Badge>
 				) : null}
 				{media.finishedAt ? (
 					<Badge variant="secondary">

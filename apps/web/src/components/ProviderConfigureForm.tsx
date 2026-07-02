@@ -57,7 +57,12 @@ export function ProviderConfigureForm({
 					autoComplete="off"
 					placeholder={`Paste your ${providerLabel} API key`}
 					value={key}
-					onChange={(e) => setKey(e.target.value)}
+					onChange={(e) => {
+						setKey(e.target.value);
+						// Clear a prior failure as the user corrects the key — a stale
+						// "couldn't save that key" alarm shouldn't linger over new input.
+						if (error) setError(false);
+					}}
 					disabled={pending}
 				/>
 			</div>

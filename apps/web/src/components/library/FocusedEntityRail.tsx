@@ -80,7 +80,7 @@ export function FocusedEntityRail({
 											key={event.entry.id}
 											className="rounded-lg border border-border/60 px-3 py-2"
 										>
-											<p className="text-pretty text-foreground text-sm leading-relaxed">
+											<p className="break-words text-pretty text-foreground text-sm leading-relaxed">
 												{event.excerpt}
 											</p>
 										</li>
