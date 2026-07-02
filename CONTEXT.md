@@ -131,10 +131,10 @@ _Avoid_: timeline table, event store, materialized timeline (ADR-0057 is a query
 A deferred Topic (issue #253) reserved for an Observation read surface (bodyweight, nutrition, sleep, etc.). Ships in v1 as an honest "coming soon" placeholder, not fake data.
 
 **Media**:
-A deferred Topic (issue #252) reserved to replace the first-model Bookmark surface. Ships in v1 as an honest "coming soon" placeholder, not fake data.
+The live Topic (issue #252, ADR-0059) surfacing the **Media** Entity Type — a faceted `EntityCollection` over the user's read/watch queue, with direct user CRUD (create/edit/delete) through the shared rail. It replaced the first-model Bookmark surface, which no longer exists.
 
 **Entity**:
-A structured concept Inkstone tracks for query and reasoning — a Journal Entry, Person, Project, Todo, Bookmark, etc. An Entity enters tier 2 (becoming a **Canonical Entity**) one of two ways: the agent proposes it and the user accepts the Proposal, or the user creates or edits it directly from a Client. Before that, an agent-surfaced Entity exists only as an *extraction candidate* in tier 3. Threads, Runs, and Proposals are not Entities — they are application state.
+A structured concept Inkstone tracks for query and reasoning — a Journal Entry, Person, Project, Todo, Media, etc. An Entity enters tier 2 (becoming a **Canonical Entity**) one of two ways: the agent proposes it and the user accepts the Proposal, or the user creates or edits it directly from a Client. Before that, an agent-surfaced Entity exists only as an *extraction candidate* in tier 3. Threads, Runs, and Proposals are not Entities — they are application state.
 _Avoid_: object, record, item.
 
 **Journal Entry**:
@@ -161,9 +161,9 @@ _Avoid_: area, folder, tag, topic bucket.
 A descriptive Entity for a real person the user wants Inkstone to remember. Person data stays small: name, optional note, and optional aliases. Tasks and Projects involving a Person are derived from Todo Person References; journal history is derived from Entity References in Journal Entries.
 _Avoid_: contact record as CRM source of truth.
 
-**Bookmark**:
-A small descriptive Entity for an outward-pointing thing the user saved to return to — a link, an article, a reference. Bookmark data stays small: a required title, an optional url, an optional note, and optional tags. Like a Person, it is a user-curated standalone Entity that derives richness from references rather than embedding it; it is not a read-it-later queue, a clipping archive, or a document store. A Bookmark is created directly by the user (a direct user CRUD write, no Proposal and no Journal Entry anchor) — the agent does not author Bookmarks in the first model. Distinct from an Entity Reference (a Journal Entry's inline pointer at another Entity) and an Entity Source (the provenance relation explaining why an Entity exists): a Bookmark is itself a Canonical Entity the user owns, not a relationship between Entities.
-_Avoid_: link, reference, source (all name other concepts), read-later, clipping, resource.
+**Media**:
+A user-curated Entity Type (ADR-0059) for a thing the user means to read or watch — a queue that becomes a log. Media data (`media_core`): a required `title`, a required `medium` (`link | article | book | tv | movie`), a required lifecycle `state` (`backlog | consuming | done | abandoned`), and the clearable optionals `rating` (1–5 positive int), `finished_at` (local datetime), `url`, `note`, and `tags`. Finish fields (`rating`/`finished_at`) belong to a terminal state. Like a Person, it is a user-curated standalone Entity created by direct user CRUD (no Proposal, no Journal Entry anchor) — the agent does not author Media in the first model. It replaced the pre-release first-model **Bookmark** (a flat `{title, url?, note?, tags?}` saved link with no lifecycle); Bookmark's shape is a strict subset of Media's, so the replacement was a clean widening of the same Entity slot, not a parallel surface. Distinct from an Entity Reference (a Journal Entry's inline pointer at another Entity) and an Entity Source (the provenance relation explaining why an Entity exists): a Media item is itself a Canonical Entity the user owns, not a relationship between Entities.
+_Avoid_: Bookmark (the retired first-model name), link, reference, source (all name other concepts), read-later, clipping, resource.
 
 **Todo Person Reference**:
 A Todo-specific association from a Todo to a Canonical Person, with role `waiting_on` or `related`. It is distinct from Entity Reference: Entity Reference renders inline Journal Entry prose, while Todo Person Reference powers task views such as "waiting on Alice" and Person backlinks. A Todo may reference multiple People, but at most once per Person; `waiting_on` includes "related" semantics.
@@ -193,7 +193,7 @@ A tier-2 timestamped tracker fact, such as bodyweight, nutrition intake, exercis
 _Avoid_: tracker entity, log entity, journal child, arbitrary JSON blob.
 
 **Entity Type**:
-The kind of structured concept an Entity is — Journal Entry, Todo, Person, Project, Bookmark, etc. Determines how the Entity's content is validated, versioned, and described back to the Worker when a Proposal that creates it is accepted. Distinct from the *change* a Proposal makes (create / update / delete): the Entity Type is *what the thing is*, the change is *what is being done to it*.
+The kind of structured concept an Entity is — Journal Entry, Todo, Person, Project, Media, etc. Determines how the Entity's content is validated, versioned, and described back to the Worker when a Proposal that creates it is accepted. Distinct from the *change* a Proposal makes (create / update / delete): the Entity Type is *what the thing is*, the change is *what is being done to it*.
 _Avoid_: kind (overloaded across unrelated discriminators), entity class, entity category.
 
 **Entity Source**:
