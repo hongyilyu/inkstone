@@ -1,4 +1,9 @@
-import { type RunEventValue, WsClient, type WsError } from "@inkstone/ui-sdk";
+import {
+	type RunEventValue,
+	stubWsClient,
+	WsClient,
+	type WsError,
+} from "@inkstone/ui-sdk";
 import { cleanup, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Effect, Layer, ManagedRuntime, Stream } from "effect";
@@ -11,10 +16,7 @@ import { Sidebar } from "./Sidebar.js";
 
 // Stub WsClient whose `threadList` returns a fixed set of threads.
 function makeStubRuntime() {
-	const unused = Effect.die("not exercised in this test");
-	const stub = WsClient.of({
-		threadCreate: () => unused,
-		postMessage: () => unused,
+	const stub = stubWsClient({
 		threadList: () =>
 			Effect.succeed({
 				threads: [
@@ -22,34 +24,6 @@ function makeStubRuntime() {
 					{ id: "t-2", title: "API rename plan", last_activity_at: 1 },
 				],
 			}),
-		threadGet: () => unused,
-		threadRename: () => unused,
-		threadArchive: () => unused,
-		threadUnarchive: () => unused,
-		threadListArchived: () => unused,
-		getRunHistory: () => Effect.die("not exercised"),
-		recurrencePreview: () => Effect.die("not exercised in this test"),
-		listEntities: () => unused,
-		getBacklinks: () => unused,
-		observationQuery: () => unused,
-		observationUpdate: () => unused,
-		entityMutate: () => unused,
-		subscribeRun: () => unused,
-		cancelRun: () => unused,
-		retryRun: () => unused,
-		providerStatus: () => unused,
-		providerLoginStart: () => unused,
-		providerConfigure: () => unused,
-		providerTest: () => unused,
-		modelCatalog: () => unused,
-		settingsGet: () => unused,
-		settingsSet: () => unused,
-		proposalGet: () => unused,
-		rescanJournalEntry: () => unused,
-		proposalDecide: () => unused,
-		messageSearch: () => unused,
-		proposalNotifications: () => unused,
-		connectionStatus: () => Stream.empty,
 	});
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 }
@@ -58,12 +32,9 @@ function makeStubRuntime() {
 // of the `Effect.die` placeholders in makeStubRuntime), so the rename/archive
 // ACTIONS can be asserted. `threadList` returns the same fixed pair.
 function makeRecordingRuntime() {
-	const unused = Effect.die("not exercised in this test");
 	const threadRename = vi.fn((_id: string, _title: string) => {});
 	const threadArchive = vi.fn((_id: string) => {});
-	const stub = WsClient.of({
-		threadCreate: () => unused,
-		postMessage: () => unused,
+	const stub = stubWsClient({
 		threadList: () =>
 			Effect.succeed({
 				threads: [
@@ -71,7 +42,6 @@ function makeRecordingRuntime() {
 					{ id: "t-2", title: "API rename plan", last_activity_at: 1 },
 				],
 			}),
-		threadGet: () => unused,
 		threadRename: (threadId: string, title: string) =>
 			Effect.sync(() => {
 				threadRename(threadId, title);
@@ -82,31 +52,6 @@ function makeRecordingRuntime() {
 				threadArchive(threadId);
 				return { thread_id: threadId };
 			}),
-		threadUnarchive: () => unused,
-		threadListArchived: () => unused,
-		getRunHistory: () => Effect.die("not exercised"),
-		recurrencePreview: () => Effect.die("not exercised in this test"),
-		listEntities: () => unused,
-		getBacklinks: () => unused,
-		observationQuery: () => unused,
-		observationUpdate: () => unused,
-		entityMutate: () => unused,
-		subscribeRun: () => unused,
-		cancelRun: () => unused,
-		retryRun: () => unused,
-		providerStatus: () => unused,
-		providerLoginStart: () => unused,
-		providerConfigure: () => unused,
-		providerTest: () => unused,
-		modelCatalog: () => unused,
-		settingsGet: () => unused,
-		settingsSet: () => unused,
-		proposalGet: () => unused,
-		rescanJournalEntry: () => unused,
-		proposalDecide: () => unused,
-		messageSearch: () => unused,
-		proposalNotifications: () => unused,
-		connectionStatus: () => Stream.empty,
 	});
 	return {
 		runtime: ManagedRuntime.make(Layer.succeed(WsClient, stub)),
@@ -118,10 +63,7 @@ function makeRecordingRuntime() {
 // Stub whose `threadRename` FAILS, so the row's failure surface (inline alert +
 // stays in edit mode with the typed title intact) can be asserted.
 function makeFailingRenameRuntime() {
-	const unused = Effect.die("not exercised in this test");
-	const stub = WsClient.of({
-		threadCreate: () => unused,
-		postMessage: () => unused,
+	const stub = stubWsClient({
 		threadList: () =>
 			Effect.succeed({
 				threads: [
@@ -129,38 +71,11 @@ function makeFailingRenameRuntime() {
 					{ id: "t-2", title: "API rename plan", last_activity_at: 1 },
 				],
 			}),
-		threadGet: () => unused,
 		threadRename: () =>
 			Effect.fail({
 				_tag: "WsRequestError",
 				reason: "connection_lost",
 			} as WsError),
-		threadArchive: () => unused,
-		threadUnarchive: () => unused,
-		threadListArchived: () => unused,
-		getRunHistory: () => Effect.die("not exercised"),
-		recurrencePreview: () => Effect.die("not exercised in this test"),
-		listEntities: () => unused,
-		getBacklinks: () => unused,
-		observationQuery: () => unused,
-		observationUpdate: () => unused,
-		entityMutate: () => unused,
-		subscribeRun: () => unused,
-		cancelRun: () => unused,
-		retryRun: () => unused,
-		providerStatus: () => unused,
-		providerLoginStart: () => unused,
-		providerConfigure: () => unused,
-		providerTest: () => unused,
-		modelCatalog: () => unused,
-		settingsGet: () => unused,
-		settingsSet: () => unused,
-		proposalGet: () => unused,
-		rescanJournalEntry: () => unused,
-		proposalDecide: () => unused,
-		messageSearch: () => unused,
-		proposalNotifications: () => unused,
-		connectionStatus: () => Stream.empty,
 	});
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 }
@@ -172,7 +87,7 @@ function makeGrowingStubRuntime(opts: {
 	readonly events: readonly RunEventValue[];
 }) {
 	const threads: { id: string; title: string; last_activity_at: number }[] = [];
-	const stub = WsClient.of({
+	const stub = stubWsClient({
 		threadCreate: (prompt: string) =>
 			Effect.sync(() => {
 				threads.unshift({
@@ -184,34 +99,7 @@ function makeGrowingStubRuntime(opts: {
 			}),
 		postMessage: () => Effect.succeed(opts.runId),
 		threadList: () => Effect.sync(() => ({ threads: [...threads] })),
-		getRunHistory: () => Effect.die("not exercised"),
-		recurrencePreview: () => Effect.die("not exercised in this test"),
-		threadGet: () => Effect.die("not exercised"),
-		threadRename: () => Effect.die("not exercised"),
-		threadArchive: () => Effect.die("not exercised"),
-		threadUnarchive: () => Effect.die("not exercised"),
-		threadListArchived: () => Effect.die("not exercised"),
-		listEntities: () => Effect.die("not exercised"),
-		getBacklinks: () => Effect.die("not exercised"),
-		observationQuery: () => Effect.die("not exercised"),
-		observationUpdate: () => Effect.die("not exercised"),
-		entityMutate: () => Effect.die("not exercised"),
 		subscribeRun: () => Stream.fromIterable(opts.events),
-		cancelRun: () => Effect.die("not exercised"),
-		retryRun: () => Effect.die("not exercised"),
-		providerStatus: () => Effect.die("not exercised"),
-		providerLoginStart: () => Effect.die("not exercised"),
-		providerConfigure: () => Effect.die("not exercised"),
-		providerTest: () => Effect.die("not exercised"),
-		modelCatalog: () => Effect.die("not exercised"),
-		settingsGet: () => Effect.die("not exercised"),
-		settingsSet: () => Effect.die("not exercised"),
-		proposalGet: () => Effect.die("not exercised"),
-		rescanJournalEntry: () => Effect.die("not exercised"),
-		proposalDecide: () => Effect.die("not exercised"),
-		messageSearch: () => Effect.die("not exercised"),
-		proposalNotifications: () => Stream.empty,
-		connectionStatus: () => Stream.empty,
 	});
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 }

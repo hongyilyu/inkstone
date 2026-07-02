@@ -1,5 +1,5 @@
 import type { RunHistoryResult } from "@inkstone/protocol";
-import { WsClient, type WsError } from "@inkstone/ui-sdk";
+import { stubWsClient, WsClient, type WsError } from "@inkstone/ui-sdk";
 import {
 	createMemoryHistory,
 	createRouter,
@@ -7,7 +7,7 @@ import {
 } from "@tanstack/react-router";
 import { cleanup, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Effect, Layer, ManagedRuntime, Stream } from "effect";
+import { Effect, Layer, ManagedRuntime } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 import { routeTree } from "@/routeTree.gen";
 import { RuntimeProvider } from "@/runtime";
@@ -41,10 +41,7 @@ describe("_chat layout route (ADR-0061)", () => {
 	});
 
 	it("navigates to a run's thread route when a feed row is clicked", async () => {
-		const unused = Effect.die("not exercised in this test");
-		const stub = WsClient.of({
-			threadCreate: () => unused,
-			postMessage: () => unused,
+		const stub = stubWsClient({
 			threadList: () => Effect.succeed({ threads: [] }),
 			getRunHistory: (): Effect.Effect<RunHistoryResult, WsError> =>
 				Effect.succeed({
@@ -58,33 +55,8 @@ describe("_chat layout route (ADR-0061)", () => {
 						},
 					],
 				}),
-			recurrencePreview: () => unused,
 			threadGet: () => Effect.never,
-			threadRename: () => unused,
-			threadArchive: () => unused,
-			threadUnarchive: () => unused,
-			threadListArchived: () => unused,
 			listEntities: () => Effect.succeed({ entities: [] }),
-			getBacklinks: () => unused,
-			observationQuery: () => unused,
-			observationUpdate: () => unused,
-			entityMutate: () => unused,
-			subscribeRun: () => unused,
-			cancelRun: () => unused,
-			retryRun: () => unused,
-			providerStatus: () => unused,
-			providerLoginStart: () => unused,
-			providerConfigure: () => unused,
-			providerTest: () => unused,
-			modelCatalog: () => unused,
-			settingsGet: () => unused,
-			settingsSet: () => unused,
-			proposalGet: () => unused,
-			rescanJournalEntry: () => unused,
-			proposalDecide: () => unused,
-			messageSearch: () => unused,
-			proposalNotifications: () => unused,
-			connectionStatus: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 		const router = createRouter({

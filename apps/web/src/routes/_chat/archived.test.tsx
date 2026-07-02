@@ -1,8 +1,13 @@
 import type { ThreadListResult } from "@inkstone/protocol";
-import { WsClient, type WsError, WsRequestError } from "@inkstone/ui-sdk";
+import {
+	stubWsClient,
+	WsClient,
+	type WsError,
+	WsRequestError,
+} from "@inkstone/ui-sdk";
 import { cleanup, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Effect, Layer, ManagedRuntime, Stream } from "effect";
+import { Effect, Layer, ManagedRuntime } from "effect";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderChatRoute } from "@/test-utils/renderChatRoute";
 import { Route } from "./archived.js";
@@ -18,39 +23,9 @@ afterEach(cleanup);
 function makeArchivedRuntime(
 	listArchived: () => Effect.Effect<ThreadListResult, WsError>,
 ) {
-	const unused = Effect.die("not exercised in this test");
-	const stub = WsClient.of({
-		threadCreate: () => unused,
-		postMessage: () => unused,
+	const stub = stubWsClient({
 		threadList: () => Effect.succeed({ threads: [] }),
-		threadGet: () => unused,
-		threadRename: () => unused,
-		threadArchive: () => unused,
-		threadUnarchive: () => unused,
 		threadListArchived: listArchived,
-		getRunHistory: () => Effect.die("not exercised"),
-		recurrencePreview: () => unused,
-		listEntities: () => unused,
-		getBacklinks: () => unused,
-		observationQuery: () => unused,
-		observationUpdate: () => unused,
-		entityMutate: () => unused,
-		subscribeRun: () => unused,
-		cancelRun: () => unused,
-		retryRun: () => unused,
-		providerStatus: () => unused,
-		providerLoginStart: () => unused,
-		providerConfigure: () => unused,
-		providerTest: () => unused,
-		modelCatalog: () => unused,
-		settingsGet: () => unused,
-		settingsSet: () => unused,
-		proposalGet: () => unused,
-		rescanJournalEntry: () => unused,
-		proposalDecide: () => unused,
-		messageSearch: () => unused,
-		proposalNotifications: () => Stream.empty,
-		connectionStatus: () => Stream.empty,
 	});
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 }
@@ -60,19 +35,13 @@ function makeArchivedRuntime(
 // (cf. makeGrowingStubRuntime), inverted to shrink. So a restore drops the row on
 // refetch, proving the archived list re-reads on success.
 function makeShrinkingArchivedRuntime() {
-	const unused = Effect.die("not exercised in this test");
 	const threadUnarchive = vi.fn((_id: string) => {});
 	let archived: { id: string; title: string; last_activity_at: number }[] = [
 		{ id: "a-1", title: "Old standup", last_activity_at: 2 },
 		{ id: "a-2", title: "Stale plan", last_activity_at: 1 },
 	];
-	const stub = WsClient.of({
-		threadCreate: () => unused,
-		postMessage: () => unused,
+	const stub = stubWsClient({
 		threadList: () => Effect.succeed({ threads: [] }),
-		threadGet: () => unused,
-		threadRename: () => unused,
-		threadArchive: () => unused,
 		threadUnarchive: (threadId: string) =>
 			Effect.sync(() => {
 				threadUnarchive(threadId);
@@ -80,29 +49,6 @@ function makeShrinkingArchivedRuntime() {
 				return { thread_id: threadId };
 			}),
 		threadListArchived: () => Effect.sync(() => ({ threads: [...archived] })),
-		getRunHistory: () => Effect.die("not exercised"),
-		recurrencePreview: () => unused,
-		listEntities: () => unused,
-		getBacklinks: () => unused,
-		observationQuery: () => unused,
-		observationUpdate: () => unused,
-		entityMutate: () => unused,
-		subscribeRun: () => unused,
-		cancelRun: () => unused,
-		retryRun: () => unused,
-		providerStatus: () => unused,
-		providerLoginStart: () => unused,
-		providerConfigure: () => unused,
-		providerTest: () => unused,
-		modelCatalog: () => unused,
-		settingsGet: () => unused,
-		settingsSet: () => unused,
-		proposalGet: () => unused,
-		rescanJournalEntry: () => unused,
-		proposalDecide: () => unused,
-		messageSearch: () => unused,
-		proposalNotifications: () => Stream.empty,
-		connectionStatus: () => Stream.empty,
 	});
 	return {
 		runtime: ManagedRuntime.make(Layer.succeed(WsClient, stub)),

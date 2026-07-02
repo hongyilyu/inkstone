@@ -3,7 +3,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LibraryItem } from "@/lib/libraryItems";
 import { isGtdEditKind } from "@/lib/proposalEdit";
 import type { PendingProposal } from "@/store/chat";
-import { PROPOSAL_VIEWS, ProposalCard } from "./ProposalCard.js";
+import { ProposalCard } from "./ProposalCard.js";
+import { PROPOSAL_VIEWS } from "./proposalViews.js";
 
 // The decided card (ADR-0044 entity_id amendment) resolves its named entity live
 // from the warm library-items cache and deep-links to it via `useNavigate`. Mock

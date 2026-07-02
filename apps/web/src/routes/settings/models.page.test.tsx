@@ -1,6 +1,6 @@
 import type { ModelInfo, ProviderStatusResult } from "@inkstone/protocol";
 import * as sdk from "@inkstone/ui-sdk";
-import { WsClient, type WsError } from "@inkstone/ui-sdk";
+import { stubWsClient, WsClient } from "@inkstone/ui-sdk";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
 	createMemoryHistory,
@@ -15,7 +15,7 @@ import {
 	within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Effect, Layer, ManagedRuntime, Stream } from "effect";
+import { Effect, Layer, ManagedRuntime } from "effect";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { routeTree } from "@/routeTree.gen";
 import { RuntimeProvider } from "@/runtime";
@@ -25,10 +25,6 @@ afterEach(() => {
 	cleanup();
 	sdk.resetNotificationHandlers();
 });
-
-const die = (): Effect.Effect<never, never> => Effect.die("unused");
-const dieStream = (): Stream.Stream<never, WsError> =>
-	Stream.fromEffect(Effect.die("unused")) as Stream.Stream<never, WsError>;
 
 function makeRuntime(opts: {
 	connected?: boolean;
@@ -79,25 +75,7 @@ function makeRuntime(opts: {
 			? Effect.die("provider/test not exercised")
 			: Effect.succeed(opts.testResult),
 	);
-	const stub = WsClient.of({
-		threadCreate: die,
-		postMessage: die,
-		threadList: die,
-		getRunHistory: die,
-		recurrencePreview: () => Effect.die("not exercised in this test"),
-		threadGet: die,
-		threadRename: die,
-		threadArchive: die,
-		threadUnarchive: die,
-		threadListArchived: die,
-		listEntities: die,
-		getBacklinks: die,
-		observationQuery: die,
-		observationUpdate: die,
-		entityMutate: die,
-		subscribeRun: dieStream,
-		cancelRun: die,
-		retryRun: die,
+	const stub = stubWsClient({
 		providerStatus: () =>
 			Effect.succeed({
 				providers: [
@@ -138,12 +116,6 @@ function makeRuntime(opts: {
 				enabled_models: opts.enabledModels ?? [],
 			}),
 		settingsSet,
-		proposalGet: die,
-		rescanJournalEntry: die,
-		proposalDecide: die,
-		messageSearch: die,
-		proposalNotifications: () => Stream.empty,
-		connectionStatus: () => Stream.empty,
 	});
 	return {
 		runtime: ManagedRuntime.make(Layer.succeed(WsClient, stub)),
@@ -225,32 +197,12 @@ describe("Models settings page (ADR-0024)", () => {
 		// (api_key) button. A defaulted "oauth" would show a bogus Connect on a
 		// key-provider; the correct affordance only appears on the next SUCCESSFUL
 		// status read.
-		const stub = WsClient.of({
-			threadCreate: die,
-			postMessage: die,
-			threadList: die,
-			getRunHistory: die,
-			recurrencePreview: () => Effect.die("not exercised in this test"),
-			threadGet: die,
-			threadRename: die,
-			threadArchive: die,
-			threadUnarchive: die,
-			threadListArchived: die,
-			listEntities: die,
-			getBacklinks: die,
-			observationQuery: die,
-			observationUpdate: die,
-			entityMutate: die,
-			subscribeRun: dieStream,
-			cancelRun: die,
-			retryRun: die,
-			// provider/status REJECTS — runPromise rejects, hitting refreshConnected's
-			// .catch. The error value is irrelevant (the catch ignores it).
-			providerStatus: () => Effect.die("status fetch failed"),
+		// provider/status REJECTS (the factory default `Effect.die` for an un-stubbed
+		// verb) — runPromise rejects, hitting refreshConnected's .catch. The error
+		// value is irrelevant (the catch ignores it).
+		const stub = stubWsClient({
 			providerLoginStart: () =>
 				Effect.succeed({ authorize_url: "https://auth.example/x" }),
-			providerConfigure: die,
-			providerTest: die,
 			modelCatalog: () =>
 				Effect.succeed({
 					providers: [{ id: "openai-codex", label: "OpenAI", models: [] }],
@@ -269,12 +221,6 @@ describe("Models settings page (ADR-0024)", () => {
 					effort: "off",
 					enabled_models: [],
 				}),
-			proposalGet: die,
-			rescanJournalEntry: die,
-			proposalDecide: die,
-			messageSearch: die,
-			proposalNotifications: () => Stream.empty,
-			connectionStatus: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 		renderPage(runtime);
@@ -340,25 +286,7 @@ describe("Models settings page (ADR-0024)", () => {
 				}),
 			),
 		);
-		const stub = WsClient.of({
-			threadCreate: die,
-			postMessage: die,
-			threadList: die,
-			getRunHistory: die,
-			recurrencePreview: () => Effect.die("not exercised in this test"),
-			threadGet: die,
-			threadRename: die,
-			threadArchive: die,
-			threadUnarchive: die,
-			threadListArchived: die,
-			listEntities: die,
-			getBacklinks: die,
-			observationQuery: die,
-			observationUpdate: die,
-			entityMutate: die,
-			subscribeRun: dieStream,
-			cancelRun: die,
-			retryRun: die,
+		const stub = stubWsClient({
 			providerStatus: () =>
 				Effect.succeed({
 					providers: [
@@ -369,9 +297,6 @@ describe("Models settings page (ADR-0024)", () => {
 						},
 					],
 				}),
-			providerLoginStart: die,
-			providerConfigure: die,
-			providerTest: die,
 			modelCatalog: () =>
 				Effect.succeed({
 					providers: [{ id: "openai-codex", label: "OpenAI", models: [] }],
@@ -384,12 +309,6 @@ describe("Models settings page (ADR-0024)", () => {
 					enabled_models: [],
 				}),
 			settingsSet,
-			proposalGet: die,
-			rescanJournalEntry: die,
-			proposalDecide: die,
-			messageSearch: die,
-			proposalNotifications: () => Stream.empty,
-			connectionStatus: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 		renderPage(runtime);
@@ -585,25 +504,7 @@ describe("Models settings page (ADR-0024)", () => {
 				}),
 			),
 		);
-		const stub = WsClient.of({
-			threadCreate: die,
-			postMessage: die,
-			threadList: die,
-			getRunHistory: die,
-			recurrencePreview: () => Effect.die("not exercised in this test"),
-			threadGet: die,
-			threadRename: die,
-			threadArchive: die,
-			threadUnarchive: die,
-			threadListArchived: die,
-			listEntities: die,
-			getBacklinks: die,
-			observationQuery: die,
-			observationUpdate: die,
-			entityMutate: die,
-			subscribeRun: dieStream,
-			cancelRun: die,
-			retryRun: die,
+		const stub = stubWsClient({
 			providerStatus: () =>
 				Effect.succeed({
 					providers: [
@@ -614,9 +515,6 @@ describe("Models settings page (ADR-0024)", () => {
 						},
 					],
 				}),
-			providerLoginStart: die,
-			providerConfigure: die,
-			providerTest: die,
 			modelCatalog: () =>
 				Effect.succeed({
 					providers: [{ id: "openai-codex", label: "OpenAI", models }],
@@ -629,12 +527,6 @@ describe("Models settings page (ADR-0024)", () => {
 					enabled_models: [],
 				}),
 			settingsSet,
-			proposalGet: die,
-			rescanJournalEntry: die,
-			proposalDecide: die,
-			messageSearch: die,
-			proposalNotifications: () => Stream.empty,
-			connectionStatus: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 		renderPage(runtime);
@@ -775,30 +667,11 @@ describe("Models settings — key-configurable provider (ADR-0062)", () => {
 				],
 			}),
 		);
-		const stub = WsClient.of({
-			threadCreate: die,
-			postMessage: die,
-			threadList: die,
-			getRunHistory: die,
-			recurrencePreview: () => Effect.die("not exercised in this test"),
-			threadGet: die,
-			threadRename: die,
-			threadArchive: die,
-			threadUnarchive: die,
-			threadListArchived: die,
-			listEntities: die,
-			getBacklinks: die,
-			observationQuery: die,
-			observationUpdate: die,
-			entityMutate: die,
-			subscribeRun: dieStream,
-			cancelRun: die,
-			retryRun: die,
+		const stub = stubWsClient({
 			providerStatus,
 			providerLoginStart: () =>
 				Effect.succeed({ authorize_url: "https://auth.example/x" }),
 			providerConfigure,
-			providerTest: die,
 			modelCatalog: () =>
 				Effect.succeed({
 					providers: [
@@ -820,12 +693,6 @@ describe("Models settings — key-configurable provider (ADR-0062)", () => {
 					effort: "off",
 					enabled_models: [],
 				}),
-			proposalGet: die,
-			rescanJournalEntry: die,
-			proposalDecide: die,
-			messageSearch: die,
-			proposalNotifications: () => Stream.empty,
-			connectionStatus: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 		renderPage(runtime);
@@ -886,25 +753,7 @@ describe("Models settings — key-configurable provider (ADR-0062)", () => {
 
 	it("surfaces a provider/configure error without crashing", async () => {
 		const user = userEvent.setup();
-		const stub = WsClient.of({
-			threadCreate: die,
-			postMessage: die,
-			threadList: die,
-			getRunHistory: die,
-			recurrencePreview: () => Effect.die("not exercised in this test"),
-			threadGet: die,
-			threadRename: die,
-			threadArchive: die,
-			threadUnarchive: die,
-			threadListArchived: die,
-			listEntities: die,
-			getBacklinks: die,
-			observationQuery: die,
-			observationUpdate: die,
-			entityMutate: die,
-			subscribeRun: dieStream,
-			cancelRun: die,
-			retryRun: die,
+		const stub = stubWsClient({
 			providerStatus: () =>
 				Effect.succeed({
 					providers: [
@@ -920,7 +769,6 @@ describe("Models settings — key-configurable provider (ADR-0062)", () => {
 						},
 					],
 				}),
-			providerLoginStart: die,
 			// provider/configure REJECTS (e.g. Core rejected the key) — the form must
 			// surface the failure, not blow up the page.
 			providerConfigure: () => Effect.die("configure failed"),
@@ -946,12 +794,6 @@ describe("Models settings — key-configurable provider (ADR-0062)", () => {
 					effort: "off",
 					enabled_models: [],
 				}),
-			proposalGet: die,
-			rescanJournalEntry: die,
-			proposalDecide: die,
-			messageSearch: die,
-			proposalNotifications: () => Stream.empty,
-			connectionStatus: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 		renderPage(runtime);
@@ -987,25 +829,7 @@ describe("Models settings — provider liveness Test (ADR-0062)", () => {
 		const providerTest = vi.fn((_provider: string, _model: string) =>
 			Effect.succeed(verdict),
 		);
-		const stub = WsClient.of({
-			threadCreate: die,
-			postMessage: die,
-			threadList: die,
-			getRunHistory: die,
-			recurrencePreview: () => Effect.die("not exercised in this test"),
-			threadGet: die,
-			threadRename: die,
-			threadArchive: die,
-			threadUnarchive: die,
-			threadListArchived: die,
-			listEntities: die,
-			getBacklinks: die,
-			observationQuery: die,
-			observationUpdate: die,
-			entityMutate: die,
-			subscribeRun: dieStream,
-			cancelRun: die,
-			retryRun: die,
+		const stub = stubWsClient({
 			providerStatus: () =>
 				Effect.succeed({
 					providers: [
@@ -1023,7 +847,6 @@ describe("Models settings — provider liveness Test (ADR-0062)", () => {
 				}),
 			providerLoginStart: () =>
 				Effect.succeed({ authorize_url: "https://auth.example/x" }),
-			providerConfigure: die,
 			providerTest,
 			modelCatalog: () =>
 				Effect.succeed({
@@ -1046,12 +869,6 @@ describe("Models settings — provider liveness Test (ADR-0062)", () => {
 					effort: "off",
 					enabled_models: [],
 				}),
-			proposalGet: die,
-			rescanJournalEntry: die,
-			proposalDecide: die,
-			messageSearch: die,
-			proposalNotifications: () => Stream.empty,
-			connectionStatus: () => Stream.empty,
 		});
 		return {
 			runtime: ManagedRuntime.make(Layer.succeed(WsClient, stub)),
@@ -1126,30 +943,10 @@ function makeFlippingRuntime() {
 			],
 		});
 	});
-	const stub = WsClient.of({
-		threadCreate: die,
-		postMessage: die,
-		threadList: die,
-		getRunHistory: die,
-		recurrencePreview: () => Effect.die("not exercised in this test"),
-		threadGet: die,
-		threadRename: die,
-		threadArchive: die,
-		threadUnarchive: die,
-		threadListArchived: die,
-		listEntities: die,
-		getBacklinks: die,
-		observationQuery: die,
-		observationUpdate: die,
-		entityMutate: die,
-		subscribeRun: dieStream,
-		cancelRun: die,
-		retryRun: die,
+	const stub = stubWsClient({
 		providerStatus,
 		providerLoginStart: () =>
 			Effect.succeed({ authorize_url: "https://auth.example/x" }),
-		providerConfigure: die,
-		providerTest: die,
 		modelCatalog: () =>
 			Effect.succeed({
 				providers: [{ id: "openai-codex", label: "OpenAI", models: [] }],
@@ -1168,12 +965,6 @@ function makeFlippingRuntime() {
 				effort: "off",
 				enabled_models: [],
 			}),
-		proposalGet: die,
-		rescanJournalEntry: die,
-		proposalDecide: die,
-		messageSearch: die,
-		proposalNotifications: () => Stream.empty,
-		connectionStatus: () => Stream.empty,
 	});
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 }
@@ -1325,30 +1116,10 @@ describe("Models settings page — provider/connected live push (ADR-0049)", () 
 					{ id: "anthropic", connected: true, auth_kind: "oauth" as const },
 				],
 			};
-			const stub = WsClient.of({
-				threadCreate: die,
-				postMessage: die,
-				threadList: die,
-				getRunHistory: die,
-				recurrencePreview: () => Effect.die("not exercised in this test"),
-				threadGet: die,
-				threadRename: die,
-				threadArchive: die,
-				threadUnarchive: die,
-				threadListArchived: die,
-				listEntities: die,
-				getBacklinks: die,
-				observationQuery: die,
-				observationUpdate: die,
-				entityMutate: die,
-				subscribeRun: dieStream,
-				cancelRun: die,
-				retryRun: die,
+			const stub = stubWsClient({
 				providerStatus: () => Effect.succeed(twoProviderStatus),
 				providerLoginStart: () =>
 					Effect.succeed({ authorize_url: "https://auth.example/x" }),
-				providerConfigure: die,
-				providerTest: die,
 				modelCatalog: () =>
 					Effect.succeed({
 						providers: [{ id: "openai-codex", label: "OpenAI", models: [] }],
@@ -1367,12 +1138,6 @@ describe("Models settings page — provider/connected live push (ADR-0049)", () 
 						effort: "off",
 						enabled_models: [],
 					}),
-				proposalGet: die,
-				rescanJournalEntry: die,
-				proposalDecide: die,
-				messageSearch: die,
-				proposalNotifications: () => Stream.empty,
-				connectionStatus: () => Stream.empty,
 			});
 			const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 			const client = new QueryClient({

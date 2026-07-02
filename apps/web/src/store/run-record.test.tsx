@@ -1,4 +1,9 @@
-import { type RunEventValue, type RunId, WsClient } from "@inkstone/ui-sdk";
+import {
+	type RunEventValue,
+	type RunId,
+	stubWsClient,
+	WsClient,
+} from "@inkstone/ui-sdk";
 import { Effect, Layer, ManagedRuntime, Queue, Stream } from "effect";
 import { beforeEach, describe, expect, it } from "vitest";
 import { awaitRun, resetBridge, send } from "./bridge.js";
@@ -24,39 +29,9 @@ import {
 
 /** Stub WsClient backed by an in-memory queue (mirrors chat.test.tsx). */
 function makeStubRuntime(queue: Queue.Queue<RunEventValue>, runId: RunId) {
-	const unused = Effect.die("not used in this test");
-	const stub = WsClient.of({
-		threadCreate: () => unused,
+	const stub = stubWsClient({
 		postMessage: () => Effect.succeed(runId),
-		threadList: () => unused,
-		getRunHistory: () => unused,
-		recurrencePreview: () => Effect.die("not exercised in this test"),
-		threadGet: () => unused,
-		threadRename: () => unused,
-		threadArchive: () => unused,
-		threadUnarchive: () => unused,
-		threadListArchived: () => unused,
-		listEntities: () => unused,
-		getBacklinks: () => unused,
-		observationQuery: () => unused,
-		observationUpdate: () => unused,
-		entityMutate: () => unused,
 		subscribeRun: () => Stream.fromQueue(queue),
-		cancelRun: () => unused,
-		retryRun: () => unused,
-		providerStatus: () => unused,
-		providerLoginStart: () => unused,
-		providerConfigure: () => unused,
-		providerTest: () => unused,
-		modelCatalog: () => unused,
-		settingsGet: () => unused,
-		settingsSet: () => unused,
-		proposalGet: () => unused,
-		rescanJournalEntry: () => unused,
-		proposalDecide: () => unused,
-		messageSearch: () => unused,
-		proposalNotifications: () => Stream.empty,
-		connectionStatus: () => Stream.empty,
 	});
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 }

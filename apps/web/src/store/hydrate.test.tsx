@@ -3,6 +3,7 @@ import {
 	InvalidParamsError,
 	type RunEventValue,
 	type RunId,
+	stubWsClient,
 	UnknownThreadError,
 	WsClient,
 	type WsError,
@@ -53,39 +54,10 @@ describe("refresh-durable hydration", () => {
 				},
 			],
 		};
-		const stub = WsClient.of({
-			threadCreate: () => Effect.die("unused"),
-			postMessage: () => Effect.die("unused"),
-			threadList: () => Effect.die("unused"),
-			getRunHistory: () => Effect.die("unused"),
-			recurrencePreview: () => Effect.die("not exercised in this test"),
-			listEntities: () => Effect.die("unused"),
-			getBacklinks: () => Effect.die("unused"),
-			observationQuery: () => Effect.die("unused"),
-			observationUpdate: () => Effect.die("unused"),
-			entityMutate: () => Effect.die("unused"),
+		const stub = stubWsClient({
 			threadGet: (id) =>
 				id === "tA" ? Effect.succeed(result) : Effect.die("unknown thread"),
-			threadRename: () => Effect.die("unused"),
-			threadArchive: () => Effect.die("unused"),
-			threadUnarchive: () => Effect.die("unused"),
-			threadListArchived: () => Effect.die("unused"),
 			subscribeRun,
-			cancelRun: () => Effect.die("unused"),
-			retryRun: () => Effect.die("unused"),
-			providerStatus: () => Effect.die("unused"),
-			providerLoginStart: () => Effect.die("unused"),
-			providerConfigure: () => Effect.die("unused"),
-			providerTest: () => Effect.die("unused"),
-			modelCatalog: () => Effect.die("unused"),
-			settingsGet: () => Effect.die("unused"),
-			settingsSet: () => Effect.die("unused"),
-			proposalGet: () => Effect.die("unused"),
-			rescanJournalEntry: () => Effect.die("unused"),
-			proposalDecide: () => Effect.die("unused"),
-			messageSearch: () => Effect.die("unused"),
-			proposalNotifications: () => Stream.empty,
-			connectionStatus: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
@@ -143,39 +115,10 @@ describe("refresh-durable hydration", () => {
 				},
 			],
 		};
-		const stub = WsClient.of({
-			threadCreate: () => Effect.die("unused"),
-			postMessage: () => Effect.die("unused"),
-			threadList: () => Effect.die("unused"),
-			getRunHistory: () => Effect.die("unused"),
-			recurrencePreview: () => Effect.die("not exercised in this test"),
-			listEntities: () => Effect.die("unused"),
-			getBacklinks: () => Effect.die("unused"),
-			observationQuery: () => Effect.die("unused"),
-			observationUpdate: () => Effect.die("unused"),
-			entityMutate: () => Effect.die("unused"),
+		const stub = stubWsClient({
 			threadGet: (id) =>
 				id === "tTools" ? Effect.succeed(result) : Effect.die("unknown thread"),
-			threadRename: () => Effect.die("unused"),
-			threadArchive: () => Effect.die("unused"),
-			threadUnarchive: () => Effect.die("unused"),
-			threadListArchived: () => Effect.die("unused"),
 			subscribeRun,
-			cancelRun: () => Effect.die("unused"),
-			retryRun: () => Effect.die("unused"),
-			providerStatus: () => Effect.die("unused"),
-			providerLoginStart: () => Effect.die("unused"),
-			providerConfigure: () => Effect.die("unused"),
-			providerTest: () => Effect.die("unused"),
-			modelCatalog: () => Effect.die("unused"),
-			settingsGet: () => Effect.die("unused"),
-			settingsSet: () => Effect.die("unused"),
-			proposalGet: () => Effect.die("unused"),
-			rescanJournalEntry: () => Effect.die("unused"),
-			proposalDecide: () => Effect.die("unused"),
-			messageSearch: () => Effect.die("unused"),
-			proposalNotifications: () => Stream.empty,
-			connectionStatus: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
@@ -223,41 +166,11 @@ describe("refresh-durable hydration", () => {
 				},
 			],
 		};
-		const stub = WsClient.of({
-			threadCreate: () => Effect.die("unused"),
-			postMessage: () => Effect.die("unused"),
-			threadList: () => Effect.die("unused"),
-			getRunHistory: () => Effect.die("unused"),
-			recurrencePreview: () => Effect.die("not exercised in this test"),
-			listEntities: () => Effect.die("unused"),
-			getBacklinks: () => Effect.die("unused"),
-			observationQuery: () => Effect.die("unused"),
-			observationUpdate: () => Effect.die("unused"),
-			entityMutate: () => Effect.die("unused"),
+		const stub = stubWsClient({
 			threadGet: (id) =>
 				id === "tReason"
 					? Effect.succeed(result)
 					: Effect.die("unknown thread"),
-			threadRename: () => Effect.die("unused"),
-			threadArchive: () => Effect.die("unused"),
-			threadUnarchive: () => Effect.die("unused"),
-			threadListArchived: () => Effect.die("unused"),
-			subscribeRun: () => Stream.empty,
-			cancelRun: () => Effect.die("unused"),
-			retryRun: () => Effect.die("unused"),
-			providerStatus: () => Effect.die("unused"),
-			providerLoginStart: () => Effect.die("unused"),
-			providerConfigure: () => Effect.die("unused"),
-			providerTest: () => Effect.die("unused"),
-			modelCatalog: () => Effect.die("unused"),
-			settingsGet: () => Effect.die("unused"),
-			settingsSet: () => Effect.die("unused"),
-			proposalGet: () => Effect.die("unused"),
-			rescanJournalEntry: () => Effect.die("unused"),
-			proposalDecide: () => Effect.die("unused"),
-			messageSearch: () => Effect.die("unused"),
-			proposalNotifications: () => Stream.empty,
-			connectionStatus: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
@@ -304,39 +217,9 @@ describe("refresh-durable hydration", () => {
 				},
 			],
 		};
-		const stub = WsClient.of({
-			threadCreate: () => Effect.die("unused"),
-			postMessage: () => Effect.die("unused"),
-			threadList: () => Effect.die("unused"),
-			getRunHistory: () => Effect.die("unused"),
-			recurrencePreview: () => Effect.die("not exercised in this test"),
-			listEntities: () => Effect.die("unused"),
-			getBacklinks: () => Effect.die("unused"),
-			observationQuery: () => Effect.die("unused"),
-			observationUpdate: () => Effect.die("unused"),
-			entityMutate: () => Effect.die("unused"),
+		const stub = stubWsClient({
 			threadGet: (id) =>
 				id === "tProp" ? Effect.succeed(result) : Effect.die("unknown thread"),
-			threadRename: () => Effect.die("unused"),
-			threadArchive: () => Effect.die("unused"),
-			threadUnarchive: () => Effect.die("unused"),
-			threadListArchived: () => Effect.die("unused"),
-			subscribeRun: () => Stream.empty,
-			cancelRun: () => Effect.die("unused"),
-			retryRun: () => Effect.die("unused"),
-			providerStatus: () => Effect.die("unused"),
-			providerLoginStart: () => Effect.die("unused"),
-			providerConfigure: () => Effect.die("unused"),
-			providerTest: () => Effect.die("unused"),
-			modelCatalog: () => Effect.die("unused"),
-			settingsGet: () => Effect.die("unused"),
-			settingsSet: () => Effect.die("unused"),
-			proposalGet: () => Effect.die("unused"),
-			rescanJournalEntry: () => Effect.die("unused"),
-			proposalDecide: () => Effect.die("unused"),
-			messageSearch: () => Effect.die("unused"),
-			proposalNotifications: () => Stream.empty,
-			connectionStatus: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
@@ -384,39 +267,9 @@ describe("refresh-durable hydration", () => {
 				},
 			],
 		};
-		const stub = WsClient.of({
-			threadCreate: () => Effect.die("unused"),
-			postMessage: () => Effect.die("unused"),
-			threadList: () => Effect.die("unused"),
-			getRunHistory: () => Effect.die("unused"),
-			recurrencePreview: () => Effect.die("not exercised in this test"),
-			listEntities: () => Effect.die("unused"),
-			getBacklinks: () => Effect.die("unused"),
-			observationQuery: () => Effect.die("unused"),
-			observationUpdate: () => Effect.die("unused"),
-			entityMutate: () => Effect.die("unused"),
+		const stub = stubWsClient({
 			threadGet: (id) =>
 				id === "tSeg" ? Effect.succeed(result) : Effect.die("unknown thread"),
-			threadRename: () => Effect.die("unused"),
-			threadArchive: () => Effect.die("unused"),
-			threadUnarchive: () => Effect.die("unused"),
-			threadListArchived: () => Effect.die("unused"),
-			subscribeRun: () => Stream.empty,
-			cancelRun: () => Effect.die("unused"),
-			retryRun: () => Effect.die("unused"),
-			providerStatus: () => Effect.die("unused"),
-			providerLoginStart: () => Effect.die("unused"),
-			providerConfigure: () => Effect.die("unused"),
-			providerTest: () => Effect.die("unused"),
-			modelCatalog: () => Effect.die("unused"),
-			settingsGet: () => Effect.die("unused"),
-			settingsSet: () => Effect.die("unused"),
-			proposalGet: () => Effect.die("unused"),
-			rescanJournalEntry: () => Effect.die("unused"),
-			proposalDecide: () => Effect.die("unused"),
-			messageSearch: () => Effect.die("unused"),
-			proposalNotifications: () => Stream.empty,
-			connectionStatus: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
@@ -457,39 +310,9 @@ describe("refresh-durable hydration", () => {
 				},
 			],
 		};
-		const stub = WsClient.of({
-			threadCreate: () => Effect.die("unused"),
-			postMessage: () => Effect.die("unused"),
-			threadList: () => Effect.die("unused"),
-			getRunHistory: () => Effect.die("unused"),
-			recurrencePreview: () => Effect.die("not exercised in this test"),
-			listEntities: () => Effect.die("unused"),
-			getBacklinks: () => Effect.die("unused"),
-			observationQuery: () => Effect.die("unused"),
-			observationUpdate: () => Effect.die("unused"),
-			entityMutate: () => Effect.die("unused"),
+		const stub = stubWsClient({
 			threadGet: (id) =>
 				id === "tRej" ? Effect.succeed(result) : Effect.die("unknown thread"),
-			threadRename: () => Effect.die("unused"),
-			threadArchive: () => Effect.die("unused"),
-			threadUnarchive: () => Effect.die("unused"),
-			threadListArchived: () => Effect.die("unused"),
-			subscribeRun: () => Stream.empty,
-			cancelRun: () => Effect.die("unused"),
-			retryRun: () => Effect.die("unused"),
-			providerStatus: () => Effect.die("unused"),
-			providerLoginStart: () => Effect.die("unused"),
-			providerConfigure: () => Effect.die("unused"),
-			providerTest: () => Effect.die("unused"),
-			modelCatalog: () => Effect.die("unused"),
-			settingsGet: () => Effect.die("unused"),
-			settingsSet: () => Effect.die("unused"),
-			proposalGet: () => Effect.die("unused"),
-			rescanJournalEntry: () => Effect.die("unused"),
-			proposalDecide: () => Effect.die("unused"),
-			messageSearch: () => Effect.die("unused"),
-			proposalNotifications: () => Stream.empty,
-			connectionStatus: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
@@ -524,39 +347,9 @@ describe("refresh-durable hydration", () => {
 				},
 			],
 		};
-		const stub = WsClient.of({
-			threadCreate: () => Effect.die("unused"),
-			postMessage: () => Effect.die("unused"),
-			threadList: () => Effect.die("unused"),
-			getRunHistory: () => Effect.die("unused"),
-			recurrencePreview: () => Effect.die("not exercised in this test"),
-			listEntities: () => Effect.die("unused"),
-			getBacklinks: () => Effect.die("unused"),
-			observationQuery: () => Effect.die("unused"),
-			observationUpdate: () => Effect.die("unused"),
-			entityMutate: () => Effect.die("unused"),
+		const stub = stubWsClient({
 			threadGet: (id) =>
 				id === "tBad" ? Effect.succeed(result) : Effect.die("unknown thread"),
-			threadRename: () => Effect.die("unused"),
-			threadArchive: () => Effect.die("unused"),
-			threadUnarchive: () => Effect.die("unused"),
-			threadListArchived: () => Effect.die("unused"),
-			subscribeRun: () => Stream.empty,
-			cancelRun: () => Effect.die("unused"),
-			retryRun: () => Effect.die("unused"),
-			providerStatus: () => Effect.die("unused"),
-			providerLoginStart: () => Effect.die("unused"),
-			providerConfigure: () => Effect.die("unused"),
-			providerTest: () => Effect.die("unused"),
-			modelCatalog: () => Effect.die("unused"),
-			settingsGet: () => Effect.die("unused"),
-			settingsSet: () => Effect.die("unused"),
-			proposalGet: () => Effect.die("unused"),
-			rescanJournalEntry: () => Effect.die("unused"),
-			proposalDecide: () => Effect.die("unused"),
-			messageSearch: () => Effect.die("unused"),
-			proposalNotifications: () => Stream.empty,
-			connectionStatus: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
@@ -600,39 +393,9 @@ describe("refresh-durable hydration", () => {
 				},
 			],
 		};
-		const stub = WsClient.of({
-			threadCreate: () => Effect.die("unused"),
-			postMessage: () => Effect.die("unused"),
-			threadList: () => Effect.die("unused"),
-			getRunHistory: () => Effect.die("unused"),
-			recurrencePreview: () => Effect.die("not exercised in this test"),
-			listEntities: () => Effect.die("unused"),
-			getBacklinks: () => Effect.die("unused"),
-			observationQuery: () => Effect.die("unused"),
-			observationUpdate: () => Effect.die("unused"),
-			entityMutate: () => Effect.die("unused"),
+		const stub = stubWsClient({
 			threadGet: (id) =>
 				id === "tProp2" ? Effect.succeed(result) : Effect.die("unknown thread"),
-			threadRename: () => Effect.die("unused"),
-			threadArchive: () => Effect.die("unused"),
-			threadUnarchive: () => Effect.die("unused"),
-			threadListArchived: () => Effect.die("unused"),
-			subscribeRun: () => Stream.empty,
-			cancelRun: () => Effect.die("unused"),
-			retryRun: () => Effect.die("unused"),
-			providerStatus: () => Effect.die("unused"),
-			providerLoginStart: () => Effect.die("unused"),
-			providerConfigure: () => Effect.die("unused"),
-			providerTest: () => Effect.die("unused"),
-			modelCatalog: () => Effect.die("unused"),
-			settingsGet: () => Effect.die("unused"),
-			settingsSet: () => Effect.die("unused"),
-			proposalGet: () => Effect.die("unused"),
-			rescanJournalEntry: () => Effect.die("unused"),
-			proposalDecide: () => Effect.die("unused"),
-			messageSearch: () => Effect.die("unused"),
-			proposalNotifications: () => Stream.empty,
-			connectionStatus: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
@@ -671,39 +434,10 @@ describe("refresh-durable hydration", () => {
 				},
 			],
 		};
-		const stub = WsClient.of({
-			threadCreate: () => Effect.die("unused"),
-			postMessage: () => Effect.die("unused"),
-			threadList: () => Effect.die("unused"),
-			getRunHistory: () => Effect.die("unused"),
-			recurrencePreview: () => Effect.die("not exercised in this test"),
-			listEntities: () => Effect.die("unused"),
-			getBacklinks: () => Effect.die("unused"),
-			observationQuery: () => Effect.die("unused"),
-			observationUpdate: () => Effect.die("unused"),
-			entityMutate: () => Effect.die("unused"),
+		const stub = stubWsClient({
 			threadGet: (id) =>
 				id === "tB" ? Effect.succeed(result) : Effect.die("unknown thread"),
-			threadRename: () => Effect.die("unused"),
-			threadArchive: () => Effect.die("unused"),
-			threadUnarchive: () => Effect.die("unused"),
-			threadListArchived: () => Effect.die("unused"),
 			subscribeRun,
-			cancelRun: () => Effect.die("unused"),
-			retryRun: () => Effect.die("unused"),
-			providerStatus: () => Effect.die("unused"),
-			providerLoginStart: () => Effect.die("unused"),
-			providerConfigure: () => Effect.die("unused"),
-			providerTest: () => Effect.die("unused"),
-			modelCatalog: () => Effect.die("unused"),
-			settingsGet: () => Effect.die("unused"),
-			settingsSet: () => Effect.die("unused"),
-			proposalGet: () => Effect.die("unused"),
-			rescanJournalEntry: () => Effect.die("unused"),
-			proposalDecide: () => Effect.die("unused"),
-			messageSearch: () => Effect.die("unused"),
-			proposalNotifications: () => Stream.empty,
-			connectionStatus: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
@@ -760,39 +494,10 @@ describe("refresh-durable hydration", () => {
 				},
 			],
 		};
-		const stub = WsClient.of({
-			threadCreate: () => Effect.die("unused"),
-			postMessage: () => Effect.die("unused"),
-			threadList: () => Effect.die("unused"),
-			getRunHistory: () => Effect.die("unused"),
-			recurrencePreview: () => Effect.die("not exercised in this test"),
-			listEntities: () => Effect.die("unused"),
-			getBacklinks: () => Effect.die("unused"),
-			observationQuery: () => Effect.die("unused"),
-			observationUpdate: () => Effect.die("unused"),
-			entityMutate: () => Effect.die("unused"),
+		const stub = stubWsClient({
 			threadGet: (id) =>
 				id === "tC" ? Deferred.await(gate) : Effect.die("unknown thread"),
-			threadRename: () => Effect.die("unused"),
-			threadArchive: () => Effect.die("unused"),
-			threadUnarchive: () => Effect.die("unused"),
-			threadListArchived: () => Effect.die("unused"),
 			subscribeRun,
-			cancelRun: () => Effect.die("unused"),
-			retryRun: () => Effect.die("unused"),
-			providerStatus: () => Effect.die("unused"),
-			providerLoginStart: () => Effect.die("unused"),
-			providerConfigure: () => Effect.die("unused"),
-			providerTest: () => Effect.die("unused"),
-			modelCatalog: () => Effect.die("unused"),
-			settingsGet: () => Effect.die("unused"),
-			settingsSet: () => Effect.die("unused"),
-			proposalGet: () => Effect.die("unused"),
-			rescanJournalEntry: () => Effect.die("unused"),
-			proposalDecide: () => Effect.die("unused"),
-			messageSearch: () => Effect.die("unused"),
-			proposalNotifications: () => Stream.empty,
-			connectionStatus: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
@@ -840,39 +545,9 @@ describe("refresh-durable hydration", () => {
 		// Contrast to the became-live success case: here thread/get REJECTS after the user sent.
 		// A failed fetch must not paint a recoverable-error screen over the valid live turn — it settles `ready`.
 		const gate = Effect.runSync(Deferred.make<ThreadGetResult, WsError>());
-		const stub = WsClient.of({
-			threadCreate: () => Effect.die("unused"),
-			postMessage: () => Effect.die("unused"),
-			threadList: () => Effect.die("unused"),
-			getRunHistory: () => Effect.die("unused"),
-			recurrencePreview: () => Effect.die("not exercised in this test"),
-			listEntities: () => Effect.die("unused"),
-			getBacklinks: () => Effect.die("unused"),
-			observationQuery: () => Effect.die("unused"),
-			observationUpdate: () => Effect.die("unused"),
-			entityMutate: () => Effect.die("unused"),
+		const stub = stubWsClient({
 			threadGet: (id) =>
 				id === "tD" ? Deferred.await(gate) : Effect.die("unknown thread"),
-			threadRename: () => Effect.die("unused"),
-			threadArchive: () => Effect.die("unused"),
-			threadUnarchive: () => Effect.die("unused"),
-			threadListArchived: () => Effect.die("unused"),
-			subscribeRun: () => Stream.empty,
-			cancelRun: () => Effect.die("unused"),
-			retryRun: () => Effect.die("unused"),
-			providerStatus: () => Effect.die("unused"),
-			providerLoginStart: () => Effect.die("unused"),
-			providerConfigure: () => Effect.die("unused"),
-			providerTest: () => Effect.die("unused"),
-			modelCatalog: () => Effect.die("unused"),
-			settingsGet: () => Effect.die("unused"),
-			settingsSet: () => Effect.die("unused"),
-			proposalGet: () => Effect.die("unused"),
-			rescanJournalEntry: () => Effect.die("unused"),
-			proposalDecide: () => Effect.die("unused"),
-			messageSearch: () => Effect.die("unused"),
-			proposalNotifications: () => Stream.empty,
-			connectionStatus: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
@@ -917,39 +592,9 @@ describe("refresh-durable hydration", () => {
 		// A genuinely missing Thread (Core `-32001`) is a deterministic dead-end:
 		// it must end in `not_found` so the UI shows an honest "isn't available"
 		// state with a Back-to-New-Chat exit, never a retry that can't succeed.
-		const stub = WsClient.of({
-			threadCreate: () => Effect.die("unused"),
-			postMessage: () => Effect.die("unused"),
-			threadList: () => Effect.die("unused"),
-			getRunHistory: () => Effect.die("unused"),
-			recurrencePreview: () => Effect.die("not exercised in this test"),
-			listEntities: () => Effect.die("unused"),
-			getBacklinks: () => Effect.die("unused"),
-			observationQuery: () => Effect.die("unused"),
-			observationUpdate: () => Effect.die("unused"),
-			entityMutate: () => Effect.die("unused"),
+		const stub = stubWsClient({
 			threadGet: () =>
 				Effect.fail(new UnknownThreadError({ message: "no such thread" })),
-			threadRename: () => Effect.die("unused"),
-			threadArchive: () => Effect.die("unused"),
-			threadUnarchive: () => Effect.die("unused"),
-			threadListArchived: () => Effect.die("unused"),
-			subscribeRun: () => Stream.empty,
-			cancelRun: () => Effect.die("unused"),
-			retryRun: () => Effect.die("unused"),
-			providerStatus: () => Effect.die("unused"),
-			providerLoginStart: () => Effect.die("unused"),
-			providerConfigure: () => Effect.die("unused"),
-			providerTest: () => Effect.die("unused"),
-			modelCatalog: () => Effect.die("unused"),
-			settingsGet: () => Effect.die("unused"),
-			settingsSet: () => Effect.die("unused"),
-			proposalGet: () => Effect.die("unused"),
-			rescanJournalEntry: () => Effect.die("unused"),
-			proposalDecide: () => Effect.die("unused"),
-			messageSearch: () => Effect.die("unused"),
-			proposalNotifications: () => Stream.empty,
-			connectionStatus: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
@@ -966,41 +611,11 @@ describe("refresh-durable hydration", () => {
 		// Core's uuid decode → -32602 → InvalidParamsError. It's as deterministic a
 		// dead-end as an unknown thread — retrying re-fails identically — so it must
 		// land on not_found, NOT the recoverable retry path (deep-review finding).
-		const stub = WsClient.of({
-			threadCreate: () => Effect.die("unused"),
-			postMessage: () => Effect.die("unused"),
-			threadList: () => Effect.die("unused"),
-			getRunHistory: () => Effect.die("unused"),
-			recurrencePreview: () => Effect.die("not exercised in this test"),
-			listEntities: () => Effect.die("unused"),
-			getBacklinks: () => Effect.die("unused"),
-			observationQuery: () => Effect.die("unused"),
-			observationUpdate: () => Effect.die("unused"),
-			entityMutate: () => Effect.die("unused"),
+		const stub = stubWsClient({
 			threadGet: () =>
 				Effect.fail(
 					new InvalidParamsError({ message: "thread_id must be a UUID" }),
 				),
-			threadRename: () => Effect.die("unused"),
-			threadArchive: () => Effect.die("unused"),
-			threadUnarchive: () => Effect.die("unused"),
-			threadListArchived: () => Effect.die("unused"),
-			subscribeRun: () => Stream.empty,
-			cancelRun: () => Effect.die("unused"),
-			retryRun: () => Effect.die("unused"),
-			providerStatus: () => Effect.die("unused"),
-			providerLoginStart: () => Effect.die("unused"),
-			providerConfigure: () => Effect.die("unused"),
-			providerTest: () => Effect.die("unused"),
-			modelCatalog: () => Effect.die("unused"),
-			settingsGet: () => Effect.die("unused"),
-			settingsSet: () => Effect.die("unused"),
-			proposalGet: () => Effect.die("unused"),
-			rescanJournalEntry: () => Effect.die("unused"),
-			proposalDecide: () => Effect.die("unused"),
-			messageSearch: () => Effect.die("unused"),
-			proposalNotifications: () => Stream.empty,
-			connectionStatus: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
@@ -1015,39 +630,9 @@ describe("refresh-durable hydration", () => {
 		// A send can turn a "missing" Thread live (the optimistic seed) before the
 		// UnknownThreadError lands — keep that live turn rather than blanking it.
 		const gate = Effect.runSync(Deferred.make<ThreadGetResult, WsError>());
-		const stub = WsClient.of({
-			threadCreate: () => Effect.die("unused"),
-			postMessage: () => Effect.die("unused"),
-			threadList: () => Effect.die("unused"),
-			getRunHistory: () => Effect.die("unused"),
-			recurrencePreview: () => Effect.die("not exercised in this test"),
-			listEntities: () => Effect.die("unused"),
-			getBacklinks: () => Effect.die("unused"),
-			observationQuery: () => Effect.die("unused"),
-			observationUpdate: () => Effect.die("unused"),
-			entityMutate: () => Effect.die("unused"),
+		const stub = stubWsClient({
 			threadGet: (id) =>
 				id === "tRace" ? Deferred.await(gate) : Effect.die("unknown thread"),
-			threadRename: () => Effect.die("unused"),
-			threadArchive: () => Effect.die("unused"),
-			threadUnarchive: () => Effect.die("unused"),
-			threadListArchived: () => Effect.die("unused"),
-			subscribeRun: () => Stream.empty,
-			cancelRun: () => Effect.die("unused"),
-			retryRun: () => Effect.die("unused"),
-			providerStatus: () => Effect.die("unused"),
-			providerLoginStart: () => Effect.die("unused"),
-			providerConfigure: () => Effect.die("unused"),
-			providerTest: () => Effect.die("unused"),
-			modelCatalog: () => Effect.die("unused"),
-			settingsGet: () => Effect.die("unused"),
-			settingsSet: () => Effect.die("unused"),
-			proposalGet: () => Effect.die("unused"),
-			rescanJournalEntry: () => Effect.die("unused"),
-			proposalDecide: () => Effect.die("unused"),
-			messageSearch: () => Effect.die("unused"),
-			proposalNotifications: () => Stream.empty,
-			connectionStatus: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
@@ -1079,38 +664,8 @@ describe("refresh-durable hydration", () => {
 
 	it("marks a failed thread/get as `error` (recoverable, not an eternal skeleton)", async () => {
 		// A wire failure: thread/get rejects. The thread must end in `error` status — never stuck `loading`.
-		const stub = WsClient.of({
-			threadCreate: () => Effect.die("unused"),
-			postMessage: () => Effect.die("unused"),
-			threadList: () => Effect.die("unused"),
-			getRunHistory: () => Effect.die("unused"),
-			recurrencePreview: () => Effect.die("not exercised in this test"),
-			listEntities: () => Effect.die("unused"),
-			getBacklinks: () => Effect.die("unused"),
-			observationQuery: () => Effect.die("unused"),
-			observationUpdate: () => Effect.die("unused"),
-			entityMutate: () => Effect.die("unused"),
+		const stub = stubWsClient({
 			threadGet: () => Effect.fail(new WsRequestError({ reason: "boom" })),
-			threadRename: () => Effect.die("unused"),
-			threadArchive: () => Effect.die("unused"),
-			threadUnarchive: () => Effect.die("unused"),
-			threadListArchived: () => Effect.die("unused"),
-			subscribeRun: () => Stream.empty,
-			cancelRun: () => Effect.die("unused"),
-			retryRun: () => Effect.die("unused"),
-			providerStatus: () => Effect.die("unused"),
-			providerLoginStart: () => Effect.die("unused"),
-			providerConfigure: () => Effect.die("unused"),
-			providerTest: () => Effect.die("unused"),
-			modelCatalog: () => Effect.die("unused"),
-			settingsGet: () => Effect.die("unused"),
-			settingsSet: () => Effect.die("unused"),
-			proposalGet: () => Effect.die("unused"),
-			rescanJournalEntry: () => Effect.die("unused"),
-			proposalDecide: () => Effect.die("unused"),
-			messageSearch: () => Effect.die("unused"),
-			proposalNotifications: () => Stream.empty,
-			connectionStatus: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
@@ -1133,38 +688,8 @@ describe("refresh-durable hydration", () => {
 				},
 			],
 		};
-		const okStub = WsClient.of({
-			threadCreate: () => Effect.die("unused"),
-			postMessage: () => Effect.die("unused"),
-			threadList: () => Effect.die("unused"),
-			getRunHistory: () => Effect.die("unused"),
-			recurrencePreview: () => Effect.die("not exercised in this test"),
-			listEntities: () => Effect.die("unused"),
-			getBacklinks: () => Effect.die("unused"),
-			observationQuery: () => Effect.die("unused"),
-			observationUpdate: () => Effect.die("unused"),
-			entityMutate: () => Effect.die("unused"),
+		const okStub = stubWsClient({
 			threadGet: () => Effect.succeed(ok),
-			threadRename: () => Effect.die("unused"),
-			threadArchive: () => Effect.die("unused"),
-			threadUnarchive: () => Effect.die("unused"),
-			threadListArchived: () => Effect.die("unused"),
-			subscribeRun: () => Stream.empty,
-			cancelRun: () => Effect.die("unused"),
-			retryRun: () => Effect.die("unused"),
-			providerStatus: () => Effect.die("unused"),
-			providerLoginStart: () => Effect.die("unused"),
-			providerConfigure: () => Effect.die("unused"),
-			providerTest: () => Effect.die("unused"),
-			modelCatalog: () => Effect.die("unused"),
-			settingsGet: () => Effect.die("unused"),
-			settingsSet: () => Effect.die("unused"),
-			proposalGet: () => Effect.die("unused"),
-			rescanJournalEntry: () => Effect.die("unused"),
-			proposalDecide: () => Effect.die("unused"),
-			messageSearch: () => Effect.die("unused"),
-			proposalNotifications: () => Stream.empty,
-			connectionStatus: () => Stream.empty,
 		});
 		const okRuntime = ManagedRuntime.make(Layer.succeed(WsClient, okStub));
 

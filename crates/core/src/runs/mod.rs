@@ -38,8 +38,9 @@ use crate::hub::Hubs;
 use crate::protocol::{JsonRpcRequest, SubscribeParams};
 
 /// Route a decoded JSON-RPC request to its handler, one `match` arm per
-/// method. An unknown method is dropped silently so the connection keeps
-/// serving subsequent frames.
+/// method. An unknown method is answered with a JSON-RPC `-32601` (method not
+/// found) so a typo'd or misrouted verb fails loud instead of leaving the
+/// client's request future awaiting a reply that never comes.
 pub async fn dispatch(
     pool: &SqlitePool,
     hubs: &Hubs,
@@ -155,7 +156,81 @@ pub async fn dispatch(
         "provider/test" => {
             provider::handle_test(req.id, req.params, out_tx).await;
         }
-        // Other methods: drop silently for the skeleton.
-        _ => {}
+        // Unknown method: answer with JSON-RPC -32601 rather than dropping the
+        // frame, so the client's pending request rejects with a diagnostic
+        // instead of hanging until the socket closes.
+        other => {
+            reply::send_rpc_error(
+                out_tx,
+                req.id,
+                -32601,
+                format!("method not found: {other}"),
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::{json, Value};
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+    use sqlx::SqlitePool;
+    use tokio::sync::mpsc;
+
+    use crate::hub;
+    use crate::protocol::JsonRpcRequest;
+
+    async fn memory_pool() -> SqlitePool {
+        let options = SqliteConnectOptions::new()
+            .filename(":memory:")
+            .foreign_keys(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .expect("open in-memory sqlite");
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .expect("run migrations");
+        pool
+    }
+
+    async fn dispatch_rpc(pool: &SqlitePool, method: &str) -> Option<Value> {
+        let hubs = hub::new_hubs();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        super::dispatch(
+            pool,
+            &hubs,
+            JsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: json!(7),
+                method: method.to_string(),
+                params: json!({}),
+            },
+            &tx,
+        )
+        .await;
+        rx.try_recv()
+            .ok()
+            .map(|line| serde_json::from_str(&line).expect("frame is JSON"))
+    }
+
+    #[tokio::test]
+    async fn unknown_method_replies_method_not_found() {
+        let pool = memory_pool().await;
+        let frame = dispatch_rpc(&pool, "does/not_exist")
+            .await
+            .expect("a frame was queued (previously the arm dropped it silently)");
+        assert_eq!(frame["error"]["code"], json!(-32601), "{frame:?}");
+        assert_eq!(frame["id"], json!(7), "{frame:?}");
+        let message = frame["error"]["message"]
+            .as_str()
+            .expect("error message");
+        assert!(
+            message.contains("does/not_exist"),
+            "expected the offending method in the message, got {message:?}"
+        );
+        assert!(frame.get("result").is_none(), "{frame:?}");
     }
 }

@@ -1,6 +1,7 @@
 import type { ProviderStatusResult, ThreadGetResult } from "@inkstone/protocol";
 import {
 	type RunEventValue,
+	stubWsClient,
 	UnknownThreadError,
 	WsClient,
 	type WsError,
@@ -46,7 +47,7 @@ function makeStubRuntime(opts: {
 	readonly providerStatus?: WsClient["Type"]["providerStatus"];
 }) {
 	const unused = Effect.die("not exercised in this test");
-	const stub = WsClient.of({
+	const stub = stubWsClient({
 		threadCreate: () =>
 			opts.sendFailure
 				? Effect.fail(opts.sendFailure)
@@ -58,20 +59,8 @@ function makeStubRuntime(opts: {
 			opts.sendFailure
 				? Effect.fail(opts.sendFailure)
 				: Effect.succeed(opts.runId),
-		threadList: () => unused,
-		getRunHistory: () => unused,
-		recurrencePreview: () => Effect.die("not exercised in this test"),
 		// Park hydrate-on-focus: a focused thread stays `loading` (these tests drive messages directly, not via thread/get).
 		threadGet: () => Effect.never,
-		threadRename: () => unused,
-		threadArchive: () => unused,
-		threadUnarchive: () => unused,
-		threadListArchived: () => unused,
-		listEntities: () => unused,
-		getBacklinks: () => unused,
-		observationQuery: () => unused,
-		observationUpdate: () => unused,
-		entityMutate: () => unused,
 		subscribeRun: () => Stream.fromIterable(opts.events),
 		cancelRun:
 			opts.cancelRun ??
@@ -92,18 +81,6 @@ function makeStubRuntime(opts: {
 						},
 					],
 				})),
-		providerLoginStart: () => unused,
-		providerConfigure: () => unused,
-		providerTest: () => unused,
-		modelCatalog: () => unused,
-		settingsGet: () => unused,
-		settingsSet: () => unused,
-		proposalGet: () => unused,
-		rescanJournalEntry: () => unused,
-		proposalDecide: () => unused,
-		messageSearch: () => unused,
-		proposalNotifications: () => Stream.empty,
-		connectionStatus: () => Stream.empty,
 	});
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 }
@@ -426,31 +403,13 @@ describe("ChatColumn", () => {
 			],
 		};
 		let calls = 0;
-		const unused = Effect.die("not exercised in this test");
-		const stub = WsClient.of({
-			threadCreate: () => unused,
-			postMessage: () => unused,
-			threadList: () => unused,
-			getRunHistory: () => unused,
-			recurrencePreview: () => Effect.die("not exercised in this test"),
+		const stub = stubWsClient({
 			threadGet: () => {
 				calls += 1;
 				return calls === 1
 					? Effect.fail(new WsRequestError({ reason: "boom" }))
 					: Effect.succeed(history);
 			},
-			threadRename: () => unused,
-			threadArchive: () => unused,
-			threadUnarchive: () => unused,
-			threadListArchived: () => unused,
-			listEntities: () => unused,
-			getBacklinks: () => unused,
-			observationQuery: () => unused,
-			observationUpdate: () => unused,
-			entityMutate: () => unused,
-			subscribeRun: () => Stream.empty,
-			cancelRun: () => unused,
-			retryRun: () => unused,
 			// Default these full-stub behaviour tests to a CONNECTED provider so the
 			// ordinary chat surface renders (slice 2's connect gate is off here).
 			providerStatus: () =>
@@ -459,18 +418,6 @@ describe("ChatColumn", () => {
 						{ id: "openai-codex", connected: true, auth_kind: "oauth" },
 					],
 				}),
-			providerLoginStart: () => unused,
-			providerConfigure: () => unused,
-			providerTest: () => unused,
-			modelCatalog: () => unused,
-			settingsGet: () => unused,
-			settingsSet: () => unused,
-			proposalGet: () => unused,
-			rescanJournalEntry: () => unused,
-			proposalDecide: () => unused,
-			messageSearch: () => unused,
-			proposalNotifications: () => Stream.empty,
-			connectionStatus: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
@@ -494,27 +441,9 @@ describe("ChatColumn", () => {
 
 	it("shows an honest not-found state (with a Back-to-New-Chat exit, no retry) for a missing thread", async () => {
 		const user = userEvent.setup();
-		const unused = Effect.die("not exercised in this test");
-		const stub = WsClient.of({
-			threadCreate: () => unused,
-			postMessage: () => unused,
-			threadList: () => unused,
-			getRunHistory: () => unused,
-			recurrencePreview: () => Effect.die("not exercised in this test"),
+		const stub = stubWsClient({
 			threadGet: () =>
 				Effect.fail(new UnknownThreadError({ message: "no such thread" })),
-			threadRename: () => unused,
-			threadArchive: () => unused,
-			threadUnarchive: () => unused,
-			threadListArchived: () => unused,
-			listEntities: () => unused,
-			getBacklinks: () => unused,
-			observationQuery: () => unused,
-			observationUpdate: () => unused,
-			entityMutate: () => unused,
-			subscribeRun: () => Stream.empty,
-			cancelRun: () => unused,
-			retryRun: () => unused,
 			// Default these full-stub behaviour tests to a CONNECTED provider so the
 			// ordinary chat surface renders (slice 2's connect gate is off here).
 			providerStatus: () =>
@@ -523,18 +452,6 @@ describe("ChatColumn", () => {
 						{ id: "openai-codex", connected: true, auth_kind: "oauth" },
 					],
 				}),
-			providerLoginStart: () => unused,
-			providerConfigure: () => unused,
-			providerTest: () => unused,
-			modelCatalog: () => unused,
-			settingsGet: () => unused,
-			settingsSet: () => unused,
-			proposalGet: () => unused,
-			rescanJournalEntry: () => unused,
-			proposalDecide: () => unused,
-			messageSearch: () => unused,
-			proposalNotifications: () => Stream.empty,
-			connectionStatus: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
@@ -1249,26 +1166,8 @@ describe("ChatColumn", () => {
 				},
 			],
 		};
-		const unused = Effect.die("not exercised in this test");
-		const stub = WsClient.of({
-			threadCreate: () => unused,
-			postMessage: () => unused,
-			threadList: () => unused,
-			getRunHistory: () => unused,
-			recurrencePreview: () => Effect.die("not exercised in this test"),
+		const stub = stubWsClient({
 			threadGet: () => Deferred.await(gate),
-			threadRename: () => unused,
-			threadArchive: () => unused,
-			threadUnarchive: () => unused,
-			threadListArchived: () => unused,
-			listEntities: () => unused,
-			getBacklinks: () => unused,
-			observationQuery: () => unused,
-			observationUpdate: () => unused,
-			entityMutate: () => unused,
-			subscribeRun: () => Stream.empty,
-			cancelRun: () => unused,
-			retryRun: () => unused,
 			// Default these full-stub behaviour tests to a CONNECTED provider so the
 			// ordinary chat surface renders (slice 2's connect gate is off here).
 			providerStatus: () =>
@@ -1277,18 +1176,6 @@ describe("ChatColumn", () => {
 						{ id: "openai-codex", connected: true, auth_kind: "oauth" },
 					],
 				}),
-			providerLoginStart: () => unused,
-			providerConfigure: () => unused,
-			providerTest: () => unused,
-			modelCatalog: () => unused,
-			settingsGet: () => unused,
-			settingsSet: () => unused,
-			proposalGet: () => unused,
-			rescanJournalEntry: () => unused,
-			proposalDecide: () => unused,
-			messageSearch: () => unused,
-			proposalNotifications: () => Stream.empty,
-			connectionStatus: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 		try {

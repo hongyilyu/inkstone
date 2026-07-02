@@ -1,5 +1,5 @@
 import type { EntityListResult } from "@inkstone/protocol";
-import { WsClient, type WsError } from "@inkstone/ui-sdk";
+import { stubWsClient, WsClient, type WsError } from "@inkstone/ui-sdk";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
 	createMemoryHistory,
@@ -8,7 +8,7 @@ import {
 	RouterProvider,
 } from "@tanstack/react-router";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
-import { Effect, Layer, ManagedRuntime, Stream } from "effect";
+import { Effect, Layer, ManagedRuntime } from "effect";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it } from "vitest";
 import { RuntimeProvider } from "@/runtime";
@@ -20,18 +20,7 @@ type Rows = EntityListResult["entities"];
  * `failing`, `listEntities` rejects in the E channel (Core unreachable) so
  * `useLibraryItems` surfaces `isError`. */
 function makeRuntime(todos: Rows, projects: Rows = [], failing = false) {
-	const unused = Effect.die("not exercised in this test");
-	const stub = WsClient.of({
-		threadCreate: () => unused,
-		postMessage: () => unused,
-		threadList: () => unused,
-		getRunHistory: () => unused,
-		recurrencePreview: () => unused,
-		threadGet: () => unused,
-		threadRename: () => unused,
-		threadArchive: () => unused,
-		threadUnarchive: () => unused,
-		threadListArchived: () => unused,
+	const stub = stubWsClient({
 		listEntities: (type) => {
 			if (failing)
 				return Effect.fail({
@@ -42,26 +31,6 @@ function makeRuntime(todos: Rows, projects: Rows = [], failing = false) {
 			if (type === "project") return Effect.succeed({ entities: projects });
 			return Effect.succeed({ entities: [] });
 		},
-		getBacklinks: () => unused,
-		observationQuery: () => unused,
-		observationUpdate: () => unused,
-		entityMutate: () => unused,
-		subscribeRun: () => unused,
-		cancelRun: () => unused,
-		retryRun: () => unused,
-		providerStatus: () => unused,
-		providerLoginStart: () => unused,
-		providerConfigure: () => unused,
-		providerTest: () => unused,
-		modelCatalog: () => unused,
-		settingsGet: () => unused,
-		settingsSet: () => unused,
-		proposalGet: () => unused,
-		rescanJournalEntry: () => unused,
-		proposalDecide: () => unused,
-		messageSearch: () => unused,
-		proposalNotifications: () => Stream.empty,
-		connectionStatus: () => Stream.empty,
 	});
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 }

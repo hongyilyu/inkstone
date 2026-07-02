@@ -136,7 +136,7 @@ fn entity_data_payload(
                 );
                 data.insert(
                     "next_review_at".to_string(),
-                    serde_json::json!(crate::entities::next_review_at_local(
+                    serde_json::json!(crate::localtime::next_review_at_local(
                         now_ms,
                         offset_minutes
                     )),
@@ -539,14 +539,14 @@ async fn apply_mark_project_reviewed(
 
     data.insert(
         "last_reviewed_at".to_string(),
-        serde_json::json!(crate::entities::now_local(now_ms, offset_minutes)),
+        serde_json::json!(crate::localtime::now_local(now_ms, offset_minutes)),
     );
     // Advance (not seed): always the NEXT Sunday strictly after now, so a Project
     // reviewed on a Sunday afternoon does not re-enter the Review view that same
     // evening (ADR-0034). `next_review_at_local` is the create-time SEED variant.
     data.insert(
         "next_review_at".to_string(),
-        serde_json::json!(crate::entities::advance_review_at_local(
+        serde_json::json!(crate::localtime::advance_review_at_local(
             now_ms,
             offset_minutes
         )),
@@ -1116,6 +1116,7 @@ pub(crate) async fn apply_entity_mutation(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use sqlx::SqlitePool;
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
@@ -1133,6 +1134,157 @@ mod tests {
             .await
             .expect("run migrations");
         pool
+    }
+
+    // ─── entity_data_payload: pure per-kind default-injection / normalization ──
+    //
+    // `entity_data_payload` is the pool-free pre-write seam that shapes the stored
+    // `entities.data` for each kind. These `#[test]`s pin its contract WITHOUT a
+    // pool or transaction (the 23 #[tokio::test]s below only observe it indirectly
+    // through a full write): default-injection, envelope unwrap, transport-field
+    // strip, and sentinel-null clear.
+
+    // A fixed non-Sunday instant so the seeded review anchor is deterministic:
+    // 2025-06-09T12:00:00Z (Monday) ⇒ the coming Sunday 2025-06-15 at 20:00.
+    const MON_NOON_MS: i64 = 1_749_470_400_000;
+
+    #[test]
+    fn create_project_injects_active_status_and_seeds_weekly_review() {
+        let data = entity_data_payload(
+            MutationKind::CreateProject,
+            &json!({ "name": "Roadmap" }),
+            MON_NOON_MS,
+            0,
+        );
+        assert_eq!(data["status"], json!("active"), "absent status ⇒ active");
+        assert_eq!(
+            data["review_every"],
+            json!({ "interval": 1, "unit": "week" }),
+            "active Project with no review fields seeds the weekly ritual"
+        );
+        assert_eq!(
+            data["next_review_at"], json!("2025-06-15T20:00:00"),
+            "review anchor seeded from now_ms/offset (coming Sunday 20:00)"
+        );
+    }
+
+    #[test]
+    fn create_project_non_active_does_not_seed_review() {
+        let data = entity_data_payload(
+            MutationKind::CreateProject,
+            &json!({ "name": "Someday", "status": "on_hold" }),
+            MON_NOON_MS,
+            0,
+        );
+        assert_eq!(data["status"], json!("on_hold"), "explicit status preserved");
+        assert!(
+            data.get("review_every").is_none() && data.get("next_review_at").is_none(),
+            "only an active Project seeds the review ritual"
+        );
+    }
+
+    #[test]
+    fn create_project_respects_supplied_review_fields() {
+        let data = entity_data_payload(
+            MutationKind::CreateProject,
+            &json!({
+                "name": "Roadmap",
+                "review_every": { "interval": 2, "unit": "week" },
+                "next_review_at": "2025-07-06T20:00:00"
+            }),
+            MON_NOON_MS,
+            0,
+        );
+        // Supplied review fields are not overwritten by the default seed.
+        assert_eq!(data["review_every"], json!({ "interval": 2, "unit": "week" }));
+        assert_eq!(data["next_review_at"], json!("2025-07-06T20:00:00"));
+    }
+
+    #[test]
+    fn create_todo_unwraps_envelope_and_injects_active_status() {
+        let data = entity_data_payload(
+            MutationKind::CreateTodo,
+            &json!({
+                "todo": { "title": "Buy milk" },
+                "person_refs": [{ "person_id": "p1", "role": "related" }]
+            }),
+            MON_NOON_MS,
+            0,
+        );
+        assert_eq!(data["title"], json!("Buy milk"), "stores payload.todo, not the envelope");
+        assert_eq!(data["status"], json!("active"), "absent status ⇒ active");
+        // person_refs persist separately; they must NOT bleed into entities.data.
+        assert!(data.get("person_refs").is_none(), "person_refs are not entity data");
+        assert!(data.get("todo").is_none(), "the envelope wrapper is unwrapped away");
+    }
+
+    #[test]
+    fn create_todo_preserves_explicit_status() {
+        let data = entity_data_payload(
+            MutationKind::CreateTodo,
+            &json!({ "todo": { "title": "Ship it", "status": "waiting" } }),
+            MON_NOON_MS,
+            0,
+        );
+        assert_eq!(data["status"], json!("waiting"), "explicit status not overwritten");
+    }
+
+    #[test]
+    fn update_kind_strips_entity_id_and_transport_and_clears_sentinel_null() {
+        let data = entity_data_payload(
+            MutationKind::UpdatePerson,
+            &json!({
+                "entity_id": "person-123",
+                "source_journal_entry_id": "je-9",
+                "name": "Alice",
+                "note": null
+            }),
+            MON_NOON_MS,
+            0,
+        );
+        assert!(data.get("entity_id").is_none(), "entity_id targets the row, not data");
+        assert!(
+            data.get("source_journal_entry_id").is_none(),
+            "create-only provenance transport field never persists into update data"
+        );
+        assert!(
+            data.get("note").is_none(),
+            "sentinel-null optional (ADR-0033) drops the key rather than storing JSON null"
+        );
+        assert_eq!(data["name"], json!("Alice"), "real fields survive");
+    }
+
+    #[test]
+    fn create_media_drops_null_optionals_with_no_defaults() {
+        let data = entity_data_payload(
+            MutationKind::CreateMedia,
+            &json!({ "title": "Dune", "medium": "book", "state": "backlog", "note": null }),
+            MON_NOON_MS,
+            0,
+        );
+        assert!(data.get("note").is_none(), "null optional dropped");
+        assert_eq!(data["title"], json!("Dune"));
+        assert_eq!(data["state"], json!("backlog"), "no default injection for media");
+    }
+
+    #[test]
+    fn delete_and_intx_kinds_store_payload_as_is() {
+        // Delete + in-tx kinds never inject/normalize at this seam — they pass the
+        // payload through verbatim (the in-tx kinds compute their data inside the tx).
+        for kind in [
+            MutationKind::DeletePerson,
+            MutationKind::UpdateTodo,
+            MutationKind::MarkProjectReviewed,
+            MutationKind::CreateJournalEntry,
+            MutationKind::ApplyIntentGraph,
+        ] {
+            let payload = json!({ "entity_id": "x", "note": null, "arbitrary": 1 });
+            assert_eq!(
+                entity_data_payload(kind, &payload, MON_NOON_MS, 0),
+                payload,
+                "{kind:?} stores its payload as-is (no strip/inject/clear)"
+            );
+        }
     }
 
     /// Locks the new seam: a trivial `create_person` through
@@ -1538,7 +1690,7 @@ mod tests {
         let after = project_data(&pool, &project_id).await;
         assert_eq!(
             after["last_reviewed_at"].as_str(),
-            Some(crate::entities::now_local(now_ms, 0).as_str()),
+            Some(crate::localtime::now_local(now_ms, 0).as_str()),
             "last_reviewed_at stamped to local now"
         );
         assert_eq!(

@@ -22,7 +22,7 @@
 
 use serde_json::{Map, Value};
 
-use crate::entities::parse_local_datetime;
+use crate::localtime::parse_local_datetime;
 
 /// The standard `description` schemars emitted for every local wall-clock field,
 /// surfaced to the Worker so the model knows the expected literal format. The

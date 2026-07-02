@@ -3,8 +3,8 @@ use sqlx::SqlitePool;
 use uuid::Uuid;
 
 use crate::db;
-use crate::entities::parse_local_datetime;
 use crate::field_spec::{Field, FieldSpec, ObjErr, PayloadSpec};
+use crate::localtime::parse_local_datetime;
 use crate::mutation::{OBSERVATION_RELATIONS, ObservationRelation};
 
 const BODYWEIGHT_SCHEMA_KEY: &str = "bodyweight";

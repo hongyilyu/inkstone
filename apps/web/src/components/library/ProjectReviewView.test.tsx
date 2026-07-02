@@ -3,11 +3,16 @@ import type {
 	EntityMutateParams,
 	EntityMutateResult,
 } from "@inkstone/protocol";
-import { InvalidParamsError, WsClient, type WsError } from "@inkstone/ui-sdk";
+import {
+	InvalidParamsError,
+	stubWsClient,
+	WsClient,
+	type WsError,
+} from "@inkstone/ui-sdk";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Effect, Layer, ManagedRuntime, Stream } from "effect";
+import { Effect, Layer, ManagedRuntime } from "effect";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RuntimeProvider } from "@/runtime";
@@ -25,44 +30,14 @@ function makeRuntime(
 	people: Rows,
 	entityMutate: EntityMutate,
 ) {
-	const unused = Effect.die("not exercised in this test");
-	const stub = WsClient.of({
-		threadCreate: () => unused,
-		postMessage: () => unused,
-		threadList: () => unused,
-		getRunHistory: () => unused,
-		recurrencePreview: () => Effect.die("not exercised in this test"),
-		threadGet: () => unused,
-		threadRename: () => unused,
-		threadArchive: () => unused,
-		threadUnarchive: () => unused,
-		threadListArchived: () => unused,
+	const stub = stubWsClient({
 		listEntities: (type) => {
 			if (type === "project") return Effect.succeed({ entities: projects });
 			if (type === "todo") return Effect.succeed({ entities: todos });
 			if (type === "person") return Effect.succeed({ entities: people });
 			return Effect.succeed({ entities: [] });
 		},
-		getBacklinks: () => unused,
-		observationQuery: () => unused,
-		observationUpdate: () => unused,
 		entityMutate,
-		subscribeRun: () => unused,
-		cancelRun: () => unused,
-		retryRun: () => unused,
-		providerStatus: () => unused,
-		providerLoginStart: () => unused,
-		providerConfigure: () => unused,
-		providerTest: () => unused,
-		modelCatalog: () => unused,
-		settingsGet: () => unused,
-		settingsSet: () => unused,
-		proposalGet: () => unused,
-		rescanJournalEntry: () => unused,
-		proposalDecide: () => unused,
-		messageSearch: () => unused,
-		proposalNotifications: () => unused,
-		connectionStatus: () => Stream.empty,
 	});
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 }
@@ -302,39 +277,7 @@ describe("ProjectReviewView (focused queue)", () => {
 	it("shows the skeleton while the first read is pending, not a snapshot of projects", () => {
 		// A runtime whose reads never resolve, so the query stays pending.
 		const never = Effect.never;
-		const stub = WsClient.of({
-			threadCreate: () => never,
-			postMessage: () => never,
-			threadList: () => never,
-			getRunHistory: () => never,
-			recurrencePreview: () => Effect.die("not exercised in this test"),
-			threadGet: () => never,
-			threadRename: () => never,
-			threadArchive: () => never,
-			threadUnarchive: () => never,
-			threadListArchived: () => never,
-			listEntities: () => never,
-			getBacklinks: () => never,
-			observationQuery: () => never,
-			observationUpdate: () => never,
-			entityMutate: () => never,
-			subscribeRun: () => Effect.never as never,
-			cancelRun: () => never,
-			retryRun: () => never,
-			providerStatus: () => never,
-			providerLoginStart: () => never,
-			providerConfigure: () => never,
-			providerTest: () => never,
-			modelCatalog: () => never,
-			settingsGet: () => never,
-			settingsSet: () => never,
-			proposalGet: () => never,
-			rescanJournalEntry: () => never,
-			proposalDecide: () => never,
-			messageSearch: () => never,
-			proposalNotifications: () => Effect.never as never,
-			connectionStatus: () => Stream.empty,
-		});
+		const stub = stubWsClient({ listEntities: () => never });
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 		const client = new QueryClient({
 			defaultOptions: {

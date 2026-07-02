@@ -4,6 +4,7 @@
 
 mod apply;
 mod intent_graph;
+mod journal_weave;
 mod lifecycle;
 mod media;
 mod message_fts;

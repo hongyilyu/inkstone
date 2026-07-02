@@ -8,6 +8,7 @@ import {
 	type ProposalNotification,
 	type RunEventValue,
 	type RunId,
+	stubWsClient,
 	WsClient,
 	type WsError,
 	WsRequestError,
@@ -53,26 +54,9 @@ function makeStubRuntime(opts: {
 	) => Effect.Effect<ProposalDecideResult, WsError>;
 	onSubscribe?: () => void;
 }) {
-	const unused = Effect.die("not exercised");
 	// Each subscribeRun gets the next queue in runQueues (a fresh hub per subscribe).
 	let subscribeIdx = 0;
-	const stub = WsClient.of({
-		threadCreate: () => unused,
-		postMessage: () => unused,
-		threadList: () => unused,
-		getRunHistory: () => unused,
-		recurrencePreview: () => Effect.die("not exercised in this test"),
-		threadGet: () => unused,
-		threadRename: () => unused,
-		threadArchive: () => unused,
-		threadUnarchive: () => unused,
-		threadListArchived: () => unused,
-		listEntities: () => unused,
-		getBacklinks: () => unused,
-		observationQuery: () => unused,
-		observationUpdate: () => unused,
-		entityMutate: () => unused,
-		rescanJournalEntry: () => unused,
+	const stub = stubWsClient({
 		subscribeRun: () => {
 			opts.onSubscribe?.();
 			if (opts.runQueues) {
@@ -82,15 +66,6 @@ function makeStubRuntime(opts: {
 			}
 			return opts.runQueue ? Stream.fromQueue(opts.runQueue) : Stream.empty;
 		},
-		cancelRun: () => unused,
-		retryRun: () => unused,
-		providerStatus: () => unused,
-		providerLoginStart: () => unused,
-		providerConfigure: () => unused,
-		providerTest: () => unused,
-		modelCatalog: () => unused,
-		settingsGet: () => unused,
-		settingsSet: () => unused,
 		proposalGet:
 			opts.proposalGet ??
 			((runId: RunId) =>
@@ -108,9 +83,7 @@ function makeStubRuntime(opts: {
 				Effect.succeed({
 					status: params.decision === "accept" ? "accepted" : "rejected",
 				} as const)),
-		messageSearch: () => unused,
 		proposalNotifications: () => Stream.fromQueue(opts.proposalQueue),
-		connectionStatus: () => Stream.empty,
 	});
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 }

@@ -21,6 +21,7 @@ import {
 	RECURRENCE_UNITS,
 	type RecurAnchor,
 	type RecurrenceUnit,
+	stampStatusTimestamps,
 	type TodoStatus,
 } from "@/lib/entityFields";
 import {
@@ -684,16 +685,12 @@ function buildUpdateParams(
 		// Clear the now-invalid timestamp(s) via sentinel-null so Core's
 		// re-validation of the MERGED whole doesn't trip on a stale one (ADR-0033).
 		partial.status = next.status;
-		if (next.status === "completed") {
-			partial.completed_at = localNowString();
-			partial.dropped_at = null;
-		} else if (next.status === "dropped") {
-			partial.dropped_at = localNowString();
-			partial.completed_at = null;
-		} else {
-			partial.completed_at = null;
-			partial.dropped_at = null;
-		}
+		stampStatusTimestamps(
+			partial,
+			next.status,
+			localNowString(),
+			"sentinel-null",
+		);
 	}
 
 	// Recurrence diffs as a whole rule: the new object when on, sentinel-null when
@@ -1004,16 +1001,7 @@ function buildProjectUpdate(
 	// `project.data`) intact — re-stamping every edit would silently overwrite the
 	// original completion/drop date (ADR-0033).
 	if (next.status !== prev.status) {
-		if (next.status === "completed") {
-			doc.completed_at = localNowString();
-			doc.dropped_at = undefined;
-		} else if (next.status === "dropped") {
-			doc.dropped_at = localNowString();
-			doc.completed_at = undefined;
-		} else {
-			doc.completed_at = undefined;
-			doc.dropped_at = undefined;
-		}
+		stampStatusTimestamps(doc, next.status, localNowString(), "undefined");
 	}
 
 	// Drop cleared optionals: under full-replace, an absent key carries no value

@@ -3,8 +3,9 @@
 //! (`packages/worker/src/models-catalog.test.ts`) guards the JSON against
 //! `pi-ai` (ADR-0009 hand-mirror discipline).
 //!
-//! Only `openai-codex` is connectable (ADR-0023). Read by the `model/catalog`
-//! handler and the `settings/set` validator.
+//! Connectable providers: `openai-codex` (OAuth, ADR-0023) and `openrouter`
+//! (API key, ADR-0062). Read by the `model/catalog` handler and the
+//! `settings/set` validator.
 
 use std::sync::OnceLock;
 

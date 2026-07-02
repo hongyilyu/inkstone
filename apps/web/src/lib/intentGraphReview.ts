@@ -1,5 +1,6 @@
 import type { NodeDecision, ResolvedNode } from "@inkstone/protocol";
 import { parseAliases } from "@/lib/entityFields";
+import { readString, readStringArray } from "@/lib/readPayload";
 
 /**
  * Pure staging logic for the `apply_intent_graph` sequential-review card
@@ -181,26 +182,6 @@ export type GraphNodeDraft =
 /** The per-handle draft buffer (component state), holding a draft for every create
  * node the user has opened for edit. A handle with no entry was never edited. */
 export type DraftBuffer = Readonly<Record<string, GraphNodeDraft>>;
-
-/** Read `key` off an unknown record as a string, degrading anything else to "". */
-function readString(source: unknown, key: string): string {
-	if (source && typeof source === "object" && key in source) {
-		const value = (source as Record<string, unknown>)[key];
-		if (typeof value === "string") return value;
-	}
-	return "";
-}
-
-/** Read `key` off an unknown record as a `string[]`, dropping non-strings; [] else. */
-function readStringArray(source: unknown, key: string): string[] {
-	if (source && typeof source === "object" && key in source) {
-		const value = (source as Record<string, unknown>)[key];
-		if (Array.isArray(value)) {
-			return value.filter((a): a is string => typeof a === "string");
-		}
-	}
-	return [];
-}
 
 /** Index the graph payload's `entities[]` by handle, so an edit can seed from — and
  * diff against — a node's ORIGINAL proposed fields. Degrades a malformed payload to

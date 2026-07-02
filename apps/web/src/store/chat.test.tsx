@@ -1,6 +1,7 @@
 import {
 	type RunEventValue,
 	type RunId,
+	stubWsClient,
 	WsClient,
 	type WsError,
 	WsRequestError,
@@ -25,39 +26,9 @@ import {
 
 // Stub WsClient backed by an in-memory Queue — see docs/design/web-store-tests.md
 function makeStubRuntime(queue: Queue.Queue<RunEventValue>, runId: RunId) {
-	const unused = Effect.die("not used in slice 11");
-	const stub = WsClient.of({
-		threadCreate: () => unused,
+	const stub = stubWsClient({
 		postMessage: () => Effect.succeed(runId),
-		threadList: () => unused,
-		getRunHistory: () => unused,
-		recurrencePreview: () => Effect.die("not exercised in this test"),
-		threadGet: () => unused,
-		threadRename: () => unused,
-		threadArchive: () => unused,
-		threadUnarchive: () => unused,
-		threadListArchived: () => unused,
-		listEntities: () => unused,
-		getBacklinks: () => unused,
-		observationQuery: () => unused,
-		observationUpdate: () => unused,
-		entityMutate: () => unused,
 		subscribeRun: () => Stream.fromQueue(queue),
-		cancelRun: () => unused,
-		retryRun: () => unused,
-		providerStatus: () => unused,
-		providerLoginStart: () => unused,
-		providerConfigure: () => unused,
-		providerTest: () => unused,
-		modelCatalog: () => unused,
-		settingsGet: () => unused,
-		settingsSet: () => unused,
-		proposalGet: () => unused,
-		rescanJournalEntry: () => unused,
-		proposalDecide: () => unused,
-		messageSearch: () => unused,
-		proposalNotifications: () => Stream.empty,
-		connectionStatus: () => Stream.empty,
 	});
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 }
@@ -174,22 +145,8 @@ describe("chat store + stream bridge", () => {
 		// rather than emitting a terminal event. Without a failure handler the fiber
 		// would die silently and the bubble would hang at `streaming` forever with a
 		// live Stop button. The bridge's catchAll must synthesize a terminal error.
-		const stub = WsClient.of({
-			threadCreate: () => Effect.die("unused"),
+		const stub = stubWsClient({
 			postMessage: () => Effect.succeed("run-drop" as RunId),
-			threadList: () => Effect.die("unused"),
-			getRunHistory: () => Effect.die("unused"),
-			recurrencePreview: () => Effect.die("not exercised in this test"),
-			threadGet: () => Effect.die("unused"),
-			threadRename: () => Effect.die("unused"),
-			threadArchive: () => Effect.die("unused"),
-			threadUnarchive: () => Effect.die("unused"),
-			threadListArchived: () => Effect.die("unused"),
-			listEntities: () => Effect.die("unused"),
-			getBacklinks: () => Effect.die("unused"),
-			observationQuery: () => Effect.die("unused"),
-			observationUpdate: () => Effect.die("unused"),
-			entityMutate: () => Effect.die("unused"),
 			// Emit one delta, then FAIL the stream like a dropped socket would.
 			subscribeRun: (): Stream.Stream<RunEventValue, WsError> =>
 				Stream.fromIterable<RunEventValue>([
@@ -199,21 +156,6 @@ describe("chat store + stream bridge", () => {
 						Stream.fail(new WsRequestError({ reason: "socket closed" })),
 					),
 				),
-			cancelRun: () => Effect.die("unused"),
-			retryRun: () => Effect.die("unused"),
-			providerStatus: () => Effect.die("unused"),
-			providerLoginStart: () => Effect.die("unused"),
-			providerConfigure: () => Effect.die("unused"),
-			providerTest: () => Effect.die("unused"),
-			modelCatalog: () => Effect.die("unused"),
-			settingsGet: () => Effect.die("unused"),
-			settingsSet: () => Effect.die("unused"),
-			proposalGet: () => Effect.die("unused"),
-			rescanJournalEntry: () => Effect.die("unused"),
-			proposalDecide: () => Effect.die("unused"),
-			messageSearch: () => Effect.die("unused"),
-			proposalNotifications: () => Stream.empty,
-			connectionStatus: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
