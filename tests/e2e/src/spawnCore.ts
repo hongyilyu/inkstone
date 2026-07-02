@@ -287,13 +287,18 @@ export async function spawnCore(
 	// Seed a connected provider by default: the chat surface gates the welcome +
 	// composer on `provider/status` (a usable Core has a provider connected), so
 	// without a credential every send-driven spec would land on the first-run
-	// connect screen with a disabled composer. The connect-flow specs start
-	// disconnected — they drive Connect themselves — which is any of: an explicit
-	// `connectedProvider: false`, a `providerLoginCmd`, or a sibling provider-helper.
+	// connect screen with a disabled composer — and, since ADR-0062, the
+	// run-creation gate rejects the send outright with `-32004`. The connect-flow
+	// specs start disconnected — they drive Connect themselves — which a
+	// `providerLoginCmd` or a sibling provider-helper implies. An EXPLICIT
+	// `connectedProvider` always wins: a spec that carries a provider-helper sibling
+	// for an unrelated reason (e.g. proving worker config) but still sends a Run can
+	// set `connectedProvider: true` to seed the credential the gate now requires.
 	const startDisconnected =
 		opts.connectedProvider === false ||
-		opts.providerLoginCmd !== undefined ||
-		opts.siblingBinaries?.providerHelper !== undefined;
+		(opts.connectedProvider !== true &&
+			(opts.providerLoginCmd !== undefined ||
+				opts.siblingBinaries?.providerHelper !== undefined));
 	if (!startDisconnected) {
 		mkdirSync(credentialsDir, { recursive: true });
 		// Shape mirrors crates/core/src/credentials.rs `StoredCredential`: an
@@ -445,6 +450,25 @@ export async function spawnCore(
 			].join("\n"),
 		);
 		env.INKSTONE_WORKFLOWS_DIR = workflowsDir;
+		// The faux Workflow resolves the Run's provider to `faux` (ADR-0062), so the
+		// run-creation gate (`ensure_provider_connected`) needs a `faux` credential —
+		// otherwise every faux-driven send is rejected `-32004` and the spec times
+		// out. Seed one whenever we're not deliberately starting disconnected (those
+		// specs don't send). The default connected seed above only writes
+		// `openai-codex`, which the faux Run never routes to.
+		if (!startDisconnected) {
+			mkdirSync(credentialsDir, { recursive: true });
+			writeFileSync(
+				path.join(credentialsDir, "faux.json"),
+				JSON.stringify({
+					kind: "oauth",
+					access: "e2e-faux-access-token",
+					refresh: "e2e-faux-refresh-token",
+					expires: 4_102_444_800_000,
+					account_id: "e2e-faux-account",
+				}),
+			);
+		}
 		if (opts.fauxToolCall) {
 			env.INKSTONE_FAUX_TOOL_CALL = "1";
 		} else if (opts.fauxLoadSkill !== undefined) {
