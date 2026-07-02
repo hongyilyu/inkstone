@@ -1,0 +1,505 @@
+import type {
+	ProposalDecideParams,
+	ProposalDecideResult,
+	ProposalGetResult,
+} from "@inkstone/protocol";
+import {
+	InvalidParamsError,
+	type ProposalNotification,
+	type RunEventValue,
+	type RunId,
+	stubWsClient,
+	WsClient,
+	type WsError,
+	WsRequestError,
+} from "@inkstone/ui-sdk";
+import { Effect, Layer, ManagedRuntime, Queue, Stream } from "effect";
+import { beforeEach, describe, expect, it } from "vitest";
+import {
+	decideProposal,
+	resetBridge,
+	startProposalStream,
+	startRunStream,
+} from "@/store/bridge.js";
+import {
+	attachRun,
+	concatText,
+	getChatState,
+	nextMessageId,
+	resetChatStore,
+	seedAssistantMessage,
+} from "@/store/chat.js";
+
+const JOURNAL_ENTRY = {
+	occurred_at: "2026-06-10T10:30:00",
+	body: [{ type: "text", text: "Bought milk after daycare pickup." }],
+};
+
+const JOURNAL_ENTRY_REVIEW_CONTEXT = {
+	current_journal_entry: {
+		entity_id: "entry-123",
+		occurred_at: "2026-06-10T10:15:00",
+		body: [{ type: "text", text: "Bought milk before daycare pickup." }],
+	},
+} satisfies NonNullable<ProposalGetResult["review_context"]>;
+
+/** Stub WsClient driven by in-memory queues so proposal flows run offline. */
+function makeStubRuntime(opts: {
+	proposalQueue: Queue.Queue<ProposalNotification>;
+	proposalGet?: (runId: RunId) => Effect.Effect<ProposalGetResult, WsError>;
+	runQueue?: Queue.Queue<RunEventValue>;
+	runQueues?: Queue.Queue<RunEventValue>[];
+	onDecide?: (
+		params: ProposalDecideParams,
+	) => Effect.Effect<ProposalDecideResult, WsError>;
+	onSubscribe?: () => void;
+}) {
+	// Each subscribeRun gets the next queue in runQueues (a fresh hub per subscribe).
+	let subscribeIdx = 0;
+	const stub = stubWsClient({
+		subscribeRun: () => {
+			opts.onSubscribe?.();
+			if (opts.runQueues) {
+				const q = opts.runQueues[subscribeIdx];
+				subscribeIdx += 1;
+				return q ? Stream.fromQueue(q) : Stream.empty;
+			}
+			return opts.runQueue ? Stream.fromQueue(opts.runQueue) : Stream.empty;
+		},
+		proposalGet:
+			opts.proposalGet ??
+			((runId: RunId) =>
+				Effect.succeed({
+					proposal_id: "prop-1",
+					run_id: runId,
+					mutation_kind: "create_journal_entry",
+					payload: JOURNAL_ENTRY,
+					rationale: "the user asked to remember this",
+					status: "pending",
+				})),
+		proposalDecide:
+			opts.onDecide ??
+			((params) =>
+				Effect.succeed({
+					status: params.decision === "accept" ? "accepted" : "rejected",
+				} as const)),
+		proposalNotifications: () => Stream.fromQueue(opts.proposalQueue),
+	});
+	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
+}
+
+beforeEach(() => {
+	resetChatStore();
+	resetBridge();
+});
+
+/** Poll the store until `predicate` holds (the stream fiber is async). */
+async function waitFor(predicate: () => boolean): Promise<void> {
+	for (let i = 0; i < 200; i++) {
+		if (predicate()) return;
+		await new Promise((r) => setTimeout(r, 5));
+	}
+	throw new Error("waitFor timed out");
+}
+
+describe("proposal stream + decide", () => {
+	it("a proposal/pending notification fetches and attaches the pending proposal", async () => {
+		const proposalQueue = Effect.runSync(
+			Queue.unbounded<ProposalNotification>(),
+		);
+		const runtime = makeStubRuntime({ proposalQueue });
+
+		startProposalStream(runtime);
+		Queue.unsafeOffer(proposalQueue, {
+			kind: "pending",
+			run_id: "run-1",
+			proposal_id: "prop-1",
+		});
+		await waitFor(() => getChatState().proposals["run-1"] !== undefined);
+
+		const proposal = getChatState().proposals["run-1"];
+		expect(proposal?.status).toBe("pending");
+		expect(proposal?.payload).toEqual(JOURNAL_ENTRY);
+
+		await runtime.dispose();
+	});
+
+	it("retains proposal review_context from proposal/get in the chat store", async () => {
+		const proposalQueue = Effect.runSync(
+			Queue.unbounded<ProposalNotification>(),
+		);
+		const runtime = makeStubRuntime({
+			proposalQueue,
+			proposalGet: (runId) =>
+				Effect.succeed({
+					proposal_id: "prop-1",
+					run_id: runId,
+					mutation_kind: "update_journal_entry",
+					payload: {
+						entity_id: "entry-123",
+						occurred_at: "2026-06-10T10:30:00",
+						body: [{ type: "text", text: "Bought milk after daycare pickup." }],
+					},
+					rationale: "the user corrected the original journal entry",
+					review_context: JOURNAL_ENTRY_REVIEW_CONTEXT,
+					status: "pending",
+				}),
+		});
+
+		startProposalStream(runtime);
+		Queue.unsafeOffer(proposalQueue, {
+			kind: "pending",
+			run_id: "run-1",
+			proposal_id: "prop-1",
+		});
+		await waitFor(() => getChatState().proposals["run-1"] !== undefined);
+
+		expect(getChatState().proposals["run-1"]?.review_context).toEqual(
+			JOURNAL_ENTRY_REVIEW_CONTEXT,
+		);
+
+		await runtime.dispose();
+	});
+
+	it("a proposal/changed notification updates the proposal status", async () => {
+		const proposalQueue = Effect.runSync(
+			Queue.unbounded<ProposalNotification>(),
+		);
+		const runtime = makeStubRuntime({ proposalQueue });
+
+		startProposalStream(runtime);
+		Queue.unsafeOffer(proposalQueue, {
+			kind: "pending",
+			run_id: "run-1",
+			proposal_id: "prop-1",
+		});
+		Queue.unsafeOffer(proposalQueue, {
+			kind: "changed",
+			run_id: "run-1",
+			proposal_id: "prop-1",
+			status: "accepted",
+		});
+		await waitFor(
+			() => getChatState().proposals["run-1"]?.status === "accepted",
+		);
+
+		expect(getChatState().proposals["run-1"]?.status).toBe("accepted");
+
+		await runtime.dispose();
+	});
+
+	it("decideProposal calls proposalDecide and flips the proposal to its decided state", async () => {
+		const proposalQueue = Effect.runSync(
+			Queue.unbounded<ProposalNotification>(),
+		);
+		const runQueue = Effect.runSync(Queue.unbounded<RunEventValue>());
+		const runtime = makeStubRuntime({ proposalQueue, runQueue });
+
+		startProposalStream(runtime);
+		Queue.unsafeOffer(proposalQueue, {
+			kind: "pending",
+			run_id: "run-1",
+			proposal_id: "prop-1",
+		});
+		await waitFor(() => getChatState().proposals["run-1"] !== undefined);
+
+		await decideProposal(runtime, "run-1", "accept");
+
+		expect(getChatState().proposals["run-1"]?.status).toBe("accepted");
+
+		await runtime.dispose();
+	});
+
+	it("preserves InvalidParamsError.message when a proposal edit is rejected", async () => {
+		const proposalQueue = Effect.runSync(
+			Queue.unbounded<ProposalNotification>(),
+		);
+		const runtime = makeStubRuntime({
+			proposalQueue,
+			onDecide: () =>
+				Effect.fail(
+					new InvalidParamsError({
+						message: "record_observations payload is invalid",
+					}),
+				),
+		});
+
+		startProposalStream(runtime);
+		Queue.unsafeOffer(proposalQueue, {
+			kind: "pending",
+			run_id: "run-1",
+			proposal_id: "prop-1",
+		});
+		await waitFor(() => getChatState().proposals["run-1"] !== undefined);
+
+		await decideProposal(runtime, "run-1", "edit", { observations: [] });
+
+		expect(getChatState().proposals["run-1"]).toMatchObject({
+			status: "error",
+			error_message: "record_observations payload is invalid",
+		});
+
+		await runtime.dispose();
+	});
+
+	it("a double decide does not flip an accepted card to error (M1)", async () => {
+		const proposalQueue = Effect.runSync(
+			Queue.unbounded<ProposalNotification>(),
+		);
+		const runQueue = Effect.runSync(Queue.unbounded<RunEventValue>());
+		// Second decide (double-click) would fail proposal_not_pending; the store guard must stop it.
+		let decideCalls = 0;
+		const runtime = makeStubRuntime({
+			proposalQueue,
+			runQueue,
+			onDecide: () => {
+				decideCalls += 1;
+				if (decideCalls === 1) {
+					return Effect.succeed({ status: "accepted" } as const);
+				}
+				return Effect.fail(
+					new WsRequestError({ reason: "proposal_not_pending" }),
+				);
+			},
+		});
+
+		startProposalStream(runtime);
+		Queue.unsafeOffer(proposalQueue, {
+			kind: "pending",
+			run_id: "run-1",
+			proposal_id: "prop-1",
+		});
+		await waitFor(() => getChatState().proposals["run-1"] !== undefined);
+
+		// Second observes the optimistic `deciding` status from the first and short-circuits.
+		const first = decideProposal(runtime, "run-1", "accept");
+		const second = decideProposal(runtime, "run-1", "accept");
+		await Promise.all([first, second]);
+
+		expect(decideCalls).toBe(1);
+		expect(getChatState().proposals["run-1"]?.status).toBe("accepted");
+
+		await runtime.dispose();
+	});
+
+	it("re-subscribes with a single consumer so the resume tail is not split (M2)", async () => {
+		const proposalQueue = Effect.runSync(
+			Queue.unbounded<ProposalNotification>(),
+		);
+		const runQueue = Effect.runSync(Queue.unbounded<RunEventValue>());
+		let subscribeCount = 0;
+		const runtime = makeStubRuntime({
+			proposalQueue,
+			runQueue,
+			onSubscribe: () => {
+				subscribeCount += 1;
+			},
+		});
+
+		// Seed run-1's turn + start the original parked stream (no terminal event → stale fiber, M2).
+		const assistantId = nextMessageId();
+		seedAssistantMessage("thread-1", {
+			id: assistantId,
+			role: "assistant",
+			status: "streaming",
+			segments: [],
+			run_id: "",
+		});
+		attachRun("thread-1", assistantId, "run-1");
+		startRunStream(runtime, "thread-1", "run-1");
+		await waitFor(() => subscribeCount === 1);
+
+		startProposalStream(runtime);
+		Queue.unsafeOffer(proposalQueue, {
+			kind: "pending",
+			run_id: "run-1",
+			proposal_id: "prop-1",
+		});
+		await waitFor(() => getChatState().proposals["run-1"] !== undefined);
+
+		await decideProposal(runtime, "run-1", "accept");
+		// Decide re-subscribed exactly once more (original fiber interrupted, not abandoned).
+		await waitFor(() => subscribeCount === 2);
+
+		// Single-consumer resume tail: deltas concatenate cleanly; two consumers would split them.
+		Queue.unsafeOffer(runQueue, { kind: "text_delta", delta: "Done" });
+		Queue.unsafeOffer(runQueue, { kind: "text_delta", delta: ". " });
+		Queue.unsafeOffer(runQueue, { kind: "text_delta", delta: "added it." });
+		Queue.unsafeOffer(runQueue, { kind: "done" });
+
+		await waitFor(() => {
+			const msg = getChatState().threads["thread-1"]?.messages.find(
+				(m) => m.run_id === "run-1",
+			);
+			return msg?.status === "completed";
+		});
+
+		const msg = getChatState().threads["thread-1"]?.messages.find(
+			(m) => m.run_id === "run-1",
+		);
+		expect(concatText(msg?.segments ?? [])).toBe("Done. added it.");
+
+		await runtime.dispose();
+	});
+
+	it("resume snapshot SETs (not appends) cumulative text after pre-park prose (M1)", async () => {
+		const proposalQueue = Effect.runSync(
+			Queue.unbounded<ProposalNotification>(),
+		);
+		// Distinct queues per subscribe (fresh hub each time) — see docs/design/web-store-tests.md
+		const parkedQueue = Effect.runSync(Queue.unbounded<RunEventValue>());
+		const resumeQueue = Effect.runSync(Queue.unbounded<RunEventValue>());
+		const runtime = makeStubRuntime({
+			proposalQueue,
+			runQueues: [parkedQueue, resumeQueue],
+		});
+
+		const assistantId = nextMessageId();
+		seedAssistantMessage("thread-1", {
+			id: assistantId,
+			role: "assistant",
+			status: "streaming",
+			segments: [],
+			run_id: "",
+		});
+		attachRun("thread-1", assistantId, "run-1");
+		startRunStream(runtime, "thread-1", "run-1");
+
+		// Original subscribe: first delta is the cumulative snapshot (SET), then parks (no terminal).
+		Queue.unsafeOffer(parkedQueue, {
+			kind: "text_delta",
+			delta: "Let me check the other thread. ",
+		});
+		await waitFor(() => {
+			const msg = getChatState().threads["thread-1"]?.messages.find(
+				(m) => m.run_id === "run-1",
+			);
+			return (
+				concatText(msg?.segments ?? []) === "Let me check the other thread. "
+			);
+		});
+
+		// Park + decide → resume re-subscribe whose snapshot re-includes the pre-park prose.
+		startProposalStream(runtime);
+		Queue.unsafeOffer(proposalQueue, {
+			kind: "pending",
+			run_id: "run-1",
+			proposal_id: "prop-1",
+		});
+		await waitFor(() => getChatState().proposals["run-1"] !== undefined);
+
+		await decideProposal(runtime, "run-1", "accept");
+
+		// Resume tail: first delta is the cumulative snapshot → SET (not append); rest APPEND.
+		Queue.unsafeOffer(resumeQueue, {
+			kind: "text_delta",
+			delta: "Let me check the other thread. ",
+		});
+		Queue.unsafeOffer(resumeQueue, {
+			kind: "text_delta",
+			delta: "Done — added it.",
+		});
+		Queue.unsafeOffer(resumeQueue, { kind: "done" });
+
+		await waitFor(() => {
+			const msg = getChatState().threads["thread-1"]?.messages.find(
+				(m) => m.run_id === "run-1",
+			);
+			return msg?.status === "completed";
+		});
+
+		const msg = getChatState().threads["thread-1"]?.messages.find(
+			(m) => m.run_id === "run-1",
+		);
+		// SET replaces the on-screen prefix; the M1 bug appended → duplicated prefix.
+		expect(concatText(msg?.segments ?? [])).toBe(
+			"Let me check the other thread. Done — added it.",
+		);
+
+		await runtime.dispose();
+	});
+
+	it("resume-after-park lands the reply AFTER the proposal segment, no duplicated prefix (ADR-0045)", async () => {
+		const proposalQueue = Effect.runSync(
+			Queue.unbounded<ProposalNotification>(),
+		);
+		const parkedQueue = Effect.runSync(Queue.unbounded<RunEventValue>());
+		const resumeQueue = Effect.runSync(Queue.unbounded<RunEventValue>());
+		const runtime = makeStubRuntime({
+			proposalQueue,
+			runQueues: [parkedQueue, resumeQueue],
+		});
+
+		const assistantId = nextMessageId();
+		seedAssistantMessage("thread-1", {
+			id: assistantId,
+			role: "assistant",
+			status: "streaming",
+			segments: [],
+			run_id: "",
+		});
+		attachRun("thread-1", assistantId, "run-1");
+		startRunStream(runtime, "thread-1", "run-1");
+
+		// Pre-park prose (snapshot SET), then park.
+		Queue.unsafeOffer(parkedQueue, {
+			kind: "text_delta",
+			delta: "Let me check the other thread. ",
+		});
+		await waitFor(() => {
+			const msg = getChatState().threads["thread-1"]?.messages.find(
+				(m) => m.run_id === "run-1",
+			);
+			return (
+				concatText(msg?.segments ?? []) === "Let me check the other thread. "
+			);
+		});
+
+		startProposalStream(runtime);
+		Queue.unsafeOffer(proposalQueue, {
+			kind: "pending",
+			run_id: "run-1",
+			proposal_id: "prop-1",
+		});
+		await waitFor(() => getChatState().proposals["run-1"] !== undefined);
+
+		await decideProposal(runtime, "run-1", "accept");
+
+		// Resume: the snapshot re-includes the pre-park prose (armed SET → reconciles
+		// the EXISTING pre-park text segment, not a duplicate after the proposal), then
+		// the genuine reply opens a NEW text segment after the proposal marker.
+		Queue.unsafeOffer(resumeQueue, {
+			kind: "text_delta",
+			delta: "Let me check the other thread. ",
+		});
+		Queue.unsafeOffer(resumeQueue, {
+			kind: "text_delta",
+			delta: "Done — added it.",
+		});
+		Queue.unsafeOffer(resumeQueue, { kind: "done" });
+
+		await waitFor(() => {
+			const msg = getChatState().threads["thread-1"]?.messages.find(
+				(m) => m.run_id === "run-1",
+			);
+			return msg?.status === "completed";
+		});
+
+		const msg = getChatState().threads["thread-1"]?.messages.find(
+			(m) => m.run_id === "run-1",
+		);
+		// search → propose → accept → reply: the timeline is pre-park text, the
+		// proposal marker, THEN the reply. The pre-park prefix appears exactly once.
+		expect(msg?.segments).toEqual([
+			{ kind: "text", text: "Let me check the other thread. " },
+			{ kind: "proposal", runId: "run-1" },
+			{ kind: "text", text: "Done — added it." },
+		]);
+		// The render-source invariant: concatText(segments) === the flat reply text.
+		expect(concatText(msg?.segments ?? [])).toBe(
+			"Let me check the other thread. Done — added it.",
+		);
+
+		await runtime.dispose();
+	});
+});

@@ -24,7 +24,7 @@
 		/* Path alias for shadcn-style imports.
 		   `paths` resolves against this tsconfig's directory (TS 5.0+), so no
 		   `baseUrl` is needed — `baseUrl` is deprecated in TS 6.0 and removed in 7.0. */
-		"paths": { "@/*": ["./src/*"] }
+		"paths": { "@/*": ["./src/*"], "@test/*": ["./test/*"] }
 	},
-	"include": ["src"]
+	"include": ["src", "test"]
 }
