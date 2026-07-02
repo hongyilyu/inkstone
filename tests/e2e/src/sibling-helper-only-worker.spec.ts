@@ -20,6 +20,11 @@ import { PROVIDER_HELPER_FIXTURE_BIN } from "./spawnCore.js";
 test.use({
 	coreOptions: {
 		siblingBinaries: { providerHelper: PROVIDER_HELPER_FIXTURE_BIN },
+		// The provider-helper sibling is here to prove worker config, NOT to drive a
+		// login — but this spec sends a Run, which the ADR-0062 run-creation gate
+		// rejects unless a provider is connected. Seed one explicitly (overrides the
+		// sibling-helper's default disconnected start).
+		connectedProvider: true,
 	},
 });
 

@@ -58,6 +58,12 @@ function ModelsSettings() {
 	// from an unreachable Core so the Providers section shows an honest error + a
 	// retry instead of a blank list of dead-clickable rows.
 	const [catalogFailed, setCatalogFailed] = useState(false);
+	// Whether the provider/status read failed. Distinguishes "couldn't reach Core to
+	// CHECK connection" from a genuine all-disconnected state — the catch below
+	// synthesizes `connected: false` (so rows stay readable) but that reads exactly
+	// like a real disconnect. This flag raises an honest "couldn't check" banner +
+	// retry so the user is never silently stranded (mirrors `catalogFailed`).
+	const [statusFailed, setStatusFailed] = useState(false);
 	// Master/detail: null = provider list, otherwise the focused provider's id.
 	const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
 	// Whether a provider login failed to start (surfaced in the shared status line).
@@ -130,6 +136,11 @@ function ModelsSettings() {
 				["provider-status"],
 				status,
 			);
+			// Any fresh, valid status clears the "couldn't check" banner — at the
+			// chokepoint, so BOTH a successful refresh AND a provider/configure success
+			// dismiss it. (Clearing only in refreshConnected's .then would leave the
+			// banner stuck if a poll failed while a configure submit was in flight.)
+			setStatusFailed(false);
 		},
 		[queryClient],
 	);
@@ -164,15 +175,22 @@ function ModelsSettings() {
 				// before the refetch lands, flashing the connect screen at a now-connected
 				// user. Writing the value keeps the cache truthful for that remount AND
 				// notifies a still-mounted chat observer immediately (no refetch needed).
+				// applyStatus also clears the statusFailed banner (the chokepoint), so a
+				// successful read here dismisses it — no separate reset needed.
 				applyStatus(status);
 			})
 			.catch(() => {
 				if (requestId !== latestStatusRequest.current) return;
-				// Status fetch failed: keep every KNOWN provider row actionable.
-				// Resolve each loaded-catalog provider id to `connected: false` so the
-				// row renders "Not connected" + a working Connect button — the
-				// pre-slice recovery path — instead of a permanent "Checking…" (which
-				// an empty map produced, since every id then resolved to null).
+				// Status fetch failed: resolve each loaded-catalog provider id to
+				// `connected: false` so rows read an honest "Not connected" instead of a
+				// permanent "Checking…" (which an empty map produced, since every id then
+				// resolved to null). This path has NO wire `auth_kind`, and we CLEAR any
+				// prior one so the rows render with no Connect/Configure button — a
+				// STALE kind from an earlier successful read would otherwise still paint a
+				// (now-unverifiable) Connect/Configure button alongside the failure banner.
+				// With no button, the rows are silently indistinct from a genuine
+				// disconnect, so we ALSO raise `statusFailed` to surface a "couldn't check
+				// connections" banner + retry (below) rather than strand the user.
 				// Local-only: do NOT write a synthesized all-disconnected snapshot into
 				// the shared ["provider-status"] cache — the chat gate derives
 				// anyConnected across it, and a fake disconnect would falsely gate a
@@ -180,6 +198,8 @@ function ModelsSettings() {
 				setConnectedById(
 					Object.fromEntries(providers.map((p) => [p.id, false])),
 				);
+				setAuthKindById({});
+				setStatusFailed(true);
 			});
 	}, [runtime, applyStatus, providers]);
 
@@ -402,20 +422,23 @@ function ModelsSettings() {
 						{catalogFailed && providers.length === 0 ? (
 							// An unreachable catalog must not read as "no providers" — show an
 							// honest error with a retry rather than a blank, dead list.
-							<div className="flex flex-col items-start gap-2 rounded-md border border-input p-4">
-								<p className="text-muted-foreground text-sm">
-									Couldn't load providers. Check that Inkstone is running.
-								</p>
-								<Button
-									variant="chip"
-									size="sm"
-									onClick={() => void loadCatalog()}
-								>
-									Try again
-								</Button>
-							</div>
+							<RetryPanel
+								message="Couldn't load providers. Check that Inkstone is running."
+								onRetry={() => void loadCatalog()}
+							/>
 						) : (
 							<div className="flex flex-col gap-2">
+								{statusFailed && (
+									// provider/status couldn't be read — the rows below fell back
+									// to a look-alike "Not connected" with no action button, so
+									// surface an honest "couldn't check" notice + a retry. Retrying
+									// just re-runs the stable refreshConnected, which clears this on
+									// its own success.
+									<RetryPanel
+										message="Couldn't check provider connections. Check that Inkstone is running."
+										onRetry={() => refreshConnected()}
+									/>
+								)}
 								{providers.map((p) => {
 									const connected = connectedById?.[p.id] ?? null;
 									const status =
@@ -544,6 +567,26 @@ function ModelsSettings() {
 					</div>
 				</>
 			)}
+		</div>
+	);
+}
+
+/** A bordered "couldn't reach Core" notice with a retry (ADR-0049). Shared by the
+ * catalog-read and provider/status-read failure paths so their identical markup
+ * can't drift as copy/styling evolves. */
+function RetryPanel({
+	message,
+	onRetry,
+}: {
+	message: string;
+	onRetry: () => void;
+}) {
+	return (
+		<div className="flex flex-col items-start gap-2 rounded-md border border-input p-4">
+			<p className="text-muted-foreground text-sm">{message}</p>
+			<Button variant="chip" size="sm" onClick={onRetry}>
+				Try again
+			</Button>
 		</div>
 	);
 }

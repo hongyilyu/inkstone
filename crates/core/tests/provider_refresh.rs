@@ -104,6 +104,7 @@ fn expired_token_refreshes_once_under_contention() {
 
     let core = workspace
         .core()
+        .no_seeded_credential()
         .worker_fixture("manifest-echo.ts")
         .env("INKSTONE_WORKFLOWS_DIR", &workflows_dir)
         .env("INKSTONE_CREDENTIALS_DIR", &creds_dir)
@@ -179,6 +180,7 @@ fn valid_token_used_without_refresh() {
 
     let core = workspace
         .core()
+        .no_seeded_credential()
         .worker_fixture("manifest-echo.ts")
         .env("INKSTONE_WORKFLOWS_DIR", &workflows_dir)
         .env("INKSTONE_CREDENTIALS_DIR", &creds_dir)

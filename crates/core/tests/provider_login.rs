@@ -19,6 +19,7 @@ use common::{CoreHandle, Workspace, Ws, next_text, try_next_text};
 fn login_core(workspace: &Workspace, creds_dir: &Path, login_error: Option<&str>) -> CoreHandle {
     let mut builder = workspace
         .core()
+        .no_seeded_credential()
         .env("INKSTONE_CREDENTIALS_DIR", creds_dir)
         .env(
             "INKSTONE_PROVIDER_LOGIN_CMD",
@@ -37,6 +38,7 @@ fn login_core(workspace: &Workspace, creds_dir: &Path, login_error: Option<&str>
 fn login_core_no_creds(workspace: &Workspace, creds_dir: &Path) -> CoreHandle {
     workspace
         .core()
+        .no_seeded_credential()
         .env("INKSTONE_CREDENTIALS_DIR", creds_dir)
         .env(
             "INKSTONE_PROVIDER_LOGIN_CMD",

@@ -33,6 +33,7 @@ fn provider_status_reflects_credential_presence() {
 
     let core = workspace
         .core()
+        .no_seeded_credential()
         .env("INKSTONE_CREDENTIALS_DIR", &creds_dir)
         .spawn();
 

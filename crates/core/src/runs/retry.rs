@@ -48,12 +48,14 @@ pub(super) async fn handle_retry(
     let run_id = params.run_id;
 
     // Decide the outcome (and gather the spawn inputs for the `accepted` path).
-    // A DB fault frames `Internal` and returns; otherwise we get one of the three
-    // outcome strings + the optional spawn payload.
+    // `prepare` frames its own failures as HandlerError: a DB fault → Internal, a
+    // disconnected provider → ProviderNotConnected (-32004). Both are framed here
+    // BEFORE any spawn or response; the errored→running flip only happens on the
+    // Ok path, so a rejected retry never leaves a half-flipped Run.
     let outcome = match prepare(pool, hubs, run_id).await {
         Ok(o) => o,
         Err(e) => {
-            handler::frame_error(out_tx, id, HandlerError::Internal(e));
+            handler::frame_error(out_tx, id, e);
             return;
         }
     };
@@ -112,32 +114,78 @@ struct Spawn {
 }
 
 /// The decision + (for `accepted`) the in-place retry transaction and spawn prep.
-/// Pure of any wire framing — the caller owns the Response. A DB fault propagates
-/// as `anyhow::Error` (framed `Internal` by the caller).
-async fn prepare(pool: &SqlitePool, hubs: &Hubs, run_id: uuid::Uuid) -> anyhow::Result<Outcome> {
+/// Pure of any wire framing — the caller owns the Response. A DB fault maps to
+/// `HandlerError::Internal`; a disconnected provider to `ProviderNotConnected`
+/// (`-32004`), both framed as error frames by the caller. The three success
+/// outcomes (`accepted`/`not_errored`/`unknown_run`) are the `Ok` values.
+async fn prepare(
+    pool: &SqlitePool,
+    hubs: &Hubs,
+    run_id: uuid::Uuid,
+) -> Result<Outcome, HandlerError> {
     // The original user prompt + the Run's Thread (for live Workflow resolution).
     // This is the single unknown-run gate: its first read is `thread_id_for_run`
     // (`SELECT … FROM runs`), so a missing Run resolves `None` here — a separate
     // `run_status` probe would catch nothing this does not.
-    let Some((prompt, thread_id)) = db::run_prompt_and_thread(pool, run_id).await? else {
+    let Some((prompt, thread_id)) = db::run_prompt_and_thread(pool, run_id)
+        .await
+        .map_err(|e| HandlerError::Internal(e.into()))?
+    else {
         return Ok(Outcome::UnknownRun);
     };
+
+    // Report `not_errored` for a non-errored Run BEFORE the provider gate: only an
+    // errored Run is retryable, and that established outcome must win regardless of
+    // provider connectivity (a disconnected provider on a running/completed Run is
+    // still `not_errored`, not `-32004`). This read is non-mutating; the guarded
+    // flip below is still the authoritative race-safe transition. A missing Run
+    // was already handled above, so `None` here would be a TOCTOU delete — treat it
+    // as not-errored (the flip would lose anyway).
+    //
+    // The advisory read and the authoritative flip can't produce a WRONG state: the
+    // CAS in `prepare_retry` self-guards on `WHERE status='errored'`, so a Run that
+    // races out of `errored` after this read still yields `not_errored` (below).
+    // The only observable effect of a concurrent double-retry of the SAME errored
+    // Run against a disconnected provider is which truthful message wins the tie
+    // (`-32004` vs `not_errored`) — not reachable from one client (the retry
+    // affordance disappears once the bubble leaves `errored`), so we do not pay the
+    // cost of folding the credential gate into the flip transaction.
+    let status = db::run_status(pool, run_id)
+        .await
+        .map_err(|e| HandlerError::Internal(e.into()))?;
+    if status != Some(db::RunStatus::Errored) {
+        return Ok(Outcome::NotErrored);
+    }
 
     // Re-resolve the Workflow from LIVE settings (NOT the snapshot), so a model
     // switch before retry takes effect (ADR-0024 contrast with resume).
     let workflow = dispatcher::dispatch_and_resolve(pool, thread_id, &prompt).await;
+
+    // Gate on the re-resolved provider's credential BEFORE the errored→running
+    // flip (ADR-0062): a disconnected provider must fail loud with "connect it",
+    // not re-drive a tokenless Worker into another 401. The shared helper maps
+    // missing→ProviderNotConnected (-32004) and corrupt→Internal, exactly as the
+    // fresh-send sites; the caller frames the returned HandlerError.
+    handler::ensure_provider_connected(&workflow.provider)?;
 
     // The reused assistant Message id — the bubble identity stays stable. Read it
     // BEFORE the committing flip + hub::create: the id is immutable, so reading it
     // earlier is order-independent, and a fault/None here aborts with the Run still
     // in its true `errored` state and no producer-less hub left behind.
     let assistant_message_id = db::assistant_message_id_for_run(pool, run_id)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("retried run {run_id} has no assistant message"))?;
+        .await
+        .map_err(|e| HandlerError::Internal(e.into()))?
+        .ok_or_else(|| {
+            HandlerError::Internal(anyhow::anyhow!("retried run {run_id} has no assistant message"))
+        })?;
 
     // The guarded flip + clear-failed-output + re-snapshot, in one tx. A lost flip
-    // (the Run was not `errored`) maps to not_errored, with nothing cleared.
-    let moved = db::prepare_retry(pool, run_id, &workflow, db::now_ms()).await?;
+    // (the Run raced out of `errored` since the read above) maps to not_errored,
+    // with nothing cleared — the transition stays authoritative even though the
+    // status read already reported errored.
+    let moved = db::prepare_retry(pool, run_id, &workflow, db::now_ms())
+        .await
+        .map_err(|e| HandlerError::Internal(e.into()))?;
     if !moved.won() {
         return Ok(Outcome::NotErrored);
     }
@@ -262,12 +310,39 @@ mod tests {
         serde_json::from_str(&line).expect("frame is JSON")
     }
 
+    /// A panic-safe credentials-dir fixture (shared [`crate::credentials::
+    /// test_credentials_env`]) for these Worker-free retry tests. When `connected`,
+    /// seeds an openai-codex credential so the run-creation provider gate
+    /// (`handler::ensure_provider_connected`, ADR-0062) passes; when not, the dir
+    /// stays empty (a disconnected provider). Keep the returned guard bound for the
+    /// whole test — it restores `INKSTONE_CREDENTIALS_DIR` on drop.
+    #[must_use]
+    fn credentials_env(connected: bool) -> crate::credentials::CredentialsEnvGuard {
+        let guard = crate::credentials::test_credentials_env();
+        if connected {
+            crate::credentials::write(
+                "openai-codex",
+                &crate::credentials::StoredCredential::Oauth(crate::credentials::Credentials {
+                    access: "tok".to_string(),
+                    refresh: "ref".to_string(),
+                    expires: 9_999_999_999_999,
+                    account_id: "acct".to_string(),
+                }),
+            )
+            .expect("write credential");
+        }
+        guard
+    }
+
     /// The accepted happy-arm of `prepare` (the testable unit — `handle_retry`'s
     /// spawn needs a real Worker binary). An ERRORED Run flips to `running`, yields
     /// `Outcome::Accepted` (label "accepted"), creates a hub, and the carried Spawn
     /// reuses the SAME assistant_message_id + the original prompt.
     #[tokio::test]
     async fn errored_run_prepares_accepted_with_reused_ids() {
+        // The resolved provider (default openai-codex) must be connected or the
+        // ADR-0062 gate would return ProviderNotConnected before the flip.
+        let _cred = credentials_env(true);
         let pool = memory_pool().await;
         let hubs = hub::new_hubs();
         let (run_id, assistant_message_id) = seed_errored_run(&pool).await;
@@ -292,8 +367,15 @@ mod tests {
 
     /// A non-errored (here `running`) Run frames `accepted:false` → `not_errored`,
     /// stays `running`, and spawns NOTHING (the guarded flip lost; nothing cleared).
+    ///
+    /// Runs with NO credential ON PURPOSE (empty creds dir): the not-errored check
+    /// must precede the provider gate, so a non-errored Run reports `not_errored`
+    /// regardless of connectivity — NOT `-32004`. This is the regression lock for
+    /// the ordering bug (a connected-credential seed here would mask it).
     #[tokio::test]
     async fn non_errored_run_is_not_errored_no_spawn() {
+        // NO credential (empty creds dir) on purpose — see the doc comment.
+        let _cred = credentials_env(false);
         let pool = memory_pool().await;
         let hubs = hub::new_hubs();
         let (tx, mut rx) = mpsc::unbounded_channel();
@@ -309,13 +391,51 @@ mod tests {
         .await;
 
         let v = recv_json(&mut rx);
-        assert_eq!(v["result"], json!({ "outcome": "not_errored" }));
+        assert_eq!(
+            v["result"],
+            json!({ "outcome": "not_errored" }),
+            "a non-errored Run reports not_errored even with a disconnected provider — the errored check precedes the gate"
+        );
+        assert!(v.get("error").is_none(), "not a -32004 error frame");
         assert_eq!(
             db::run_status(&pool, run_id).await.unwrap().map(db::RunStatus::as_str),
             Some("running"),
             "the running Run is untouched"
         );
         // No hub was created (no spawn) for a not_errored outcome.
+        assert!(hub::get(&hubs, run_id).is_none(), "no hub → no Worker spawned");
+    }
+
+    /// Retrying an errored Run whose re-resolved provider is DISCONNECTED frames a
+    /// `-32004` ProviderNotConnected ERROR (not an outcome string), does NOT flip the
+    /// Run to running, and spawns nothing — the ADR-0062 gate before the flip.
+    #[tokio::test]
+    async fn disconnected_provider_frames_minus_32004_and_no_flip() {
+        // Empty credential dir → the default openai-codex provider is not connected.
+        let _cred = credentials_env(false);
+        let pool = memory_pool().await;
+        let hubs = hub::new_hubs();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (run_id, _assistant_message_id) = seed_errored_run(&pool).await;
+
+        super::handle_retry(
+            &pool,
+            &hubs,
+            json!(4),
+            json!({ "run_id": run_id.to_string() }),
+            &tx,
+        )
+        .await;
+
+        let v = recv_json(&mut rx);
+        assert_eq!(v["error"]["code"], json!(-32004));
+        assert!(v.get("result").is_none());
+        // The Run stayed errored — the gate ran BEFORE the errored→running flip.
+        assert_eq!(
+            db::run_status(&pool, run_id).await.unwrap().map(db::RunStatus::as_str),
+            Some("errored"),
+            "a disconnected-provider retry must not flip the Run to running"
+        );
         assert!(hub::get(&hubs, run_id).is_none(), "no hub → no Worker spawned");
     }
 

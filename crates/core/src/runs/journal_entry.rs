@@ -67,6 +67,10 @@ pub(super) async fn handle(
         // hub before spawning, gather prior-Run history, spawn the Worker.
         let workflow = dispatcher::dispatch_and_resolve(pool, thread_uuid, &prompt).await;
 
+        // Reject BEFORE persisting/spawning if the resolved model's provider has no
+        // credential (ADR-0062) — same fail-loud gate as run/post_message.
+        handler::ensure_provider_connected(&workflow.provider)?;
+
         let run_id = Uuid::now_v7();
         let user_message_id = Uuid::now_v7();
         let assistant_message_id = Uuid::now_v7();

@@ -57,6 +57,10 @@ pub(super) async fn handle(
         // user settings (ADR-0024) — one shared seam.
         let workflow = dispatcher::dispatch_and_resolve(pool, thread_id, &params.prompt).await;
 
+        // Reject BEFORE minting the Thread if the resolved model's provider has no
+        // credential (ADR-0062) — no Thread/Run rows, no doomed tokenless Worker.
+        handler::ensure_provider_connected(&workflow.provider)?;
+
         db::persist_thread_with_first_run(
             pool,
             thread_id,
@@ -81,8 +85,9 @@ pub(super) async fn handle(
         // `worker::spawn` below. `out_tx.clone()` is this connection's outbound
         // channel: on a successful generation the titler frames a `thread/titled`
         // notification onto it (ADR-0047) so the creating tab's sidebar updates
-        // live. With no credential, or empty/whitespace output, it silently keeps
-        // the prompt-derived placeholder and pushes nothing.
+        // live. On empty/whitespace output it silently keeps the prompt-derived
+        // placeholder and pushes nothing. (The provider is guaranteed connected
+        // here: the gate above rejects a disconnected one before this point.)
         worker::spawn_title_generation(
             thread_id,
             params.prompt.clone(),

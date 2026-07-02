@@ -66,6 +66,7 @@ fn provider_configure_stores_api_key_and_status_lists_both() {
 
     let core = workspace
         .core()
+        .no_seeded_credential()
         .env("INKSTONE_CREDENTIALS_DIR", &creds_dir)
         .spawn();
 
@@ -195,6 +196,7 @@ fn provider_configure_rejects_empty_api_key() {
 
     let core = workspace
         .core()
+        .no_seeded_credential()
         .env("INKSTONE_CREDENTIALS_DIR", &creds_dir)
         .spawn();
 
@@ -260,6 +262,7 @@ fn provider_configure_trims_the_api_key() {
 
     let core = workspace
         .core()
+        .no_seeded_credential()
         .env("INKSTONE_CREDENTIALS_DIR", &creds_dir)
         .spawn();
 

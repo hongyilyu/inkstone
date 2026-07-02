@@ -44,6 +44,11 @@ pub(super) async fn handle(
         // user settings (ADR-0024) — one shared seam.
         let workflow = dispatcher::dispatch_and_resolve(pool, thread_id, &params.prompt).await;
 
+        // Reject BEFORE persisting/spawning if the resolved model's provider has no
+        // credential (ADR-0062): a tokenless Worker would only 401 into an opaque
+        // errored Run. Fail loud so the Client can prompt "connect it".
+        handler::ensure_provider_connected(&workflow.provider)?;
+
         let run_id = Uuid::now_v7();
         let user_message_id = Uuid::now_v7();
         let assistant_message_id = Uuid::now_v7();
