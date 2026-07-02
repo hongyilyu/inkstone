@@ -397,15 +397,16 @@ function SingleEntityProposalCard({
 						</p>
 					) : null}
 
-					{isError ? (
-						<p role="alert" className="text-sm text-destructive">
-							{payloadIssue
-								? `Fix before saving: ${payloadIssue}.`
-								: proposalErrorMessage || "Couldn't apply. Try again."}
-						</p>
-					) : payloadIssue ? (
+					{payloadIssue ? (
+						// A payload issue reads the same whether or not the last attempt
+						// errored, so check it FIRST and render the alert once (an
+						// errored attempt on a still-invalid payload is still "fix it").
 						<p role="alert" className="text-sm text-destructive">
 							Fix before saving: {payloadIssue}.
+						</p>
+					) : isError ? (
+						<p role="alert" className="text-sm text-destructive">
+							{proposalErrorMessage || "Couldn't apply. Try again."}
 						</p>
 					) : null}
 
