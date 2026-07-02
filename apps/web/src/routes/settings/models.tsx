@@ -422,40 +422,22 @@ function ModelsSettings() {
 						{catalogFailed && providers.length === 0 ? (
 							// An unreachable catalog must not read as "no providers" — show an
 							// honest error with a retry rather than a blank, dead list.
-							<div className="flex flex-col items-start gap-2 rounded-md border border-input p-4">
-								<p className="text-muted-foreground text-sm">
-									Couldn't load providers. Check that Inkstone is running.
-								</p>
-								<Button
-									variant="chip"
-									size="sm"
-									onClick={() => void loadCatalog()}
-								>
-									Try again
-								</Button>
-							</div>
+							<RetryPanel
+								message="Couldn't load providers. Check that Inkstone is running."
+								onRetry={() => void loadCatalog()}
+							/>
 						) : (
 							<div className="flex flex-col gap-2">
 								{statusFailed && (
 									// provider/status couldn't be read — the rows below fell back
 									// to a look-alike "Not connected" with no action button, so
-									// surface an honest "couldn't check" notice + a retry (same
-									// shape as the catalog-failure panel above). Retrying just
-									// re-runs the stable refreshConnected, which clears this on
+									// surface an honest "couldn't check" notice + a retry. Retrying
+									// just re-runs the stable refreshConnected, which clears this on
 									// its own success.
-									<div className="flex flex-col items-start gap-2 rounded-md border border-input p-4">
-										<p className="text-muted-foreground text-sm">
-											Couldn't check provider connections. Check that Inkstone
-											is running.
-										</p>
-										<Button
-											variant="chip"
-											size="sm"
-											onClick={() => refreshConnected()}
-										>
-											Try again
-										</Button>
-									</div>
+									<RetryPanel
+										message="Couldn't check provider connections. Check that Inkstone is running."
+										onRetry={() => refreshConnected()}
+									/>
 								)}
 								{providers.map((p) => {
 									const connected = connectedById?.[p.id] ?? null;
@@ -585,6 +567,26 @@ function ModelsSettings() {
 					</div>
 				</>
 			)}
+		</div>
+	);
+}
+
+/** A bordered "couldn't reach Core" notice with a retry (ADR-0049). Shared by the
+ * catalog-read and provider/status-read failure paths so their identical markup
+ * can't drift as copy/styling evolves. */
+function RetryPanel({
+	message,
+	onRetry,
+}: {
+	message: string;
+	onRetry: () => void;
+}) {
+	return (
+		<div className="flex flex-col items-start gap-2 rounded-md border border-input p-4">
+			<p className="text-muted-foreground text-sm">{message}</p>
+			<Button variant="chip" size="sm" onClick={onRetry}>
+				Try again
+			</Button>
 		</div>
 	);
 }
