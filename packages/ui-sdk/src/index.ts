@@ -308,7 +308,7 @@ export type WsClientService = Context.Tag.Service<typeof WsClient>;
  * exercises; every other member gets a safe default. The two default kinds encode
  * the members' distinct failure semantics:
  *
- * - The 31 request VERBS default to `Effect.die("WsClient.<method> not stubbed")`.
+ * - The 28 request VERBS default to `Effect.die("WsClient.<method> not stubbed")`.
  *   A verb returns a value the code under test asserts on, so an un-stubbed call
  *   must fail LOUD with a named cause — never silently return a wrong value.
  * - The 3 STREAM members (`subscribeRun`, `proposalNotifications`,

@@ -57,6 +57,20 @@ export function journalBodyHasEntityRef(payload: unknown): boolean {
 	});
 }
 
+// The shared label + `<dl>` shell every detail-body section wears (entry, person,
+// project). One owner keeps the `<section>`/title/`<dl>` markup and its styling in
+// a single place; callers supply only their `<Field>` rows as children.
+function Section({ title, children }: { title: string; children: ReactNode }) {
+	return (
+		<section className="flex flex-col gap-2">
+			<p className="text-xs font-medium tracking-normal text-muted-foreground">
+				{title}
+			</p>
+			<dl className="flex flex-col gap-1.5 text-sm">{children}</dl>
+		</section>
+	);
+}
+
 function EntrySection({
 	title,
 	occurredAt,
@@ -69,16 +83,11 @@ function EntrySection({
 	bodyText: string;
 }) {
 	return (
-		<section className="flex flex-col gap-2">
-			<p className="text-xs font-medium tracking-normal text-muted-foreground">
-				{title}
-			</p>
-			<dl className="flex flex-col gap-1.5 text-sm">
-				<Field label="Occurred" value={occurredAt || "Unknown"} />
-				{endedAt ? <Field label="Ended" value={endedAt} /> : null}
-				<Field label="Body" value={bodyText || "Empty"} />
-			</dl>
-		</section>
+		<Section title={title}>
+			<Field label="Occurred" value={occurredAt || "Unknown"} />
+			{endedAt ? <Field label="Ended" value={endedAt} /> : null}
+			<Field label="Body" value={bodyText || "Empty"} />
+		</Section>
 	);
 }
 
@@ -226,18 +235,13 @@ function personSection(title: string, body: unknown): ReactNode {
 		(a): a is string => typeof a === "string",
 	);
 	return (
-		<section className="flex flex-col gap-2">
-			<p className="text-xs font-medium tracking-normal text-muted-foreground">
-				{title}
-			</p>
-			<dl className="flex flex-col gap-1.5 text-sm">
-				<Field label="Name" value={textField(body, "name") || "Unknown"} />
-				{note ? <Field label="Note" value={note} /> : null}
-				{aliases.length > 0 ? (
-					<Field label="Aliases" value={aliases.join(", ")} />
-				) : null}
-			</dl>
-		</section>
+		<Section title={title}>
+			<Field label="Name" value={textField(body, "name") || "Unknown"} />
+			{note ? <Field label="Note" value={note} /> : null}
+			{aliases.length > 0 ? (
+				<Field label="Aliases" value={aliases.join(", ")} />
+			) : null}
+		</Section>
 	);
 }
 
@@ -266,23 +270,18 @@ function projectSection(title: string, body: unknown): ReactNode {
 	const status = textField(body, "status");
 	const note = textField(body, "note");
 	return (
-		<section className="flex flex-col gap-2">
-			<p className="text-xs font-medium tracking-normal text-muted-foreground">
-				{title}
-			</p>
-			<dl className="flex flex-col gap-1.5 text-sm">
-				<Field label="Name" value={textField(body, "name") || "Unknown"} />
-				{outcome ? <Field label="Outcome" value={outcome} /> : null}
-				{/* Humanize the raw enum ("on_hold") to its label; fall back to raw. */}
-				{status ? (
-					<Field
-						label="Status"
-						value={statusLabel(status, PROJECT_STATUS_LABEL)}
-					/>
-				) : null}
-				{note ? <Field label="Note" value={note} /> : null}
-			</dl>
-		</section>
+		<Section title={title}>
+			<Field label="Name" value={textField(body, "name") || "Unknown"} />
+			{outcome ? <Field label="Outcome" value={outcome} /> : null}
+			{/* Humanize the raw enum ("on_hold") to its label; fall back to raw. */}
+			{status ? (
+				<Field
+					label="Status"
+					value={statusLabel(status, PROJECT_STATUS_LABEL)}
+				/>
+			) : null}
+			{note ? <Field label="Note" value={note} /> : null}
+		</Section>
 	);
 }
 
