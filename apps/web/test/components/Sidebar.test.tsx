@@ -4,15 +4,15 @@ import {
 	WsClient,
 	type WsError,
 } from "@inkstone/ui-sdk";
+import { renderChatRoute } from "@test/test-utils/renderChatRoute";
 import { cleanup, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Effect, Layer, ManagedRuntime, Stream } from "effect";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { resetBridge } from "@/store/bridge";
-import { resetChatStore } from "@/store/chat";
-import { renderChatRoute } from "@test/test-utils/renderChatRoute";
 import { ChatColumn } from "@/components/ChatColumn.js";
 import { Sidebar } from "@/components/Sidebar.js";
+import { resetBridge } from "@/store/bridge";
+import { resetChatStore } from "@/store/chat";
 
 // Stub WsClient whose `threadList` returns a fixed set of threads.
 function makeStubRuntime() {

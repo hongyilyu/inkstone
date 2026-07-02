@@ -15,8 +15,8 @@ import userEvent from "@testing-library/user-event";
 import { Effect, Layer, ManagedRuntime } from "effect";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { RuntimeProvider } from "@/runtime";
 import { ProjectReviewView } from "@/components/library/ProjectReviewView";
+import { RuntimeProvider } from "@/runtime";
 
 type Rows = EntityListResult["entities"];
 

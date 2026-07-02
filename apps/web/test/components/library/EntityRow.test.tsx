@@ -5,6 +5,7 @@ import type {
 } from "@inkstone/protocol";
 import { stubWsClient, WsClient, type WsError } from "@inkstone/ui-sdk";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { people, todos } from "@test/lib/libraryItems.fixtures";
 import {
 	cleanup,
 	fireEvent,
@@ -16,10 +17,9 @@ import userEvent from "@testing-library/user-event";
 import { Effect, Layer, ManagedRuntime } from "effect";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { addDays, type Todo } from "@/lib/libraryItems";
-import { people, todos } from "@test/lib/libraryItems.fixtures";
-import { RuntimeProvider } from "@/runtime";
 import { EntityRow, TodoRow } from "@/components/library/EntityRow";
+import { addDays, type Todo } from "@/lib/libraryItems";
+import { RuntimeProvider } from "@/runtime";
 
 const todo = (id: string) => {
 	const t = todos.find((x) => x.id === id);

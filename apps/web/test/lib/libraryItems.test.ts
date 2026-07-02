@@ -1,3 +1,4 @@
+import { libraryFixtures as entities } from "@test/lib/libraryItems.fixtures";
 import { describe, expect, it } from "vitest";
 import { parseTodo } from "@/lib/entityCodec";
 import {
@@ -33,7 +34,6 @@ import {
 	todosForProject,
 	waitingTodos,
 } from "@/lib/libraryItems";
-import { libraryFixtures as entities } from "@test/lib/libraryItems.fixtures";
 
 const byId = (id: string) => {
 	const e = entities.find((x) => x.id === id);

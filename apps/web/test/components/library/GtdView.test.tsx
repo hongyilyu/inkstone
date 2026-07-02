@@ -7,8 +7,8 @@ import { Effect, Layer, ManagedRuntime } from "effect";
 import type { ReactNode } from "react";
 import { useState } from "react";
 import { afterEach, describe, expect, it } from "vitest";
-import { RuntimeProvider } from "@/runtime";
 import { type GtdFilter, GtdView } from "@/components/library/GtdView";
+import { RuntimeProvider } from "@/runtime";
 
 type Rows = EntityListResult["entities"];
 

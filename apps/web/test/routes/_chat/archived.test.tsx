@@ -5,11 +5,11 @@ import {
 	type WsError,
 	WsRequestError,
 } from "@inkstone/ui-sdk";
+import { renderChatRoute } from "@test/test-utils/renderChatRoute";
 import { cleanup, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Effect, Layer, ManagedRuntime } from "effect";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { renderChatRoute } from "@test/test-utils/renderChatRoute";
 import { Route } from "@/routes/_chat/archived.js";
 
 afterEach(cleanup);

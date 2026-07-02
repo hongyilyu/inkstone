@@ -5,8 +5,8 @@ import { renderHook, waitFor } from "@testing-library/react";
 import { Effect, Layer, ManagedRuntime } from "effect";
 import type { ReactNode } from "react";
 import { describe, expect, it } from "vitest";
-import { RuntimeProvider } from "@/runtime";
 import { useProviderStatus } from "@/lib/hooks/useProviderStatus.js";
+import { RuntimeProvider } from "@/runtime";
 
 // A WsClient stub whose `providerStatus` returns `result` and counts calls; the
 // rest die. The counter lets the remount test prove the read is not permanently

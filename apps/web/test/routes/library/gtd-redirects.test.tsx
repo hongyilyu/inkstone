@@ -4,12 +4,12 @@ import {
 	createRouter,
 	RouterProvider,
 } from "@tanstack/react-router";
+import { renderWithQuery } from "@test/test-utils/renderWithQuery";
 import { cleanup, waitFor } from "@testing-library/react";
 import { Effect, Layer, ManagedRuntime } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 import { routeTree } from "@/routeTree.gen";
 import { RuntimeProvider } from "@/runtime";
-import { renderWithQuery } from "@test/test-utils/renderWithQuery";
 
 // Multiple routers across tests; vitest config has no `globals`, so clean up manually.
 afterEach(cleanup);

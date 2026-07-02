@@ -1,7 +1,7 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
-import type { ToolCall } from "@/store/chat";
 import { groupToolCalls, ToolActivity } from "@/components/ToolActivity.js";
+import type { ToolCall } from "@/store/chat";
 
 afterEach(cleanup);
 

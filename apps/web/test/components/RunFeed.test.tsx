@@ -12,8 +12,8 @@ import userEvent from "@testing-library/user-event";
 import { Effect, Layer, ManagedRuntime } from "effect";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { RuntimeProvider } from "@/runtime";
 import { RunFeed } from "@/components/RunFeed";
+import { RuntimeProvider } from "@/runtime";
 
 /** Stub WsClient whose `getRunHistory` runs the provided handler; others die. */
 function makeRuntime(

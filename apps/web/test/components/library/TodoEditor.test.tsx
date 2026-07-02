@@ -9,9 +9,9 @@ import userEvent from "@testing-library/user-event";
 import { Effect, Layer, ManagedRuntime } from "effect";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { TodoEditor } from "@/components/library/TodoEditor";
 import type { LibraryItem, Person, Project, Todo } from "@/lib/libraryItems";
 import { RuntimeProvider } from "@/runtime";
-import { TodoEditor } from "@/components/library/TodoEditor";
 
 // Stub WsClient whose `entityMutate` records params and succeeds; `recurrencePreview`
 // runs the supplied handler (defaults to dying); other methods die.

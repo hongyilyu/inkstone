@@ -13,9 +13,9 @@ import { renderHook, waitFor } from "@testing-library/react";
 import { Effect, Layer, ManagedRuntime } from "effect";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { useEntityMutation } from "@/lib/hooks/useEntityMutation";
 import { RuntimeProvider } from "@/runtime";
 import { currentCue, resetEntityCueStore } from "@/store/entityCue";
-import { useEntityMutation } from "@/lib/hooks/useEntityMutation";
 
 // Stub WsClient whose `entityMutate` runs the provided handler; unused methods die.
 function makeRuntime(

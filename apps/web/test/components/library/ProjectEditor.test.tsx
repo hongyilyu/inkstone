@@ -9,9 +9,9 @@ import userEvent from "@testing-library/user-event";
 import { Effect, Layer, ManagedRuntime } from "effect";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ProjectEditor } from "@/components/library/ProjectEditor";
 import type { Project } from "@/lib/libraryItems";
 import { RuntimeProvider } from "@/runtime";
-import { ProjectEditor } from "@/components/library/ProjectEditor";
 
 // Stub WsClient whose `entityMutate` records params and succeeds; unused methods die.
 function makeRuntime(

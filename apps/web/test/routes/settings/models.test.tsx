@@ -3,12 +3,12 @@ import {
 	createRouter,
 	RouterProvider,
 } from "@tanstack/react-router";
+import { renderWithQuery } from "@test/test-utils/renderWithQuery";
 import { cleanup, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it } from "vitest";
 import { routeTree } from "@/routeTree.gen";
 import { RuntimeProvider } from "@/runtime";
-import { renderWithQuery } from "@test/test-utils/renderWithQuery";
 
 // This file renders multiple routers across tests; the repo's vitest config
 // does not set `globals: true`, so testing-library's auto-cleanup isn't wired.

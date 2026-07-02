@@ -10,11 +10,11 @@ import { renderHook, waitFor } from "@testing-library/react";
 import { Effect, Layer, ManagedRuntime } from "effect";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { RuntimeProvider } from "@/runtime";
 import {
 	assembleBacklinks,
 	useEntityBacklinks,
 } from "@/lib/hooks/useEntityBacklinks.js";
+import { RuntimeProvider } from "@/runtime";
 
 // `assembleBacklinks` mirrors `assembleLibraryItems`' DROP-on-throw discipline:
 // parseJournalEntry is STRICT (throws on a malformed entry), so one bad

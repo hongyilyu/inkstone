@@ -7,6 +7,7 @@ import {
 	createRouter,
 	RouterProvider,
 } from "@tanstack/react-router";
+import { renderWithQuery } from "@test/test-utils/renderWithQuery";
 import {
 	cleanup,
 	render,
@@ -19,7 +20,6 @@ import { Effect, Layer, ManagedRuntime } from "effect";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { routeTree } from "@/routeTree.gen";
 import { RuntimeProvider } from "@/runtime";
-import { renderWithQuery } from "@test/test-utils/renderWithQuery";
 
 afterEach(() => {
 	cleanup();

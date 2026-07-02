@@ -6,9 +6,9 @@ import { Effect, Layer, ManagedRuntime } from "effect";
 import { Hourglass, Inbox } from "lucide-react";
 import type { ComponentProps, ReactNode } from "react";
 import { afterEach, describe, expect, it } from "vitest";
+import { DerivedTodoView } from "@/components/library/DerivedTodoView";
 import { inboxTodos, waitingTodos } from "@/lib/libraryItems";
 import { RuntimeProvider } from "@/runtime";
-import { DerivedTodoView } from "@/components/library/DerivedTodoView";
 
 type Rows = EntityListResult["entities"];
 

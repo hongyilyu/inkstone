@@ -5,11 +5,11 @@ import { renderHook, waitFor } from "@testing-library/react";
 import { Effect, Layer, ManagedRuntime } from "effect";
 import type { ReactNode } from "react";
 import { describe, expect, it } from "vitest";
-import { RuntimeProvider } from "@/runtime";
 import {
 	assembleObservationItems,
 	useObservations,
 } from "@/lib/hooks/useObservations.js";
+import { RuntimeProvider } from "@/runtime";
 
 const row = (
 	over: Partial<ObservationRow> & Pick<ObservationRow, "schema_key" | "values">,

@@ -7,8 +7,8 @@ import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TodoDraft } from "@/lib/entityCodec";
 import { todoDraftFromVm } from "@/lib/entityCodec";
-import { RuntimeProvider } from "@/runtime";
 import { useRecurrenceNextDates } from "@/lib/hooks/useRecurrenceNextDates.js";
+import { RuntimeProvider } from "@/runtime";
 
 afterEach(() => {
 	vi.restoreAllMocks();

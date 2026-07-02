@@ -11,8 +11,8 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { Effect, Layer, ManagedRuntime } from "effect";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it } from "vitest";
-import { RuntimeProvider } from "@/runtime";
 import { TodayOverview } from "@/components/library/TodayOverview";
+import { RuntimeProvider } from "@/runtime";
 
 type Rows = EntityListResult["entities"];
 

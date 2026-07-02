@@ -4,6 +4,7 @@ import {
 	createRouter,
 	RouterProvider,
 } from "@tanstack/react-router";
+import { renderWithQuery } from "@test/test-utils/renderWithQuery";
 import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Effect, Layer } from "effect";
@@ -12,7 +13,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { routeTree } from "@/routeTree.gen";
 import { RuntimeProvider } from "@/runtime";
 import { openCommand, resetCommandStore } from "@/store/command";
-import { renderWithQuery } from "@test/test-utils/renderWithQuery";
 
 // Stub: empty threadList so the open-triggered query resolves; Alice (person)
 // and a matching daycare todo seeded as stable live entity/list results.

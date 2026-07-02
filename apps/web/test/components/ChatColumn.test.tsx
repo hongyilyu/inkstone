@@ -8,10 +8,12 @@ import {
 	WsRequestError,
 } from "@inkstone/ui-sdk";
 import { QueryClient } from "@tanstack/react-query";
+import { renderChatRoute } from "@test/test-utils/renderChatRoute";
 import { act, cleanup, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Deferred, Effect, Layer, ManagedRuntime, Stream } from "effect";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ChatColumn } from "@/components/ChatColumn.js";
 import {
 	CONNECTION_SEND_FAILURE,
 	GENERIC_SEND_FAILURE,
@@ -24,8 +26,6 @@ import {
 	seedAssistantMessage,
 	setPendingProposal,
 } from "@/store/chat";
-import { renderChatRoute } from "@test/test-utils/renderChatRoute";
-import { ChatColumn } from "@/components/ChatColumn.js";
 
 // Stub WsClient injected via RuntimeProvider (no real socket); its finite subscribeRun event list drives the store.
 function makeStubRuntime(opts: {

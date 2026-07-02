@@ -23,6 +23,7 @@ import userEvent from "@testing-library/user-event";
 import { Effect, Layer, ManagedRuntime } from "effect";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { EntityDetail } from "@/components/library/EntityDetail";
 import {
 	formatDateTime,
 	formatDay,
@@ -33,7 +34,6 @@ import {
 	type Todo,
 } from "@/lib/libraryItems";
 import { RuntimeProvider } from "@/runtime";
-import { EntityDetail } from "@/components/library/EntityDetail";
 
 const { navigate } = vi.hoisted(() => ({ navigate: vi.fn() }));
 

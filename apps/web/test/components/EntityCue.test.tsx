@@ -1,7 +1,7 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { resetEntityCueStore, showEntityCue } from "@/store/entityCue";
 import { EntityCue } from "@/components/EntityCue";
+import { resetEntityCueStore, showEntityCue } from "@/store/entityCue";
 
 // `showEntityCue` starts a real auto-dismiss timer; fake them so no stray timer
 // fires across tests, and reset the single-slot store between cases.

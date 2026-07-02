@@ -4,11 +4,11 @@ import {
 	fauxToolCall,
 } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
-import { fauxInterpreterDeps } from "../../src/faux/faux-deps.js";
-import type { InterpreterDeps } from "../../src/interpreter.js";
 import { runFixture } from "../../eval/run.js";
 import type { Fixture } from "../../eval/types.js";
 import { CODEX_ACCESS_TOKEN_ENV } from "../../eval/types.js";
+import { fauxInterpreterDeps } from "../../src/faux/faux-deps.js";
+import type { InterpreterDeps } from "../../src/interpreter.js";
 
 // The runner drives the REAL model, so it needs a real provider credential
 // (openai-codex OAuth access token, ADR-0023). But the token alone is NOT enough

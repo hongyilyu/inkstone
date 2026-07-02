@@ -1,11 +1,11 @@
 import { stubWsClient, WsClient } from "@inkstone/ui-sdk";
+import { renderWithQuery } from "@test/test-utils/renderWithQuery";
 import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Effect, Layer, ManagedRuntime } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
-import { RuntimeProvider } from "@/runtime";
-import { renderWithQuery } from "@test/test-utils/renderWithQuery";
 import { ModelPicker } from "@/components/ModelPicker.js";
+import { RuntimeProvider } from "@/runtime";
 
 afterEach(cleanup);
 

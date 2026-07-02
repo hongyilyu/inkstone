@@ -1,10 +1,10 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ProposalCard } from "@/components/ProposalCard.js";
+import { PROPOSAL_VIEWS } from "@/components/proposalViews.js";
 import type { LibraryItem } from "@/lib/libraryItems";
 import { isGtdEditKind } from "@/lib/proposalEdit";
 import type { PendingProposal } from "@/store/chat";
-import { ProposalCard } from "@/components/ProposalCard.js";
-import { PROPOSAL_VIEWS } from "@/components/proposalViews.js";
 
 // The decided card (ADR-0044 entity_id amendment) resolves its named entity live
 // from the warm library-items cache and deep-links to it via `useNavigate`. Mock

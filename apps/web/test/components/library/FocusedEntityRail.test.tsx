@@ -7,13 +7,13 @@ import { Effect, Layer, ManagedRuntime } from "effect";
 import type { ReactNode } from "react";
 import { useState } from "react";
 import { afterEach, describe, expect, it } from "vitest";
-import { assembleLibraryItems } from "@/lib/hooks/useLibraryItems";
-import { RuntimeProvider } from "@/runtime";
 import { FocusedEntityRail } from "@/components/library/FocusedEntityRail";
 import {
 	type TimelineFilter,
 	TimelineView,
 } from "@/components/library/TimelineView";
+import { assembleLibraryItems } from "@/lib/hooks/useLibraryItems";
+import { RuntimeProvider } from "@/runtime";
 
 type Rows = EntityListResult["entities"];
 

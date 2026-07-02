@@ -3,8 +3,8 @@ import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { toObservationView } from "@/lib/observationView";
 import { type HealthFilter, HealthView } from "@/components/library/HealthView";
+import { toObservationView } from "@/lib/observationView";
 
 // HealthView reads its data straight from `useObservations`; mock the hook so the
 // test controls the rows, the pending state, and the error state without a live

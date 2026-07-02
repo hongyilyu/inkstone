@@ -1,13 +1,6 @@
 import { createMedia, updateMedia } from "@inkstone/protocol";
 import { Schema as S } from "effect";
 import { describe, expect, it } from "vitest";
-import type {
-	JournalEntry,
-	Media,
-	Person,
-	Project,
-	Todo,
-} from "@/lib/libraryItems";
 import {
 	buildJournalEntry,
 	buildJournalReference,
@@ -36,6 +29,13 @@ import {
 	type TodoDraft,
 	todoDraftFromVm,
 } from "@/lib/entityCodec.js";
+import type {
+	JournalEntry,
+	Media,
+	Person,
+	Project,
+	Todo,
+} from "@/lib/libraryItems";
 
 // `created_at` is pinned to fixed numbers; `createdAt`'s toLocaleDateString() is
 // timezone/locale-fragile, so the assertions below pin the structural VM fields
