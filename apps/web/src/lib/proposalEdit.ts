@@ -3,9 +3,11 @@ import {
 	asTodoStatus,
 	type ProjectStatus,
 	parseAliases,
+	stampStatusTimestamps,
 	type TodoStatus,
 } from "@/lib/entityFields";
 import { localNowString } from "@/lib/libraryItems";
+import { readObject, readString, readStringArray } from "@/lib/readPayload";
 
 // Pure overlay builders for the Proposal review card's inline GTD edit (ADR-0025).
 //
@@ -67,29 +69,6 @@ export function gtdEditVariant(kind: string): GtdEditVariant | null {
 /** Whether a wire `mutation_kind` surfaces the GTD inline edit form. */
 export function isGtdEditKind(kind: string): boolean {
 	return gtdEditVariant(kind) !== null;
-}
-
-/** Read `key` off `payload` as a string, degrading anything else to "". */
-function readString(payload: unknown, key: string): string {
-	if (payload && typeof payload === "object" && key in payload) {
-		const value = (payload as Record<string, unknown>)[key];
-		if (typeof value === "string") return value;
-	}
-	return "";
-}
-
-/** Read `key` off `payload` as a plain object, degrading anything else to null. */
-function readObject(
-	payload: unknown,
-	key: string,
-): Record<string, unknown> | null {
-	if (payload && typeof payload === "object" && key in payload) {
-		const value = (payload as Record<string, unknown>)[key];
-		if (value && typeof value === "object" && !Array.isArray(value)) {
-			return value as Record<string, unknown>;
-		}
-	}
-	return null;
 }
 
 /**
@@ -160,16 +139,7 @@ export function overlayCreateTodo(
 	// Re-stamp the coupled timestamp only on a status CHANGE; an unchanged status
 	// leaves any stored completed_at/dropped_at intact.
 	if (draft.status !== prevStatus) {
-		if (draft.status === "completed") {
-			todo.completed_at = localNowString();
-			delete todo.dropped_at;
-		} else if (draft.status === "dropped") {
-			todo.dropped_at = localNowString();
-			delete todo.completed_at;
-		} else {
-			delete todo.completed_at;
-			delete todo.dropped_at;
-		}
+		stampStatusTimestamps(todo, draft.status, localNowString(), "delete");
 	}
 
 	next.todo = todo;
@@ -192,17 +162,6 @@ export interface CreatePersonDraft {
 	/** Aliases as a comma-separated string; split on overlay. */
 	aliases: string;
 	note: string;
-}
-
-/** Read `key` off `payload` as a `string[]`, dropping non-string entries; [] otherwise. */
-function readStringArray(payload: unknown, key: string): string[] {
-	if (payload && typeof payload === "object" && key in payload) {
-		const value = (payload as Record<string, unknown>)[key];
-		if (Array.isArray(value)) {
-			return value.filter((a): a is string => typeof a === "string");
-		}
-	}
-	return [];
 }
 
 /** Seed a create_person draft from the proposed payload, never throwing. */
@@ -320,16 +279,7 @@ export function overlayCreateProject(
 	// Re-stamp the coupled timestamp only on a status CHANGE; an unchanged status
 	// leaves any stored completed_at/dropped_at intact.
 	if (draft.status !== prevStatus) {
-		if (draft.status === "completed") {
-			next.completed_at = localNowString();
-			delete next.dropped_at;
-		} else if (draft.status === "dropped") {
-			next.dropped_at = localNowString();
-			delete next.completed_at;
-		} else {
-			delete next.completed_at;
-			delete next.dropped_at;
-		}
+		stampStatusTimestamps(next, draft.status, localNowString(), "delete");
 	}
 
 	return next;
