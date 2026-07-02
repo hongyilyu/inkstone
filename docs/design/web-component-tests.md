@@ -2,7 +2,7 @@
 
 Design rationale extracted from code comments during cleanup — keep in sync with the source.
 
-## apps/web/src/rename-guard.test.ts — BANNED
+## apps/web/test/rename-guard.test.ts — BANNED
 
 PR1 (slice 9) purged the chat-role identifiers from `apps/web/src`. This guard reads every source file and asserts none reintroduce them, so the rename stays complete as later slices stack on it.
 
