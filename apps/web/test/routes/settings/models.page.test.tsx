@@ -526,7 +526,12 @@ describe("Models settings page (ADR-0024)", () => {
 		await openProviderDetail(user);
 
 		const row = await screen.findByRole("row", { name: /GPT-5\.5/ });
-		expect(screen.getAllByRole("row")).toHaveLength(2);
+		// Both bare-named models group under one "OpenAI" vendor rowgroup header,
+		// so the table has 1 header row + 2 model rows.
+		expect(
+			screen.getByRole("rowheader", { name: "OpenAI" }),
+		).toBeInTheDocument();
+		expect(screen.getAllByRole("row")).toHaveLength(3);
 
 		await user.click(
 			within(row).getByRole("button", { name: /set as preferred/i }),

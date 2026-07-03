@@ -4,6 +4,7 @@ import { Brain, Check, ChevronDown, Eye } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { filterEnabledModels } from "@/lib/enabledModels.js";
 import { useProviderStatus } from "@/lib/hooks/useProviderStatus";
+import { modelDisplayName } from "@/lib/modelVendor.js";
 import { cn } from "@/lib/utils.js";
 import { useRuntime } from "@/runtime";
 import { fetchCatalog, fetchSettings, saveSettings } from "@/store/settings";
@@ -20,6 +21,12 @@ export function ModelPicker() {
 	const [providerByModel, setProviderByModel] = useState<
 		Record<string, string>
 	>({});
+	// Provider id → display label, so a row can be identified by provider
+	// (opencode-style "model (provider)") — the same model reachable via two
+	// providers (e.g. GPT-5.5 via Codex AND OpenRouter) is otherwise ambiguous.
+	const [providerLabels, setProviderLabels] = useState<Record<string, string>>(
+		{},
+	);
 	const [selectedId, setSelectedId] = useState<string | null>(null);
 	// `null` until settings/get resolves; only then does the empty-vs-curated
 	// distinction become meaningful. Keeping it null pre-load prevents the
@@ -39,6 +46,9 @@ export function ModelPicker() {
 					Object.fromEntries(
 						c.providers.flatMap((p) => p.models.map((m) => [m.id, p.id])),
 					),
+				);
+				setProviderLabels(
+					Object.fromEntries(c.providers.map((p) => [p.id, p.label])),
 				);
 			})
 			.catch(() => {});
@@ -63,6 +73,17 @@ export function ModelPicker() {
 		() => models.find((m) => m.id === selectedId) ?? null,
 		[models, selectedId],
 	);
+
+	// A model's provider label, or "" when unknown — the disambiguator shown
+	// beside the model name so two same-named models from different providers
+	// (e.g. GPT-5.5 via Codex AND OpenRouter) are told apart. Memoized so it is a
+	// stable dependency for the search memo below.
+	const providerLabelOf = useCallback(
+		(id: string): string => providerLabels[providerByModel[id]] ?? "",
+		[providerLabels, providerByModel],
+	);
+	const selectedProviderLabel =
+		selectedId === null ? "" : providerLabelOf(selectedId);
 
 	// Which providers are connected (ADR-0062). A model whose provider has no
 	// credential would run TOKENLESS and fail (Core now rejects such a send with a
@@ -126,10 +147,24 @@ export function ModelPicker() {
 	const visible = useMemo(() => {
 		const q = query.trim().toLowerCase();
 		if (!q) return enabled;
+		// Search matches the name, id, AND provider label — the label is shown on
+		// every row, so a query like "openrouter" should find its tagged rows.
 		return enabled.filter(
-			(m) => m.name.toLowerCase().includes(q) || m.id.toLowerCase().includes(q),
+			(m) =>
+				m.name.toLowerCase().includes(q) ||
+				m.id.toLowerCase().includes(q) ||
+				providerLabelOf(m.id).toLowerCase().includes(q),
 		);
-	}, [enabled, query]);
+	}, [enabled, query, providerLabelOf]);
+
+	// The label shown on the trigger (and voiced to assistive tech): the selected
+	// model — vendor prefix stripped, provider tag appended (e.g. "GPT-5.5
+	// (OpenRouter)") — or the placeholder when nothing is picked.
+	const triggerLabel = selected
+		? selectedProviderLabel
+			? `${modelDisplayName(selected)} (${selectedProviderLabel})`
+			: modelDisplayName(selected)
+		: "Select model";
 
 	const pick = (id: string) => {
 		setSelectedId(id); // optimistic
@@ -143,8 +178,8 @@ export function ModelPicker() {
 		<Popover.Root open={open} onOpenChange={setOpen}>
 			<Popover.Trigger
 				render={
-					<Button variant="chip" size="pill" aria-label="Select model">
-						<span>{selected?.name ?? "Select model"}</span>
+					<Button variant="chip" size="pill" aria-label={triggerLabel}>
+						<span>{triggerLabel}</span>
 						<ChevronDown className="h-4 w-4" aria-hidden />
 					</Button>
 				}
@@ -185,8 +220,15 @@ export function ModelPicker() {
 													className="size-4 shrink-0 text-foreground/70"
 													aria-hidden
 												/>
-												<span className="min-w-0 flex-1 truncate font-medium text-sm">
-													{m.name}
+												<span className="flex min-w-0 flex-1 items-baseline gap-1.5 text-sm">
+													<span className="min-w-0 truncate font-medium">
+														{modelDisplayName(m)}
+													</span>
+													{providerLabelOf(m.id) ? (
+														<span className="shrink-0 text-muted-foreground text-xs">
+															({providerLabelOf(m.id)})
+														</span>
+													) : null}
 												</span>
 												{m.input.includes("image") ? (
 													<Eye

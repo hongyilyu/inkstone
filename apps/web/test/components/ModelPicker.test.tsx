@@ -134,6 +134,103 @@ describe("ModelPicker", () => {
 		await runtime.dispose();
 	});
 
+	it("distinguishes two SAME-NAMED models from different providers by their provider tag, in rows AND the trigger", async () => {
+		const user = userEvent.setup();
+		// The real ambiguity: the SAME model name served by two providers (GPT-5.5
+		// via Codex AND via OpenRouter). Each row — and the trigger after picking —
+		// must carry the provider label so they're told apart (opencode-style).
+		const dupCatalog = {
+			providers: [
+				{
+					id: "openai-codex",
+					label: "OpenAI",
+					models: [
+						{
+							id: "gpt-5.5",
+							name: "GPT-5.5",
+							reasoning: true,
+							input: ["text", "image"],
+						},
+					],
+				},
+				{
+					id: "openrouter",
+					label: "OpenRouter",
+					models: [
+						{
+							// Realistic OpenRouter name shape ("Vendor: Model"); the picker
+							// strips the vendor prefix to display "GPT-5.5", matching the
+							// Codex row's display so only the provider tag disambiguates.
+							id: "openai/gpt-5.5",
+							name: "OpenAI: GPT-5.5",
+							reasoning: true,
+							input: ["text", "image"],
+						},
+					],
+				},
+			],
+		} as const;
+		const settingsResult = {
+			provider: "openai-codex",
+			model: null,
+			effort: "off",
+			enabled_models: [] as readonly string[],
+		};
+		const stub = stubWsClient({
+			providerStatus: () =>
+				Effect.succeed({
+					providers: [
+						{
+							id: "openai-codex",
+							connected: true,
+							auth_kind: "oauth" as const,
+						},
+						{
+							id: "openrouter",
+							connected: true,
+							auth_kind: "api_key" as const,
+						},
+					],
+				}),
+			modelCatalog: () => Effect.succeed(dupCatalog),
+			settingsGet: () => Effect.succeed(settingsResult),
+			settingsSet: () =>
+				Effect.succeed({ ...settingsResult, model: "openai/gpt-5.5" }),
+		});
+		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
+		renderWithQuery(
+			<RuntimeProvider runtime={runtime}>
+				<ModelPicker />
+			</RuntimeProvider>,
+		);
+
+		const trigger = screen.getByRole("button", { name: /select model/i });
+		await user.click(trigger);
+		const list = await screen.findByRole("list");
+
+		// Both rows show the SAME name but distinct provider tags. Match on
+		// tolerant substrings, not exact textContent (the visual gap is CSS, so the
+		// spans render adjacent with no literal space — an exact match is brittle).
+		const rows = within(list).getAllByRole("button");
+		expect(rows).toHaveLength(2);
+		const rowText = (r: Element) => r.textContent ?? "";
+		expect(rows.some((r) => /GPT-5\.5.*\(OpenAI\)/.test(rowText(r)))).toBe(
+			true,
+		);
+		const orRow = rows.find((r) => /GPT-5\.5.*\(OpenRouter\)/.test(rowText(r)));
+		expect(orRow).toBeDefined();
+
+		// Picking the OpenRouter one: the trigger keeps the provider tag (in its
+		// text AND its accessible name), so the selection isn't ambiguous with the
+		// Codex GPT-5.5.
+		if (orRow === undefined) throw new Error("OpenRouter row not found");
+		await user.click(orRow);
+		expect(trigger).toHaveTextContent("GPT-5.5 (OpenRouter)");
+		expect(trigger).toHaveAccessibleName("GPT-5.5 (OpenRouter)");
+
+		await runtime.dispose();
+	});
+
 	it("HIDES a model whose provider is not connected — only connected-provider models are listed (ADR-0062)", async () => {
 		const user = userEvent.setup();
 		// Both models enabled, but openrouter is NOT connected: its model must not be
@@ -225,15 +322,16 @@ describe("ModelPicker", () => {
 			</QueryClientProvider>,
 		);
 
-		// Connected first → the trigger shows the selected model's name.
-		expect(await screen.findByText("GPT-5.5")).toBeInTheDocument();
+		// Connected first → the trigger shows the selected model WITH its provider
+		// tag (assert the tag too, so this can't pass if disambiguation regressed).
+		expect(await screen.findByText("GPT-5.5 (OpenAI)")).toBeInTheDocument();
 
 		// Provider disconnects; refetch the shared status query so the picker sees it.
 		codexConnected = false;
 		await client.invalidateQueries({ queryKey: ["provider-status"] });
 
 		// The stale selection is dropped — "GPT-5.5" clears from the trigger.
-		await waitFor(() => expect(screen.queryByText("GPT-5.5")).toBeNull());
+		await waitFor(() => expect(screen.queryByText(/GPT-5\.5/)).toBeNull());
 
 		await runtime.dispose();
 	});
@@ -263,10 +361,11 @@ describe("ModelPicker", () => {
 			expect(row).not.toBeDisabled();
 		});
 
-		// Picking it updates the trigger to the model's name.
+		// Picking it updates the trigger to the model's name WITH its provider tag
+		// — assert the full label so this can't pass if the tag regressed.
 		const row = within(list).getByText("GPT-5.5").closest("button");
 		if (row) await user.click(row);
-		expect(await screen.findByText("GPT-5.5")).toBeInTheDocument();
+		expect(await screen.findByText("GPT-5.5 (OpenAI)")).toBeInTheDocument();
 
 		await runtime.dispose();
 	});
