@@ -13,22 +13,32 @@
 
 import type { ModelInfo } from "@inkstone/protocol";
 
+/** Split a `"Vendor: Model"` name into its two parts on the FIRST `": "`, or
+ * `null` for a bare name (no prefix, or a leading `": "`). The single source of
+ * the prefix rule, so `vendorOf` and `modelDisplayName` can't drift apart. */
+function splitVendorPrefix(
+	name: string,
+): { vendor: string; rest: string } | null {
+	const idx = name.indexOf(": ");
+	return idx > 0
+		? { vendor: name.slice(0, idx), rest: name.slice(idx + 2) }
+		: null;
+}
+
 /** The vendor that makes `model`. The "Vendor: …" name prefix when present
  * (OpenRouter), else `providerLabel` (Codex's bare names → its own label). */
 export function vendorOf(
 	model: Pick<ModelInfo, "name">,
 	providerLabel: string,
 ): string {
-	const idx = model.name.indexOf(": ");
-	return idx > 0 ? model.name.slice(0, idx) : providerLabel;
+	return splitVendorPrefix(model.name)?.vendor ?? providerLabel;
 }
 
 /** `model`'s name with the redundant "Vendor: " prefix stripped, so a row under
  * a vendor header reads "Claude Opus 4.8", not "Anthropic: Claude Opus 4.8".
  * Names without the prefix (Codex) are returned unchanged. */
 export function modelDisplayName(model: Pick<ModelInfo, "name">): string {
-	const idx = model.name.indexOf(": ");
-	return idx > 0 ? model.name.slice(idx + 2) : model.name;
+	return splitVendorPrefix(model.name)?.rest ?? model.name;
 }
 
 export interface VendorGroup {

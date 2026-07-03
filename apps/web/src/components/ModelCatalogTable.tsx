@@ -2,7 +2,11 @@ import type { ModelInfo } from "@inkstone/protocol";
 import { Brain, Eye, Star } from "lucide-react";
 import { useId } from "react";
 import { isModelEnabled } from "@/lib/enabledModels.js";
-import { groupByVendor, modelDisplayName } from "@/lib/modelVendor.js";
+import {
+	groupByVendor,
+	modelDisplayName,
+	type VendorGroup,
+} from "@/lib/modelVendor.js";
 import { cn } from "@/lib/utils.js";
 import { Badge } from "./ui/badge.js";
 
@@ -78,7 +82,7 @@ export function ModelCatalogTable({
 }
 
 interface VendorRowsProps {
-	group: { readonly vendor: string; readonly models: readonly ModelInfo[] };
+	group: VendorGroup;
 	/** Whether this is the final vendor group — only its last row drops its
 	 * bottom border (each group is its own `<tbody>`, so `last:` alone would
 	 * strip the separator before every following vendor header). */
