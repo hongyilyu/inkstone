@@ -152,12 +152,12 @@ describe("ModelCatalogTable", () => {
 			/>,
 		);
 
-		// Both vendors appear as colgroup headers.
+		// Both vendors appear as rowgroup headers.
 		expect(
-			screen.getByRole("columnheader", { name: "OpenAI" }),
+			screen.getByRole("rowheader", { name: "OpenAI" }),
 		).toBeInTheDocument();
 		expect(
-			screen.getByRole("columnheader", { name: "Anthropic" }),
+			screen.getByRole("rowheader", { name: "Anthropic" }),
 		).toBeInTheDocument();
 
 		// The "Vendor: " prefix is stripped from the row name (grouped under the header).

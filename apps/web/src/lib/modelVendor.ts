@@ -37,22 +37,18 @@ export interface VendorGroup {
 }
 
 /** Group `models` by vendor, preserving first-seen order for both the vendors
- * and the models within each (the catalog's curated order). */
+ * and the models within each (the catalog's curated order). A `Map` already
+ * iterates in insertion order, so it alone carries the vendor ordering. */
 export function groupByVendor(
 	models: readonly ModelInfo[],
 	providerLabel: string,
 ): readonly VendorGroup[] {
-	const groups: { vendor: string; models: ModelInfo[] }[] = [];
-	const byVendor = new Map<string, { vendor: string; models: ModelInfo[] }>();
+	const byVendor = new Map<string, ModelInfo[]>();
 	for (const model of models) {
 		const vendor = vendorOf(model, providerLabel);
-		let group = byVendor.get(vendor);
-		if (group === undefined) {
-			group = { vendor, models: [] };
-			byVendor.set(vendor, group);
-			groups.push(group);
-		}
-		group.models.push(model);
+		const group = byVendor.get(vendor);
+		if (group === undefined) byVendor.set(vendor, [model]);
+		else group.push(model);
 	}
-	return groups;
+	return [...byVendor].map(([vendor, models]) => ({ vendor, models }));
 }

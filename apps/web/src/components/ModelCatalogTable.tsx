@@ -46,29 +46,26 @@ export function ModelCatalogTable({
 	}
 
 	// Rows are grouped under their vendor (the model MAKER — OpenAI, Anthropic…),
-	// which is derived from the model name / provider label (ADR-0024). Column
-	// count drives the header cell's colSpan so the vendor label spans the row.
+	// which is derived from the model name / provider label. Each vendor is its
+	// own `<tbody>` rowgroup so the header `<th scope="rowgroup">` labels the
+	// model rows beneath it for assistive tech.
 	const groups = groupByVendor(models, providerLabel);
-	const columns = onToggleEnabled ? 3 : 2;
 
 	return (
 		<div className="overflow-hidden rounded-md border border-input">
 			<table className="w-full caption-bottom text-sm">
-				<tbody>
-					{groups.map((group) => (
-						<VendorRows
-							key={group.vendor}
-							group={group}
-							columns={columns}
-							selectedId={selectedId}
-							onSelect={onSelect}
-							disabled={disabled}
-							isEnabled={isEnabled}
-							onToggleEnabled={onToggleEnabled}
-							hintId={hintId}
-						/>
-					))}
-				</tbody>
+				{groups.map((group) => (
+					<VendorRows
+						key={group.vendor}
+						group={group}
+						selectedId={selectedId}
+						onSelect={onSelect}
+						disabled={disabled}
+						isEnabled={isEnabled}
+						onToggleEnabled={onToggleEnabled}
+						hintId={hintId}
+					/>
+				))}
 			</table>
 			{onToggleEnabled ? (
 				<p id={hintId} className="sr-only">
@@ -81,7 +78,6 @@ export function ModelCatalogTable({
 
 interface VendorRowsProps {
 	group: { readonly vendor: string; readonly models: readonly ModelInfo[] };
-	columns: number;
 	selectedId: string | null;
 	onSelect: (id: string) => void;
 	disabled?: boolean;
@@ -90,10 +86,10 @@ interface VendorRowsProps {
 	hintId: string;
 }
 
-/** One vendor's section: a header row naming the vendor, then a row per model. */
+/** One vendor's section as its own `<tbody>` rowgroup: a header row naming the
+ * vendor, then a row per model. */
 function VendorRows({
 	group,
-	columns,
 	selectedId,
 	onSelect,
 	disabled,
@@ -101,11 +97,13 @@ function VendorRows({
 	onToggleEnabled,
 	hintId,
 }: VendorRowsProps) {
+	// The toggle column only exists when a toggle handler is provided.
+	const columns = onToggleEnabled ? 3 : 2;
 	return (
-		<>
+		<tbody>
 			<tr className="border-input border-b bg-muted/30">
 				<th
-					scope="colgroup"
+					scope="rowgroup"
 					colSpan={columns}
 					className="px-2 py-1.5 text-left font-medium text-[11px] text-muted-foreground uppercase tracking-wide"
 				>
@@ -215,6 +213,6 @@ function VendorRows({
 					</tr>
 				);
 			})}
-		</>
+		</tbody>
 	);
 }
