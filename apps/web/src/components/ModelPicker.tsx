@@ -4,6 +4,7 @@ import { Brain, Check, ChevronDown, Eye } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { filterEnabledModels } from "@/lib/enabledModels.js";
 import { useProviderStatus } from "@/lib/hooks/useProviderStatus";
+import { modelDisplayName } from "@/lib/modelVendor.js";
 import { cn } from "@/lib/utils.js";
 import { useRuntime } from "@/runtime";
 import { fetchCatalog, fetchSettings, saveSettings } from "@/store/settings";
@@ -157,11 +158,12 @@ export function ModelPicker() {
 	}, [enabled, query, providerLabelOf]);
 
 	// The label shown on the trigger (and voiced to assistive tech): the selected
-	// model with its provider tag, or the placeholder when nothing is picked.
+	// model — vendor prefix stripped, provider tag appended (e.g. "GPT-5.5
+	// (OpenRouter)") — or the placeholder when nothing is picked.
 	const triggerLabel = selected
 		? selectedProviderLabel
-			? `${selected.name} (${selectedProviderLabel})`
-			: selected.name
+			? `${modelDisplayName(selected)} (${selectedProviderLabel})`
+			: modelDisplayName(selected)
 		: "Select model";
 
 	const pick = (id: string) => {
@@ -220,7 +222,7 @@ export function ModelPicker() {
 												/>
 												<span className="flex min-w-0 flex-1 items-baseline gap-1.5 text-sm">
 													<span className="min-w-0 truncate font-medium">
-														{m.name}
+														{modelDisplayName(m)}
 													</span>
 													{providerLabelOf(m.id) ? (
 														<span className="shrink-0 text-muted-foreground text-xs">

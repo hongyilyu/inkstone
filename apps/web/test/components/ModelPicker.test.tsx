@@ -158,8 +158,11 @@ describe("ModelPicker", () => {
 					label: "OpenRouter",
 					models: [
 						{
+							// Realistic OpenRouter name shape ("Vendor: Model"); the picker
+							// strips the vendor prefix to display "GPT-5.5", matching the
+							// Codex row's display so only the provider tag disambiguates.
 							id: "openai/gpt-5.5",
-							name: "GPT-5.5",
+							name: "OpenAI: GPT-5.5",
 							reasoning: true,
 							input: ["text", "image"],
 						},
