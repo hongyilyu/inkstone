@@ -361,10 +361,11 @@ describe("ModelPicker", () => {
 			expect(row).not.toBeDisabled();
 		});
 
-		// Picking it updates the trigger to the model's name (+ provider tag).
+		// Picking it updates the trigger to the model's name WITH its provider tag
+		// — assert the full label so this can't pass if the tag regressed.
 		const row = within(list).getByText("GPT-5.5").closest("button");
 		if (row) await user.click(row);
-		expect(await screen.findByText(/GPT-5\.5/)).toBeInTheDocument();
+		expect(await screen.findByText("GPT-5.5 (OpenAI)")).toBeInTheDocument();
 
 		await runtime.dispose();
 	});

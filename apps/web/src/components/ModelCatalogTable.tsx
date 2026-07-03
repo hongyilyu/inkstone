@@ -54,10 +54,11 @@ export function ModelCatalogTable({
 	return (
 		<div className="overflow-hidden rounded-md border border-input">
 			<table className="w-full caption-bottom text-sm">
-				{groups.map((group) => (
+				{groups.map((group, i) => (
 					<VendorRows
 						key={group.vendor}
 						group={group}
+						isLastGroup={i === groups.length - 1}
 						selectedId={selectedId}
 						onSelect={onSelect}
 						disabled={disabled}
@@ -78,6 +79,10 @@ export function ModelCatalogTable({
 
 interface VendorRowsProps {
 	group: { readonly vendor: string; readonly models: readonly ModelInfo[] };
+	/** Whether this is the final vendor group — only its last row drops its
+	 * bottom border (each group is its own `<tbody>`, so `last:` alone would
+	 * strip the separator before every following vendor header). */
+	isLastGroup: boolean;
 	selectedId: string | null;
 	onSelect: (id: string) => void;
 	disabled?: boolean;
@@ -90,6 +95,7 @@ interface VendorRowsProps {
  * vendor, then a row per model. */
 function VendorRows({
 	group,
+	isLastGroup,
 	selectedId,
 	onSelect,
 	disabled,
@@ -120,7 +126,13 @@ function VendorRows({
 				return (
 					<tr
 						key={m.id}
-						className="group/row border-input border-b transition-colors last:border-0 hover:bg-muted/50"
+						className={cn(
+							"group/row border-input border-b transition-colors hover:bg-muted/50",
+							// Only the final group's last row drops its border; each group is
+							// its own <tbody>, so a bare `last:` would strip the separator
+							// before every following vendor header.
+							isLastGroup && "last:border-0",
+						)}
 					>
 						<td className="p-2 align-middle">
 							<div className="flex items-center gap-2.5">
