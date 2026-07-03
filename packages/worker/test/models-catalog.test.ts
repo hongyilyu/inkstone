@@ -1,155 +1,150 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-// Drift guard for the embedded openai-codex catalog (ADR-0024) — see docs/design/worker-tests.md
+// The embedded catalog SOURCE is vendor-owned (ADR-0024): `vendors` each own
+// their models by bare `key`; `providers` only declare which vendors they reach.
+// Core (crates/core/src/models/mod.rs) derives the per-provider catalog from it.
+// This test re-derives the same way and drift-checks each derived model against
+// pi-ai — so a pi-ai bump that adds/removes/retypes a shipped model fails CI.
+interface VendorModel {
+	key: string;
+	name: string;
+	reasoning: boolean;
+	input: string[];
+}
+interface Vendor {
+	id: string;
+	label: string;
+	models: VendorModel[];
+}
+interface Reach {
+	vendor: string;
+	models?: string[];
+}
+interface Provider {
+	id: string;
+	label: string;
+	id_style: "bare" | "prefixed";
+	reaches: Reach[];
+}
+interface SourceCatalog {
+	vendors: Vendor[];
+	providers: Provider[];
+}
+
+function source(): SourceCatalog {
+	const jsonUrl = new URL(
+		"../../../crates/core/src/models/catalog.json",
+		import.meta.url,
+	);
+	return JSON.parse(readFileSync(jsonUrl, "utf8")) as SourceCatalog;
+}
+
+// Mirror of Core's derivation: expand a provider's `reaches` against the vendor
+// lists into concrete { id } models (the id is all the drift check needs).
+function derive(
+	src: SourceCatalog,
+): { id: string; models: { id: string }[] }[] {
+	const vendors = new Map(src.vendors.map((v) => [v.id, v]));
+	return src.providers.map((provider) => ({
+		id: provider.id,
+		models: provider.reaches.flatMap((reach) => {
+			const vendor = vendors.get(reach.vendor);
+			if (!vendor) throw new Error(`unknown vendor ${reach.vendor}`);
+			const keys = reach.models ?? vendor.models.map((m) => m.key);
+			return keys.map((key) => ({
+				id: provider.id_style === "bare" ? key : `${vendor.id}/${key}`,
+			}));
+		}),
+	}));
+}
+
+type PiModels = Record<
+	string,
+	Record<string, { id: string; reasoning?: boolean; input: string[] }>
+>;
+
+async function piModels(): Promise<PiModels> {
+	const mainUrl = import.meta.resolve("@earendil-works/pi-ai");
+	const genUrl = new URL("./models.generated.js", mainUrl);
+	return (await import(genUrl.href)).MODELS as PiModels;
+}
+
 describe("model catalog drift", () => {
-	it("crates/core/src/models/openai-codex.json is a subset of pi-ai MODELS['openai-codex'], field-exact on each retained model", async () => {
-		const mainUrl = import.meta.resolve("@earendil-works/pi-ai");
-		const genUrl = new URL("./models.generated.js", mainUrl);
-		const { MODELS } = (await import(genUrl.href)) as {
-			MODELS: Record<
-				string,
-				Record<
-					string,
-					{
-						id: string;
-						name: string;
-						reasoning?: boolean;
-						input: string[];
-						cost: { input: number; output: number };
-					}
-				>
-			>;
-		};
+	// Each vendor is a deliberately CURATED subset of pi-ai (product policy trims
+	// it), so a raw deep-equals is wrong. The invariant: every DERIVED model id
+	// still exists in pi-ai's `MODELS[providerId]`, and its capability fields
+	// ({reasoning, input}) match pi-ai EXACTLY. The display NAME is intentionally
+	// NOT pinned — it is vendor-owned (defined once) and derived (a `prefixed`
+	// provider prepends the vendor label), whereas pi-ai names the same model
+	// inconsistently across providers (e.g. "GPT-5.4 mini" vs "GPT-5.4 Mini").
+	it("every derived model id still exists in pi-ai (unique per provider)", async () => {
+		const MODELS = await piModels();
+		const derived = derive(source());
+		expect(derived.length, "catalog has providers").toBeGreaterThan(0);
 
-		// Index pi-ai's openai-codex models by id, projected to the retained
-		// ModelInfo subset (`cost` was dropped in the feature-cut sweep — see
-		// docs/design/worker-tests.md).
-		const fromPi = new Map(
-			Object.values(MODELS["openai-codex"]).map((m) => [
-				m.id,
-				{ id: m.id, name: m.name, reasoning: !!m.reasoning, input: m.input },
-			]),
-		);
-
-		const jsonUrl = new URL(
-			"../../../crates/core/src/models/openai-codex.json",
-			import.meta.url,
-		);
-		const json = JSON.parse(readFileSync(jsonUrl, "utf8")) as {
-			providers: {
-				id: string;
-				label: string;
-				models: {
-					id: string;
-					name: string;
-					reasoning: boolean;
-					input: string[];
-				}[];
-			}[];
-		};
-		const provider = json.providers.find((p) => p.id === "openai-codex");
-		expect(
-			provider,
-			"openai-codex provider present in embedded JSON",
-		).toBeDefined();
-
-		// The embedded catalog is a deliberately CURATED subset of pi-ai's
-		// openai-codex models (product policy trims it — e.g. to gpt-5.5 only), so a
-		// raw deep-equals against the full pi-ai list is wrong. The drift invariant
-		// is two-part: (1) every embedded model id still exists upstream (a removed
-		// or renamed upstream id trips it), and (2) each retained entry's
-		// {id,name,reasoning,input} matches pi-ai EXACTLY (an upstream field change
-		// to a model we ship trips it). What it intentionally does NOT enforce is
-		// that we ship every upstream model — that's the curation.
-		for (const model of provider?.models ?? []) {
-			const upstream = fromPi.get(model.id);
+		for (const provider of derived) {
+			const upstream = MODELS[provider.id];
 			expect(
 				upstream,
-				`embedded model ${model.id} still present in pi-ai MODELS['openai-codex']`,
+				`pi-ai has a MODELS['${provider.id}'] group`,
 			).toBeDefined();
+
 			expect(
-				model,
-				`embedded model ${model.id} matches pi-ai field-for-field`,
-			).toEqual(upstream);
+				provider.models.length,
+				`${provider.id} derives models`,
+			).toBeGreaterThan(0);
+
+			const ids = provider.models.map((m) => m.id);
+			expect(new Set(ids).size, `${provider.id} model ids are unique`).toBe(
+				ids.length,
+			);
+
+			for (const model of provider.models) {
+				expect(
+					upstream[model.id],
+					`derived model ${model.id} still present in pi-ai MODELS['${provider.id}']`,
+				).toBeDefined();
+			}
 		}
 	});
 
-	it("crates/core/src/models/openrouter.json is a subset of pi-ai MODELS['openrouter'], field-exact on each retained model", async () => {
-		const mainUrl = import.meta.resolve("@earendil-works/pi-ai");
-		const genUrl = new URL("./models.generated.js", mainUrl);
-		const { MODELS } = (await import(genUrl.href)) as {
-			MODELS: Record<
-				string,
-				Record<
-					string,
-					{
-						id: string;
-						name: string;
-						reasoning?: boolean;
-						input: string[];
-						cost: { input: number; output: number };
-					}
-				>
-			>;
-		};
+	// Field-exact check on the source vendor models' own capability fields: the
+	// {reasoning, input} we author must equal pi-ai's for the same model, under
+	// whichever provider serves it. Split from the id-existence check above so a
+	// failure names the vendor model, not just the derived id.
+	it("each vendor model's reasoning + input match pi-ai", async () => {
+		const MODELS = await piModels();
+		const src = source();
 
-		// Index pi-ai's openrouter models by id, projected to the retained
-		// ModelInfo subset (`cost` was dropped in the feature-cut sweep — see
-		// docs/design/worker-tests.md).
-		const fromPi = new Map(
-			Object.values(MODELS.openrouter).map((m) => [
-				m.id,
-				{ id: m.id, name: m.name, reasoning: !!m.reasoning, input: m.input },
-			]),
-		);
+		// Build vendorId → the pi-ai record for that model, via any provider that
+		// reaches it (capabilities agree across providers; only names differ).
+		const reachOf = new Map<string, Provider>();
+		for (const p of src.providers)
+			for (const r of p.reaches)
+				if (!reachOf.has(r.vendor)) reachOf.set(r.vendor, p);
 
-		// The embedded openrouter group is a bare `ProviderModels` (`{ id, label,
-		// models }`), NOT wrapped in `{ providers: [...] }` like openai-codex.json —
-		// Core's `catalog()` pushes it onto the merged providers array. Parse it as
-		// the group directly.
-		const jsonUrl = new URL(
-			"../../../crates/core/src/models/openrouter.json",
-			import.meta.url,
-		);
-		const provider = JSON.parse(readFileSync(jsonUrl, "utf8")) as {
-			id: string;
-			label: string;
-			models: {
-				id: string;
-				name: string;
-				reasoning: boolean;
-				input: string[];
-			}[];
-		};
-		expect(provider.id, "openrouter group id").toBe("openrouter");
-		expect(
-			provider.models.length,
-			"openrouter group has embedded models",
-		).toBeGreaterThan(0);
-
-		// Ids are unique within the group. The per-model field-exact loop below
-		// checks each row against pi-ai independently, so it would not catch a
-		// duplicated id on its own.
-		const ids = provider.models.map((m) => m.id);
-		expect(new Set(ids).size, "openrouter model ids are unique").toBe(
-			ids.length,
-		);
-
-		// Same curated-subset drift invariant as openai-codex: every embedded model
-		// id still exists in pi-ai's (much larger) openrouter set, and each retained
-		// entry's {id,name,reasoning,input} matches pi-ai EXACTLY. Curation (we ship
-		// a curated subset of pi-ai's openrouter models) is intentional and NOT enforced.
-		for (const model of provider.models) {
-			const upstream = fromPi.get(model.id);
+		for (const vendor of src.vendors) {
+			const provider = reachOf.get(vendor.id);
 			expect(
-				upstream,
-				`embedded model ${model.id} still present in pi-ai MODELS['openrouter']`,
+				provider,
+				`vendor ${vendor.id} is reached by a provider`,
 			).toBeDefined();
-			expect(
-				model,
-				`embedded model ${model.id} matches pi-ai field-for-field`,
-			).toEqual(upstream);
+			if (!provider) continue;
+			const group = MODELS[provider.id];
+			for (const m of vendor.models) {
+				const id =
+					provider.id_style === "bare" ? m.key : `${vendor.id}/${m.key}`;
+				const up = group[id];
+				expect(
+					up,
+					`vendor model ${vendor.id}/${m.key} present in pi-ai (as ${id})`,
+				).toBeDefined();
+				expect(
+					{ reasoning: m.reasoning, input: m.input },
+					`vendor model ${vendor.id}/${m.key} matches pi-ai reasoning + input`,
+				).toEqual({ reasoning: !!up.reasoning, input: up.input });
+			}
 		}
 	});
 });
