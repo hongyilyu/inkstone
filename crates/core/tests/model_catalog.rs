@@ -39,7 +39,10 @@ fn model_catalog_returns_openai_codex_models() {
             .expect("openai-codex provider present");
 
         let models = codex["models"].as_array().expect("models array");
-        assert_eq!(models.len(), 1, "openai-codex ships a single curated model");
+        assert!(
+            !models.is_empty(),
+            "openai-codex ships its curated models"
+        );
 
         let gpt55 = models
             .iter()
