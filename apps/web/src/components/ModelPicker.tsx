@@ -73,6 +73,14 @@ export function ModelPicker() {
 		[models, selectedId],
 	);
 
+	// A model's provider label, or "" when unknown — the disambiguator shown
+	// beside the model name so two same-named models from different providers
+	// (e.g. GPT-5.5 via Codex AND OpenRouter) are told apart.
+	const providerLabelOf = (id: string): string =>
+		providerLabels[providerByModel[id]] ?? "";
+	const selectedProviderLabel =
+		selectedId === null ? "" : providerLabelOf(selectedId);
+
 	// Which providers are connected (ADR-0062). A model whose provider has no
 	// credential would run TOKENLESS and fail (Core now rejects such a send with a
 	// typed -32004), so it is not OFFERED here at all — the picker lists only models
@@ -153,7 +161,13 @@ export function ModelPicker() {
 			<Popover.Trigger
 				render={
 					<Button variant="chip" size="pill" aria-label="Select model">
-						<span>{selected?.name ?? "Select model"}</span>
+						<span>
+							{selected
+								? selectedProviderLabel
+									? `${selected.name} (${selectedProviderLabel})`
+									: selected.name
+								: "Select model"}
+						</span>
 						<ChevronDown className="h-4 w-4" aria-hidden />
 					</Button>
 				}
@@ -194,11 +208,13 @@ export function ModelPicker() {
 													className="size-4 shrink-0 text-foreground/70"
 													aria-hidden
 												/>
-												<span className="min-w-0 flex-1 truncate text-sm">
-													<span className="font-medium">{m.name}</span>
-													{providerLabels[providerByModel[m.id]] ? (
-														<span className="ml-1.5 text-muted-foreground text-xs">
-															({providerLabels[providerByModel[m.id]]})
+												<span className="flex min-w-0 flex-1 items-baseline gap-1.5 text-sm">
+													<span className="min-w-0 truncate font-medium">
+														{m.name}
+													</span>
+													{providerLabelOf(m.id) ? (
+														<span className="shrink-0 text-muted-foreground text-xs">
+															({providerLabelOf(m.id)})
 														</span>
 													) : null}
 												</span>

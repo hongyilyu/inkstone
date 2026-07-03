@@ -12,7 +12,7 @@ export interface ModelCatalogTableProps {
 	onSelect: (id: string) => void;
 	disabled?: boolean;
 	/** The provider's display label, e.g. "OpenAI". Backs the vendor derivation:
-	 * a bare-named model (Codex) is grouped under this label (ADR-0024). */
+	 * a bare-named model (Codex) is grouped under this label. */
 	providerLabel: string;
 	/** Ids enabled for chat. Empty (or omitted) means "no curation → all enabled" (ADR-0024); a non-empty set enables only those ids. */
 	enabledIds?: readonly string[];
