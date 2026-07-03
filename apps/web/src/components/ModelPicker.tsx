@@ -75,9 +75,12 @@ export function ModelPicker() {
 
 	// A model's provider label, or "" when unknown — the disambiguator shown
 	// beside the model name so two same-named models from different providers
-	// (e.g. GPT-5.5 via Codex AND OpenRouter) are told apart.
-	const providerLabelOf = (id: string): string =>
-		providerLabels[providerByModel[id]] ?? "";
+	// (e.g. GPT-5.5 via Codex AND OpenRouter) are told apart. Memoized so it is a
+	// stable dependency for the search memo below.
+	const providerLabelOf = useCallback(
+		(id: string): string => providerLabels[providerByModel[id]] ?? "",
+		[providerLabels, providerByModel],
+	);
 	const selectedProviderLabel =
 		selectedId === null ? "" : providerLabelOf(selectedId);
 
@@ -143,10 +146,23 @@ export function ModelPicker() {
 	const visible = useMemo(() => {
 		const q = query.trim().toLowerCase();
 		if (!q) return enabled;
+		// Search matches the name, id, AND provider label — the label is shown on
+		// every row, so a query like "openrouter" should find its tagged rows.
 		return enabled.filter(
-			(m) => m.name.toLowerCase().includes(q) || m.id.toLowerCase().includes(q),
+			(m) =>
+				m.name.toLowerCase().includes(q) ||
+				m.id.toLowerCase().includes(q) ||
+				providerLabelOf(m.id).toLowerCase().includes(q),
 		);
-	}, [enabled, query]);
+	}, [enabled, query, providerLabelOf]);
+
+	// The label shown on the trigger (and voiced to assistive tech): the selected
+	// model with its provider tag, or the placeholder when nothing is picked.
+	const triggerLabel = selected
+		? selectedProviderLabel
+			? `${selected.name} (${selectedProviderLabel})`
+			: selected.name
+		: "Select model";
 
 	const pick = (id: string) => {
 		setSelectedId(id); // optimistic
@@ -160,14 +176,8 @@ export function ModelPicker() {
 		<Popover.Root open={open} onOpenChange={setOpen}>
 			<Popover.Trigger
 				render={
-					<Button variant="chip" size="pill" aria-label="Select model">
-						<span>
-							{selected
-								? selectedProviderLabel
-									? `${selected.name} (${selectedProviderLabel})`
-									: selected.name
-								: "Select model"}
-						</span>
+					<Button variant="chip" size="pill" aria-label={triggerLabel}>
+						<span>{triggerLabel}</span>
 						<ChevronDown className="h-4 w-4" aria-hidden />
 					</Button>
 				}

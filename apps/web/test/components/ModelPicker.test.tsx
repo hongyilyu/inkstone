@@ -201,25 +201,29 @@ describe("ModelPicker", () => {
 			</RuntimeProvider>,
 		);
 
-		await user.click(screen.getByRole("button", { name: /select model/i }));
+		const trigger = screen.getByRole("button", { name: /select model/i });
+		await user.click(trigger);
 		const list = await screen.findByRole("list");
 
-		// Both rows show the SAME name but distinct provider tags.
+		// Both rows show the SAME name but distinct provider tags. Match on
+		// tolerant substrings, not exact textContent (the visual gap is CSS, so the
+		// spans render adjacent with no literal space — an exact match is brittle).
 		const rows = within(list).getAllByRole("button");
 		expect(rows).toHaveLength(2);
-		expect(rows.some((r) => r.textContent === "GPT-5.5(OpenAI)")).toBe(true);
-		expect(rows.some((r) => r.textContent === "GPT-5.5(OpenRouter)")).toBe(
+		const rowText = (r: Element) => r.textContent ?? "";
+		expect(rows.some((r) => /GPT-5\.5.*\(OpenAI\)/.test(rowText(r)))).toBe(
 			true,
 		);
+		const orRow = rows.find((r) => /GPT-5\.5.*\(OpenRouter\)/.test(rowText(r)));
+		expect(orRow).toBeDefined();
 
-		// Picking the OpenRouter one: the trigger keeps the provider tag, so the
-		// selection isn't ambiguous with the Codex GPT-5.5.
-		const orRow = rows.find((r) => r.textContent === "GPT-5.5(OpenRouter)");
+		// Picking the OpenRouter one: the trigger keeps the provider tag (in its
+		// text AND its accessible name), so the selection isn't ambiguous with the
+		// Codex GPT-5.5.
 		if (orRow === undefined) throw new Error("OpenRouter row not found");
 		await user.click(orRow);
-		expect(
-			screen.getByRole("button", { name: /select model/i }),
-		).toHaveTextContent("GPT-5.5 (OpenRouter)");
+		expect(trigger).toHaveTextContent("GPT-5.5 (OpenRouter)");
+		expect(trigger).toHaveAccessibleName("GPT-5.5 (OpenRouter)");
 
 		await runtime.dispose();
 	});
@@ -315,8 +319,9 @@ describe("ModelPicker", () => {
 			</QueryClientProvider>,
 		);
 
-		// Connected first → the trigger shows the selected model (name + provider tag).
-		expect(await screen.findByText(/GPT-5\.5/)).toBeInTheDocument();
+		// Connected first → the trigger shows the selected model WITH its provider
+		// tag (assert the tag too, so this can't pass if disambiguation regressed).
+		expect(await screen.findByText("GPT-5.5 (OpenAI)")).toBeInTheDocument();
 
 		// Provider disconnects; refetch the shared status query so the picker sees it.
 		codexConnected = false;

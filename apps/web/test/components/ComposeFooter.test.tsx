@@ -64,12 +64,12 @@ describe("ComposeFooter", () => {
 		expect(onSend).toHaveBeenCalledTimes(1);
 		expect(onSend).toHaveBeenCalledWith("hello");
 
-		// The model picker trigger is present; it reflects the preferred model
-		// from settings (`gpt-5.5`) once loaded.
+		// The model picker trigger is present; once the preferred model loads
+		// (`gpt-5.5`), the trigger's accessible name reflects it (with its provider
+		// tag), so it's found by that name rather than the "Select model" placeholder.
 		expect(
-			screen.getByRole("button", { name: /select model/i }),
+			await screen.findByRole("button", { name: /GPT-5\.5/ }),
 		).toBeInTheDocument();
-		expect(await screen.findByText(/GPT-5\.5/)).toBeInTheDocument();
 
 		// The effort picker reflects the global effort from settings (`off`).
 		expect(
