@@ -20,6 +20,12 @@ export function ModelPicker() {
 	const [providerByModel, setProviderByModel] = useState<
 		Record<string, string>
 	>({});
+	// Provider id → display label, so a row can be identified by provider
+	// (opencode-style "model (provider)") — the same model reachable via two
+	// providers (e.g. GPT-5.5 via Codex AND OpenRouter) is otherwise ambiguous.
+	const [providerLabels, setProviderLabels] = useState<Record<string, string>>(
+		{},
+	);
 	const [selectedId, setSelectedId] = useState<string | null>(null);
 	// `null` until settings/get resolves; only then does the empty-vs-curated
 	// distinction become meaningful. Keeping it null pre-load prevents the
@@ -39,6 +45,9 @@ export function ModelPicker() {
 					Object.fromEntries(
 						c.providers.flatMap((p) => p.models.map((m) => [m.id, p.id])),
 					),
+				);
+				setProviderLabels(
+					Object.fromEntries(c.providers.map((p) => [p.id, p.label])),
 				);
 			})
 			.catch(() => {});
@@ -185,8 +194,13 @@ export function ModelPicker() {
 													className="size-4 shrink-0 text-foreground/70"
 													aria-hidden
 												/>
-												<span className="min-w-0 flex-1 truncate font-medium text-sm">
-													{m.name}
+												<span className="min-w-0 flex-1 truncate text-sm">
+													<span className="font-medium">{m.name}</span>
+													{providerLabels[providerByModel[m.id]] ? (
+														<span className="ml-1.5 text-muted-foreground text-xs">
+															({providerLabels[providerByModel[m.id]]})
+														</span>
+													) : null}
 												</span>
 												{m.input.includes("image") ? (
 													<Eye

@@ -134,6 +134,35 @@ describe("ModelPicker", () => {
 		await runtime.dispose();
 	});
 
+	it("tags each row with its provider so a same-named model from two providers is distinguishable", async () => {
+		const user = userEvent.setup();
+		// Both providers connected; enabled set empty (show all). The codex GPT-5.5
+		// and (hypothetically) an openrouter model share the picker — every row must
+		// carry its provider label so the two are told apart (opencode-style).
+		const runtime = makeRuntime([], {
+			providers: [
+				{ id: "openai-codex", connected: true, auth_kind: "oauth" as const },
+				{ id: "openrouter", connected: true, auth_kind: "api_key" as const },
+			],
+		});
+		renderWithQuery(
+			<RuntimeProvider runtime={runtime}>
+				<ModelPicker />
+			</RuntimeProvider>,
+		);
+
+		await user.click(screen.getByRole("button", { name: /select model/i }));
+		const list = await screen.findByRole("list");
+
+		// The codex model's row is tagged (OpenAI); the openrouter model's, (OpenRouter).
+		const codexRow = within(list).getByText("GPT-5.5").closest("button");
+		expect(codexRow).toHaveTextContent("(OpenAI)");
+		const orRow = within(list).getByText("Claude Opus 4.8").closest("button");
+		expect(orRow).toHaveTextContent("(OpenRouter)");
+
+		await runtime.dispose();
+	});
+
 	it("HIDES a model whose provider is not connected — only connected-provider models are listed (ADR-0062)", async () => {
 		const user = userEvent.setup();
 		// Both models enabled, but openrouter is NOT connected: its model must not be

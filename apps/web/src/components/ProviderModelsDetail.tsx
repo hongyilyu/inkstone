@@ -162,6 +162,7 @@ export function ProviderModelsDetail({
 				models={models}
 				selectedId={selectedId}
 				onSelect={onSelect}
+				providerLabel={label}
 				enabledIds={enabledIds}
 				onToggleEnabled={onToggleEnabled}
 				// Not connected → picking a default would run tokenless, so lock
