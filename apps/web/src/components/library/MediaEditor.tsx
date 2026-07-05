@@ -1,4 +1,4 @@
-import { useId, useState } from "react";
+import { useId } from "react";
 import {
 	buildMedia,
 	type MediaDraft,
@@ -10,7 +10,7 @@ import {
 	MEDIA_STATE_OPTIONS,
 	type MediaState,
 } from "@/lib/entityFields";
-import { useEntityMutation } from "@/lib/hooks/useEntityMutation";
+import { useEntityDraftEditor } from "@/lib/hooks/useEntityDraftEditor";
 import type { Media } from "@/lib/libraryItems";
 import {
 	EditorField,
@@ -32,9 +32,13 @@ type Props = (
 /** Create / edit a Media item inline in the Library rail (ADR-0059). */
 export function MediaEditor({ onDone, onCancel, ...m }: Props) {
 	const existing = m.mode === "edit" ? m.media : undefined;
-	const baseline = mediaDraftFromVm(existing);
-	const [draft, setDraft] = useState<MediaDraft>(baseline);
-	const mutation = useEntityMutation();
+	const { draft, set, submit, saving, error } = useEntityDraftEditor({
+		existing,
+		draftFromVm: mediaDraftFromVm,
+		build: buildMedia,
+		onDone,
+		fallbackId: (d) => d.title,
+	});
 
 	const ids = {
 		title: useId(),
@@ -47,50 +51,29 @@ export function MediaEditor({ onDone, onCancel, ...m }: Props) {
 		note: useId(),
 	};
 
-	const set = <K extends keyof MediaDraft>(key: K, value: MediaDraft[K]) =>
-		setDraft((d) => ({ ...d, [key]: value }));
-
 	// When the state leaves terminal, clear rating/finished from the draft so a
 	// stale value isn't carried (Core rejects them off-terminal — ADR-0059).
-	const setState = (state: MediaState) =>
-		setDraft((d) =>
-			isMediaTerminalState(state)
-				? { ...d, state }
-				: { ...d, state, rating: "", finishedDay: "" },
-		);
+	const setState = (state: MediaState) => {
+		if (isMediaTerminalState(state)) {
+			set("state", state);
+		} else {
+			set("state", state);
+			set("rating", "");
+			set("finishedDay", "");
+		}
+	};
 
 	const titleEmpty = draft.title.trim() === "";
 	const terminal = isMediaTerminalState(draft.state);
 
-	const submit = () => {
-		if (titleEmpty) return;
-		const params = existing
-			? buildMedia({ mode: "update", existing, baseline, draft })
-			: buildMedia({ mode: "create", draft });
-		if (params === null) {
-			// Nothing changed — close without a write.
-			onDone(existing?.id ?? draft.title);
-			return;
-		}
-		mutation.mutate(params, {
-			onSuccess: (result) =>
-				onDone(result.entity_id ?? existing?.id ?? draft.title),
-		});
-	};
-
-	const error =
-		mutation.error == null
-			? null
-			: mutation.error instanceof Error && mutation.error.message
-				? mutation.error.message
-				: "Couldn't save. Try again.";
-
 	return (
 		<EntityEditorFrame
 			title={existing ? "Edit Media" : "New Media"}
-			onSubmit={submit}
+			onSubmit={() => {
+				if (!titleEmpty) submit();
+			}}
 			onCancel={onCancel}
-			saving={mutation.isPending}
+			saving={saving}
 			error={error}
 			canSave={!titleEmpty}
 			disabledReason="Add a title to save"

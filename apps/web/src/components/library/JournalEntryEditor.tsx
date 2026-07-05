@@ -13,6 +13,7 @@ import {
 	type ReferenceableKind,
 	stagedNewChip,
 } from "@/lib/entityCodec.js";
+import { deriveMutationError } from "@/lib/hooks/useEntityDraftEditor";
 import { useEntityMutation } from "@/lib/hooks/useEntityMutation";
 import {
 	type JournalEntry,
@@ -141,12 +142,7 @@ export function JournalEntryEditor({ onDone, onCancel, ...m }: Props) {
 		run().catch(() => {});
 	};
 
-	const error =
-		mutation.error == null
-			? null
-			: mutation.error instanceof Error && mutation.error.message
-				? mutation.error.message
-				: "Couldn't save. Try again.";
+	const error = deriveMutationError(mutation.error);
 
 	return (
 		<EntityEditorFrame
