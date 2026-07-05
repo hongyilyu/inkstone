@@ -1249,6 +1249,74 @@ mod tests {
         );
     }
 
+    /// The snapshot-composition rule (finding F9, the Core half): a Run's
+    /// subscribe snapshot is the assistant message's CUMULATIVE text — all
+    /// `type='text'` parts concatenated in `seq` order, reasoning excluded.
+    /// CROSS-LANGUAGE MIRROR: the web client (`apps/web/src/store/chat.ts`
+    /// `setCumulativeText` / the `appendTextSegment` armed path) assumes exactly
+    /// this rule, because Core sends the snapshot as a plain `text_delta`
+    /// (`runs/subscribe.rs` `send_text_delta(… &snap.text)` sites) —
+    /// indistinguishable on the wire from a tail delta; only the client's armed
+    /// bit disambiguates. Tagging the snapshot on the wire is the recorded
+    /// follow-up (F9's full fix); until then this test tethers the two halves.
+    #[tokio::test]
+    async fn select_run_snapshot_concats_text_parts_in_seq_order() {
+        let pool = memory_pool().await;
+        let thread_id = Uuid::now_v7();
+        let run_id = Uuid::now_v7();
+        let assistant_id = Uuid::now_v7();
+
+        let mut tx = pool.begin().await.expect("begin");
+        queries::insert_thread(&mut *tx, thread_id, "T", 1)
+            .await
+            .expect("thread");
+        sqlx::query(
+            "INSERT INTO runs \
+             (id, thread_id, workflow_name, workflow_version, provider, model, \
+              thinking_level, user_message_id, status, started_at) \
+             VALUES (?, ?, 'w', '1', 'p', 'm', 'medium', ?, 'parked', 1)",
+        )
+        .bind(run_id.to_string())
+        .bind(thread_id.to_string())
+        .bind(assistant_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .expect("run");
+        queries::insert_message(
+            &mut *tx,
+            assistant_id,
+            thread_id,
+            run_id,
+            "assistant",
+            "completed",
+            1,
+        )
+        .await
+        .expect("assistant message");
+        // text @ seq 0, reasoning @ seq 1, text @ seq 2: the snapshot spans the
+        // text parts across the interleaved reasoning without a separator.
+        queries::insert_text_part(&mut *tx, assistant_id, 0, "Hello ")
+            .await
+            .expect("text part 0");
+        queries::insert_reasoning_part(&mut *tx, assistant_id, 1, "thinking…")
+            .await
+            .expect("reasoning part 1");
+        queries::insert_text_part(&mut *tx, assistant_id, 2, "world")
+            .await
+            .expect("text part 2");
+        tx.commit().await.expect("commit seed");
+
+        let snap = select_run_snapshot(&pool, run_id)
+            .await
+            .expect("read ok")
+            .expect("run exists");
+        assert_eq!(
+            snap.text, "Hello world",
+            "cumulative = all text parts, seq order, reasoning excluded"
+        );
+        assert!(snap.status.is_parked(), "status rides the snapshot");
+    }
+
     /// Drive a bare Run to `errored` directly (terminal fields stamped), to seed
     /// the retry verb's `from` state. Mirrors what `RunStatus::fail` leaves behind.
     async fn mark_bare_run_errored(pool: &SqlitePool, run_id: &str) {

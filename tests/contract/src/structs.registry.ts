@@ -81,9 +81,24 @@ import {
 	WorkerManifest,
 	WorkerOutbound,
 } from "@inkstone/protocol";
-import type { Schema as S } from "effect";
+import { Schema as S } from "effect";
 
 export type FixtureDir = "emitted" | "authored";
+
+/** The Decision-prose contract (finding F12). NOT a runtime wire type — the
+ * human-readable tool_result prose Core writes on a decided Proposal, which the
+ * faux worker's matchers (`packages/worker/src/faux/faux-decisions.ts`)
+ * machine-parse to reconstruct phase across resumes. Test-only, so the schema
+ * lives here (not `@inkstone/protocol`). The worker-side pin
+ * (`packages/worker/test/faux/faux-decisions.test.ts`) asserts the matcher
+ * literals classify every sample in the fixture. */
+const DecisionProse = S.Struct({
+	declined_text: S.String,
+	accepted_prefix: S.String,
+	accepted_examples: S.Array(
+		S.Struct({ verb: S.String, kind: S.String, sample: S.String }),
+	),
+});
 
 export interface FixtureEntry {
 	/** The wire message this fixture exercises — the unit the completeness lock
@@ -761,6 +776,17 @@ export const fixtures: readonly FixtureEntry[] = [
 		schema: ProviderHelperLine,
 		dir: "authored",
 	},
+
+	// ── Decision prose (finding F12): the machine-parsed tool_result prose
+	// contract between Core's accept/reject renderers and the faux worker's
+	// matchers. Emitted through the real renderers, so a Rust copy edit reds
+	// both the Rust stale-fixture lock and the worker's matcher pin. ──
+	{
+		message: "DecisionProse",
+		file: "decision_prose.json",
+		schema: DecisionProse,
+		dir: "emitted",
+	},
 ];
 
 /** The hand-maintained canonical set of in-scope wire messages (41 at
@@ -836,6 +862,8 @@ export const CANONICAL_MESSAGES: readonly string[] = [
 	"WorkerStdout",
 	// provider-helper stdout protocol (ADR-0023)
 	"ProviderHelperLine",
+	// Decision prose (finding F12) — not a wire type; see its registry entry.
+	"DecisionProse",
 ];
 
 /** Expected fixture count per tagged-union message (grilling Q10). A union must

@@ -27,6 +27,7 @@
 #[cfg(test)]
 mod parity_fixtures {
     use crate::protocol::*;
+    use serde::Serialize;
     use std::path::Path;
 
     // Shared id constants — identical spelling to the values baked into the
@@ -34,6 +35,129 @@ mod parity_fixtures {
     const UUID_A: &str = "0190d3c1-0000-7000-8000-000000000001";
     const UUID_B: &str = "0190d3c1-0000-7000-8000-000000000002";
     const UUID_RUN: &str = "0190d3c1-0000-7000-8000-000000000003";
+
+    /// The Decision-prose contract (finding F12): NOT a wire type — the
+    /// human-readable tool_result content Core writes on a decided Proposal,
+    /// which the faux worker (`packages/worker/src/faux/faux-decisions.ts`)
+    /// machine-parses to reconstruct its phase across resumes. This test-only
+    /// struct emits `decision_prose.json` so both languages check the prose
+    /// against one committed artifact: `emitted_fixtures_match_committed` reds
+    /// when the Rust renderers drift, the worker's `faux-decisions.test.ts`
+    /// reds when the TS matchers drift.
+    #[derive(Serialize)]
+    struct DecisionProse {
+        declined_text: &'static str,
+        accepted_prefix: &'static str,
+        /// One REAL-renderer sample per `(verb, kind)` the faux matchers
+        /// branch on, rendered from fixed payloads so the bytes are stable.
+        accepted_examples: Vec<AcceptedExample>,
+    }
+
+    #[derive(Serialize)]
+    struct AcceptedExample {
+        verb: &'static str,
+        kind: &'static str,
+        sample: String,
+    }
+
+    /// Build the Decision-prose samples through the REAL accept renderers
+    /// (`entities::render_accept` / `observations::render_accept`) — the fixture
+    /// carries ground-truth prose, not a re-spelling.
+    fn decision_prose() -> DecisionProse {
+        use crate::mutation::MutationKind as M;
+        let render = crate::entities::render_accept;
+        let je_payload = serde_json::json!({
+            "occurred_at": "2026-06-10T10:30:00",
+            "body": [{ "type": "text", "text": "Bought milk." }],
+        });
+        DecisionProse {
+            declined_text: crate::decide::DECLINED_CONTENT,
+            accepted_prefix: "Accepted.",
+            accepted_examples: vec![
+                AcceptedExample {
+                    verb: "Created",
+                    kind: "Journal Entry",
+                    sample: render(M::CreateJournalEntry, &je_payload, Some(UUID_A)),
+                },
+                AcceptedExample {
+                    verb: "Updated",
+                    kind: "Journal Entry",
+                    sample: render(M::UpdateJournalEntry, &je_payload, None),
+                },
+                AcceptedExample {
+                    verb: "Deleted",
+                    kind: "Journal Entry",
+                    sample: render(
+                        M::DeleteJournalEntry,
+                        &serde_json::json!({ "entity_id": UUID_A }),
+                        None,
+                    ),
+                },
+                AcceptedExample {
+                    verb: "Referenced",
+                    kind: "Entity",
+                    sample: render(
+                        M::ReferenceExistingEntityFromJournalEntry,
+                        &serde_json::json!({
+                            "source_entity_id": UUID_A,
+                            "target_entity_id": UUID_B,
+                            "body": [{ "type": "text", "text": "See " },
+                                     { "type": "entity_ref", "ref_id": UUID_B }],
+                        }),
+                        None,
+                    ),
+                },
+                AcceptedExample {
+                    verb: "Created",
+                    kind: "Person",
+                    sample: render(
+                        M::CreatePerson,
+                        &serde_json::json!({ "name": "Morris" }),
+                        Some(UUID_A),
+                    ),
+                },
+                AcceptedExample {
+                    verb: "Created",
+                    kind: "Project",
+                    sample: render(
+                        M::CreateProject,
+                        &serde_json::json!({ "name": "Lead Ads", "status": "active" }),
+                        Some(UUID_A),
+                    ),
+                },
+                AcceptedExample {
+                    verb: "Created",
+                    kind: "Todo",
+                    sample: render(
+                        M::CreateTodo,
+                        &serde_json::json!({ "todo": { "title": "Buy milk", "status": "active" } }),
+                        Some(UUID_A),
+                    ),
+                },
+                // The non-Entity accept path (observations.rs render_accept) —
+                // no faux verb-matcher branches on it, but the shared
+                // `Accepted.` prefix classification must still hold.
+                AcceptedExample {
+                    verb: "Recorded",
+                    kind: "Observations",
+                    sample: crate::observations::render_accept(&[
+                        crate::observations::Observation {
+                            id: UUID_A.to_string(),
+                            schema_key: "bodyweight".to_string(),
+                            schema_version: 1,
+                            occurred_at: "2026-06-01T07:30:00".to_string(),
+                            ended_at: None,
+                            values: serde_json::json!({ "kg": 72.4 }),
+                            note: None,
+                            source: None,
+                            created_at: 1_700_000_000_000,
+                            updated_at: 1_700_000_000_000,
+                        },
+                    ]),
+                },
+            ],
+        }
+    }
 
     /// The Serialize-capable messages Core EMITS as fixtures. Each entry is
     /// `(filename, serialized-JSON)`: the writer dumps the JSON to
@@ -855,6 +979,10 @@ mod parity_fixtures {
                     access_token: None,
                 }
             ),
+            // ── Decision prose (finding F12): NOT a wire type — the machine-
+            // parsed tool_result prose contract between Core's accept/reject
+            // renderers and the faux worker's matchers. See `decision_prose()`.
+            fx!("decision_prose.json", decision_prose()),
         ]
     }
 
@@ -951,6 +1079,7 @@ mod parity_fixtures {
             "tool_result.err.json",
             "worker_manifest.json",
             "worker_manifest.bare.json",
+            "decision_prose.json",
         ];
         // The embedded table must cover exactly what the writer emits — neither can
         // gain or drop a fixture the other lacks.
@@ -1081,5 +1210,293 @@ mod parity_fixtures {
         .unwrap();
         let decisions = graph.decisions.expect("maximal carries a decisions vector");
         assert_eq!(decisions.len(), 4, "all four per-node decision forms present");
+    }
+
+    // ─── inventory lock (finding F14) ─────────────────────────────────────
+    //
+    // The fixture locks above are airtight ONCE a type is enrolled — but
+    // enrollment itself was discipline-dependent: a new RPC's params/result
+    // structs shipped with zero contract coverage unless someone remembered to
+    // add fixtures + registry entries. This lock converts that silent
+    // non-enrollment into a red `cargo test` naming the struct: every
+    // Serialize/Deserialize `pub` type declared in the protocol module must be
+    // triaged into exactly one of the three lists below. It proves the mapping
+    // is TOTAL, not that it is correct — fixture quality stays the existing
+    // locks' job once enrolled.
+
+    /// Wire messages with their own fixture(s) — mirrors `CANONICAL_MESSAGES`
+    /// in `tests/contract/src/structs.registry.ts` (minus the test-only
+    /// `DecisionProse`, which is not a `pub` production type here; the TS
+    /// registry's `ProviderHelperLine` is Rust's `HelperLine`).
+    const FIXTURE_BACKED: &[&str] = &[
+        "PostMessageParams",
+        "PostMessageResult",
+        "SubscribeParams",
+        "SubscribeResult",
+        "RunCancelParams",
+        "RunCancelResult",
+        "RunRetryParams",
+        "RunRetryResult",
+        "ProposalGetParams",
+        "ProposalGetResult",
+        "ProposalDecideParams",
+        "ProposalDecideResult",
+        "ProposalPendingNotification",
+        "ProposalChangedNotification",
+        "ThreadTitledNotification",
+        "ProviderConnectedNotification",
+        "ThreadCreateParams",
+        "ThreadCreateResult",
+        "ThreadListResult",
+        "ThreadRenameParams",
+        "ThreadArchiveParams",
+        "ThreadUnarchiveParams",
+        "ThreadMutateResult",
+        "ThreadGetParams",
+        "ThreadGetResult",
+        "RunGetHistoryParams",
+        "RunHistoryResult",
+        "RecurrencePreviewParams",
+        "RecurrencePreviewResult",
+        "ObservationRecordParams",
+        "ObservationRecordResult",
+        "ObservationUpdateParams",
+        "ObservationUpdateResult",
+        "ObservationQueryParams",
+        "ObservationQueryResult",
+        "ObservationGetHistoryParams",
+        "ObservationGetHistoryResult",
+        "EntityListParams",
+        "EntityListResult",
+        "EntityBacklinksParams",
+        "EntityBacklinksResult",
+        "EntityMutateParams",
+        "EntityMutateResult",
+        "JournalEntryRescanParams",
+        "JournalEntryRescanResult",
+        "MessageSearchParams",
+        "MessageSearchResult",
+        "ProviderStatusResult",
+        "ProviderConfigureParams",
+        "ProviderTestParams",
+        "ProviderTestResult",
+        "ProviderLoginStartParams",
+        "ProviderLoginStartResult",
+        "ModelCatalogResult",
+        "SettingsResult",
+        "SettingsSetParams",
+        "RunEvent",
+        "ToolResult",
+        "WorkerStdout",
+        "WorkerManifest",
+        "HelperLine",
+    ];
+
+    /// Leaf types that never cross the wire alone — each is serialized (or
+    /// parsed) inside the named wrapper's committed fixture. The lock does not
+    /// verify the *quality* of that coverage (e.g. a variant only exercised as
+    /// `None`); the per-fixture parity tests own that once enrolled.
+    const TRANSITIVELY_COVERED: &[(&str, &str)] = &[
+        ("JournalEntryBodyNode", "proposal_get_result.json review_context body"),
+        ("ProposalReviewContext", "proposal_get_result.json"),
+        ("ProposalReviewCurrentJournalEntry", "proposal_get_result.json"),
+        ("ProposalReviewCurrentPerson", "proposal_get_result.json (None branch)"),
+        ("ProposalReviewCurrentProject", "proposal_get_result.json (None branch)"),
+        ("ResolvedNode", "proposal_get_result.json resolved_plan"),
+        ("ResolvedNodeCandidate", "proposal_get_result.json resolved_plan"),
+        ("NodeDecision", "proposal_decide_params.json decisions (authored)"),
+        ("ThreadSummary", "thread_list_result.json"),
+        ("RunHistoryItem", "run_history_result.json"),
+        ("ObservationRecordDraft", "observation_record_params.json (authored)"),
+        ("ObservationEvidence", "observation_record_params.json (authored)"),
+        ("ObservationUpdateDraft", "observation_update_params.json (authored)"),
+        ("ObservationSourceView", "observation_query_result.json"),
+        ("ObservationRow", "observation_query_result.json"),
+        ("ObservationRevisionView", "observation_get_history_result.json"),
+        ("EntityRow", "entity_list_result.json"),
+        ("EntitySourceView", "entity_list_result.json"),
+        ("ResolvedEntityRef", "entity_list_result.json"),
+        ("TodoPersonRefView", "entity_list_result.json"),
+        ("MessageHit", "message_search_result.json"),
+        ("MessageView", "thread_get_result.json"),
+        ("Segment", "thread_get_result.json (all four variants)"),
+        ("ToolCallStatus", "run_event.tool_call.*.json (one per value)"),
+        ("ToolOutcome", "tool_result.ok.json / tool_result.err.json"),
+        ("AgentToolResult", "tool_result.ok.json"),
+        ("ToolTextContent", "tool_result.ok.json"),
+        ("ToolErrorWire", "tool_result.err.json"),
+        ("ProviderStatus", "provider_status_result.json"),
+        ("ModelInfo", "model_catalog_result.json"),
+        ("ProviderModels", "model_catalog_result.json"),
+        ("ManifestToolCall", "worker_manifest.json"),
+        ("ManifestMessage", "worker_manifest.json (all three variants)"),
+        ("WorkflowManifest", "worker_manifest.json"),
+        ("CoreToolDescriptor", "worker_manifest.json"),
+    ];
+
+    /// Deliberately out of the gate, each with its recorded reason.
+    const EXCLUDED_WITH_REASON: &[(&str, &str)] = &[
+        (
+            "JsonRpcRequest",
+            "ADR-0009: the JSON-RPC envelope has no field-for-field TS mirror \
+             (ui-sdk decodes a deliberately partial envelope); recorded exclusion",
+        ),
+        (
+            "JsonRpcResponse",
+            "ADR-0009: same recorded envelope exclusion as JsonRpcRequest",
+        ),
+    ];
+
+    /// The protocol module's own sources, embedded so the scan needs no runtime
+    /// file access. MUST list every file under `src/protocol/` that declares
+    /// wire types — a new domain file added to `protocol/mod.rs` without a row
+    /// here would silently evade the gate, so `mod.rs` is embedded too and the
+    /// test asserts its `mod` declarations match this table.
+    const PROTOCOL_SOURCES: &[(&str, &str)] = &[
+        ("mod.rs", include_str!("mod.rs")),
+        ("entity.rs", include_str!("entity.rs")),
+        ("observation.rs", include_str!("observation.rs")),
+        ("proposal.rs", include_str!("proposal.rs")),
+        ("provider.rs", include_str!("provider.rs")),
+        ("run.rs", include_str!("run.rs")),
+        ("thread.rs", include_str!("thread.rs")),
+        ("worker.rs", include_str!("worker.rs")),
+    ];
+
+    /// Collect serde-derived `pub struct`/`pub enum` names from one source.
+    /// Plain line iteration (no regex dependency): any `#[derive(…)]` —
+    /// single- or multi-line, or split across several derive attributes —
+    /// containing Serialize/Deserialize arms the scanner; interleaved
+    /// attributes and doc comments keep it armed; the next `pub struct`/`pub
+    /// enum` line collects the name. Non-`pub` types (this module's fixture
+    /// emitters) never enter the inventory.
+    fn scan_serde_pub_types(src: &str, into: &mut std::collections::BTreeSet<String>) {
+        let mut armed = false;
+        let mut in_attr = false; // inside any multi-line #[…] attribute
+        let mut attr_is_derive = false;
+        for line in src.lines() {
+            let t = line.trim();
+            if in_attr {
+                if attr_is_derive && (t.contains("Serialize") || t.contains("Deserialize")) {
+                    armed = true;
+                }
+                if t.ends_with(']') {
+                    in_attr = false;
+                }
+                continue;
+            }
+            // Attributes (#[derive(…)], #[serde(…)]) and comments ride between
+            // derive and item without disarming; multiple derive lines
+            // accumulate (armed stays true once set), so a Serialize derive
+            // followed by a plain #[derive(Clone)] still collects the item.
+            // A `#[…` line without its closing `]` opens multi-line mode.
+            if t.starts_with("#[") {
+                if t.starts_with("#[derive(")
+                    && (t.contains("Serialize") || t.contains("Deserialize"))
+                {
+                    armed = true;
+                }
+                if !t.ends_with(']') {
+                    in_attr = true;
+                    attr_is_derive = t.starts_with("#[derive(");
+                }
+                continue;
+            }
+            if t.starts_with("//") || t.is_empty() {
+                continue;
+            }
+            if armed {
+                if let Some(rest) = t
+                    .strip_prefix("pub struct ")
+                    .or_else(|| t.strip_prefix("pub enum "))
+                {
+                    let name: String = rest
+                        .chars()
+                        .take_while(|c| c.is_alphanumeric() || *c == '_')
+                        .collect();
+                    into.insert(name);
+                }
+                armed = false;
+            }
+        }
+    }
+
+    /// Scan every protocol source for serde-derived `pub` wire types and
+    /// assert each is triaged into exactly one list above — and that no list
+    /// entry is stale. A new RPC struct added without enrollment reds here BY
+    /// NAME, before it can ship uncovered. A scanner miss of an ENROLLED type
+    /// is loud (the stale-entry assert fires); the multi-line/split-derive
+    /// handling above is for NEW types with unusual formatting, where a miss
+    /// would be silent.
+    #[test]
+    fn wire_type_inventory_is_enrolled() {
+        // The source table itself is gated: every `mod x;` declared in
+        // protocol/mod.rs must have an embedded row, so a new domain file
+        // cannot silently sit outside the scan.
+        let mod_src = PROTOCOL_SOURCES
+            .iter()
+            .find_map(|(f, s)| (*f == "mod.rs").then_some(*s))
+            .expect("mod.rs is embedded");
+        for line in mod_src.lines() {
+            let t = line.trim();
+            let Some(m) = t.strip_prefix("mod ").or_else(|| t.strip_prefix("pub mod "))
+            else {
+                continue;
+            };
+            let Some(name) = m.strip_suffix(';') else {
+                continue;
+            };
+            if name == "parity" {
+                continue; // this test module declares no wire types
+            }
+            let file = format!("{name}.rs");
+            assert!(
+                PROTOCOL_SOURCES.iter().any(|(f, _)| *f == file),
+                "protocol/mod.rs declares `mod {name};` but PROTOCOL_SOURCES has \
+                 no embedded row for {file} — add it so the inventory scan covers it"
+            );
+        }
+
+        let mut declared = std::collections::BTreeSet::new();
+        for (_file, src) in PROTOCOL_SOURCES {
+            scan_serde_pub_types(src, &mut declared);
+        }
+
+        let enrolled: Vec<&str> = FIXTURE_BACKED
+            .iter()
+            .copied()
+            .chain(TRANSITIVELY_COVERED.iter().map(|(n, _)| *n))
+            .chain(EXCLUDED_WITH_REASON.iter().map(|(n, _)| *n))
+            .collect();
+        let enrolled_set: std::collections::BTreeSet<&str> =
+            enrolled.iter().copied().collect();
+        assert_eq!(
+            enrolled.len(),
+            enrolled_set.len(),
+            "a type is enrolled in more than one list; triage must be single-homed"
+        );
+
+        let unenrolled: Vec<&String> = declared
+            .iter()
+            .filter(|n| !enrolled_set.contains(n.as_str()))
+            .collect();
+        assert!(
+            unenrolled.is_empty(),
+            "serde wire types declared in the protocol module but not enrolled \
+             in the contract gate: {unenrolled:?}. Triage each: add fixtures + a \
+             registry entry (FIXTURE_BACKED), name the covering wrapper fixture \
+             (TRANSITIVELY_COVERED), or record why it is out of scope \
+             (EXCLUDED_WITH_REASON)."
+        );
+
+        let stale: Vec<&&str> = enrolled_set
+            .iter()
+            .filter(|n| !declared.contains(**n))
+            .collect();
+        assert!(
+            stale.is_empty(),
+            "enrollment lists name types no longer declared in the protocol \
+             module (renamed or removed?): {stale:?}"
+        );
     }
 }
