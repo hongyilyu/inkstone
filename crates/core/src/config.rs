@@ -114,7 +114,7 @@ pub fn get() -> &'static Config {
     }
 }
 
-/// Per-thread test override (the replacement for the five env-guard mutexes).
+/// Per-thread test override.
 /// libtest runs each test on its own thread and every `#[tokio::test]` here is
 /// current-thread, so a thread-local override is visible to the whole test —
 /// including deep call stacks (`insert_media` → `media_root`) — while tests on

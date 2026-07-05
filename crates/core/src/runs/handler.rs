@@ -253,7 +253,7 @@ mod tests {
 
         // Shared panic-safe fixture: points this thread's Config at a fresh
         // credentials tempdir and restores the previous config on drop.
-        let env = credentials::test_credentials_dir();
+        let creds = credentials::test_credentials_dir();
 
         // No credential file → ProviderNotConnected carrying the provider id.
         match ensure_provider_connected("openai-codex") {
@@ -275,7 +275,7 @@ mod tests {
 
         // A present-but-UNPARSEABLE file → Internal (fail loud on a corrupt store),
         // never a misleading ProviderNotConnected.
-        std::fs::write(env.dir().join("openrouter.json"), b"{ not valid json")
+        std::fs::write(creds.dir().join("openrouter.json"), b"{ not valid json")
             .expect("write corrupt file");
         match ensure_provider_connected("openrouter") {
             Err(HandlerError::Internal(_)) => {}

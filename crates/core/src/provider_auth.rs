@@ -155,9 +155,11 @@ mod tests {
     #[test]
     fn api_key_resolves_to_stored_key_without_refresh() {
         let _creds = test_credentials_dir();
-        // The no-refresh tripwire: with no helper command, an ApiKey arm that
-        // accidentally reached the refresh path would error at launch::resolve.
-        // Assert (read-only, no mutation) that the ambient env doesn't defeat it.
+        // The no-refresh tripwire: with no helper command override, an ApiKey
+        // arm that accidentally reached the refresh path would resolve the tsx
+        // default and fail at `Command::spawn` in `refresh_via_helper` (no
+        // CWD-relative tsx under crates/core). Assert (read-only, no mutation)
+        // that the ambient env doesn't defeat it.
         assert!(
             std::env::var_os("INKSTONE_PROVIDER_HELPER_CMD").is_none(),
             "test requires no ambient INKSTONE_PROVIDER_HELPER_CMD"

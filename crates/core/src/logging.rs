@@ -29,8 +29,9 @@ const DEFAULT_DIRECTIVE: &str = "info,sqlx::query=warn";
 const MAX_LOG_FILES: usize = 7;
 
 /// Initialize the global `tracing` subscriber writing JSONL to the rolling log
-/// file. Call this as the *first* statement of `main()` so even early fail-fast
-/// paths (`workflow::init`, `db::open`) are captured.
+/// file. Call this immediately after `config::init` in `main()` —
+/// `resolve_log_dir()` reads `config::get()`, which panics pre-init — so even
+/// early fail-fast paths (`workflow::init`, `db::open`) are captured.
 ///
 /// Uses the **blocking** daily appender (not `tracing_appender::non_blocking`):
 /// the non-blocking writer buffers behind a `WorkerGuard` that cannot flush on
