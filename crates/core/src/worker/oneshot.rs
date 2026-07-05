@@ -140,18 +140,3 @@ where
     }
 }
 
-/// Read the collector timeout from `env_var` as a `u64` of milliseconds; unset,
-/// unparseable, or `0` falls back to 15s. `0` is rejected because a zero-length
-/// timeout fires instantly, turning every one-shot into a silent no-op. The env
-/// seam lets tests set it low to exercise the timeout without a wall-clock wait.
-/// Shared by the titler (`INKSTONE_TITLE_TIMEOUT_MS`) and the probe
-/// (`INKSTONE_PROVIDER_TEST_TIMEOUT_MS`).
-pub(super) fn timeout_from_env(env_var: &str) -> Duration {
-    const DEFAULT_MS: u64 = 15_000;
-    let ms = std::env::var(env_var)
-        .ok()
-        .and_then(|raw| raw.parse::<u64>().ok())
-        .filter(|ms| *ms > 0)
-        .unwrap_or(DEFAULT_MS);
-    Duration::from_millis(ms)
-}

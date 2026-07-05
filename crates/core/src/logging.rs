@@ -72,8 +72,8 @@ pub fn init() -> Result<()> {
 /// `pub(crate)`) so the log dir and the DB dir resolve through the same per-OS
 /// logic and can never drift apart.
 fn resolve_log_dir() -> Result<PathBuf> {
-    if let Some(env) = std::env::var_os("INKSTONE_LOG_DIR") {
-        return Ok(PathBuf::from(env));
+    if let Some(ref dir) = crate::config::get().log_dir_override {
+        return Ok(dir.clone());
     }
     Ok(crate::db::os_data_dir()?.join("inkstone").join("logs"))
 }

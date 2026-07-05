@@ -72,11 +72,12 @@ impl std::fmt::Debug for StoredCredential {
     }
 }
 
-/// The directory credential files live in: `INKSTONE_CREDENTIALS_DIR` if set
-/// (tests), else `<dir of resolved DB path>/credentials`.
+/// The directory credential files live in: the boot-resolved
+/// `INKSTONE_CREDENTIALS_DIR` override if set (tests), else
+/// `<dir of resolved DB path>/credentials`.
 fn credentials_dir() -> Result<PathBuf> {
-    if let Some(dir) = std::env::var_os("INKSTONE_CREDENTIALS_DIR") {
-        return Ok(PathBuf::from(dir));
+    if let Some(ref dir) = crate::config::get().credentials_dir_override {
+        return Ok(dir.clone());
     }
     let db_path = crate::db::resolve_db_path()?;
     let parent = db_path
@@ -161,64 +162,43 @@ fn write_file_0600(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> 
     std::fs::write(path, bytes)
 }
 
-/// Serializes every test that mutates the process-global
-/// `INKSTONE_CREDENTIALS_DIR` env var — shared across modules (the store's own
-/// tests and `provider_auth`'s) so no two env-mutating tests race on the same
-/// var. A poisoned lock is recovered (a panicking test must not wedge the rest).
-#[cfg(test)]
-pub(crate) fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner())
-}
-
-/// RAII test fixture: hold [`env_lock`] and point `INKSTONE_CREDENTIALS_DIR` at a
-/// fresh tempdir for the duration, removing the var on drop. Panic-safe — a manual
-/// `set_var`/`remove_var` pair leaks the var to the next test if an assertion
-/// panics between them; this cleans up on every unwind. Callers seed whatever
-/// credential shape they need under [`dir`](Self::dir) (or leave it empty for a
-/// disconnected provider). Keep the guard bound for the whole test.
+/// RAII test fixture: point this thread's Config at a fresh tempdir's
+/// `credentials/` for the duration (via [`crate::config::test_override`]),
+/// restoring the previous config on drop. Panic-safe and parallel-safe — the
+/// override is thread-local, so tests on other threads are untouched and no
+/// serialization is needed. Callers seed whatever credential shape they need
+/// under [`dir`](Self::dir) (or leave it empty for a disconnected provider).
+/// Keep the guard bound for the whole test.
 #[cfg(test)]
 pub(crate) struct CredentialsEnvGuard {
-    // Drop order: `Drop::drop` runs FIRST (removes the var while the lock is still
-    // held), THEN fields drop in declaration order — so `_lock` outlives the
-    // removal and no other env-mutating test can race it.
-    _lock: std::sync::MutexGuard<'static, ()>,
+    _config: crate::config::test_override::ConfigGuard,
     tmp: tempfile::TempDir,
 }
 
 #[cfg(test)]
 impl CredentialsEnvGuard {
-    /// The credentials dir `INKSTONE_CREDENTIALS_DIR` points at — write fixture
-    /// files here (it need not exist yet; [`write`] creates it).
+    /// The credentials dir the thread's Config points at — write fixture files
+    /// here (it need not exist yet; [`write`] creates it).
     pub(crate) fn dir(&self) -> std::path::PathBuf {
         self.tmp.path().join("credentials")
     }
 }
 
-#[cfg(test)]
-impl Drop for CredentialsEnvGuard {
-    fn drop(&mut self) {
-        // SAFETY: `_lock` is still alive (fields drop after this body), so no other
-        // env-mutating test races this removal.
-        unsafe {
-            std::env::remove_var("INKSTONE_CREDENTIALS_DIR");
-        }
-    }
-}
-
-/// Point `INKSTONE_CREDENTIALS_DIR` at a fresh tempdir for one test, returning a
-/// [`CredentialsEnvGuard`] that restores it on drop (see there). The dir starts
-/// empty — the caller seeds credentials via [`write`] or leaves it empty for a
-/// disconnected provider.
+/// Point this thread's Config `credentials_dir_override` at a fresh tempdir for
+/// one test, returning a [`CredentialsEnvGuard`] that restores it on drop (see
+/// there). The dir starts empty — the caller seeds credentials via [`write`] or
+/// leaves it empty for a disconnected provider.
 #[cfg(test)]
 pub(crate) fn test_credentials_env() -> CredentialsEnvGuard {
-    let lock = env_lock();
     let tmp = tempfile::tempdir().expect("tempdir");
-    // SAFETY: serialized by the env lock just acquired.
-    unsafe {
-        std::env::set_var("INKSTONE_CREDENTIALS_DIR", tmp.path().join("credentials"));
+    let config = crate::config::Config {
+        credentials_dir_override: Some(tmp.path().join("credentials")),
+        ..Default::default()
+    };
+    CredentialsEnvGuard {
+        _config: crate::config::test_override::install(config),
+        tmp,
     }
-    CredentialsEnvGuard { _lock: lock, tmp }
 }
 
 #[cfg(test)]
@@ -242,18 +222,12 @@ mod tests {
     }
 
     /// `write()` round-trips through `read()` and lands the file at mode 0600
-    /// in a 0700 dir (ADR-0023). Serialized via a process-global lock because
-    /// the `INKSTONE_CREDENTIALS_DIR` env var is global.
+    /// in a 0700 dir (ADR-0023). Hermetic: the credentials dir comes from the
+    /// thread's Config override, no env mutation.
     #[test]
     fn write_then_read_round_trips_at_0600() {
-        let _guard = env_lock();
-
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let dir = tmp.path().join("credentials");
-        // SAFETY: single-threaded test guarded by ENV_LOCK.
-        unsafe {
-            std::env::set_var("INKSTONE_CREDENTIALS_DIR", &dir);
-        }
+        let guard = test_credentials_env();
+        let dir = guard.dir();
 
         let creds = Credentials {
             access: "tok_access".to_string(),
@@ -289,10 +263,6 @@ mod tests {
                 & 0o777;
             assert_eq!(dir_mode, 0o700, "credential dir is 0700");
         }
-
-        unsafe {
-            std::env::remove_var("INKSTONE_CREDENTIALS_DIR");
-        }
     }
 
     /// A redacting `Debug` keeps the token bytes out of any log line.
@@ -316,14 +286,8 @@ mod tests {
     /// new (OpenRouter); the OAuth variant preserves the codex shape.
     #[test]
     fn stored_credential_both_kinds_round_trip_at_0600() {
-        let _guard = env_lock();
-
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let dir = tmp.path().join("credentials");
-        // SAFETY: single-threaded test guarded by ENV_LOCK.
-        unsafe {
-            std::env::set_var("INKSTONE_CREDENTIALS_DIR", &dir);
-        }
+        let guard = test_credentials_env();
+        let dir = guard.dir();
 
         // OAuth (codex): unchanged credential shape, wrapped in the enum.
         let oauth = StoredCredential::Oauth(Credentials {
@@ -382,10 +346,6 @@ mod tests {
                 .mode()
                 & 0o777;
             assert_eq!(dir_mode, 0o700, "credential dir is 0700");
-        }
-
-        unsafe {
-            std::env::remove_var("INKSTONE_CREDENTIALS_DIR");
         }
     }
 

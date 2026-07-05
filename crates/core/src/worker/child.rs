@@ -53,12 +53,15 @@ impl ChildWorker {
         // Point the Worker's `worker.jsonl` sink at the sibling of Core's
         // `core.jsonl` (ADR-0038), so the Worker half of the trail is written by
         // default — not only when an operator sets the path. An explicit
-        // `INKSTONE_WORKER_LOG_PATH` already in Core's env wins as an override
-        // (the child inherits it; we only supply the default when it's absent).
-        if std::env::var_os("INKSTONE_WORKER_LOG_PATH").is_none() {
-            if let Some(path) = crate::logging::worker_log_path() {
-                command.env("INKSTONE_WORKER_LOG_PATH", path);
-            }
+        // `INKSTONE_WORKER_LOG_PATH` in Core's boot config wins as the override;
+        // either way the path is set explicitly on the child (same effect as the
+        // old inherit-from-Core's-env behavior, routed through the boot config).
+        let log_path = crate::config::get()
+            .worker_log_path
+            .clone()
+            .or_else(crate::logging::worker_log_path);
+        if let Some(path) = log_path {
+            command.env("INKSTONE_WORKER_LOG_PATH", path);
         }
 
         let mut child = match command.spawn() {

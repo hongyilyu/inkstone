@@ -305,14 +305,8 @@ pub(super) fn serialize_manifest(manifest: &WorkerManifest<'_>) -> String {
 
 async fn pre_spawn_delay_if_configured() {
     // Test-only hook for forcing the cancel-before-worker-start race.
-    let Ok(raw) = std::env::var("INKSTONE_WORKER_PRE_SPAWN_DELAY_MS") else {
-        return;
-    };
-    let Ok(ms) = raw.parse::<u64>() else {
-        return;
-    };
-    if ms > 0 {
-        tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+    if let Some(delay) = crate::config::get().worker_pre_spawn_delay {
+        tokio::time::sleep(delay).await;
     }
 }
 
@@ -348,9 +342,6 @@ mod tests {
     /// one struct that reaches the wire.
     #[test]
     fn workflow_manifest_injects_skills_and_ambient_load_skill() {
-        let _guard = crate::skills::SKILLS_ENV_GUARD
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
         let tmp = tempfile::tempdir().expect("tempdir");
         std::fs::create_dir_all(tmp.path().join("weekly-review")).expect("mk skill dir");
         std::fs::write(
@@ -358,9 +349,7 @@ mod tests {
             "---\nname: weekly-review\ndescription: Guide a GTD weekly review.\n---\n\n# Weekly review\n",
         )
         .expect("write SKILL.md");
-        unsafe {
-            std::env::set_var("INKSTONE_SKILLS_DIR", tmp.path());
-        }
+        let _config = crate::skills::test_skills_dir(tmp.path());
 
         // A Workflow whose own allowlist has one domain tool and NOT load_skill.
         let wf = workflow(&["search_entities"]);
@@ -386,10 +375,6 @@ mod tests {
             tool_names.contains(&"load_skill"),
             "ambient load_skill shipped despite the Workflow omitting it — got {tool_names:?}"
         );
-
-        unsafe {
-            std::env::remove_var("INKSTONE_SKILLS_DIR");
-        }
     }
 
     /// With no skills dir, the prompt is left untouched (no empty block) but
@@ -397,14 +382,9 @@ mod tests {
     /// does not.
     #[test]
     fn workflow_manifest_without_skills_keeps_bare_prompt_but_ships_load_skill() {
-        let _guard = crate::skills::SKILLS_ENV_GUARD
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
         let tmp = tempfile::tempdir().expect("tempdir");
         // Point at an empty (existing) dir: scan finds nothing.
-        unsafe {
-            std::env::set_var("INKSTONE_SKILLS_DIR", tmp.path());
-        }
+        let _config = crate::skills::test_skills_dir(tmp.path());
 
         let wf = workflow(&["search_entities"]);
         let system_prompt = crate::skills::augmented_system_prompt(&wf);
@@ -419,9 +399,5 @@ mod tests {
             tool_names.contains(&"load_skill"),
             "load_skill stays ambient"
         );
-
-        unsafe {
-            std::env::remove_var("INKSTONE_SKILLS_DIR");
-        }
     }
 }

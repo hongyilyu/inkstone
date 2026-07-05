@@ -251,8 +251,8 @@ mod tests {
     fn ensure_provider_connected_maps_missing_present_and_corrupt() {
         use crate::credentials::{self, StoredCredential};
 
-        // Shared panic-safe fixture: sets INKSTONE_CREDENTIALS_DIR and restores it
-        // on drop (no manual set/remove_var that would leak on an assert panic).
+        // Shared panic-safe fixture: points this thread's Config at a fresh
+        // credentials tempdir and restores the previous config on drop.
         let env = credentials::test_credentials_env();
 
         // No credential file → ProviderNotConnected carrying the provider id.

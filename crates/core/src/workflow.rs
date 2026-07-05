@@ -66,8 +66,8 @@ static DEFAULT_WORKFLOW: OnceLock<Workflow> = OnceLock::new();
 /// it (tests); otherwise `crates/core/workflows/` resolved from the crate
 /// manifest dir, so it works regardless of the process CWD.
 fn default_dir() -> PathBuf {
-    if let Some(dir) = std::env::var_os("INKSTONE_WORKFLOWS_DIR") {
-        return PathBuf::from(dir);
+    if let Some(ref dir) = crate::config::get().workflows_dir_override {
+        return dir.clone();
     }
     Path::new(env!("CARGO_MANIFEST_DIR")).join("workflows")
 }

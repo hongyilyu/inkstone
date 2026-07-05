@@ -1,4 +1,5 @@
 mod cancel;
+mod config;
 mod credentials;
 mod db;
 mod decide;
@@ -57,6 +58,11 @@ async fn main() -> Result<()> {
     // dependency — an unwritable log dir must not abort Core boot (mirrors the
     // worker-spawn sink, which also degrades silently). Worst case the trail is
     // absent; the process still serves.
+    // Resolve all INKSTONE_* env knobs once at boot and freeze them in a
+    // process-global Config (P0-4). Modules read the struct, not the env — tests
+    // inject values directly without env mutation.
+    config::init(config::Config::from_env());
+
     if let Err(e) = logging::init() {
         eprintln!("INKSTONE_LOG_INIT_FAILED {e:#}");
     }

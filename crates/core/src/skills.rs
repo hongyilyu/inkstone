@@ -88,11 +88,11 @@ struct Frontmatter {
 /// `INKSTONE_SKILLS_DIR` does). The override-or-data-dir *shape* mirrors
 /// `db::resolve_db_path` and `workflow::default_dir`.
 pub fn skills_dir() -> anyhow::Result<PathBuf> {
-    // An empty override is treated as unset — otherwise it resolves to a relative
-    // `""` and reads from the process CWD. Mirrors `os_data_dir`'s `XDG_DATA_HOME`
-    // filter (`db/mod.rs`).
-    if let Some(dir) = std::env::var_os("INKSTONE_SKILLS_DIR").filter(|d| !d.is_empty()) {
-        return Ok(PathBuf::from(dir));
+    // An empty env override is treated as unset by `Config::from_lookup` —
+    // otherwise it would resolve to a relative `""` and read from the process
+    // CWD. Mirrors `os_data_dir`'s `XDG_DATA_HOME` filter (`db/mod.rs`).
+    if let Some(ref dir) = crate::config::get().skills_dir_override {
+        return Ok(dir.clone());
     }
     Ok(crate::db::os_data_dir()?.join("inkstone").join("skills"))
 }
@@ -433,12 +433,18 @@ pub fn seed_if_absent() {
     tracing::info!(event = "skills.seeded", count = SEED_SKILLS.len());
 }
 
-/// Serializes every test that mutates the process-global `INKSTONE_SKILLS_DIR`.
-/// Shared with `tools::load_skill`'s tests because both resolve through
-/// [`skills_dir`]; two separate guards would not serialize against each other in
-/// the single lib test binary, reintroducing the env race.
+/// Point this thread's Config `skills_dir_override` at `dir` for one test,
+/// returning the RAII guard that restores the previous config on drop.
+/// Thread-local (see [`crate::config::test_override`]), so tests here and in
+/// `tools::load_skill` / `worker` run in parallel without racing. Shared so the
+/// fixture shape cannot drift between the three modules.
 #[cfg(test)]
-pub(crate) static SKILLS_ENV_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+pub(crate) fn test_skills_dir(dir: &Path) -> crate::config::test_override::ConfigGuard {
+    crate::config::test_override::install(crate::config::Config {
+        skills_dir_override: Some(dir.to_path_buf()),
+        ..Default::default()
+    })
+}
 
 #[cfg(test)]
 mod tests {
@@ -660,31 +666,24 @@ mod tests {
     }
 
     #[test]
-    fn empty_skills_dir_env_falls_back_to_data_dir() {
-        let _guard = SKILLS_ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
-        // An empty override must NOT resolve to a relative `""` (which would read
-        // from the process CWD) — it falls through to `<data dir>/inkstone/skills`.
-        unsafe {
-            std::env::set_var("INKSTONE_SKILLS_DIR", "");
-        }
+    fn unset_skills_dir_falls_back_to_data_dir() {
+        // With no override in the thread's Config (the all-default shape —
+        // which is also what an empty `INKSTONE_SKILLS_DIR` parses to, see
+        // `config`'s empty-string tests), resolution falls through to
+        // `<data dir>/inkstone/skills`, never a relative `""` read off the CWD.
+        let _config = crate::config::test_override::install(crate::config::Config::default());
         let dir = skills_dir().expect("skills_dir resolves");
         assert!(
             dir.ends_with("inkstone/skills"),
-            "empty override falls back to the data dir, got {dir:?}"
+            "no override falls back to the data dir, got {dir:?}"
         );
-        unsafe {
-            std::env::remove_var("INKSTONE_SKILLS_DIR");
-        }
     }
 
     #[test]
     fn seed_if_absent_populates_then_respects_user_deletes() {
-        let _guard = SKILLS_ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
         let tmp = tempfile::tempdir().expect("tempdir");
         let dir = tmp.path().join("skills");
-        unsafe {
-            std::env::set_var("INKSTONE_SKILLS_DIR", &dir);
-        }
+        let _config = test_skills_dir(&dir);
 
         // First run: the dir is absent → seed both bundled skills.
         seed_if_absent();
@@ -701,9 +700,5 @@ mod tests {
             vec!["inbox-triage"],
             "an existing dir is the user's — deletes survive, no re-seed"
         );
-
-        unsafe {
-            std::env::remove_var("INKSTONE_SKILLS_DIR");
-        }
     }
 }
