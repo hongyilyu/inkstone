@@ -967,6 +967,26 @@ pub enum WorkerStdout {
     },
 }
 
+/// One NDJSON line of the Provider Helper's stdout (ADR-0023): `authorize_url`
+/// appears only in login mode; refresh mode emits credentials or error.
+/// TS mirror: `ProviderHelperLine` in packages/protocol.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum HelperLine {
+    AuthorizeUrl {
+        url: String,
+    },
+    Credentials {
+        access: String,
+        refresh: String,
+        expires: i64,
+        account_id: String,
+    },
+    Error {
+        message: String,
+    },
+}
+
 /// One provider's connection status in `provider/status` (ADR-0023). `connected`
 /// is true when a credential file exists for it. `auth_kind` (ADR-0062) is the
 /// provider's authentication kind from the [`crate::providers`] registry,
@@ -3107,6 +3127,13 @@ mod parity_fixtures {
         parses!(WorkerStdout, "worker_stdout.error.json");
         parses!(WorkerStdout, "worker_stdout.tool_request.json");
         parses!(WorkerStdout, "worker_stdout.reasoning_delta.json");
+
+        // HelperLine (deser-only): the 3 variants Core reads off the Provider
+        // Helper's stdout (ADR-0023). Hand-authored because Core never
+        // serializes them.
+        parses!(HelperLine, "provider_helper_line.authorize_url.json");
+        parses!(HelperLine, "provider_helper_line.credentials.json");
+        parses!(HelperLine, "provider_helper_line.error.json");
 
         // Spot-check the maximal ProposalDecideParams carries every per-node form,
         // so a future fixture edit can't silently drop the rich graph shape.

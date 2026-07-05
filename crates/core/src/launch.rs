@@ -79,7 +79,8 @@ impl Role {
 
     /// The argv tail to pass the sibling binary. The Worker takes none (its
     /// manifest arrives on stdin); the helper binary takes its mode
-    /// (`login` / `refresh`), mirroring `provider.ts <mode>`.
+    /// (`login` / `refresh`), mirroring `provider.ts <mode> <provider>` — the
+    /// spawn sites append the provider id after the resolved args.
     fn binary_args(self) -> Vec<String> {
         match self {
             Role::Worker | Role::Titler => Vec::new(),
@@ -322,7 +323,8 @@ mod tests {
     }
 
     /// (d) Helper roles map to one `inkstone-provider-helper` binary with the
-    /// `login` / `refresh` arg (mirrors `provider.ts <mode>`).
+    /// `login` / `refresh` arg (mirrors `provider.ts <mode> <provider>`; the
+    /// provider id is appended by the spawn sites, not the resolver).
     #[test]
     fn helper_roles_map_to_provider_helper_binary() {
         let exe_dir = PathBuf::from("/opt/inkstone/bin");

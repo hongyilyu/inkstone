@@ -203,7 +203,7 @@ jobs:
         run: |
           pnpm build:provider-helper
           out="$(mktemp)"
-          timeout 8 target/debug/inkstone-provider-helper login >"$out" 2>&1 || true
+          timeout 8 target/debug/inkstone-provider-helper login openai-codex >"$out" 2>&1 || true
           echo "--- helper stdout ---"
           cat "$out"
           grep -q '"kind":"authorize_url"' "$out"
