@@ -82,10 +82,10 @@ struct Frontmatter {
     description: Option<String>,
 }
 
-/// Resolve the skills base directory: `INKSTONE_SKILLS_DIR` env override (tests)
-/// else `<OS data dir>/inkstone/skills/`. Tracks the OS data dir, NOT
-/// `INKSTONE_DB_PATH` — relocating the DB does not move the skills dir (only
-/// `INKSTONE_SKILLS_DIR` does). The override-or-data-dir *shape* mirrors
+/// Resolve the skills base directory: the boot-resolved `INKSTONE_SKILLS_DIR`
+/// override (tests) else `<OS data dir>/inkstone/skills/`. Tracks the OS data
+/// dir, NOT `INKSTONE_DB_PATH` — relocating the DB does not move the skills dir
+/// (only `INKSTONE_SKILLS_DIR` does). The override-or-data-dir *shape* mirrors
 /// `db::resolve_db_path` and `workflow::default_dir`.
 pub fn skills_dir() -> anyhow::Result<PathBuf> {
     // An empty env override is treated as unset by `Config::from_lookup` —

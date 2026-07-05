@@ -170,13 +170,14 @@ fn write_file_0600(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> 
 /// under [`dir`](Self::dir) (or leave it empty for a disconnected provider).
 /// Keep the guard bound for the whole test.
 #[cfg(test)]
-pub(crate) struct CredentialsEnvGuard {
+#[must_use = "the override is removed when the guard drops"]
+pub(crate) struct CredentialsDirGuard {
     _config: crate::config::test_override::ConfigGuard,
     tmp: tempfile::TempDir,
 }
 
 #[cfg(test)]
-impl CredentialsEnvGuard {
+impl CredentialsDirGuard {
     /// The credentials dir the thread's Config points at — write fixture files
     /// here (it need not exist yet; [`write`] creates it).
     pub(crate) fn dir(&self) -> std::path::PathBuf {
@@ -185,17 +186,17 @@ impl CredentialsEnvGuard {
 }
 
 /// Point this thread's Config `credentials_dir_override` at a fresh tempdir for
-/// one test, returning a [`CredentialsEnvGuard`] that restores it on drop (see
+/// one test, returning a [`CredentialsDirGuard`] that restores it on drop (see
 /// there). The dir starts empty — the caller seeds credentials via [`write`] or
 /// leaves it empty for a disconnected provider.
 #[cfg(test)]
-pub(crate) fn test_credentials_env() -> CredentialsEnvGuard {
+pub(crate) fn test_credentials_dir() -> CredentialsDirGuard {
     let tmp = tempfile::tempdir().expect("tempdir");
     let config = crate::config::Config {
         credentials_dir_override: Some(tmp.path().join("credentials")),
         ..Default::default()
     };
-    CredentialsEnvGuard {
+    CredentialsDirGuard {
         _config: crate::config::test_override::install(config),
         tmp,
     }
@@ -226,7 +227,7 @@ mod tests {
     /// thread's Config override, no env mutation.
     #[test]
     fn write_then_read_round_trips_at_0600() {
-        let guard = test_credentials_env();
+        let guard = test_credentials_dir();
         let dir = guard.dir();
 
         let creds = Credentials {
@@ -286,7 +287,7 @@ mod tests {
     /// new (OpenRouter); the OAuth variant preserves the codex shape.
     #[test]
     fn stored_credential_both_kinds_round_trip_at_0600() {
-        let guard = test_credentials_env();
+        let guard = test_credentials_dir();
         let dir = guard.dir();
 
         // OAuth (codex): unchanged credential shape, wrapped in the enum.

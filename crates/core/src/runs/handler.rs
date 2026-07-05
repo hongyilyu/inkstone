@@ -253,7 +253,7 @@ mod tests {
 
         // Shared panic-safe fixture: points this thread's Config at a fresh
         // credentials tempdir and restores the previous config on drop.
-        let env = credentials::test_credentials_env();
+        let env = credentials::test_credentials_dir();
 
         // No credential file → ProviderNotConnected carrying the provider id.
         match ensure_provider_connected("openai-codex") {

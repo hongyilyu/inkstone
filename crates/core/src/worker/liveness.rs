@@ -134,10 +134,9 @@ fn dead(message: String) -> ProviderTestResult {
     }
 }
 
-/// The collector timeout for the probe Worker (ADR-0062), resolved from the
-/// boot-parsed [`crate::config::Config`] (P0-4). Previously read from
-/// `INKSTONE_PROVIDER_TEST_TIMEOUT_MS` at call time; now reads the pre-parsed
-/// value so no env mutation is needed and tests can construct a `Config` directly.
+/// The collector timeout for the probe Worker (ADR-0062): the boot-resolved
+/// `INKSTONE_PROVIDER_TEST_TIMEOUT_MS` (unset/unparseable/`0` → 15s, parsed in
+/// [`crate::config::Config::from_lookup`]).
 fn probe_timeout() -> std::time::Duration {
     crate::config::get().provider_test_timeout
 }

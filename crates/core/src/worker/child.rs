@@ -54,8 +54,7 @@ impl ChildWorker {
         // `core.jsonl` (ADR-0038), so the Worker half of the trail is written by
         // default — not only when an operator sets the path. An explicit
         // `INKSTONE_WORKER_LOG_PATH` in Core's boot config wins as the override;
-        // either way the path is set explicitly on the child (same effect as the
-        // old inherit-from-Core's-env behavior, routed through the boot config).
+        // either way the path is set explicitly on the child.
         let log_path = crate::config::get()
             .worker_log_path
             .clone()

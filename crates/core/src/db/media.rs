@@ -371,11 +371,10 @@ mod tests {
     }
 
     /// Point this thread's Config `media_dir_override` at `dir` for one test —
-    /// hermetic and parallel-safe (see `crate::config::test_override`), replacing
-    /// the old mutex-serialized env-mutation idiom. `#[tokio::test]` runs its
-    /// (current-thread) runtime on the installing thread, so the deep
-    /// `insert_media` → `media_root` call stack sees the override.
-    #[must_use]
+    /// hermetic and parallel-safe (see `crate::config::test_override`).
+    /// `#[tokio::test]` runs its (current-thread) runtime on the installing
+    /// thread, so the deep `insert_media` → `media_root` call stack sees the
+    /// override.
     fn test_media_dir(dir: &std::path::Path) -> crate::config::test_override::ConfigGuard {
         crate::config::test_override::install(crate::config::Config {
             media_dir_override: Some(dir.to_path_buf()),

@@ -1,8 +1,8 @@
-//! Boot-resolved configuration (P0-4). All `INKSTONE_*` env knobs for
-//! directories, paths, and timeouts are read ONCE in `main()`'s fail-fast boot
-//! sequence, parsed into this struct, and threaded to modules via an injected
-//! parameter or a process-global `OnceLock` accessor. Tests construct the struct
-//! directly — no env mutation, no guard mutex.
+//! Boot-resolved configuration. All `INKSTONE_*` env knobs for directories,
+//! paths, and timeouts are read ONCE in `main()`'s fail-fast boot sequence,
+//! parsed into this struct, and read by modules through the process-global
+//! [`get`] accessor. Tests construct the struct directly — no env mutation, no
+//! guard mutex.
 
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -15,7 +15,7 @@ const DEFAULT_TIMEOUT_MS: u64 = 15_000;
 /// Boot-resolved configuration. Each field corresponds to one `INKSTONE_*` env
 /// var; `None` means "unset, use the runtime default" (e.g. derive from the OS
 /// data dir).
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Config {
     pub db_path_override: Option<PathBuf>,
     pub credentials_dir_override: Option<PathBuf>,
@@ -130,6 +130,7 @@ pub(crate) mod test_override {
 
     /// RAII handle from [`install`]: restores the previous override on drop
     /// (panic-safe — an assert failure mid-test cannot leak the override).
+    #[must_use = "the override is removed when the guard drops"]
     pub(crate) struct ConfigGuard {
         prev: Option<&'static Config>,
     }
@@ -137,7 +138,6 @@ pub(crate) mod test_override {
     /// Install `config` as this thread's Config for the guard's lifetime. The
     /// config is leaked (a few hundred bytes per test) to satisfy the
     /// `&'static` contract of [`super::get`].
-    #[must_use]
     pub(crate) fn install(config: Config) -> ConfigGuard {
         let leaked: &'static Config = Box::leak(Box::new(config));
         let prev = OVERRIDE.with(|o| o.replace(Some(leaked)));

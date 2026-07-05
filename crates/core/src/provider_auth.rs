@@ -147,14 +147,21 @@ async fn refresh_via_helper(refresh_token: &str) -> Result<Credentials> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::credentials::{OPENAI_CODEX, test_credentials_env};
+    use crate::credentials::{OPENAI_CODEX, test_credentials_dir};
 
     /// A static API-key credential resolves to its stored key directly — no
     /// refresh, no helper spawn (the helper command is unset; if the ApiKey arm
     /// touched it, this would error). The codex OAuth path stays untouched.
     #[test]
     fn api_key_resolves_to_stored_key_without_refresh() {
-        let _env = test_credentials_env();
+        let _creds = test_credentials_dir();
+        // The no-refresh tripwire: with no helper command, an ApiKey arm that
+        // accidentally reached the refresh path would error at launch::resolve.
+        // Assert (read-only, no mutation) that the ambient env doesn't defeat it.
+        assert!(
+            std::env::var_os("INKSTONE_PROVIDER_HELPER_CMD").is_none(),
+            "test requires no ambient INKSTONE_PROVIDER_HELPER_CMD"
+        );
 
         credentials::write(
             "openrouter",
@@ -176,7 +183,7 @@ mod tests {
     /// token with no refresh — the existing OAuth fast path, behavior-identical.
     #[test]
     fn valid_oauth_resolves_to_access_token() {
-        let _env = test_credentials_env();
+        let _creds = test_credentials_dir();
 
         credentials::write(
             OPENAI_CODEX,
@@ -202,7 +209,7 @@ mod tests {
     /// An unconfigured provider (no stored credential) resolves to `None`.
     #[test]
     fn unconfigured_provider_resolves_to_none() {
-        let _env = test_credentials_env();
+        let _creds = test_credentials_dir();
 
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()

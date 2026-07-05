@@ -311,14 +311,13 @@ mod tests {
     }
 
     /// A panic-safe credentials-dir fixture (shared [`crate::credentials::
-    /// test_credentials_env`]) for these Worker-free retry tests. When `connected`,
+    /// test_credentials_dir`]) for these Worker-free retry tests. When `connected`,
     /// seeds an openai-codex credential so the run-creation provider gate
     /// (`handler::ensure_provider_connected`, ADR-0062) passes; when not, the dir
     /// stays empty (a disconnected provider). Keep the returned guard bound for the
-    /// whole test — it restores `INKSTONE_CREDENTIALS_DIR` on drop.
-    #[must_use]
-    fn credentials_env(connected: bool) -> crate::credentials::CredentialsEnvGuard {
-        let guard = crate::credentials::test_credentials_env();
+    /// whole test — it restores the thread's previous Config override on drop.
+    fn credentials_dir(connected: bool) -> crate::credentials::CredentialsDirGuard {
+        let guard = crate::credentials::test_credentials_dir();
         if connected {
             crate::credentials::write(
                 "openai-codex",
@@ -342,7 +341,7 @@ mod tests {
     async fn errored_run_prepares_accepted_with_reused_ids() {
         // The resolved provider (default openai-codex) must be connected or the
         // ADR-0062 gate would return ProviderNotConnected before the flip.
-        let _cred = credentials_env(true);
+        let _cred = credentials_dir(true);
         let pool = memory_pool().await;
         let hubs = hub::new_hubs();
         let (run_id, assistant_message_id) = seed_errored_run(&pool).await;
@@ -375,7 +374,7 @@ mod tests {
     #[tokio::test]
     async fn non_errored_run_is_not_errored_no_spawn() {
         // NO credential (empty creds dir) on purpose — see the doc comment.
-        let _cred = credentials_env(false);
+        let _cred = credentials_dir(false);
         let pool = memory_pool().await;
         let hubs = hub::new_hubs();
         let (tx, mut rx) = mpsc::unbounded_channel();
@@ -412,7 +411,7 @@ mod tests {
     #[tokio::test]
     async fn disconnected_provider_frames_minus_32004_and_no_flip() {
         // Empty credential dir → the default openai-codex provider is not connected.
-        let _cred = credentials_env(false);
+        let _cred = credentials_dir(false);
         let pool = memory_pool().await;
         let hubs = hub::new_hubs();
         let (tx, mut rx) = mpsc::unbounded_channel();

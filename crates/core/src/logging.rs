@@ -67,8 +67,8 @@ pub fn init() -> Result<()> {
     Ok(())
 }
 
-/// Resolve the log directory: `INKSTONE_LOG_DIR` env override wins, else
-/// `<OS data dir>/inkstone/logs`. Reuses `db::os_data_dir` (already
+/// Resolve the log directory: the boot-resolved `INKSTONE_LOG_DIR` override
+/// wins, else `<OS data dir>/inkstone/logs`. Reuses `db::os_data_dir` (already
 /// `pub(crate)`) so the log dir and the DB dir resolve through the same per-OS
 /// logic and can never drift apart.
 fn resolve_log_dir() -> Result<PathBuf> {

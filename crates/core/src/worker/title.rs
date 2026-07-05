@@ -149,10 +149,9 @@ pub fn spawn_title_generation(
     );
 }
 
-/// The collector timeout for the title Worker (ADR-0046), resolved from the
-/// boot-parsed [`crate::config::Config`] (P0-4). Previously read from
-/// `INKSTONE_TITLE_TIMEOUT_MS` at call time; now reads the pre-parsed value
-/// so no env mutation is needed and tests can construct a `Config` directly.
+/// The collector timeout for the title Worker (ADR-0046): the boot-resolved
+/// `INKSTONE_TITLE_TIMEOUT_MS` (unset/unparseable/`0` → 15s, parsed in
+/// [`crate::config::Config::from_lookup`]).
 fn title_timeout() -> std::time::Duration {
     crate::config::get().title_timeout
 }

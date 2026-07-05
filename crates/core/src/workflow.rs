@@ -62,9 +62,9 @@ impl Workflow {
 
 static DEFAULT_WORKFLOW: OnceLock<Workflow> = OnceLock::new();
 
-/// The directory Workflows are loaded from. `INKSTONE_WORKFLOWS_DIR` overrides
-/// it (tests); otherwise `crates/core/workflows/` resolved from the crate
-/// manifest dir, so it works regardless of the process CWD.
+/// The directory Workflows are loaded from: the boot-resolved
+/// `INKSTONE_WORKFLOWS_DIR` override (tests); otherwise `crates/core/workflows/`
+/// resolved from the crate manifest dir, so it works regardless of the CWD.
 fn default_dir() -> PathBuf {
     if let Some(ref dir) = crate::config::get().workflows_dir_override {
         return dir.clone();
