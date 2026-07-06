@@ -198,6 +198,11 @@ pub struct MessageSearchResult {
     pub hits: Vec<MessageHit>,
 }
 
+/// Mirror tests: lock the Rust serde shapes to the canonical snake_case wire
+/// JSON the TS `Schema` definitions in `packages/protocol` produce (ADR-0009).
+/// Each test asserts agreement in the type's available direction; a renamed
+/// field or changed type fails the matching test. This is the reconciliation
+/// point that guards against TS/Rust divergence.
 #[cfg(test)]
 mod mirror_tests {
     use super::*;

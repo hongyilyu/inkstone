@@ -293,35 +293,30 @@ async fn resolve_plan_disposition(
         return Ok(PlanDisposition::Create(Vec::new()));
     };
 
-    // ONE `list_by_type` read backs BOTH passes (no double-query): the shared
-    // exact-match core, then the token-overlap near-matches (ADR-0042
-    // amendment) — the near-match list is only used when the node falls
-    // through to `create` (zero exact matches).
+    // ONE `list_by_type` read and ONE label parse back BOTH passes (no
+    // double-query, no re-parse): the shared exact-match core, then the
+    // token-overlap near-matches (ADR-0042 amendment) — the near-match list is
+    // only used when the node falls through to `create` (zero exact matches).
     let rows = queries::list_by_type(pool, node.type_str).await?;
-    let matches: Vec<ResolvedNodeCandidate> = exact_label_matches(&rows, node.type_str, label)
+    let labeled = labeled_rows(&rows, node.type_str);
+    let matches: Vec<ResolvedNodeCandidate> = exact_label_matches(&labeled, label)
         .into_iter()
-        .map(|(entity_id, label)| ResolvedNodeCandidate { entity_id, label })
+        .map(|(entity_id, label)| ResolvedNodeCandidate {
+            entity_id: entity_id.clone(),
+            label: label.clone(),
+        })
         .collect();
 
+    let needle = label.trim().to_lowercase();
     let node_tokens = name_tokens(label);
-    let label_key = label_key_for(node.type_str);
     let mut near_matches: Vec<ResolvedNodeCandidate> = Vec::new();
-    for (id, _, data, _, _) in rows {
-        let Some(stored) = serde_json::from_str::<serde_json::Value>(&data)
-            .ok()
-            .as_ref()
-            .and_then(|v| v.get(label_key))
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_string)
-        else {
-            continue;
-        };
-        if stored.trim().to_lowercase() != label.trim().to_lowercase()
-            && is_near_match(&node_tokens, &name_tokens(&stored))
+    for (id, stored) in &labeled {
+        if stored.trim().to_lowercase() != needle
+            && is_near_match(&node_tokens, &name_tokens(stored))
         {
             near_matches.push(ResolvedNodeCandidate {
-                entity_id: id,
-                label: stored,
+                entity_id: id.clone(),
+                label: stored.clone(),
             });
         }
     }
@@ -1350,7 +1345,8 @@ async fn resolve_disposition(
         return Ok(Disposition::Create(node.payload.clone()));
     };
     let rows = queries::list_by_type(&mut **tx, node.type_str).await?;
-    let mut matches = exact_label_matches(&rows, node.type_str, label).into_iter();
+    let labeled = labeled_rows(&rows, node.type_str);
+    let mut matches = exact_label_matches(&labeled, label).into_iter();
 
     let Some((first_id, _)) = matches.next() else {
         return Ok(Disposition::Create(node.payload.clone()));
@@ -1365,23 +1361,18 @@ async fn resolve_disposition(
             node.handle, node.type_str, node.type_str, label
         )));
     }
-    Ok(Disposition::Reuse(first_id))
+    Ok(Disposition::Reuse(first_id.clone()))
 }
 
-/// The ONE exact-match rule both resolvers share (formerly duplicated between
-/// [`resolve_disposition`] and [`resolve_plan_disposition`] and kept equivalent
-/// only by a doc comment): trim+lowercase equality of `label` against each
-/// accepted same-type row's `label_key_for(type_str)` value. Operates on the
-/// already-fetched `list_by_type` rows — callers own the read (the plan's
-/// one-read-backs-both property, the apply's in-tx read) — and returns the
-/// matching `(entity_id, stored_label)` pairs in row order. The
-/// `plan_and_decide_agree_on_*` tests pin the agreement this function embodies.
-fn exact_label_matches(
+/// Parse each accepted same-type row's display label out of its `data` JSON via
+/// [`label_key_for`], yielding `(entity_id, stored_label)` in row order (rows
+/// whose data is unparseable or label-less drop out). Both resolvers feed
+/// [`exact_label_matches`] from this ONE parse; the plan path additionally runs
+/// its near-match pass over the same parsed labels (one read, one parse).
+fn labeled_rows(
     rows: &[(String, String, String, i64, i64)],
     type_str: &str,
-    label: &str,
 ) -> Vec<(String, String)> {
-    let needle = label.trim().to_lowercase();
     let label_key = label_key_for(type_str);
     rows.iter()
         .filter_map(|(id, _, data, _, _)| {
@@ -1391,8 +1382,26 @@ fn exact_label_matches(
                 .and_then(|v| v.get(label_key))
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string)?;
-            (stored.trim().to_lowercase() == needle).then_some((id.clone(), stored))
+            Some((id.clone(), stored))
         })
+        .collect()
+}
+
+/// The ONE exact-match rule both resolvers share (formerly duplicated between
+/// [`resolve_disposition`] and [`resolve_plan_disposition`] and kept equivalent
+/// only by a doc comment): trim+lowercase equality of `label` against each
+/// accepted same-type row's stored label (from [`labeled_rows`] — callers own
+/// the read and the parse). Returns the matching `(entity_id, stored_label)`
+/// pairs in row order. The `plan_and_decide_agree_on_*` tests pin the
+/// agreement this function embodies.
+fn exact_label_matches<'a>(
+    labeled: &'a [(String, String)],
+    label: &str,
+) -> Vec<&'a (String, String)> {
+    let needle = label.trim().to_lowercase();
+    labeled
+        .iter()
+        .filter(|(_, stored)| stored.trim().to_lowercase() == needle)
         .collect()
 }
 

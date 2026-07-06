@@ -188,6 +188,11 @@ pub struct ProposalChangedNotification {
     pub status: String,
 }
 
+/// Mirror tests: lock the Rust serde shapes to the canonical snake_case wire
+/// JSON the TS `Schema` definitions in `packages/protocol` produce (ADR-0009).
+/// Each test asserts agreement in the type's available direction; a renamed
+/// field or changed type fails the matching test. This is the reconciliation
+/// point that guards against TS/Rust divergence.
 #[cfg(test)]
 mod mirror_tests {
     use super::*;
@@ -196,7 +201,6 @@ mod mirror_tests {
     // A fixed UUID-shaped string; the wire carries ids as plain strings.
     const UUID_A: &str = "0190d3c1-0000-7000-8000-000000000001";
     const UUID_B: &str = "0190d3c1-0000-7000-8000-000000000002";
-    const UUID_RUN: &str = "0190d3c1-0000-7000-8000-000000000003";
 
     #[test]
     fn proposal_get_params_decodes_run_id() {
