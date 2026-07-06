@@ -36,6 +36,13 @@ runHelperMain(
 	process.argv.slice(2),
 	{ login: loginOpenAICodex, refresh: refreshOpenAICodexToken },
 	io,
-).then((code) => {
-	process.exitCode = code;
-});
+)
+	.then((code) => {
+		process.exitCode = code;
+	})
+	// runHelperMain resolves with a code on every dispatch path; the only way
+	// here is io.emit itself throwing (e.g. EPIPE on a closed stdout). Nothing
+	// left to write — just exit nonzero instead of an unhandled rejection.
+	.catch(() => {
+		process.exitCode = 1;
+	});

@@ -48,7 +48,14 @@ async function runRefresh(deps: HelperDeps, io: HelperIo): Promise<number> {
 		io.emit({ kind: "error", message: "refresh: no input on stdin" });
 		return 1;
 	}
-	const { refresh } = JSON.parse(line) as { refresh: string };
+	const parsed = JSON.parse(line) as { refresh?: unknown };
+	// Guard the shape, not just the parse: {} would otherwise forward undefined
+	// into the OAuth dep and leave the failure mode up to the SDK.
+	if (typeof parsed.refresh !== "string" || parsed.refresh.length === 0) {
+		io.emit({ kind: "error", message: "refresh: invalid input on stdin" });
+		return 1;
+	}
+	const refresh = parsed.refresh;
 	try {
 		const rotated = await deps.refresh(refresh);
 		io.emit(toCoreCredentials(rotated));

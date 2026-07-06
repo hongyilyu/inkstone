@@ -88,6 +88,18 @@ describe("refresh mode", () => {
 		assertContractLines(lines);
 	});
 
+	it("a payload without a refresh string is rejected before the refresh dep", async () => {
+		const { lines, io } = capture(JSON.stringify({}));
+		const deps: HelperDeps = { login: vi.fn(), refresh: vi.fn() };
+		const code = await runHelperMain(["refresh", "openai-codex"], deps, io);
+		expect(code).toBe(1);
+		expect(deps.refresh).not.toHaveBeenCalled();
+		expect(lines).toEqual([
+			{ kind: "error", message: "refresh: invalid input on stdin" },
+		]);
+		assertContractLines(lines);
+	});
+
 	it("empty stdin emits the no-input error without calling the refresh dep", async () => {
 		const { lines, io } = capture(null);
 		const deps: HelperDeps = { login: vi.fn(), refresh: vi.fn() };
