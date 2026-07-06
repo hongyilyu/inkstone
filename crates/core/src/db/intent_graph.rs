@@ -551,36 +551,20 @@ pub async fn apply_intent_graph_proposal(
     //     (source = JE) are inserted after the JE row exists.
     let mut anchor_entity_id: Option<String> = None;
     if let Some(je) = &je_create {
+        let ctx = WeaveContext {
+            run_id,
+            links: &graph.links,
+            handle_to_id: &handle_to_id,
+            handle_to_label: &handle_to_label,
+            decisions: &decisions,
+            proposal_id,
+            now_ms,
+        };
         let je_id = match je.existing_id.as_deref().filter(|id| !id.trim().is_empty()) {
             Some(existing_id) => {
-                anchor_reuse_journal_entry(
-                    &mut tx,
-                    run_id,
-                    je,
-                    existing_id,
-                    &graph.links,
-                    &handle_to_id,
-                    &handle_to_label,
-                    &decisions,
-                    proposal_id,
-                    now_ms,
-                )
-                .await?
+                anchor_reuse_journal_entry(&mut tx, je, existing_id, &ctx).await?
             }
-            None => {
-                weave_and_mint_journal_entry(
-                    &mut tx,
-                    run_id,
-                    je,
-                    &graph.links,
-                    &handle_to_id,
-                    &handle_to_label,
-                    &decisions,
-                    proposal_id,
-                    now_ms,
-                )
-                .await?
-            }
+            None => weave_and_mint_journal_entry(&mut tx, je, &ctx).await?,
         };
         first_entity_id.get_or_insert_with(|| je_id.clone());
         anchor_entity_id = Some(je_id);
@@ -720,6 +704,37 @@ async fn mint_create(
     .await
 }
 
+/// The recurring weave-call bundle (formerly 6 of the two weave fns' 9-10
+/// positional params). One instance is built at the single call site in
+/// [`apply_intent_graph_proposal`] and lent to whichever weave strategy the JE
+/// node selects.
+struct WeaveContext<'a> {
+    run_id: Uuid,
+    links: &'a [Link],
+    handle_to_id: &'a std::collections::HashMap<String, String>,
+    handle_to_label: &'a std::collections::HashMap<String, String>,
+    decisions: &'a NodeDecisions,
+    proposal_id: &'a str,
+    now_ms: i64,
+}
+
+/// The surviving `journal_ref` links from the JE node — the ONE filter both
+/// weave strategies open with: kind == `JournalRef`, `from` == the JE handle,
+/// target neither rejected nor unresolved (a dropped target's body placeholder
+/// collapses to text). Yields `(link, target_entity_id)`; everything past this
+/// filter (mint-plan-then-insert vs insert-then-read-authoritative-id) stays
+/// strategy-specific by design — see the dangling-chip comments in each fn.
+fn surviving_journal_refs<'a>(
+    ctx: &'a WeaveContext<'_>,
+    je_handle: &'a str,
+) -> impl Iterator<Item = (&'a Link, &'a String)> {
+    ctx.links
+        .iter()
+        .filter(move |l| matches!(l.kind, LinkKind::JournalRef) && l.from == je_handle)
+        .filter(|l| !ctx.decisions.is_rejected(&l.to))
+        .filter_map(|l| ctx.handle_to_id.get(&l.to).map(|id| (l, id)))
+}
+
 /// Weave the JE node's `journal_ref` body mentions and mint the Journal Entry in
 /// ONE revision (ADR-0042 "Multi-ref Journal Entry weave is one write"). Called
 /// AFTER every referenced entity is resolved, so the placeholder rewrite + the
@@ -741,17 +756,10 @@ async fn mint_create(
 ///    JE row exists before its refs).
 ///
 /// Returns the minted JE id (the graph anchor).
-#[allow(clippy::too_many_arguments)]
 async fn weave_and_mint_journal_entry(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    run_id: Uuid,
     je: &ResolvedCreate,
-    links: &[Link],
-    handle_to_id: &std::collections::HashMap<String, String>,
-    handle_to_label: &std::collections::HashMap<String, String>,
-    decisions: &NodeDecisions,
-    proposal_id: &str,
-    now_ms: i64,
+    ctx: &WeaveContext<'_>,
 ) -> Result<String, ApplyError> {
     // 1. Surviving journal_ref targets → an entity_ref id. A link whose target node
     //    was rejected (or otherwise unresolved) is dropped here, so its body
@@ -773,18 +781,7 @@ async fn weave_and_mint_journal_entry(
     // The ordered weave plan: (ref_id, target_entity_id, label_snapshot), one entry
     // per DISTINCT target entity. Kept ordered so the inserted rows are deterministic.
     let mut weave_plan: Vec<(String, String, Option<String>)> = Vec::new();
-    for link in links
-        .iter()
-        .filter(|l| matches!(l.kind, LinkKind::JournalRef) && l.from == je.handle)
-    {
-        if decisions.is_rejected(&link.to) {
-            continue;
-        }
-        let Some(entity_id) = handle_to_id.get(&link.to) else {
-            // The target resolved to no id (rejected, or a degenerate handle): drop
-            // the ref. Its body placeholder collapses to text.
-            continue;
-        };
+    for (link, entity_id) in surviving_journal_refs(ctx, &je.handle) {
         // Reuse the entity's ref_id if a prior link already targeted it (same entity
         // via another handle, or a duplicate journal_ref); else mint one + plan the
         // single row. Either way this handle's placeholder maps to that ref_id.
@@ -793,7 +790,7 @@ async fn weave_and_mint_journal_entry(
             None => {
                 let ref_id = Uuid::now_v7().to_string();
                 entity_ref_id.insert(entity_id.clone(), ref_id.clone());
-                let label = handle_to_label.get(&link.to).cloned();
+                let label = ctx.handle_to_label.get(&link.to).cloned();
                 weave_plan.push((ref_id.clone(), entity_id.clone(), label));
                 ref_id
             }
@@ -804,7 +801,7 @@ async fn weave_and_mint_journal_entry(
     // 2. Weave the JE body: rewrite each entity_ref placeholder to its ref_id, or
     //    collapse to the target's NAME as plain text when it was rejected/dropped.
     let mut payload = je.payload.clone();
-    weave_journal_body(&mut payload, &target_ref_id, handle_to_label)?;
+    weave_journal_body(&mut payload, &target_ref_id, ctx.handle_to_label)?;
 
     // Defense in depth (ADR-0042): the woven body is Core-constructed, but validate
     // it against the same per-node content rules the client codec enforces before
@@ -836,12 +833,12 @@ async fn weave_and_mint_journal_entry(
     // INSIDE this tx, exactly as `apply_proposal` resolves a message-sourced
     // create. The JE is always newborn in this Run, so the guard row is correct by
     // construction (this Run's user Message).
-    let message_id = queries::user_message_id_for_run(&mut **tx, run_id).await?;
+    let message_id = queries::user_message_id_for_run(&mut **tx, ctx.run_id).await?;
     let source = Some(EntitySource::FromMessage {
         message_id,
         relation: SourceRelation::CreatedFrom.as_str().to_string(),
     });
-    let je_id = mint_create(tx, &woven_je, proposal_id, source, now_ms).await?;
+    let je_id = mint_create(tx, &woven_je, ctx.proposal_id, source, ctx.now_ms).await?;
 
     // 4. Insert the entity_ref rows now that the JE (their source) exists. The id
     //    matches the body's ref_id minted in step 1.
@@ -852,7 +849,7 @@ async fn weave_and_mint_journal_entry(
             &je_id,
             target_entity_id,
             label.as_deref(),
-            now_ms,
+            ctx.now_ms,
         )
         .await?;
     }
@@ -890,22 +887,15 @@ async fn weave_and_mint_journal_entry(
 ///    NOTHING, so re-anchoring an already-anchored entity is a no-op).
 ///
 /// Returns the existing JE id (the graph anchor — unchanged).
-#[allow(clippy::too_many_arguments)]
 async fn anchor_reuse_journal_entry(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    run_id: Uuid,
     je: &ResolvedCreate,
     existing_id: &str,
-    links: &[Link],
-    handle_to_id: &std::collections::HashMap<String, String>,
-    handle_to_label: &std::collections::HashMap<String, String>,
-    decisions: &NodeDecisions,
-    proposal_id: &str,
-    now_ms: i64,
+    ctx: &WeaveContext<'_>,
 ) -> Result<String, ApplyError> {
     // 1. Cross-thread guard: the re-anchored JE's origin user-Message must be in this
     //    Run's Thread. A cross-thread re-scan is refused — nothing is written.
-    if !queries::journal_entry_target_is_valid(&mut **tx, run_id, existing_id).await? {
+    if !queries::journal_entry_target_is_valid(&mut **tx, ctx.run_id, existing_id).await? {
         return Err(ApplyError::InvalidMutation(format!(
             "intent graph anchor-reuse target {existing_id:?} is not a Journal Entry created from \
              this thread; cross-thread re-scan is refused"
@@ -946,17 +936,7 @@ async fn anchor_reuse_journal_entry(
     //    (`apply::reference_existing_entity_from_journal_entry`).
     let mut entity_ref_id: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
-    for link in links
-        .iter()
-        .filter(|l| matches!(l.kind, LinkKind::JournalRef) && l.from == je.handle)
-    {
-        if decisions.is_rejected(&link.to) {
-            continue;
-        }
-        let Some(entity_id) = handle_to_id.get(&link.to) else {
-            // The target resolved to no id (rejected, or a degenerate handle): drop it.
-            continue;
-        };
+    for (link, entity_id) in surviving_journal_refs(ctx, &je.handle) {
         // A re-scan ref needs exactly ONE placement (ADR-0042 amendment, #221):
         // `match_text` splices the chip at a substring already in the entry's prose
         // (the original re-scan path); `append_text` appends a model-proposed clause
@@ -988,14 +968,14 @@ async fn anchor_reuse_journal_entry(
             Some(existing) => existing.clone(),
             None => {
                 let proposed_ref_id = Uuid::now_v7().to_string();
-                let label = handle_to_label.get(&link.to).cloned();
+                let label = ctx.handle_to_label.get(&link.to).cloned();
                 queries::insert_entity_ref(
                     &mut **tx,
                     &proposed_ref_id,
                     existing_id,
                     entity_id,
                     label.as_deref(),
-                    now_ms,
+                    ctx.now_ms,
                 )
                 .await?;
                 // Read the row's id back: on ON CONFLICT this is the EXISTING row's
@@ -1034,7 +1014,7 @@ async fn anchor_reuse_journal_entry(
             // clause CONTENT stays the model's; its label must be a verbatim substring (else
             // fail loud).
             Placement::Append(append_text) => {
-                let label = handle_to_label.get(&link.to).map(String::as_str).ok_or_else(|| {
+                let label = ctx.handle_to_label.get(&link.to).map(String::as_str).ok_or_else(|| {
                     ApplyError::InvalidMutation(format!(
                         "intent graph anchor-reuse journal_ref to {:?} has no recognized name to splice into its append_text clause",
                         link.to
@@ -1075,7 +1055,7 @@ async fn anchor_reuse_journal_entry(
         crate::mutation::EntityType::JournalEntry.as_str(),
         schema_version,
         &data_str,
-        now_ms,
+        ctx.now_ms,
     )
     .await?;
     if updated != 1 {
@@ -1088,8 +1068,8 @@ async fn anchor_reuse_journal_entry(
         existing_id,
         next_seq,
         &data_str,
-        Some(proposal_id),
-        now_ms,
+        Some(ctx.proposal_id),
+        ctx.now_ms,
     )
     .await?;
 
