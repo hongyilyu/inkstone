@@ -1,5 +1,5 @@
-import { useState } from "react";
 import type { EntityMutateParams } from "@inkstone/protocol";
+import { useState } from "react";
 import { useEntityMutation } from "./useEntityMutation.js";
 
 /**

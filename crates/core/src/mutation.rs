@@ -1705,6 +1705,18 @@ mod tests {
                 let core = core_fn();
                 assert!(!core.is_empty(), "{:?} data_core non-empty", entity_type);
             }
+
+            // A create carrying the provenance directive with no envelope
+            // extraction must strip it, or it persists into entity data.
+            if spec.create_source_directive && spec.create_normalize.extract.is_none() {
+                assert!(
+                    spec.create_normalize
+                        .strip
+                        .contains(&"source_journal_entry_id"),
+                    "{:?} carries source_journal_entry_id but its create_normalize does not strip it",
+                    entity_type
+                );
+            }
         }
     }
 
