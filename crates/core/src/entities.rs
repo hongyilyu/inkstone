@@ -94,12 +94,13 @@ pub(crate) fn render_accept(
             let body = journal_body_text(payload);
             format!("Accepted. Updated Journal Entry (occurred_at={occurred_at}, body={body}).")
         }
-        M::DeleteJournalEntry => {
+        M::DeleteJournalEntry | M::DeletePerson | M::DeleteProject | M::DeleteTodo => {
+            let noun = kind.describe().entity_type.spec().noun;
             let entity_id = payload
                 .get("entity_id")
                 .and_then(Value::as_str)
                 .unwrap_or("unknown");
-            format!("Accepted. Deleted Journal Entry (entity_id={entity_id}).")
+            format!("Accepted. Deleted {noun} (entity_id={entity_id}).")
         }
         M::ReferenceExistingEntityFromJournalEntry => {
             let source_entity_id = payload
@@ -114,27 +115,6 @@ pub(crate) fn render_accept(
             format!(
                 "Accepted. Referenced Entity (source_entity_id={source_entity_id}, target_entity_id={target_entity_id}, body={body})."
             )
-        }
-        M::DeletePerson => {
-            let entity_id = payload
-                .get("entity_id")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown");
-            format!("Accepted. Deleted Person (entity_id={entity_id}).")
-        }
-        M::DeleteProject => {
-            let entity_id = payload
-                .get("entity_id")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown");
-            format!("Accepted. Deleted Project (entity_id={entity_id}).")
-        }
-        M::DeleteTodo => {
-            let entity_id = payload
-                .get("entity_id")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown");
-            format!("Accepted. Deleted Todo (entity_id={entity_id}).")
         }
         M::CreatePerson => {
             let entity_id = entity_id.expect("create accept rendering requires entity_id");

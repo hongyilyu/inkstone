@@ -22,24 +22,13 @@ use serde_json::Value;
 
 use crate::field_spec::{BodyPolicy, Field, FieldSpec, ObjErr, PayloadSpec, Presence};
 
-/// The schema version stamped onto a freshly-created Journal Entry + its first
-/// revision.
+// Re-export schema version values for external consumers (entities.rs tests,
+// db/mod.rs). The canonical values now live inline on the `EntityTypeSpec` rows.
 pub const JOURNAL_ENTRY_SCHEMA_VERSION: i64 = 1;
-
-/// The schema version stamped onto a freshly-created Person + its first revision.
 pub const PERSON_SCHEMA_VERSION: i64 = 1;
-
-/// The schema version stamped onto a freshly-created Project + its first revision.
 pub const PROJECT_SCHEMA_VERSION: i64 = 1;
-
-/// The schema version stamped onto a freshly-created Todo + its first revision.
 pub const TODO_SCHEMA_VERSION: i64 = 1;
-
-/// The schema version stamped onto a freshly-created Media + its first
-/// revision (ADR-0059).
 pub const MEDIA_SCHEMA_VERSION: i64 = 1;
-
-/// The schema version stamped onto a freshly-created Habit + its first revision.
 pub const HABIT_SCHEMA_VERSION: i64 = 1;
 
 /// Search/reference projection for an Entity Type. Kept small on purpose: the
@@ -76,14 +65,159 @@ impl EntityProjectionPolicy {
     }
 }
 
+/// Declarative pre-write normalization for a regular create/update payload,
+/// consumed by `db::apply`'s `entity_data_payload` seam. Fn pointers (not
+/// closures/traits) keep the spec row `Copy`/`Eq`, matching the
+/// `launch::resolve_with` precedent. The step ORDER is load-bearing:
+/// extract → strip → null-drop → post — the Project review-default seeding must
+/// observe null-cleared input (a `null` review field is a clear directive,
+/// treated as absent and thus seeded; ADR-0033).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct NormalizePolicy {
+    /// Transport fields to strip (target/provenance keys, never entity data),
+    /// e.g. `["entity_id", "source_journal_entry_id"]`.
+    pub(crate) strip: &'static [&'static str],
+    /// Sentinel-null clear (ADR-0033): a `null`-valued optional field is a clear
+    /// directive — drop the key rather than persist a JSON null.
+    pub(crate) drop_nulls: bool,
+    /// Runs AFTER strip + null-drop (ordering is load-bearing for the Project
+    /// review seeding).
+    pub(crate) post: Option<fn(&mut serde_json::Map<String, Value>, now_ms: i64, offset_minutes: i64)>,
+    /// Pre-step for envelope kinds (`create_todo` unwraps `payload.todo`).
+    /// `None` from the extractor means "no envelope to unwrap" — the payload is
+    /// stored as-is (the pre-policy arms returned `payload.clone()` likewise).
+    pub(crate) extract: Option<fn(&Value) -> Option<Value>>,
+}
+
+/// A store-as-is policy (no strip, no null-drop): the Journal Entry create,
+/// whose body is woven at decide-time and stored verbatim.
+const IDENTITY_NORMALIZE: NormalizePolicy = NormalizePolicy {
+    strip: &[],
+    drop_nulls: false,
+    post: None,
+    extract: None,
+};
+
+/// The shared full-replace update policy: strip the `entity_id` target (it
+/// targets the row but is not entity data) and the create-only
+/// `source_journal_entry_id` provenance directive (honored solely for
+/// `created_from` — stripping it means an update payload can never persist this
+/// transport field into entity data), then sentinel-null clear (ADR-0033: the
+/// person/project update is a full-document replace, so an omitted-or-null
+/// optional field is simply absent in the stored data).
+pub(crate) const UPDATE_NORMALIZE: NormalizePolicy = NormalizePolicy {
+    strip: &["entity_id", "source_journal_entry_id"],
+    drop_nulls: true,
+    post: None,
+    extract: None,
+};
+
+impl NormalizePolicy {
+    /// Run the pipeline: extract → (non-object passthrough) → strip → null-drop
+    /// → post. A payload the extractor rejects, or a non-object payload, is
+    /// stored as-is — exactly what the pre-policy per-kind arms did.
+    pub(crate) fn apply(self, payload: &Value, now_ms: i64, offset_minutes: i64) -> Value {
+        let value = match self.extract {
+            Some(extract) => match extract(payload) {
+                Some(value) => value,
+                None => return payload.clone(),
+            },
+            None => payload.clone(),
+        };
+        let Value::Object(mut data) = value else {
+            return value;
+        };
+        for key in self.strip {
+            data.remove(*key);
+        }
+        if self.drop_nulls {
+            data.retain(|_, value| !value.is_null());
+        }
+        if let Some(post) = self.post {
+            post(&mut data, now_ms, offset_minutes);
+        }
+        Value::Object(data)
+    }
+}
+
+/// `create_project` post-normalization (registered on the Project spec row):
+/// inject `status:"active"` when absent so the stored data always carries an
+/// explicit status (validate tolerates a missing status), and for a resulting
+/// active Project with no review fields supplied seed the default weekly review
+/// ritual (`review_every` + `next_review_at`) from the review anchor (ADR-0031).
+/// Runs AFTER null-drop so a `null` review field is treated as absent (and thus
+/// seeded).
+fn project_create_defaults(
+    data: &mut serde_json::Map<String, Value>,
+    now_ms: i64,
+    offset_minutes: i64,
+) {
+    let status = data
+        .entry("status")
+        .or_insert_with(|| serde_json::json!("active"));
+    let is_active = status.as_str() == Some("active");
+    if is_active && !data.contains_key("review_every") && !data.contains_key("next_review_at") {
+        data.insert(
+            "review_every".to_string(),
+            serde_json::json!({ "interval": 1, "unit": "week" }),
+        );
+        data.insert(
+            "next_review_at".to_string(),
+            serde_json::json!(crate::localtime::next_review_at_local(
+                now_ms,
+                offset_minutes
+            )),
+        );
+    }
+}
+
+/// `create_todo` post-normalization (registered on the Todo spec row): inject
+/// `status:"active"` when absent, mirroring the Project status default.
+fn todo_create_defaults(
+    data: &mut serde_json::Map<String, Value>,
+    _now_ms: i64,
+    _offset_minutes: i64,
+) {
+    data.entry("status")
+        .or_insert_with(|| serde_json::json!("active"));
+}
+
+/// `create_todo` envelope unwrap (registered on the Todo spec row): store
+/// `payload.todo` (the TodoData); `person_refs` persist separately in
+/// `todo_person_refs`, never in `entities.data`.
+fn todo_envelope_extract(payload: &Value) -> Option<Value> {
+    payload.get("todo").filter(|todo| todo.is_object()).cloned()
+}
+
 /// Closed policy row for an Entity Type. This is the trait-like dispatch point
-/// Phase 2 needs: static, compile-checked, and metadata-only.
+/// Phase 2 needs: static, compile-checked, and metadata-only — ONE row per type
+/// from which the regular payload specs, schema version, accept-text noun, and
+/// apply-normalization policy all derive. Adding an Entity Type is adding one
+/// row (plus explicit arms for anything genuinely irregular).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct EntityTypeSpec {
     pub(crate) entity_type: EntityType,
     pub(crate) stored_type: &'static str,
+    /// The schema version stamped onto a freshly-created Entity of this type +
+    /// its first revision.
     pub(crate) schema_version: i64,
+    /// The human noun accept-text rendering weaves ("Accepted. Deleted {noun} …").
+    pub(crate) noun: &'static str,
     pub(crate) projection: EntityProjectionPolicy,
+    /// The data field core the regular payload specs derive from. `None` for
+    /// the irregular types — journal (body policies) and todo (the `Mode`-split
+    /// core) — whose `payload_spec` arms stay explicit.
+    pub(crate) data_core: Option<fn() -> Vec<Field>>,
+    /// Whether this type's create payload carries the optional
+    /// `source_journal_entry_id` provenance directive (ADR-0030/0031):
+    /// person/project/todo creates do; media/habit are user-CRUD only and do
+    /// not. Consumed by [`EntityTypeSpec::create_payload`] — an explicit flag,
+    /// never a guess, because appending it unconditionally would change the
+    /// media/habit contract fixtures.
+    pub(crate) create_source_directive: bool,
+    /// Pre-write normalization for this type's create kind, consumed by
+    /// `db::apply::entity_data_payload`.
+    pub(crate) create_normalize: NormalizePolicy,
 }
 
 impl EntityTypeSpec {
@@ -97,6 +231,34 @@ impl EntityTypeSpec {
 
     pub(crate) fn search_projection(self) -> Option<EntityProjectionSpec> {
         self.projection.search_spec()
+    }
+
+    /// The regular create payload: the data core plus, where the row declares
+    /// it, the `source_journal_entry_id` provenance directive. The irregular
+    /// types (journal, todo) keep explicit `payload_spec` arms.
+    fn create_payload(self) -> PayloadSpec {
+        let mut fields = self.data_core_fields();
+        if self.create_source_directive {
+            fields.push(source_journal_entry_id_field());
+        }
+        PayloadSpec::payload(self.stored_type, fields)
+    }
+
+    /// The regular update payload: the `entity_id` target prepended to the core.
+    fn update_payload(self) -> PayloadSpec {
+        update_payload(self.stored_type, self.data_core_fields())
+    }
+
+    /// The DATA-only payload (the entity fields, no envelope/id) the update
+    /// validators check after stripping the target id.
+    fn data_payload(self) -> PayloadSpec {
+        PayloadSpec::payload(self.stored_type, self.data_core_fields())
+    }
+
+    fn data_core_fields(self) -> Vec<Field> {
+        (self
+            .data_core
+            .expect("regular payload derives from a data core"))()
     }
 }
 
@@ -182,53 +344,119 @@ impl EntityType {
 
     pub(crate) fn spec(self) -> EntityTypeSpec {
         match self {
+            // Journal Entry's data core is irregular (body policies split the
+            // create/update shapes), so `data_core` is None and its payload
+            // arms stay explicit; its create stores the woven body verbatim.
             EntityType::JournalEntry => EntityTypeSpec {
                 entity_type: self,
                 stored_type: "journal_entry",
-                schema_version: JOURNAL_ENTRY_SCHEMA_VERSION,
+                schema_version: 1,
+                noun: "Journal Entry",
                 projection: EntityProjectionPolicy::None,
+                data_core: None,
+                create_source_directive: false,
+                create_normalize: IDENTITY_NORMALIZE,
             },
             EntityType::Person => EntityTypeSpec {
                 entity_type: self,
                 stored_type: "person",
-                schema_version: PERSON_SCHEMA_VERSION,
+                schema_version: 1,
+                noun: "Person",
                 projection: EntityProjectionPolicy::ReferenceAndSearch(EntityProjectionSpec {
                     label_field: "name",
                     aliases_field: Some("aliases"),
                 }),
+                data_core: Some(EntityType::person_core),
+                create_source_directive: true,
+                create_normalize: NormalizePolicy {
+                    // `source_journal_entry_id` is a provenance directive, never
+                    // Person data — strip it before storing (validate already
+                    // accepted it). A `null` optional field carries no value to
+                    // store (ADR-0033).
+                    strip: &["source_journal_entry_id"],
+                    drop_nulls: true,
+                    post: None,
+                    extract: None,
+                },
             },
             EntityType::Project => EntityTypeSpec {
                 entity_type: self,
                 stored_type: "project",
-                schema_version: PROJECT_SCHEMA_VERSION,
+                schema_version: 1,
+                noun: "Project",
                 projection: EntityProjectionPolicy::ReferenceAndSearch(EntityProjectionSpec {
                     label_field: "name",
                     aliases_field: None,
                 }),
+                data_core: Some(EntityType::project_core),
+                create_source_directive: true,
+                create_normalize: NormalizePolicy {
+                    // `source_journal_entry_id` is provenance, never Project
+                    // data. Null-drop precedes the review-default seeding so a
+                    // `null` review field is treated as absent (and thus seeded
+                    // for an active Project) — see `project_create_defaults`.
+                    strip: &["source_journal_entry_id"],
+                    drop_nulls: true,
+                    post: Some(project_create_defaults),
+                    extract: None,
+                },
             },
+            // Todo's data core is Mode-split (full create vs the `update_todo`
+            // partial envelope), so `data_core` is None and its payload arms
+            // stay explicit; its create unwraps the `{todo, person_refs?}`
+            // envelope and defaults `status`.
             EntityType::Todo => EntityTypeSpec {
                 entity_type: self,
                 stored_type: "todo",
-                schema_version: TODO_SCHEMA_VERSION,
+                schema_version: 1,
+                noun: "Todo",
                 projection: EntityProjectionPolicy::ReferenceAndSearch(EntityProjectionSpec {
                     label_field: "title",
                     aliases_field: None,
                 }),
+                data_core: None,
+                create_source_directive: true,
+                create_normalize: NormalizePolicy {
+                    strip: &[],
+                    drop_nulls: false,
+                    post: Some(todo_create_defaults),
+                    extract: Some(todo_envelope_extract),
+                },
             },
             EntityType::Media => EntityTypeSpec {
                 entity_type: self,
                 stored_type: "media",
-                schema_version: MEDIA_SCHEMA_VERSION,
+                schema_version: 1,
+                noun: "Media",
                 projection: EntityProjectionPolicy::None,
+                data_core: Some(EntityType::media_core),
+                create_source_directive: false,
+                create_normalize: NormalizePolicy {
+                    // A `null` optional field carries no value to store
+                    // (ADR-0033). No envelope, no defaults.
+                    strip: &[],
+                    drop_nulls: true,
+                    post: None,
+                    extract: None,
+                },
             },
             EntityType::Habit => EntityTypeSpec {
                 entity_type: self,
                 stored_type: "habit",
-                schema_version: HABIT_SCHEMA_VERSION,
+                schema_version: 1,
+                noun: "Habit",
                 projection: EntityProjectionPolicy::Search(EntityProjectionSpec {
                     label_field: "name",
                     aliases_field: None,
                 }),
+                data_core: Some(EntityType::habit_core),
+                create_source_directive: false,
+                create_normalize: NormalizePolicy {
+                    strip: &[],
+                    drop_nulls: true,
+                    post: None,
+                    extract: None,
+                },
             },
         }
     }
@@ -620,26 +848,15 @@ impl MutationKind {
     pub(crate) fn payload_spec(self) -> PayloadSpec {
         use MutationKind as M;
         match self {
-            // ── Person ──
-            M::CreatePerson => {
-                let mut fields = EntityType::person_core();
-                fields.push(source_journal_entry_id_field());
-                PayloadSpec::payload("person", fields)
+            // ── Regular create/update kinds (Person/Project + the user-CRUD-only
+            // Media/Habit): the spec row frames the data core; the row's
+            // `create_source_directive` flag decides the provenance field. ──
+            M::CreatePerson | M::CreateProject | M::CreateMedia | M::CreateHabit => {
+                self.describe().entity_type.spec().create_payload()
             }
-            M::UpdatePerson => update_payload("person", EntityType::person_core()),
-            // ── Project ──
-            M::CreateProject => {
-                let mut fields = EntityType::project_core();
-                fields.push(source_journal_entry_id_field());
-                PayloadSpec::payload("project", fields)
+            M::UpdatePerson | M::UpdateProject | M::UpdateMedia | M::UpdateHabit => {
+                self.describe().entity_type.spec().update_payload()
             }
-            M::UpdateProject => update_payload("project", EntityType::project_core()),
-            // ── Media (user-CRUD only) ──
-            M::CreateMedia => PayloadSpec::payload("media", EntityType::media_core()),
-            M::UpdateMedia => update_payload("media", EntityType::media_core()),
-            // ── Habit (user-CRUD only) ──
-            M::CreateHabit => PayloadSpec::payload("habit", EntityType::habit_core()),
-            M::UpdateHabit => update_payload("habit", EntityType::habit_core()),
             // ── Todo ──
             M::CreateTodo => PayloadSpec::payload(
                 "create_todo",
@@ -691,14 +908,15 @@ impl MutationKind {
                     Field::required("body", FieldSpec::Body(BodyPolicy::TextOrNewRef)),
                 ],
             ),
-            // ── id-only payloads ──
-            M::DeleteJournalEntry => entity_id_only("delete_journal_entry"),
-            M::DeletePerson => entity_id_only("delete_person"),
-            M::DeleteProject => entity_id_only("delete_project"),
-            M::DeleteTodo => entity_id_only("delete_todo"),
-            M::DeleteMedia => entity_id_only("delete_media"),
-            M::DeleteHabit => entity_id_only("delete_habit"),
-            M::MarkProjectReviewed => entity_id_only("mark_project_reviewed"),
+            // ── id-only payloads: the noun is the wire kind, woven into the
+            // unsupported-field message. ──
+            M::DeleteJournalEntry
+            | M::DeletePerson
+            | M::DeleteProject
+            | M::DeleteTodo
+            | M::DeleteMedia
+            | M::DeleteHabit
+            | M::MarkProjectReviewed => entity_id_only(self.as_wire()),
             // ── intent graph (ADR-0042) ──
             M::ApplyIntentGraph => intent_graph_payload(),
         }
@@ -710,18 +928,14 @@ impl MutationKind {
     pub(crate) fn payload_data_spec(self) -> PayloadSpec {
         use MutationKind as M;
         match self {
-            M::CreatePerson | M::UpdatePerson => {
-                PayloadSpec::payload("person", EntityType::person_core())
-            }
-            M::CreateProject | M::UpdateProject => {
-                PayloadSpec::payload("project", EntityType::project_core())
-            }
-            M::CreateMedia | M::UpdateMedia => {
-                PayloadSpec::payload("media", EntityType::media_core())
-            }
-            M::CreateHabit | M::UpdateHabit => {
-                PayloadSpec::payload("habit", EntityType::habit_core())
-            }
+            M::CreatePerson
+            | M::UpdatePerson
+            | M::CreateProject
+            | M::UpdateProject
+            | M::CreateMedia
+            | M::UpdateMedia
+            | M::CreateHabit
+            | M::UpdateHabit => self.describe().entity_type.spec().data_payload(),
             other => other.payload_spec(),
         }
     }
@@ -1030,68 +1244,55 @@ pub(crate) enum MutationKind {
     ApplyIntentGraph,
 }
 
+/// Single source of truth for the wire string ↔ `MutationKind` mapping.
+/// Consulted in both directions by `from_wire`/`as_wire`; the round-trip test
+/// asserts totality (every kind appears exactly once). The order is the
+/// historical wire-insertion order and matches `ProposableMutation::ALL`.
+const WIRE: &[(&str, MutationKind)] = &[
+    ("create_journal_entry", MutationKind::CreateJournalEntry),
+    ("update_journal_entry", MutationKind::UpdateJournalEntry),
+    ("delete_journal_entry", MutationKind::DeleteJournalEntry),
+    (
+        "reference_existing_entity_from_journal_entry",
+        MutationKind::ReferenceExistingEntityFromJournalEntry,
+    ),
+    ("create_person", MutationKind::CreatePerson),
+    ("update_person", MutationKind::UpdatePerson),
+    ("delete_person", MutationKind::DeletePerson),
+    ("create_project", MutationKind::CreateProject),
+    ("update_project", MutationKind::UpdateProject),
+    ("delete_project", MutationKind::DeleteProject),
+    ("mark_project_reviewed", MutationKind::MarkProjectReviewed),
+    ("create_todo", MutationKind::CreateTodo),
+    ("update_todo", MutationKind::UpdateTodo),
+    ("delete_todo", MutationKind::DeleteTodo),
+    ("create_media", MutationKind::CreateMedia),
+    ("update_media", MutationKind::UpdateMedia),
+    ("delete_media", MutationKind::DeleteMedia),
+    ("create_habit", MutationKind::CreateHabit),
+    ("update_habit", MutationKind::UpdateHabit),
+    ("delete_habit", MutationKind::DeleteHabit),
+    ("apply_intent_graph", MutationKind::ApplyIntentGraph),
+];
+
 impl MutationKind {
     /// Resolve the wire `mutation_kind` string into the closed enum. `None` for
     /// an unknown string — the SINGLE string→type point on each write path. The
     /// user path maps `None` to a client `Invalid`; the agent path (a stored,
     /// already-validated `proposals.mutation_kind`) maps it to `Internal`.
     pub(crate) fn from_wire(s: &str) -> Option<Self> {
-        Some(match s {
-            "create_journal_entry" => MutationKind::CreateJournalEntry,
-            "update_journal_entry" => MutationKind::UpdateJournalEntry,
-            "delete_journal_entry" => MutationKind::DeleteJournalEntry,
-            "reference_existing_entity_from_journal_entry" => {
-                MutationKind::ReferenceExistingEntityFromJournalEntry
-            }
-            "create_person" => MutationKind::CreatePerson,
-            "update_person" => MutationKind::UpdatePerson,
-            "delete_person" => MutationKind::DeletePerson,
-            "create_project" => MutationKind::CreateProject,
-            "update_project" => MutationKind::UpdateProject,
-            "delete_project" => MutationKind::DeleteProject,
-            "mark_project_reviewed" => MutationKind::MarkProjectReviewed,
-            "create_todo" => MutationKind::CreateTodo,
-            "update_todo" => MutationKind::UpdateTodo,
-            "delete_todo" => MutationKind::DeleteTodo,
-            "create_media" => MutationKind::CreateMedia,
-            "update_media" => MutationKind::UpdateMedia,
-            "delete_media" => MutationKind::DeleteMedia,
-            "create_habit" => MutationKind::CreateHabit,
-            "update_habit" => MutationKind::UpdateHabit,
-            "delete_habit" => MutationKind::DeleteHabit,
-            "apply_intent_graph" => MutationKind::ApplyIntentGraph,
-            _ => return None,
-        })
+        WIRE.iter()
+            .find(|(w, _)| *w == s)
+            .map(|&(_, kind)| kind)
     }
 
     /// The wire `mutation_kind` string for this kind. Used for diagnostics and
     /// the `ProposableMutation` ↔ `Input` schema round-trip test.
     pub(crate) fn as_wire(self) -> &'static str {
-        match self {
-            MutationKind::CreateJournalEntry => "create_journal_entry",
-            MutationKind::UpdateJournalEntry => "update_journal_entry",
-            MutationKind::DeleteJournalEntry => "delete_journal_entry",
-            MutationKind::ReferenceExistingEntityFromJournalEntry => {
-                "reference_existing_entity_from_journal_entry"
-            }
-            MutationKind::CreatePerson => "create_person",
-            MutationKind::UpdatePerson => "update_person",
-            MutationKind::DeletePerson => "delete_person",
-            MutationKind::CreateProject => "create_project",
-            MutationKind::UpdateProject => "update_project",
-            MutationKind::DeleteProject => "delete_project",
-            MutationKind::MarkProjectReviewed => "mark_project_reviewed",
-            MutationKind::CreateTodo => "create_todo",
-            MutationKind::UpdateTodo => "update_todo",
-            MutationKind::DeleteTodo => "delete_todo",
-            MutationKind::CreateMedia => "create_media",
-            MutationKind::UpdateMedia => "update_media",
-            MutationKind::DeleteMedia => "delete_media",
-            MutationKind::CreateHabit => "create_habit",
-            MutationKind::UpdateHabit => "update_habit",
-            MutationKind::DeleteHabit => "delete_habit",
-            MutationKind::ApplyIntentGraph => "apply_intent_graph",
-        }
+        WIRE.iter()
+            .find(|&&(_, kind)| kind == self)
+            .map(|&(w, _)| w)
+            .expect("every MutationKind is in the WIRE table")
     }
 
     /// The single home of the path-independent taxonomy: one row per kind. A new
@@ -1102,21 +1303,27 @@ impl MutationKind {
         use TargetKey as K;
         use WriteOp as W;
         match self {
-            M::CreateJournalEntry => Descriptor {
-                write_op: W::Create,
-                entity_type: E::JournalEntry,
-                target_key: None,
-            },
-            M::UpdateJournalEntry => Descriptor {
-                write_op: W::Update,
-                entity_type: E::JournalEntry,
-                target_key: Some(K::EntityId),
-            },
-            M::DeleteJournalEntry => Descriptor {
-                write_op: W::Delete,
-                entity_type: E::JournalEntry,
-                target_key: Some(K::EntityId),
-            },
+            // ── Regular creates ──
+            M::CreateJournalEntry
+            | M::CreatePerson
+            | M::CreateProject
+            | M::CreateTodo
+            | M::CreateMedia
+            | M::CreateHabit => regular(W::Create, self.regular_entity_type(), None),
+            // ── Regular updates (target = entity_id) ──
+            M::UpdateJournalEntry
+            | M::UpdatePerson
+            | M::UpdateProject
+            | M::UpdateMedia
+            | M::UpdateHabit => regular(W::Update, self.regular_entity_type(), Some(K::EntityId)),
+            // ── Regular deletes (target = entity_id) ──
+            M::DeleteJournalEntry
+            | M::DeletePerson
+            | M::DeleteProject
+            | M::DeleteTodo
+            | M::DeleteMedia
+            | M::DeleteHabit => regular(W::Delete, self.regular_entity_type(), Some(K::EntityId)),
+            // ── Irregular kinds (comment-held invariants) ──
             // The reference weave writes a new revision of the SOURCE Journal
             // Entry (its body gains the entity_ref), so it is an Update whose
             // target key is `source_entity_id`.
@@ -1125,36 +1332,6 @@ impl MutationKind {
                 entity_type: E::JournalEntry,
                 target_key: Some(K::SourceEntityId),
             },
-            M::CreatePerson => Descriptor {
-                write_op: W::Create,
-                entity_type: E::Person,
-                target_key: None,
-            },
-            M::UpdatePerson => Descriptor {
-                write_op: W::Update,
-                entity_type: E::Person,
-                target_key: Some(K::EntityId),
-            },
-            M::DeletePerson => Descriptor {
-                write_op: W::Delete,
-                entity_type: E::Person,
-                target_key: Some(K::EntityId),
-            },
-            M::CreateProject => Descriptor {
-                write_op: W::Create,
-                entity_type: E::Project,
-                target_key: None,
-            },
-            M::UpdateProject => Descriptor {
-                write_op: W::Update,
-                entity_type: E::Project,
-                target_key: Some(K::EntityId),
-            },
-            M::DeleteProject => Descriptor {
-                write_op: W::Delete,
-                entity_type: E::Project,
-                target_key: Some(K::EntityId),
-            },
             // A read-modify-write of the Project's review fields (ADR-0034): an
             // Update targeting `entity_id`.
             M::MarkProjectReviewed => Descriptor {
@@ -1162,52 +1339,12 @@ impl MutationKind {
                 entity_type: E::Project,
                 target_key: Some(K::EntityId),
             },
-            M::CreateTodo => Descriptor {
-                write_op: W::Create,
-                entity_type: E::Todo,
-                target_key: None,
-            },
             // update_todo's target key is `todo_id` (its envelope wraps a
             // Partial<TodoData> under `todo`), NOT `entity_id`.
             M::UpdateTodo => Descriptor {
                 write_op: W::Update,
                 entity_type: E::Todo,
                 target_key: Some(K::TodoId),
-            },
-            M::DeleteTodo => Descriptor {
-                write_op: W::Delete,
-                entity_type: E::Todo,
-                target_key: Some(K::EntityId),
-            },
-            M::CreateMedia => Descriptor {
-                write_op: W::Create,
-                entity_type: E::Media,
-                target_key: None,
-            },
-            M::UpdateMedia => Descriptor {
-                write_op: W::Update,
-                entity_type: E::Media,
-                target_key: Some(K::EntityId),
-            },
-            M::DeleteMedia => Descriptor {
-                write_op: W::Delete,
-                entity_type: E::Media,
-                target_key: Some(K::EntityId),
-            },
-            M::CreateHabit => Descriptor {
-                write_op: W::Create,
-                entity_type: E::Habit,
-                target_key: None,
-            },
-            M::UpdateHabit => Descriptor {
-                write_op: W::Update,
-                entity_type: E::Habit,
-                target_key: Some(K::EntityId),
-            },
-            M::DeleteHabit => Descriptor {
-                write_op: W::Delete,
-                entity_type: E::Habit,
-                target_key: Some(K::EntityId),
             },
             // A graph spans many entities, so it has NO single target id — like a
             // create, `target_key` is None. `entity_type` is the JE anchor; the
@@ -1221,6 +1358,40 @@ impl MutationKind {
                 target_key: None,
             },
         }
+    }
+
+    /// The Entity Type of a regular CRUD kind. Panics for the non-CRUD irregulars
+    /// (reference weave, mark_project_reviewed, intent graph) which have explicit
+    /// arms in `describe`.
+    fn regular_entity_type(self) -> EntityType {
+        use MutationKind as M;
+        match self {
+            M::CreateJournalEntry | M::UpdateJournalEntry | M::DeleteJournalEntry => {
+                EntityType::JournalEntry
+            }
+            M::CreatePerson | M::UpdatePerson | M::DeletePerson => EntityType::Person,
+            M::CreateProject | M::UpdateProject | M::DeleteProject => EntityType::Project,
+            M::CreateTodo | M::DeleteTodo => EntityType::Todo,
+            M::CreateMedia | M::UpdateMedia | M::DeleteMedia => EntityType::Media,
+            M::CreateHabit | M::UpdateHabit | M::DeleteHabit => EntityType::Habit,
+            M::ReferenceExistingEntityFromJournalEntry
+            | M::MarkProjectReviewed
+            | M::UpdateTodo
+            | M::ApplyIntentGraph => {
+                panic!("regular_entity_type called on irregular kind {:?}", self)
+            }
+        }
+    }
+}
+
+/// Helper for the mechanical rows in `describe`: a pure `(WriteOp, EntityType,
+/// TargetKey)` triple. Named explicitly (not a closure) so it reads alongside the
+/// irregular arms.
+fn regular(write_op: WriteOp, entity_type: EntityType, target_key: Option<TargetKey>) -> Descriptor {
+    Descriptor {
+        write_op,
+        entity_type,
+        target_key,
     }
 }
 
@@ -1496,32 +1667,56 @@ mod tests {
 
     #[test]
     fn from_wire_round_trips_every_kind() {
-        // Every wire string the propose schema / user path can send resolves,
-        // and as_wire is its exact inverse.
-        for kind in [
-            MutationKind::CreateJournalEntry,
-            MutationKind::UpdateJournalEntry,
-            MutationKind::DeleteJournalEntry,
-            MutationKind::ReferenceExistingEntityFromJournalEntry,
-            MutationKind::CreatePerson,
-            MutationKind::UpdatePerson,
-            MutationKind::DeletePerson,
-            MutationKind::CreateProject,
-            MutationKind::UpdateProject,
-            MutationKind::DeleteProject,
-            MutationKind::MarkProjectReviewed,
-            MutationKind::CreateTodo,
-            MutationKind::UpdateTodo,
-            MutationKind::DeleteTodo,
-            MutationKind::CreateMedia,
-            MutationKind::UpdateMedia,
-            MutationKind::DeleteMedia,
-            MutationKind::CreateHabit,
-            MutationKind::UpdateHabit,
-            MutationKind::DeleteHabit,
-            MutationKind::ApplyIntentGraph,
-        ] {
-            assert_eq!(MutationKind::from_wire(kind.as_wire()), Some(kind));
+        // Derived from the WIRE table — no hand-list to drift.
+        assert_eq!(
+            WIRE.len(),
+            21,
+            "WIRE table covers all 21 MutationKinds"
+        );
+        for &(wire_str, kind) in WIRE {
+            assert_eq!(
+                MutationKind::from_wire(wire_str),
+                Some(kind),
+                "from_wire({wire_str:?}) resolves"
+            );
+            assert_eq!(kind.as_wire(), wire_str, "{kind:?} round-trips");
+        }
+    }
+
+    #[test]
+    fn entity_type_spec_registry_is_coherent() {
+        // Iterates EntityType::ALL and asserts each spec row is coherent: the
+        // spec-driven tables derive correctly and a missing hook on a future
+        // kind fails here rather than at runtime.
+        for entity_type in EntityType::ALL {
+            let spec = entity_type.spec();
+            assert_eq!(spec.entity_type, entity_type);
+            assert_eq!(
+                EntityType::from_str(spec.stored_type),
+                Some(entity_type),
+                "{:?} stored_type round-trips via from_str",
+                entity_type
+            );
+            assert!(spec.schema_version > 0, "{:?} schema_version positive", entity_type);
+            assert!(!spec.noun.is_empty(), "{:?} noun non-empty", entity_type);
+
+            // Regular create/update/delete kinds route through the spec.
+            if let Some(core_fn) = spec.data_core {
+                let core = core_fn();
+                assert!(!core.is_empty(), "{:?} data_core non-empty", entity_type);
+            }
+
+            // A create carrying the provenance directive with no envelope
+            // extraction must strip it, or it persists into entity data.
+            if spec.create_source_directive && spec.create_normalize.extract.is_none() {
+                assert!(
+                    spec.create_normalize
+                        .strip
+                        .contains(&"source_journal_entry_id"),
+                    "{:?} carries source_journal_entry_id but its create_normalize does not strip it",
+                    entity_type
+                );
+            }
         }
     }
 

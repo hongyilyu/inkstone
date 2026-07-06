@@ -1,11 +1,7 @@
-import { useId, useState } from "react";
-import {
-	buildProject,
-	type ProjectDraft,
-	projectDraftFromVm,
-} from "@/lib/entityCodec.js";
+import { useId } from "react";
+import { buildProject, projectDraftFromVm } from "@/lib/entityCodec.js";
 import { PROJECT_STATUS_OPTIONS, type ProjectStatus } from "@/lib/entityFields";
-import { useEntityMutation } from "@/lib/hooks/useEntityMutation";
+import { useEntityDraftEditor } from "@/lib/hooks/useEntityDraftEditor";
 import type { Project } from "@/lib/libraryItems";
 import {
 	EditorField,
@@ -27,9 +23,13 @@ type Props = (
 /** Create / edit a Project inline in the Library rail (ADR-0033). */
 export function ProjectEditor({ onDone, onCancel, ...m }: Props) {
 	const existing = m.mode === "edit" ? m.project : undefined;
-	const baseline = projectDraftFromVm(existing);
-	const [draft, setDraft] = useState<ProjectDraft>(baseline);
-	const mutation = useEntityMutation();
+	const { draft, set, submit, saving, error } = useEntityDraftEditor({
+		existing,
+		draftFromVm: projectDraftFromVm,
+		build: buildProject,
+		onDone,
+		fallbackId: (d) => d.name,
+	});
 
 	const ids = {
 		name: useId(),
@@ -38,45 +38,16 @@ export function ProjectEditor({ onDone, onCancel, ...m }: Props) {
 		status: useId(),
 	};
 
-	const set = <K extends keyof ProjectDraft>(key: K, value: ProjectDraft[K]) =>
-		setDraft((d) => ({ ...d, [key]: value }));
-
 	const nameEmpty = draft.name.trim() === "";
-
-	const submit = () => {
-		if (nameEmpty) return;
-		const params = existing
-			? buildProject({
-					mode: "update",
-					existing,
-					baseline,
-					draft,
-				})
-			: buildProject({ mode: "create", draft });
-		if (params === null) {
-			// Nothing changed — close without a write.
-			onDone(existing?.id ?? draft.name);
-			return;
-		}
-		mutation.mutate(params, {
-			onSuccess: (result) =>
-				onDone(result.entity_id ?? existing?.id ?? draft.name),
-		});
-	};
-
-	const error =
-		mutation.error == null
-			? null
-			: mutation.error instanceof Error && mutation.error.message
-				? mutation.error.message
-				: "Couldn't save. Try again.";
 
 	return (
 		<EntityEditorFrame
 			title={existing ? "Edit Project" : "New Project"}
-			onSubmit={submit}
+			onSubmit={() => {
+				if (!nameEmpty) submit();
+			}}
 			onCancel={onCancel}
-			saving={mutation.isPending}
+			saving={saving}
 			error={error}
 			canSave={!nameEmpty}
 			disabledReason="Add a name to save"
