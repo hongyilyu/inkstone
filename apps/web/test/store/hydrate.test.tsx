@@ -188,6 +188,102 @@ describe("refresh-durable hydration", () => {
 		await runtime.dispose();
 	});
 
+	it("rehydrates a cancelled turn: incomplete + terminal_reason 'cancelled' → cancelled flag set", async () => {
+		// A turn cancelled in a PRIOR session must reload as the calm stopped notice
+		// (ADR-0014 cancel-is-not-an-error), so toMessage maps the wire
+		// terminal_reason onto the store's `cancelled` flag.
+		const result: ThreadGetResult = {
+			thread_id: "tCancel",
+			title: "T",
+			messages: [
+				{
+					id: "m2",
+					role: "assistant",
+					status: "incomplete",
+					run_id: "r1",
+					terminal_reason: "cancelled",
+					segments: [{ kind: "text", text: "partial re" }],
+				},
+			],
+		};
+		const stub = stubWsClient({
+			threadGet: (id) =>
+				id === "tCancel"
+					? Effect.succeed(result)
+					: Effect.die("unknown thread"),
+		});
+		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
+
+		await hydrateThread(runtime, "tCancel");
+
+		const assistant = getChatState().threads.tCancel?.messages[0];
+		expect(assistant?.status).toBe("incomplete");
+		expect(assistant?.cancelled).toBe(true);
+
+		await runtime.dispose();
+	});
+
+	it("does NOT set cancelled for terminal_reason 'errored' — the failure alert path is preserved", async () => {
+		const result: ThreadGetResult = {
+			thread_id: "tErr",
+			title: "T",
+			messages: [
+				{
+					id: "m2",
+					role: "assistant",
+					status: "incomplete",
+					run_id: "r1",
+					terminal_reason: "errored",
+					segments: [{ kind: "text", text: "partial re" }],
+				},
+			],
+		};
+		const stub = stubWsClient({
+			threadGet: (id) =>
+				id === "tErr" ? Effect.succeed(result) : Effect.die("unknown thread"),
+		});
+		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
+
+		await hydrateThread(runtime, "tErr");
+
+		const assistant = getChatState().threads.tErr?.messages[0];
+		expect(assistant?.status).toBe("incomplete");
+		expect(assistant?.cancelled).toBeUndefined();
+
+		await runtime.dispose();
+	});
+
+	it("does NOT set cancelled when terminal_reason is absent (a live Run's messages)", async () => {
+		const result: ThreadGetResult = {
+			thread_id: "tNoReason",
+			title: "T",
+			messages: [
+				{
+					id: "m2",
+					role: "assistant",
+					status: "incomplete",
+					run_id: "r1",
+					segments: [{ kind: "text", text: "partial re" }],
+				},
+			],
+		};
+		const stub = stubWsClient({
+			threadGet: (id) =>
+				id === "tNoReason"
+					? Effect.succeed(result)
+					: Effect.die("unknown thread"),
+		});
+		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
+
+		await hydrateThread(runtime, "tNoReason");
+
+		const assistant = getChatState().threads.tNoReason?.messages[0];
+		expect(assistant?.status).toBe("incomplete");
+		expect(assistant?.cancelled).toBeUndefined();
+
+		await runtime.dispose();
+	});
+
 	it("reconstructs a decided Proposal (ADR-0044) so the settled card survives reload", async () => {
 		const result: ThreadGetResult = {
 			thread_id: "tProp",

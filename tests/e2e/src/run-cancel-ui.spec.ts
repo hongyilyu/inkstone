@@ -38,4 +38,15 @@ test("clicking Stop cancels a streaming run and settles the bubble", async ({
 	await expect(
 		chat.page.getByRole("button", { name: /^send$/i }),
 	).toBeVisible();
+
+	// Reload: the cancelled turn must rehydrate as the same calm stopped notice
+	// (MessageView.terminal_reason === 'cancelled' → Message.cancelled), not the
+	// failure alert — ADR-0014 cancel-is-not-an-error, rehydration-parity line.
+	await chat.reload();
+	await expect(chat.assistantStopped()).toBeVisible({ timeout: 15_000 });
+	await expect(chat.assistantStopped()).toContainText("You stopped this reply");
+	await expect(chat.assistantError()).toHaveCount(0);
+	await expect(
+		chat.assistantStopped().getByRole("button", { name: /try again/i }),
+	).toBeVisible();
 });

@@ -71,7 +71,10 @@ function toSegment(
 /** Map a wire `MessageView` to the live {@link Message}, narrowing role/status via
  * defensive guards. The ordered `segments[]` is consumed VERBATIM (ADR-0045): the
  * wire already carries the true `run_steps` order, so the reload renders the same
- * timeline the live stream built — no legacy bucket reconstruction. See docs/design/web-store.md. */
+ * timeline the live stream built — no legacy bucket reconstruction. An `incomplete`
+ * turn whose owning Run's `terminal_reason` is `"cancelled"` sets the store's
+ * `cancelled` flag, so a Stop from a prior session rehydrates as the calm stopped
+ * notice, not the failure alert (ADR-0014). See docs/design/web-store.md. */
 export function toMessage(view: ThreadGetResult["messages"][number]): Message {
 	const role: Message["role"] = view.role === "user" ? "user" : "assistant";
 	const status: Message["status"] =
@@ -80,6 +83,11 @@ export function toMessage(view: ThreadGetResult["messages"][number]): Message {
 		view.status === "incomplete"
 			? view.status
 			: "completed";
+	// The `incomplete` guard is load-bearing: a cancelled Run's USER message also
+	// carries terminal_reason "cancelled" on the wire but is status "completed" —
+	// it must never be flagged.
+	const cancelled =
+		status === "incomplete" && view.terminal_reason === "cancelled";
 	const segments: Segment[] = view.segments.map((segment, i) =>
 		toSegment(view.id, view.run_id, segment, i),
 	);
@@ -89,6 +97,9 @@ export function toMessage(view: ThreadGetResult["messages"][number]): Message {
 		status,
 		run_id: view.run_id,
 		segments,
+		// Keep the key ABSENT (not false) otherwise — matching how applyEvent
+		// leaves non-cancelled turns.
+		...(cancelled ? { cancelled: true } : {}),
 	};
 }
 
