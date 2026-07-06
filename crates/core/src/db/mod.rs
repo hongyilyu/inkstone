@@ -60,12 +60,15 @@ pub(crate) use observations::{
     insert_observations, observation_revisions, observation_schema_key, query_observations,
     update_observation,
 };
+// Result/row types no caller names (`Backlinks`, `Current*Row`,
+// `ResolvedEntityRef`) and the V0-internal GTD reads (`todos_by_*`, consumed
+// only by `backlinks_for_entity`) are NOT re-exported — callers destructure the
+// returning fns' fields, and in a binary-only crate an unreachable re-export
+// trips `unused_imports`. Re-add a name here when a real caller lands.
 pub use entities_read::{
-    Backlinks, CurrentEntityRow, CurrentJournalEntryRow, CurrentThreadJournalEntryRow,
-    EntityProvenance, EntityRow, ResolvedEntityRef, backlinks_for_entity,
-    current_journal_entry_by_id, current_person_by_id, current_project_by_id,
-    current_thread_journal_entries, entity_is_type, entity_type_by_id, list_by_type,
-    todos_by_person, todos_by_project,
+    EntityProvenance, EntityRow, backlinks_for_entity, current_journal_entry_by_id,
+    current_person_by_id, current_project_by_id, current_thread_journal_entries,
+    entity_is_type, entity_type_by_id, list_by_type,
 };
 // `MessageRow` is not re-exported: no caller names it (consumers destructure
 // `get_thread_with_messages`' tuple and use `.text()`/`.segments`), and in a
@@ -1383,6 +1386,7 @@ pub async fn set_setting(pool: &SqlitePool, key: &str, value: &str) -> sqlx::Res
 
 #[cfg(test)]
 mod tests {
+    use super::entities_read::{todos_by_person, todos_by_project};
     use super::*;
 
     /// A migrated in-memory pool so the `runs` CHECK constraints are in force.
