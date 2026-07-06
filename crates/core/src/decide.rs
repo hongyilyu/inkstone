@@ -13,6 +13,13 @@ use crate::entities;
 use crate::mutation::{self, MutationKind, ProposableMutation};
 use crate::protocol::NodeDecision;
 
+/// The exact tool_result content the resumed model reads when the user rejects
+/// a Proposal (ADR-0025). CROSS-LANGUAGE CONTRACT: the faux worker
+/// (`packages/worker/src/faux/faux-decisions.ts` `DECLINED_TEXT`) reconstructs
+/// its phase by matching this sentinel; the `decision_prose.json` contract
+/// fixture pins the two spellings equal.
+pub(crate) const DECLINED_CONTENT: &str = "User declined this proposal.";
+
 /// The user's resolution of a Proposal, parsed from the wire `decision` string.
 /// An `edit`'s payload-presence is enforced later (fresh apply path), not here.
 enum Decision {
@@ -307,7 +314,7 @@ async fn apply_or_reject(
         // proposable stored kind can still be declined cleanly.
         let decision_payload = serde_json::json!({
             "decision": "reject",
-            "content": "User declined this proposal.",
+            "content": DECLINED_CONTENT,
             "is_error": false,
         })
         .to_string();
