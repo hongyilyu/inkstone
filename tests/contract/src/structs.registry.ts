@@ -48,6 +48,7 @@ import {
 	ProposalPendingNotification,
 	ProviderConfigureParams,
 	ProviderConnectedNotification,
+	ProviderHelperLine,
 	ProviderLoginStartParams,
 	ProviderLoginStartResult,
 	ProviderStatusResult,
@@ -738,6 +739,28 @@ export const fixtures: readonly FixtureEntry[] = [
 		schema: WorkerOutbound,
 		dir: "authored",
 	},
+	// ProviderHelperLine: Rust deser-only (3 variants) — one NDJSON line of the
+	// Provider Helper's stdout (ADR-0023). Hand-authored because Core only ever
+	// deserializes them (the WorkerStdout situation); the same files are parsed
+	// by the Rust self-lock in crates/core/src/protocol.rs.
+	{
+		message: "ProviderHelperLine",
+		file: "provider_helper_line.authorize_url.json",
+		schema: ProviderHelperLine,
+		dir: "authored",
+	},
+	{
+		message: "ProviderHelperLine",
+		file: "provider_helper_line.credentials.json",
+		schema: ProviderHelperLine,
+		dir: "authored",
+	},
+	{
+		message: "ProviderHelperLine",
+		file: "provider_helper_line.error.json",
+		schema: ProviderHelperLine,
+		dir: "authored",
+	},
 ];
 
 /** The hand-maintained canonical set of in-scope wire messages (41 at
@@ -811,6 +834,8 @@ export const CANONICAL_MESSAGES: readonly string[] = [
 	"ToolResult",
 	"WorkerManifest",
 	"WorkerStdout",
+	// provider-helper stdout protocol (ADR-0023)
+	"ProviderHelperLine",
 ];
 
 /** Expected fixture count per tagged-union message (grilling Q10). A union must
@@ -834,4 +859,6 @@ export const UNION_VARIANTS: Readonly<Record<string, number>> = {
 	// bare = 2 fixtures; the per-ManifestMessage-variant coverage is asserted
 	// structurally in the Rust self-lock, not by fixture count.
 	WorkerManifest: 2,
+	// ProviderHelperLine (3 variants): authorize_url, credentials, error = 3.
+	ProviderHelperLine: 3,
 };

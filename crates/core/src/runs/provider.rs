@@ -6,7 +6,6 @@
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use serde::Deserialize;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc::UnboundedSender;
@@ -15,8 +14,8 @@ use super::handler::{self, HandlerError};
 use super::reply;
 use crate::credentials::{self, Credentials, StoredCredential};
 use crate::protocol::{
-    ProviderConfigureParams, ProviderLoginStartParams, ProviderLoginStartResult, ProviderStatus,
-    ProviderStatusResult, ProviderTestParams,
+    HelperLine, ProviderConfigureParams, ProviderLoginStartParams, ProviderLoginStartResult,
+    ProviderStatus, ProviderStatusResult, ProviderTestParams,
 };
 
 pub(super) async fn handle(
@@ -131,25 +130,6 @@ pub(super) async fn handle_test(
 /// fail to bind. Reject overlap rather than spawn a doomed second helper.
 static LOGIN_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 
-/// One structured line of the Provider Helper's `login`-mode stdout
-/// (ADR-0023): the authorize URL, then credentials on success, or an error.
-#[derive(Debug, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-enum LoginLine {
-    AuthorizeUrl {
-        url: String,
-    },
-    Credentials {
-        access: String,
-        refresh: String,
-        expires: i64,
-        account_id: String,
-    },
-    Error {
-        message: String,
-    },
-}
-
 pub(super) async fn handle_login_start(
     id: serde_json::Value,
     params: serde_json::Value,
@@ -189,8 +169,12 @@ pub(super) async fn handle_login_start(
                 }
             };
 
+        // Append the provider id: the helper serves only its supported set and
+        // rejects others with an error line (spawn happens before the
+        // `params.provider` move into the drain task below).
         let mut child = match Command::new(&program)
             .args(&args)
+            .arg(&params.provider)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -218,9 +202,9 @@ pub(super) async fn handle_login_start(
         // to the Client, which opens it in a new tab.
         let authorize_url = loop {
             match lines.next_line().await {
-                Ok(Some(line)) => match serde_json::from_str::<LoginLine>(&line) {
-                    Ok(LoginLine::AuthorizeUrl { url }) => break url,
-                    Ok(LoginLine::Error { message }) => {
+                Ok(Some(line)) => match serde_json::from_str::<HelperLine>(&line) {
+                    Ok(HelperLine::AuthorizeUrl { url }) => break url,
+                    Ok(HelperLine::Error { message }) => {
                         LOGIN_IN_FLIGHT.store(false, Ordering::SeqCst);
                         let _ = child.wait().await;
                         // The helper sanitizes this message for display.
@@ -299,8 +283,8 @@ where
     R: tokio::io::AsyncBufRead + Unpin,
 {
     while let Some(line) = lines.next_line().await? {
-        match serde_json::from_str::<LoginLine>(&line) {
-            Ok(LoginLine::Credentials {
+        match serde_json::from_str::<HelperLine>(&line) {
+            Ok(HelperLine::Credentials {
                 access,
                 refresh,
                 expires,
@@ -313,7 +297,7 @@ where
                     account_id,
                 }));
             }
-            Ok(LoginLine::Error { message }) => {
+            Ok(HelperLine::Error { message }) => {
                 anyhow::bail!("provider login helper error: {message}");
             }
             // Another authorize_url or noise — keep reading.

@@ -4,14 +4,18 @@
 	"private": true,
 	"type": "module",
 	"dependencies": {
-		"@earendil-works/pi-ai": "0.80.2"
+		"@earendil-works/pi-ai": "0.80.2",
+		"@inkstone/protocol": "workspace:*"
 	},
 	"scripts": {
-		"check": "tsc --noEmit"
+		"check": "tsc --noEmit",
+		"test": "vitest run"
 	},
 	"devDependencies": {
 		"@types/node": "^22.0.0",
+		"effect": "^3.21.2",
 		"tsx": "^4.8.1",
-		"typescript": "^6.0.0"
+		"typescript": "^6.0.0",
+		"vitest": "^4.1.7"
 	}
 }

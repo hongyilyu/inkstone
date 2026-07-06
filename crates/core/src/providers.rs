@@ -39,6 +39,14 @@ pub struct ProviderEntry {
     pub login_allowed: bool,
 }
 
+/// The providers the Provider Helper can actually serve — hand-mirroring the
+/// helper's `SUPPORTED_PROVIDERS` (packages/provider-helper/src/helper-main.ts,
+/// pinned by its own unit test). Test-only: the registry coherence test below
+/// keeps every `login_allowed` entry inside this set, so flipping the flag on a
+/// provider the helper cannot serve fails `cargo test`, not a user's login.
+#[cfg(test)]
+const HELPER_SUPPORTED_PROVIDERS: &[&str] = &[OPENAI_CODEX];
+
 /// The registry: every provider Inkstone knows about (ADR-0062). The one source
 /// for the status enumeration, the configure allowlist, and the login allow-check.
 const REGISTRY: &[ProviderEntry] = &[
@@ -128,6 +136,23 @@ mod tests {
         assert!(get("acme").is_none());
         assert!(!is_configurable("acme"));
         assert!(!login_allowed("acme"));
+    }
+
+    /// Every `login_allowed` provider must be one the Provider Helper actually
+    /// serves — otherwise `provider/login_start` would spawn the helper only to
+    /// have it reject the provider (or worse, before the helper's own check,
+    /// run the wrong OAuth flow under the new provider's name).
+    #[test]
+    fn login_allowed_providers_are_helper_supported() {
+        for entry in all().iter().filter(|e| e.login_allowed) {
+            assert!(
+                HELPER_SUPPORTED_PROVIDERS.contains(&entry.id),
+                "provider {:?} is login_allowed but the Provider Helper does not \
+                 support it — extend the helper's SUPPORTED_PROVIDERS (and this \
+                 mirror) before flipping the registry flag",
+                entry.id
+            );
+        }
     }
 
     #[test]

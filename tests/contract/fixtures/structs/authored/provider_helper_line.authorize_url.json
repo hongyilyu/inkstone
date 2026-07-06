@@ -1,0 +1,4 @@
+{
+  "kind": "authorize_url",
+  "url": "https://auth.openai.com/oauth/authorize?client_id=pi&code_challenge=abc"
+}

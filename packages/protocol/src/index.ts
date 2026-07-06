@@ -755,6 +755,23 @@ export type CoreToolDescriptor = S.Schema.Type<typeof CoreToolDescriptor>;
 export const WorkerOutbound = S.Union(RunEvent, ToolRequest);
 export type WorkerOutbound = S.Schema.Type<typeof WorkerOutbound>;
 
+/** One NDJSON line of the Provider Helper's stdout (ADR-0023): the authorize
+ * URL (login mode), the rotated credentials, or a sanitized error. Consumed by
+ * Core (`HelperLine` in crates/core/src/protocol.rs); produced by
+ * packages/provider-helper. */
+export const ProviderHelperLine = S.Union(
+	S.Struct({ kind: S.Literal("authorize_url"), url: S.String }),
+	S.Struct({
+		kind: S.Literal("credentials"),
+		access: S.String,
+		refresh: S.String,
+		expires: S.Number,
+		account_id: S.String,
+	}),
+	S.Struct({ kind: S.Literal("error"), message: S.String }),
+);
+export type ProviderHelperLine = S.Schema.Type<typeof ProviderHelperLine>;
+
 // provider/* (ADR-0023, ADR-0014 amendment): LLM-provider connection.
 
 /** How a provider authenticates (ADR-0062): OAuth browser login vs a pasted

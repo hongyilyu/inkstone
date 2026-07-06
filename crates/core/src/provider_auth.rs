@@ -15,12 +15,12 @@ use std::process::Stdio;
 use std::sync::OnceLock;
 
 use anyhow::{Context, Result, bail};
-use serde::Deserialize;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::Mutex;
 
 use crate::credentials::{self, Credentials, StoredCredential};
+use crate::protocol::HelperLine;
 
 /// Serializes credential refreshes across all in-flight Runs (single-flight,
 /// ADR-0023), so the rotated refresh token is never used twice.
@@ -67,37 +67,25 @@ async fn resolve_oauth(
         }
     }
 
-    let rotated = refresh_via_helper(&creds.refresh).await?;
+    let rotated = refresh_via_helper(provider, &creds.refresh).await?;
     let access = rotated.access.clone();
     credentials::write(provider, &StoredCredential::Oauth(rotated))?;
     Ok(Some(access))
-}
-
-/// One line of the Provider Helper's stdout in `refresh` mode (ADR-0023).
-#[derive(Debug, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-enum HelperLine {
-    Credentials {
-        access: String,
-        refresh: String,
-        expires: i64,
-        account_id: String,
-    },
-    Error {
-        message: String,
-    },
 }
 
 /// Spawn the Provider Helper in `refresh` mode, feed it the refresh token on
 /// stdin, and read back the rotated credentials. The command is resolved by
 /// `crate::launch` (ADR-0041): the `INKSTONE_PROVIDER_HELPER_CMD` override
 /// (shlex-parsed) or the default tsx invocation; tests point it at a stub.
-async fn refresh_via_helper(refresh_token: &str) -> Result<Credentials> {
+/// The provider id is appended to the argv — the helper rejects providers it
+/// cannot serve rather than silently running the wrong OAuth flow.
+async fn refresh_via_helper(provider: &str, refresh_token: &str) -> Result<Credentials> {
     let crate::launch::ResolvedCommand { program, args } =
         crate::launch::resolve(crate::launch::Role::ProviderRefresh)?;
 
     let mut child = Command::new(&program)
         .args(&args)
+        .arg(provider)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -116,28 +104,36 @@ async fn refresh_via_helper(refresh_token: &str) -> Result<Credentials> {
     let stdout = child.stdout.take().context("provider helper has no stdout")?;
     let mut lines = BufReader::new(stdout).lines();
 
-    // The first structured line is the result (credentials or error).
+    // The first terminal structured line is the result (credentials or error).
     while let Some(line) = lines.next_line().await.context("read provider helper stdout")? {
         let parsed: HelperLine = match serde_json::from_str(&line) {
             Ok(p) => p,
             // Non-JSON noise (e.g. a stray log) — skip and keep reading.
             Err(_) => continue,
         };
-        let _ = child.wait().await;
-        return match parsed {
+        match parsed {
+            // An authorize_url is a login-mode line; unexpected in refresh mode.
+            // Keep scanning (without waiting on the child) rather than deadlock.
+            HelperLine::AuthorizeUrl { .. } => continue,
             HelperLine::Credentials {
                 access,
                 refresh,
                 expires,
                 account_id,
-            } => Ok(Credentials {
-                access,
-                refresh,
-                expires,
-                account_id,
-            }),
-            HelperLine::Error { message } => bail!("provider helper refresh failed: {message}"),
-        };
+            } => {
+                let _ = child.wait().await;
+                return Ok(Credentials {
+                    access,
+                    refresh,
+                    expires,
+                    account_id,
+                });
+            }
+            HelperLine::Error { message } => {
+                let _ = child.wait().await;
+                bail!("provider helper refresh failed: {message}")
+            }
+        }
     }
 
     let _ = child.wait().await;
