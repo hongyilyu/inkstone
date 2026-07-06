@@ -1503,11 +1503,21 @@ const cannedCases: Record<keyof typeof requestDescriptors, CannedCase> = {
 	},
 	settingsGet: {
 		args: [],
-		response: { provider: "codex", model: null, effort: "medium", enabled_models: [] },
+		response: {
+			provider: "codex",
+			model: null,
+			effort: "medium",
+			enabled_models: [],
+		},
 	},
 	settingsSet: {
 		args: [{ model: "m", effort: "high" }],
-		response: { provider: "codex", model: "m", effort: "high", enabled_models: [] },
+		response: {
+			provider: "codex",
+			model: "m",
+			effort: "high",
+			enabled_models: [],
+		},
 	},
 	proposalGet: {
 		args: ["r-1"],
