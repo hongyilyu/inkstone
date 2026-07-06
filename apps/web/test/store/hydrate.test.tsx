@@ -253,6 +253,36 @@ describe("refresh-durable hydration", () => {
 		await runtime.dispose();
 	});
 
+	it("does NOT set cancelled on a completed message (a cancelled Run's user turn carries the reason too)", async () => {
+		const result: ThreadGetResult = {
+			thread_id: "tUser",
+			title: "T",
+			messages: [
+				{
+					id: "m1",
+					role: "user",
+					status: "completed",
+					run_id: "r1",
+					terminal_reason: "cancelled",
+					segments: [{ kind: "text", text: "hi" }],
+				},
+			],
+		};
+		const stub = stubWsClient({
+			threadGet: (id) =>
+				id === "tUser" ? Effect.succeed(result) : Effect.die("unknown thread"),
+		});
+		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
+
+		await hydrateThread(runtime, "tUser");
+
+		const user = getChatState().threads.tUser?.messages[0];
+		expect(user?.status).toBe("completed");
+		expect(user?.cancelled).toBeUndefined();
+
+		await runtime.dispose();
+	});
+
 	it("does NOT set cancelled when terminal_reason is absent (a live Run's messages)", async () => {
 		const result: ThreadGetResult = {
 			thread_id: "tNoReason",
