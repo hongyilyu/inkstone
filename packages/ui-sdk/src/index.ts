@@ -196,101 +196,239 @@ export class WsClientConfig extends Context.Tag(
 	"@inkstone/ui-sdk/WsClientConfig",
 )<WsClientConfig, { readonly url: string }>() {}
 
-export class WsClient extends Context.Tag("@inkstone/ui-sdk/WsClient")<
-	WsClient,
-	{
-		readonly threadCreate: (
-			prompt: string,
-		) => Effect.Effect<ThreadCreateResult, WsError>;
-		readonly postMessage: (
-			threadId: string,
-			prompt: string,
-		) => Effect.Effect<RunId, WsError>;
-		readonly threadList: () => Effect.Effect<ThreadListResult, WsError>;
-		readonly getRunHistory: (
-			limit?: number,
-		) => Effect.Effect<RunHistoryResult, WsError>;
-		readonly recurrencePreview: (
-			params: RecurrencePreviewParams,
-		) => Effect.Effect<RecurrencePreviewResult, WsError>;
-		readonly threadGet: (
-			threadId: string,
-		) => Effect.Effect<ThreadGetResult, WsError>;
-		// thread/{rename,archive,unarchive,list_archived} (ADR-0052): the four
-		// mutating/archived-list Thread verbs. The three mutators share
-		// ThreadMutateResult (the affected thread_id); list_archived mirrors
-		// thread/list but reads the archived set.
-		readonly threadRename: (
-			threadId: string,
-			title: string,
-		) => Effect.Effect<ThreadMutateResult, WsError>;
-		readonly threadArchive: (
-			threadId: string,
-		) => Effect.Effect<ThreadMutateResult, WsError>;
-		readonly threadUnarchive: (
-			threadId: string,
-		) => Effect.Effect<ThreadMutateResult, WsError>;
-		readonly threadListArchived: () => Effect.Effect<ThreadListResult, WsError>;
-		readonly listEntities: (
-			type: string,
-		) => Effect.Effect<EntityListResult, WsError>;
-		readonly getBacklinks: (
-			entityId: string,
-		) => Effect.Effect<EntityBacklinksResult, WsError>;
-		readonly observationQuery: (
-			params: ObservationQueryParams,
-		) => Effect.Effect<ObservationQueryResult, WsError>;
-		readonly observationUpdate: (
-			params: ObservationUpdateParams,
-		) => Effect.Effect<ObservationUpdateResult, WsError>;
-		readonly entityMutate: (
-			params: EntityMutateParams,
-		) => Effect.Effect<EntityMutateResult, WsError>;
-		readonly rescanJournalEntry: (
-			jeId: string,
-		) => Effect.Effect<JournalEntryRescanResult, WsError>;
-		readonly messageSearch: (
-			query: string,
-		) => Effect.Effect<MessageSearchResult, WsError>;
-		readonly subscribeRun: (
-			runId: RunId,
-		) => Stream.Stream<RunEventValue, WsError>;
-		readonly cancelRun: (
-			runId: RunId,
-		) => Effect.Effect<RunCancelResult, WsError>;
-		readonly retryRun: (runId: RunId) => Effect.Effect<RunRetryResult, WsError>;
-		readonly providerStatus: () => Effect.Effect<ProviderStatusResult, WsError>;
-		readonly providerLoginStart: (
-			provider: string,
-		) => Effect.Effect<ProviderLoginStartResult, WsError>;
-		// provider/configure (ADR-0062): store a static API key for a
-		// key-configurable provider (OpenRouter); the result is the refreshed
-		// provider/status, so the caller flips the row exactly like login does.
-		readonly providerConfigure: (
-			provider: string,
-			apiKey: string,
-		) => Effect.Effect<ProviderStatusResult, WsError>;
-		// provider/test (ADR-0062): probe whether a provider actually answers, using
-		// the given model. Provider-agnostic (codex + openrouter); spawns a one-shot
-		// ephemeral Worker and persists nothing — the result is a transient liveness
-		// verdict, not stored status.
-		readonly providerTest: (
-			provider: string,
-			model: string,
-		) => Effect.Effect<ProviderTestResult, WsError>;
-		readonly modelCatalog: () => Effect.Effect<ModelCatalogResult, WsError>;
-		readonly settingsGet: () => Effect.Effect<SettingsResult, WsError>;
-		readonly settingsSet: (params: {
+/**
+ * One row per plain request/response verb: the wire `method`, `toParams`
+ * (typing the verb's public arguments), the wire `result` schema, and an
+ * optional `map` post-processing the decoded result (only `postMessage` uses
+ * it today). The `WsClient` tag's request surface, the live layer, AND
+ * `stubWsClient` all derive from this ONE table, so adding a plain RPC verb
+ * costs one row. The 3 stream members (`subscribeRun`,
+ * `proposalNotifications`, `connectionStatus`) stay hand-written on the tag —
+ * they are not request/response — and `subscribeRun`'s snapshot-then-tail wire
+ * dance stays a hand-written implementation.
+ *
+ * Exported for the table-driven round-trip test; production consumers use the
+ * `WsClient` tag, never the table.
+ */
+export const requestDescriptors = {
+	threadCreate: {
+		method: "thread/create",
+		toParams: (prompt: string) => ({ prompt }),
+		result: ThreadCreateResult,
+	},
+	postMessage: {
+		method: "run/post_message",
+		toParams: (threadId: string, prompt: string) => ({
+			thread_id: threadId,
+			prompt,
+		}),
+		result: PostMessageResult,
+		map: (r: PostMessageResult): RunId => r.run_id,
+	},
+	threadList: {
+		method: "thread/list",
+		toParams: () => ({}),
+		result: ThreadListResult,
+	},
+	// run/get_history (ADR-0028 as-built): the recent-Runs feed, newest-first.
+	// A `limit` is sent only when given; omitting it lets Core apply its
+	// default (an undefined field serializes away to `{}`).
+	getRunHistory: {
+		method: "run/get_history",
+		toParams: (limit?: number) => (limit === undefined ? {} : { limit }),
+		result: RunHistoryResult,
+	},
+	// recurrence/preview (ADR-0039 amendment, #227): preview the next
+	// occurrence of a draft Recurrence Rule. Read-only — the editor sends an
+	// in-progress rule + the Todo's current anchor dates and renders the
+	// returned dates (or `ended`). `recurrence` rides as the opaque rule object.
+	recurrencePreview: {
+		method: "recurrence/preview",
+		toParams: (params: RecurrencePreviewParams) => ({ ...params }),
+		result: RecurrencePreviewResult,
+	},
+	threadGet: {
+		method: "thread/get",
+		toParams: (threadId: string) => ({ thread_id: threadId }),
+		result: ThreadGetResult,
+	},
+	// thread/{rename,archive,unarchive,list_archived} (ADR-0052): the four
+	// mutating/archived-list Thread verbs. The three mutators share
+	// ThreadMutateResult (the affected thread_id; Core rejects an empty rename
+	// title); list_archived mirrors thread/list but reads the archived set.
+	threadRename: {
+		method: "thread/rename",
+		toParams: (threadId: string, title: string) => ({
+			thread_id: threadId,
+			title,
+		}),
+		result: ThreadMutateResult,
+	},
+	threadArchive: {
+		method: "thread/archive",
+		toParams: (threadId: string) => ({ thread_id: threadId }),
+		result: ThreadMutateResult,
+	},
+	threadUnarchive: {
+		method: "thread/unarchive",
+		toParams: (threadId: string) => ({ thread_id: threadId }),
+		result: ThreadMutateResult,
+	},
+	threadListArchived: {
+		method: "thread/list_archived",
+		toParams: () => ({}),
+		result: ThreadListResult,
+	},
+	// entity/list (ADR-0004): accepted Entities of one type (e.g. journal_entry, todo).
+	listEntities: {
+		method: "entity/list",
+		toParams: (type: string) => ({ type }),
+		result: EntityListResult,
+	},
+	// entity/backlinks (ADR-0050): the two reverse sets the detail Inspector
+	// shows for one Entity — mentioned_in (Journal Entries) + linked_todos.
+	getBacklinks: {
+		method: "entity/backlinks",
+		toParams: (entityId: string) => ({ entity_id: entityId }),
+		result: EntityBacklinksResult,
+	},
+	// observation/query (#253): read-only typed-observation fetch — an
+	// all-optional filter object spread onto the wire like entityMutate.
+	observationQuery: {
+		method: "observation/query",
+		toParams: (params: ObservationQueryParams) => ({ ...params }),
+		result: ObservationQueryResult,
+	},
+	observationUpdate: {
+		method: "observation/update",
+		toParams: (params: ObservationUpdateParams) => ({ ...params }),
+		result: ObservationUpdateResult,
+	},
+	// entity/mutate (ADR-0033): a user-initiated CRUD request — same
+	// {mutation_kind, payload} envelope as the Worker's propose tool.
+	entityMutate: {
+		method: "entity/mutate",
+		toParams: (params: EntityMutateParams) => ({ ...params }),
+		result: EntityMutateResult,
+	},
+	// journal_entry/rescan (ADR-0042): re-scan an accepted Journal Entry for
+	// mentioned-but-uncaptured entities. Core resolves the JE's origin Thread
+	// and starts an agent Run there; the caller navigates to that Thread.
+	rescanJournalEntry: {
+		method: "journal_entry/rescan",
+		toParams: (jeId: string) => ({ je_id: jeId }),
+		result: JournalEntryRescanResult,
+	},
+	// message/search (ADR-0035): substring full-text search over completed Message text.
+	messageSearch: {
+		method: "message/search",
+		toParams: (query: string) => ({ query }),
+		result: MessageSearchResult,
+	},
+	// run/cancel (ADR-0014): ask Core to cancel a Run. For a running Run the
+	// terminal `cancelled` Run Event also arrives over subscribeRun; for a
+	// parked Run nothing is pushed, so the response outcome is authoritative.
+	cancelRun: {
+		method: "run/cancel",
+		toParams: (runId: RunId) => ({ run_id: runId }),
+		result: RunCancelResult,
+	},
+	// run/retry (ADR-0028 retry amendment, #230): ask Core to re-drive an
+	// errored Run IN PLACE on the same run id. `accepted` means Core won the
+	// `errored → running` flip and is re-streaming (its terminal arrives over
+	// subscribeRun); `not_errored`/`unknown_run` are normal response values.
+	retryRun: {
+		method: "run/retry",
+		toParams: (runId: RunId) => ({ run_id: runId }),
+		result: RunRetryResult,
+	},
+	// provider/* (ADR-0023): connection status + begin OAuth login.
+	providerStatus: {
+		method: "provider/status",
+		toParams: () => ({}),
+		result: ProviderStatusResult,
+	},
+	providerLoginStart: {
+		method: "provider/login_start",
+		toParams: (provider: string) => ({ provider }),
+		result: ProviderLoginStartResult,
+	},
+	// provider/configure (ADR-0062): store a static API key for a
+	// key-configurable provider (OpenRouter); the result is the refreshed
+	// provider/status, so the caller flips the row exactly like login does.
+	providerConfigure: {
+		method: "provider/configure",
+		toParams: (provider: string, apiKey: string) => ({
+			provider,
+			api_key: apiKey,
+		}),
+		result: ProviderStatusResult,
+	},
+	// provider/test (ADR-0062): probe whether a provider actually answers, using
+	// the given model. Provider-agnostic (codex + openrouter); spawns a one-shot
+	// ephemeral Worker and persists nothing — the result is a transient liveness
+	// verdict, not stored status.
+	providerTest: {
+		method: "provider/test",
+		toParams: (provider: string, model: string) => ({ provider, model }),
+		result: ProviderTestResult,
+	},
+	// model/catalog + settings/* (ADR-0024): catalog, preferred model, global effort.
+	modelCatalog: {
+		method: "model/catalog",
+		toParams: () => ({}),
+		result: ModelCatalogResult,
+	},
+	settingsGet: {
+		method: "settings/get",
+		toParams: () => ({}),
+		result: SettingsResult,
+	},
+	settingsSet: {
+		method: "settings/set",
+		toParams: (params: {
 			readonly model?: string;
 			readonly effort?: string;
 			readonly enabled_models?: readonly string[];
-		}) => Effect.Effect<SettingsResult, WsError>;
-		readonly proposalGet: (
+		}) => ({ ...params }),
+		result: SettingsResult,
+	},
+	// proposal/* (ADR-0025): get a parked Run's pending Proposal and decide it.
+	// proposalDecide is wire-wise a plain request (Core owns the idempotent
+	// multi-step decide); the pushed pending/changed notifications stream over
+	// the hand-written proposalNotifications member.
+	proposalGet: {
+		method: "proposal/get",
+		toParams: (runId: RunId) => ({ run_id: runId }),
+		result: ProposalGetResult,
+	},
+	proposalDecide: {
+		method: "proposal/decide",
+		toParams: (params: ProposalDecideParams) => ({ ...params }),
+		result: ProposalDecideResult,
+	},
+} as const;
+
+type Descriptors = typeof requestDescriptors;
+type VerbResult<K extends keyof Descriptors> = Descriptors[K] extends {
+	readonly map: (r: never) => infer B;
+}
+	? B
+	: S.Schema.Type<Descriptors[K]["result"]>;
+
+/** The request-verb half of the WsClient service, derived from the table. */
+export type RequestVerbs = {
+	readonly [K in keyof Descriptors]: (
+		...args: Parameters<Descriptors[K]["toParams"]>
+	) => Effect.Effect<VerbResult<K>, WsError>;
+};
+
+export class WsClient extends Context.Tag("@inkstone/ui-sdk/WsClient")<
+	WsClient,
+	RequestVerbs & {
+		readonly subscribeRun: (
 			runId: RunId,
-		) => Effect.Effect<ProposalGetResult, WsError>;
-		readonly proposalDecide: (
-			params: ProposalDecideParams,
-		) => Effect.Effect<ProposalDecideResult, WsError>;
+		) => Stream.Stream<RunEventValue, WsError>;
 		readonly proposalNotifications: () => Stream.Stream<ProposalNotification>;
 		// Socket-liveness state stream (ADR-0051). No error channel — a pure
 		// state stream; `SubscriptionRef.changes` replays the CURRENT value on
@@ -331,36 +469,17 @@ export function stubWsClient(
 ): WsClientService {
 	const die = (method: string) => () =>
 		Effect.die(`WsClient.${method} not stubbed`);
+	// Derived from the descriptor table. The cast crosses fromEntries' index
+	// signature; the compiler-check property survives structurally: the tag's
+	// request half IS `RequestVerbs` (derived from the same table these keys
+	// come from), and `WsClient.of` below still demands every stream member —
+	// so a new table row is auto-stubbed and a new hand member still reds here.
+	const verbs = Object.fromEntries(
+		Object.keys(requestDescriptors).map((k) => [k, die(k)]),
+	) as unknown as RequestVerbs;
 	return WsClient.of({
-		threadCreate: die("threadCreate"),
-		postMessage: die("postMessage"),
-		threadList: die("threadList"),
-		getRunHistory: die("getRunHistory"),
-		recurrencePreview: die("recurrencePreview"),
-		threadGet: die("threadGet"),
-		threadRename: die("threadRename"),
-		threadArchive: die("threadArchive"),
-		threadUnarchive: die("threadUnarchive"),
-		threadListArchived: die("threadListArchived"),
-		listEntities: die("listEntities"),
-		getBacklinks: die("getBacklinks"),
-		observationQuery: die("observationQuery"),
-		observationUpdate: die("observationUpdate"),
-		entityMutate: die("entityMutate"),
-		rescanJournalEntry: die("rescanJournalEntry"),
-		messageSearch: die("messageSearch"),
+		...verbs,
 		subscribeRun: () => Stream.empty,
-		cancelRun: die("cancelRun"),
-		retryRun: die("retryRun"),
-		providerStatus: die("providerStatus"),
-		providerLoginStart: die("providerLoginStart"),
-		providerConfigure: die("providerConfigure"),
-		providerTest: die("providerTest"),
-		modelCatalog: die("modelCatalog"),
-		settingsGet: die("settingsGet"),
-		settingsSet: die("settingsSet"),
-		proposalGet: die("proposalGet"),
-		proposalDecide: die("proposalDecide"),
 		proposalNotifications: () => Stream.empty,
 		connectionStatus: () => Stream.empty,
 		...overrides,
@@ -623,136 +742,29 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 					);
 				});
 
-			const threadCreate = (
-				prompt: string,
-			): Effect.Effect<ThreadCreateResult, WsError> =>
-				request("thread/create", { prompt }, ThreadCreateResult);
-
-			const postMessage = (
-				threadId: string,
-				prompt: string,
-			): Effect.Effect<RunId, WsError> =>
-				request(
-					"run/post_message",
-					{ thread_id: threadId, prompt },
-					PostMessageResult,
-				).pipe(Effect.map((r) => r.run_id));
-
-			const threadList = (): Effect.Effect<ThreadListResult, WsError> =>
-				request("thread/list", {}, ThreadListResult);
-
-			// run/get_history (ADR-0028 as-built): the recent-Runs feed, newest-first.
-			// A `limit` is sent only when given; omitting it lets Core apply its
-			// default (an undefined field serializes away to `{}`).
-			const getRunHistory = (
-				limit?: number,
-			): Effect.Effect<RunHistoryResult, WsError> =>
-				request(
-					"run/get_history",
-					limit === undefined ? {} : { limit },
-					RunHistoryResult,
-				);
-
-			// recurrence/preview (ADR-0039 amendment, #227): preview the next
-			// occurrence of a draft Recurrence Rule. Read-only — the editor sends an
-			// in-progress rule + the Todo's current anchor dates and renders the
-			// returned dates (or `ended`). `recurrence` rides as the opaque rule object.
-			const recurrencePreview = (
-				params: RecurrencePreviewParams,
-			): Effect.Effect<RecurrencePreviewResult, WsError> =>
-				request("recurrence/preview", { ...params }, RecurrencePreviewResult);
-
-			const threadGet = (
-				threadId: string,
-			): Effect.Effect<ThreadGetResult, WsError> =>
-				request("thread/get", { thread_id: threadId }, ThreadGetResult);
-
-			// thread/rename (ADR-0052): retitle a Thread (Core rejects an
-			// empty/whitespace title); acks the affected thread_id.
-			const threadRename = (
-				threadId: string,
-				title: string,
-			): Effect.Effect<ThreadMutateResult, WsError> =>
-				request(
-					"thread/rename",
-					{ thread_id: threadId, title },
-					ThreadMutateResult,
-				);
-
-			// thread/archive (ADR-0052): hide a Thread from the default sidebar list.
-			const threadArchive = (
-				threadId: string,
-			): Effect.Effect<ThreadMutateResult, WsError> =>
-				request("thread/archive", { thread_id: threadId }, ThreadMutateResult);
-
-			// thread/unarchive (ADR-0052): restore an archived Thread to the list.
-			const threadUnarchive = (
-				threadId: string,
-			): Effect.Effect<ThreadMutateResult, WsError> =>
-				request(
-					"thread/unarchive",
-					{ thread_id: threadId },
-					ThreadMutateResult,
-				);
-
-			// thread/list_archived (ADR-0052): the archived counterpart of
-			// thread/list — same ThreadListResult shape, the archived set.
-			const threadListArchived = (): Effect.Effect<ThreadListResult, WsError> =>
-				request("thread/list_archived", {}, ThreadListResult);
-
-			// entity/list (ADR-0004): accepted Entities of one type (e.g. journal_entry, todo).
-			const listEntities = (
-				type: string,
-			): Effect.Effect<EntityListResult, WsError> =>
-				request("entity/list", { type }, EntityListResult);
-
-			// entity/backlinks (ADR-0050): the two reverse sets the detail Inspector
-			// shows for one Entity — mentioned_in (Journal Entries) + linked_todos.
-			const getBacklinks = (
-				entityId: string,
-			): Effect.Effect<EntityBacklinksResult, WsError> =>
-				request(
-					"entity/backlinks",
-					{ entity_id: entityId },
-					EntityBacklinksResult,
-				);
-
-			// observation/query (#253): read-only typed-observation fetch — an
-			// all-optional filter object spread onto the wire like entityMutate.
-			const observationQuery = (
-				params: ObservationQueryParams,
-			): Effect.Effect<ObservationQueryResult, WsError> =>
-				request("observation/query", { ...params }, ObservationQueryResult);
-
-			const observationUpdate = (
-				params: ObservationUpdateParams,
-			): Effect.Effect<ObservationUpdateResult, WsError> =>
-				request("observation/update", { ...params }, ObservationUpdateResult);
-
-			// entity/mutate (ADR-0033): a user-initiated CRUD request — same
-			// {mutation_kind, payload} envelope as the Worker's propose tool.
-			const entityMutate = (
-				params: EntityMutateParams,
-			): Effect.Effect<EntityMutateResult, WsError> =>
-				request("entity/mutate", { ...params }, EntityMutateResult);
-
-			// journal_entry/rescan (ADR-0042): re-scan an accepted Journal Entry for
-			// mentioned-but-uncaptured entities. Core resolves the JE's origin Thread
-			// and starts an agent Run there; the caller navigates to that Thread.
-			const rescanJournalEntry = (
-				jeId: string,
-			): Effect.Effect<JournalEntryRescanResult, WsError> =>
-				request(
-					"journal_entry/rescan",
-					{ je_id: jeId },
-					JournalEntryRescanResult,
-				);
-
-			// message/search (ADR-0035): substring full-text search over completed Message text.
-			const messageSearch = (
-				query: string,
-			): Effect.Effect<MessageSearchResult, WsError> =>
-				request("message/search", { query }, MessageSearchResult);
+			// Every request/response verb derives from `requestDescriptors`: send
+			// `d.method` with `d.toParams(...args)`, decode with `d.result`, apply
+			// `d.map` when present. The cast at the end is the one seam between the
+			// table's per-row types and the mapped-object type — the round-trip test
+			// exercises every row against a live socket, so a row whose closure
+			// misbehaved would fail there, not hide behind the cast.
+			const verbs = Object.fromEntries(
+				Object.entries(requestDescriptors).map(([k, d]) => [
+					k,
+					(...args: never[]) => {
+						const sent = request(
+							d.method,
+							(d.toParams as (...a: never[]) => Record<string, unknown>)(
+								...args,
+							),
+							d.result as S.Schema<unknown>,
+						);
+						return "map" in d
+							? sent.pipe(Effect.map(d.map as (r: unknown) => unknown))
+							: sent;
+					},
+				]),
+			) as unknown as RequestVerbs;
 
 			// Queue is created before run/subscribe is sent so post-ack events aren't dropped — see docs/design/ui-sdk.md
 			const subscribeRun = (
@@ -766,78 +778,6 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 					}),
 				);
 
-			// run/cancel (ADR-0014): ask Core to cancel a Run. For a running Run the
-			// terminal `cancelled` Run Event also arrives over subscribeRun; for a
-			// parked Run nothing is pushed, so the response outcome is authoritative.
-			const cancelRun = (
-				runId: RunId,
-			): Effect.Effect<RunCancelResult, WsError> =>
-				request("run/cancel", { run_id: runId }, RunCancelResult);
-
-			// run/retry (ADR-0028 retry amendment, #230): ask Core to re-drive an
-			// errored Run IN PLACE on the same run id. `accepted` means Core won the
-			// `errored → running` flip and is re-streaming (its terminal arrives over
-			// subscribeRun); `not_errored`/`unknown_run` are normal response values.
-			const retryRun = (runId: RunId): Effect.Effect<RunRetryResult, WsError> =>
-				request("run/retry", { run_id: runId }, RunRetryResult);
-
-			// provider/* (ADR-0023): connection status + begin OAuth login.
-			const providerStatus = (): Effect.Effect<ProviderStatusResult, WsError> =>
-				request("provider/status", {}, ProviderStatusResult);
-
-			const providerLoginStart = (
-				provider: string,
-			): Effect.Effect<ProviderLoginStartResult, WsError> =>
-				request("provider/login_start", { provider }, ProviderLoginStartResult);
-
-			// provider/configure (ADR-0062): store a static API key; the result reuses
-			// ProviderStatusResult (the refreshed status), so the caller routes it
-			// through the same live-refresh chokepoint as a login.
-			const providerConfigure = (
-				provider: string,
-				apiKey: string,
-			): Effect.Effect<ProviderStatusResult, WsError> =>
-				request(
-					"provider/configure",
-					{ provider, api_key: apiKey },
-					ProviderStatusResult,
-				);
-
-			// provider/test (ADR-0062): a transient liveness probe against a provider
-			// using a specific model. Nothing is persisted; the caller renders the
-			// alive/dead verdict as ephemeral UI state.
-			const providerTest = (
-				provider: string,
-				model: string,
-			): Effect.Effect<ProviderTestResult, WsError> =>
-				request("provider/test", { provider, model }, ProviderTestResult);
-
-			// model/catalog + settings/* (ADR-0024): catalog, preferred model, global effort.
-			const modelCatalog = (): Effect.Effect<ModelCatalogResult, WsError> =>
-				request("model/catalog", {}, ModelCatalogResult);
-
-			const settingsGet = (): Effect.Effect<SettingsResult, WsError> =>
-				request("settings/get", {}, SettingsResult);
-
-			const settingsSet = (params: {
-				readonly model?: string;
-				readonly effort?: string;
-				readonly enabled_models?: readonly string[];
-			}): Effect.Effect<SettingsResult, WsError> =>
-				request("settings/set", { ...params }, SettingsResult);
-
-			// proposal/* (ADR-0025): get a parked Run's pending Proposal, decide it,
-			// and stream the pushed pending/changed notifications.
-			const proposalGet = (
-				runId: RunId,
-			): Effect.Effect<ProposalGetResult, WsError> =>
-				request("proposal/get", { run_id: runId }, ProposalGetResult);
-
-			const proposalDecide = (
-				params: ProposalDecideParams,
-			): Effect.Effect<ProposalDecideResult, WsError> =>
-				request("proposal/decide", { ...params }, ProposalDecideResult);
-
 			const proposalNotifications = (): Stream.Stream<ProposalNotification> =>
 				Stream.fromQueue(ensureProposalQueue());
 
@@ -848,35 +788,8 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 				statusRef.changes;
 
 			return WsClient.of({
-				threadCreate,
-				postMessage,
-				threadList,
-				getRunHistory,
-				recurrencePreview,
-				threadGet,
-				threadRename,
-				threadArchive,
-				threadUnarchive,
-				threadListArchived,
-				listEntities,
-				getBacklinks,
-				observationQuery,
-				observationUpdate,
-				entityMutate,
-				rescanJournalEntry,
-				messageSearch,
+				...verbs,
 				subscribeRun,
-				cancelRun,
-				retryRun,
-				providerStatus,
-				providerLoginStart,
-				providerConfigure,
-				providerTest,
-				modelCatalog,
-				settingsGet,
-				settingsSet,
-				proposalGet,
-				proposalDecide,
 				proposalNotifications,
 				connectionStatus,
 			});
