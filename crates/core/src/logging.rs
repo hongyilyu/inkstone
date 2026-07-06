@@ -29,8 +29,9 @@ const DEFAULT_DIRECTIVE: &str = "info,sqlx::query=warn";
 const MAX_LOG_FILES: usize = 7;
 
 /// Initialize the global `tracing` subscriber writing JSONL to the rolling log
-/// file. Call this as the *first* statement of `main()` so even early fail-fast
-/// paths (`workflow::init`, `db::open`) are captured.
+/// file. Call this immediately after `config::init` in `main()` —
+/// `resolve_log_dir()` reads `config::get()`, which panics pre-init — so even
+/// early fail-fast paths (`workflow::init`, `db::open`) are captured.
 ///
 /// Uses the **blocking** daily appender (not `tracing_appender::non_blocking`):
 /// the non-blocking writer buffers behind a `WorkerGuard` that cannot flush on
@@ -67,13 +68,13 @@ pub fn init() -> Result<()> {
     Ok(())
 }
 
-/// Resolve the log directory: `INKSTONE_LOG_DIR` env override wins, else
-/// `<OS data dir>/inkstone/logs`. Reuses `db::os_data_dir` (already
+/// Resolve the log directory: the boot-resolved `INKSTONE_LOG_DIR` override
+/// wins, else `<OS data dir>/inkstone/logs`. Reuses `db::os_data_dir` (already
 /// `pub(crate)`) so the log dir and the DB dir resolve through the same per-OS
 /// logic and can never drift apart.
 fn resolve_log_dir() -> Result<PathBuf> {
-    if let Some(env) = std::env::var_os("INKSTONE_LOG_DIR") {
-        return Ok(PathBuf::from(env));
+    if let Some(ref dir) = crate::config::get().log_dir_override {
+        return Ok(dir.clone());
     }
     Ok(crate::db::os_data_dir()?.join("inkstone").join("logs"))
 }

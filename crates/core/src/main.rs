@@ -1,4 +1,5 @@
 mod cancel;
+mod config;
 mod credentials;
 mod db;
 mod decide;
@@ -51,12 +52,18 @@ struct AppState {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize the Diagnostic Log subscriber FIRST (ADR-0038), before any
-    // fail-fast boot step, so even `workflow::init`/`db::open` faults are
-    // captured on the trail. Fail-OPEN: observability is not an availability
-    // dependency — an unwritable log dir must not abort Core boot (mirrors the
-    // worker-spawn sink, which also degrades silently). Worst case the trail is
-    // absent; the process still serves.
+    // Resolve all INKSTONE_* env knobs once and freeze them in a process-global
+    // Config. Modules read the struct, not the env — tests inject values
+    // directly without env mutation. Must run before `logging::init`:
+    // `resolve_log_dir()` reads `config::get()`, which panics pre-init.
+    config::init(config::Config::from_env());
+
+    // Initialize the Diagnostic Log subscriber next (ADR-0038) — only config
+    // resolution, which it depends on, precedes it — so even
+    // `workflow::init`/`db::open` faults are captured on the trail. Fail-OPEN:
+    // observability is not an availability dependency — an unwritable log dir
+    // must not abort Core boot (mirrors the worker-spawn sink, which also
+    // degrades silently). Worst case the trail is absent; the process serves.
     if let Err(e) = logging::init() {
         eprintln!("INKSTONE_LOG_INIT_FAILED {e:#}");
     }

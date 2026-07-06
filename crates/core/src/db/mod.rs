@@ -69,22 +69,23 @@ pub(crate) fn now_ms() -> i64 {
         .as_millis() as i64
 }
 
-/// Resolve the DB path: `INKSTONE_DB_PATH` env override wins, else
-/// `<OS data dir>/inkstone/db.sqlite`.
+/// Resolve the DB path: the boot-resolved `INKSTONE_DB_PATH` override wins,
+/// else `<OS data dir>/inkstone/db.sqlite`.
 pub(crate) fn resolve_db_path() -> Result<PathBuf> {
-    if let Some(env) = std::env::var_os("INKSTONE_DB_PATH") {
-        return Ok(PathBuf::from(env));
+    if let Some(ref path) = crate::config::get().db_path_override {
+        return Ok(path.clone());
     }
     Ok(os_data_dir()?.join("inkstone").join("db.sqlite"))
 }
 
-/// Resolve the media root: `INKSTONE_MEDIA_DIR` env override wins (empty treated
-/// as unset, like `skills_dir`), else `<OS data dir>/inkstone/media/`. The same
-/// override-or-data-dir shape as `resolve_db_path`; binary media bytes live under
-/// this root with only the relative path stored in SQLite (ADR-0058).
+/// Resolve the media root: the boot-resolved `INKSTONE_MEDIA_DIR` override wins
+/// (empty treated as unset at parse time, like `skills_dir`), else
+/// `<OS data dir>/inkstone/media/`. The same override-or-data-dir shape as
+/// `resolve_db_path`; binary media bytes live under this root with only the
+/// relative path stored in SQLite (ADR-0058).
 pub(crate) fn media_root() -> Result<PathBuf> {
-    if let Some(dir) = std::env::var_os("INKSTONE_MEDIA_DIR").filter(|d| !d.is_empty()) {
-        return Ok(PathBuf::from(dir));
+    if let Some(ref dir) = crate::config::get().media_dir_override {
+        return Ok(dir.clone());
     }
     Ok(os_data_dir()?.join("inkstone").join("media"))
 }
