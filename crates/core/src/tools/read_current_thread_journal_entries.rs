@@ -102,7 +102,7 @@ mod tests {
         assert_eq!(d.json_schema["type"], serde_json::json!("object"));
     }
 
-    /// A migrated in-memory pool, mirroring `db::tests::memory_pool`.
+    /// A migrated in-memory pool, mirroring the db submodules' `memory_pool` helpers.
     async fn memory_pool() -> SqlitePool {
         let options = SqliteConnectOptions::new()
             .filename(":memory:")

@@ -173,7 +173,7 @@ mod tests {
     use serde_json::json;
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
-    /// A migrated in-memory pool, mirroring `db::tests::memory_pool`.
+    /// A migrated in-memory pool, mirroring the db submodules' `memory_pool` helpers.
     async fn memory_pool() -> SqlitePool {
         let options = SqliteConnectOptions::new()
             .filename(":memory:")

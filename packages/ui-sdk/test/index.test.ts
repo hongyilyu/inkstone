@@ -12,11 +12,13 @@ import { WebSocketServer, type WebSocket as WsConn } from "ws";
 import {
 	type ConnectionStatus,
 	clearNotificationHandler,
+	requestDescriptors,
 	resetNotificationHandlers,
 	setNotificationHandler,
 	WsClient,
 	WsClientConfig,
 	WsClientLive,
+	type WsError,
 } from "../src/index.js";
 
 type WireRequest = {
@@ -1382,4 +1384,283 @@ describe("WsClient", () => {
 			await server.close();
 		}
 	});
+});
+
+// ─── descriptor-table round-trip (one row = one covered verb) ───────────────
+//
+// Proves the ONE `requestDescriptors` table drives the live path for every
+// request/response verb: for each row, invoke the verb with canned args
+// against the fake server, assert the wire frame carries the row's `method`
+// and `toParams(...)` output, and that the canned response decodes through the
+// row's `result` schema (and `map`, when present). A new table row is
+// automatically covered — a row missing from `cannedCases` fails the
+// completeness assertion below.
+
+// `method` and `params` are authored INDEPENDENTLY of the descriptor table
+// (not derived from `d.method` / `d.toParams`): the assertion below compares the
+// observed wire frame against THESE literals, so a wrong table row — misspelled
+// method, mangled params — fails the round-trip instead of matching itself.
+type CannedCase = {
+	readonly args: readonly unknown[];
+	readonly method: string;
+	readonly params: Record<string, unknown>;
+	readonly response: unknown;
+	readonly expected?: unknown;
+};
+
+const cannedCases: Record<keyof typeof requestDescriptors, CannedCase> = {
+	threadCreate: {
+		args: ["hi"],
+		method: "thread/create",
+		params: { prompt: "hi" },
+		response: { thread_id: "t-1", run_id: "r-1" },
+	},
+	postMessage: {
+		args: ["t-1", "hello"],
+		method: "run/post_message",
+		params: { thread_id: "t-1", prompt: "hello" },
+		response: { run_id: "r-2" },
+		// postMessage is the one mapped verb: the decoded result collapses to run_id.
+		expected: "r-2",
+	},
+	threadList: {
+		args: [],
+		method: "thread/list",
+		params: {},
+		response: { threads: [{ id: "t-1", title: "T", last_activity_at: 1 }] },
+	},
+	getRunHistory: {
+		args: [2],
+		method: "run/get_history",
+		params: { limit: 2 },
+		response: {
+			runs: [
+				{ run_id: "r-1", thread_id: "t-1", title: "T", kind: "done", at: 5 },
+			],
+		},
+	},
+	recurrencePreview: {
+		args: [{ recurrence: { freq: "daily" }, due_at: "2026-01-01" }],
+		method: "recurrence/preview",
+		params: { recurrence: { freq: "daily" }, due_at: "2026-01-01" },
+		response: { ended: false, due_at: "2026-01-02" },
+	},
+	threadGet: {
+		args: ["t-1"],
+		method: "thread/get",
+		params: { thread_id: "t-1" },
+		response: { thread_id: "t-1", title: "T", messages: [] },
+	},
+	threadRename: {
+		args: ["t-1", "New"],
+		method: "thread/rename",
+		params: { thread_id: "t-1", title: "New" },
+		response: { thread_id: "t-1" },
+	},
+	threadArchive: {
+		args: ["t-1"],
+		method: "thread/archive",
+		params: { thread_id: "t-1" },
+		response: { thread_id: "t-1" },
+	},
+	threadUnarchive: {
+		args: ["t-1"],
+		method: "thread/unarchive",
+		params: { thread_id: "t-1" },
+		response: { thread_id: "t-1" },
+	},
+	threadListArchived: {
+		args: [],
+		method: "thread/list_archived",
+		params: {},
+		response: { threads: [] },
+	},
+	listEntities: {
+		args: ["todo"],
+		method: "entity/list",
+		params: { type: "todo" },
+		response: { entities: [] },
+	},
+	getBacklinks: {
+		args: ["e-1"],
+		method: "entity/backlinks",
+		params: { entity_id: "e-1" },
+		response: { mentioned_in: [], linked_todos: [] },
+	},
+	observationQuery: {
+		args: [{ schema_key: "mood" }],
+		method: "observation/query",
+		params: { schema_key: "mood" },
+		response: { observations: [] },
+	},
+	observationUpdate: {
+		args: [
+			{
+				observation_id: "o-1",
+				draft: { values: {} },
+			},
+		],
+		method: "observation/update",
+		params: { observation_id: "o-1", draft: { values: {} } },
+		response: { observation_id: "o-1" },
+	},
+	entityMutate: {
+		args: [{ mutation_kind: "create_todo", payload: { title: "x" } }],
+		method: "entity/mutate",
+		params: { mutation_kind: "create_todo", payload: { title: "x" } },
+		response: { entity_id: "e-1" },
+	},
+	rescanJournalEntry: {
+		args: ["je-1"],
+		method: "journal_entry/rescan",
+		params: { je_id: "je-1" },
+		response: { run_id: "r-3", thread_id: "t-2" },
+	},
+	messageSearch: {
+		args: ["hello"],
+		method: "message/search",
+		params: { query: "hello" },
+		response: { hits: [] },
+	},
+	// Discriminating literals (already_terminal vs not_errored — each decodes
+	// ONLY under its own schema) so a swapped cancel/retry table row fails the
+	// decode here rather than passing on the shared "accepted" value.
+	cancelRun: {
+		args: ["r-1"],
+		method: "run/cancel",
+		params: { run_id: "r-1" },
+		response: { outcome: "already_terminal" },
+	},
+	retryRun: {
+		args: ["r-1"],
+		method: "run/retry",
+		params: { run_id: "r-1" },
+		response: { outcome: "not_errored" },
+	},
+	providerStatus: {
+		args: [],
+		method: "provider/status",
+		params: {},
+		response: {
+			providers: [{ id: "codex", connected: true, auth_kind: "oauth" }],
+		},
+	},
+	providerLoginStart: {
+		args: ["codex"],
+		method: "provider/login_start",
+		params: { provider: "codex" },
+		response: { authorize_url: "https://example.test/auth" },
+	},
+	providerConfigure: {
+		args: ["openrouter", "sk-x"],
+		method: "provider/configure",
+		params: { provider: "openrouter", api_key: "sk-x" },
+		response: {
+			providers: [{ id: "openrouter", connected: true, auth_kind: "api_key" }],
+		},
+	},
+	providerTest: {
+		args: ["codex", "gpt-x"],
+		method: "provider/test",
+		params: { provider: "codex", model: "gpt-x" },
+		response: { alive: true },
+	},
+	modelCatalog: {
+		args: [],
+		method: "model/catalog",
+		params: {},
+		response: {
+			providers: [
+				{
+					id: "codex",
+					label: "Codex",
+					models: [{ id: "m", name: "M", reasoning: true, input: ["text"] }],
+				},
+			],
+		},
+	},
+	settingsGet: {
+		args: [],
+		method: "settings/get",
+		params: {},
+		response: {
+			provider: "codex",
+			model: null,
+			effort: "medium",
+			enabled_models: [],
+		},
+	},
+	settingsSet: {
+		args: [{ model: "m", effort: "high" }],
+		method: "settings/set",
+		params: { model: "m", effort: "high" },
+		response: {
+			provider: "codex",
+			model: "m",
+			effort: "high",
+			enabled_models: [],
+		},
+	},
+	proposalGet: {
+		args: ["r-1"],
+		method: "proposal/get",
+		params: { run_id: "r-1" },
+		response: {
+			proposal_id: "p-1",
+			run_id: "r-1",
+			mutation_kind: "create_todo",
+			payload: { title: "x" },
+			rationale: null,
+			status: "pending",
+		},
+	},
+	proposalDecide: {
+		args: [{ proposal_id: "p-1", decision: "accept" }],
+		method: "proposal/decide",
+		params: { proposal_id: "p-1", decision: "accept" },
+		response: { status: "accepted", entity_id: "e-1" },
+	},
+};
+
+describe("requestDescriptors round-trip", () => {
+	it("covers every table row", () => {
+		expect(Object.keys(cannedCases).sort()).toEqual(
+			Object.keys(requestDescriptors).sort(),
+		);
+	});
+
+	for (const key of Object.keys(
+		requestDescriptors,
+	) as (keyof typeof requestDescriptors)[]) {
+		const c = cannedCases[key];
+
+		it(`${key} sends ${c.method} with the expected params and decodes the canned result`, async () => {
+			let observed: WireRequest | undefined;
+			const server = await makeServer((ws, req) => {
+				observed = req;
+				ws.send(
+					JSON.stringify({ jsonrpc: "2.0", id: req.id, result: c.response }),
+				);
+			});
+
+			const program = Effect.gen(function* () {
+				const client = yield* WsClient;
+				const verb = client[key] as (
+					...args: unknown[]
+				) => Effect.Effect<unknown, WsError>;
+				return yield* verb(...c.args);
+			});
+
+			try {
+				const result = await Effect.runPromise(provide(server.url)(program));
+				// Compare against the INDEPENDENTLY-authored c.method/c.params, not
+				// d.method/d.toParams — a wrong table row must fail, not self-match.
+				expect(observed?.method).toBe(c.method);
+				expect(observed?.params).toEqual(c.params);
+				expect(result).toEqual(c.expected ?? c.response);
+			} finally {
+				await server.close();
+			}
+		});
+	}
 });

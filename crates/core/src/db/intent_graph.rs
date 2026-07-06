@@ -162,9 +162,10 @@ struct ExtractedGraph {
 /// stored graph payload (ADR-0042), so `proposal/get` can ship create/reuse/
 /// ambiguous badges to the Client WITHOUT re-resolving. One [`ResolvedNode`] per
 /// entity node (the JE node is create-only, carries no disposition, and is NOT a
-/// plan node). Each node's disposition mirrors [`resolve_disposition`]'s natural
-/// path EXACTLY — honor an `existing_id` hint, else exact (case-insensitive,
-/// trimmed) label+type match against the accepted set: zero → `create`, one →
+/// plan node). Each node's disposition follows [`resolve_disposition`]'s natural
+/// path — honor an `existing_id` hint, else the SHARED [`exact_label_matches`]
+/// core (one function, not a synced copy; the `plan_and_decide_agree_on_*` tests
+/// pin the agreement): zero → `create`, one →
 /// `reuse`, two-or-more → `ambiguous` (with the competing candidates). The model's
 /// per-node `edited_fields`/`entity_id` decisions are NOT applied here (this is the
 /// pre-decision display); the Client stages those locally.
@@ -266,9 +267,9 @@ fn is_near_match(
 /// so a pathological accepted set can't bloat the advisory plan.
 const MAX_NEAR_MATCHES: usize = 5;
 
-/// Resolve one entity node's disposition for the READ-ONLY plan, mirroring
+/// Resolve one entity node's disposition for the READ-ONLY plan, following
 /// [`resolve_disposition`]'s NATURAL path (no per-node override/edit — those are
-/// staged in the Client). Reads the accepted set via `queries::list_by_type`
+/// staged in the Client) through the shared [`exact_label_matches`] core. Reads the accepted set via `queries::list_by_type`
 /// against the POOL (not a tx): there is no in-tx state at `proposal/get`. Returns
 /// every competing match for an `ambiguous` node so the Client renders the
 /// candidates.
@@ -284,41 +285,38 @@ async fn resolve_plan_disposition(
         return Ok(PlanDisposition::Reuse(hint.to_string()));
     }
 
-    // 2. Exact (case-insensitive, trimmed) label + type match. Without a label
-    //    there is nothing to match on → `create` (no near-matches without a name).
+    // 2. Exact (case-insensitive, trimmed) label + type match via the SAME
+    //    shared core the decide-time resolver uses ([`exact_label_matches`]).
+    //    Without a label there is nothing to match on → `create` (no
+    //    near-matches without a name).
     let Some(label) = node.label.as_deref() else {
         return Ok(PlanDisposition::Create(Vec::new()));
     };
-    let needle = label.trim().to_lowercase();
-    let label_key = label_key_for(node.type_str);
 
-    // One pass over the accepted same-type rows collects BOTH the exact matches and
-    // the token-overlap near-matches (ADR-0042 amendment) — the near-match list is
-    // only used when the node falls through to `create` (zero exact matches), so a
-    // single `list_by_type` read backs both (no double-query).
-    let node_tokens = name_tokens(label);
+    // ONE `list_by_type` read and ONE label parse back BOTH passes (no
+    // double-query, no re-parse): the shared exact-match core, then the
+    // token-overlap near-matches (ADR-0042 amendment) — the near-match list is
+    // only used when the node falls through to `create` (zero exact matches).
     let rows = queries::list_by_type(pool, node.type_str).await?;
-    let mut matches: Vec<ResolvedNodeCandidate> = Vec::new();
+    let labeled = labeled_rows(&rows, node.type_str);
+    let matches: Vec<ResolvedNodeCandidate> = exact_label_matches(&labeled, label)
+        .into_iter()
+        .map(|(entity_id, label)| ResolvedNodeCandidate {
+            entity_id: entity_id.clone(),
+            label: label.clone(),
+        })
+        .collect();
+
+    let needle = label.trim().to_lowercase();
+    let node_tokens = name_tokens(label);
     let mut near_matches: Vec<ResolvedNodeCandidate> = Vec::new();
-    for (id, _, data, _, _) in rows {
-        let Some(stored) = serde_json::from_str::<serde_json::Value>(&data)
-            .ok()
-            .as_ref()
-            .and_then(|v| v.get(label_key))
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_string)
-        else {
-            continue;
-        };
-        if stored.trim().to_lowercase() == needle {
-            matches.push(ResolvedNodeCandidate {
-                entity_id: id,
-                label: stored,
-            });
-        } else if is_near_match(&node_tokens, &name_tokens(&stored)) {
+    for (id, stored) in &labeled {
+        if stored.trim().to_lowercase() != needle
+            && is_near_match(&node_tokens, &name_tokens(stored))
+        {
             near_matches.push(ResolvedNodeCandidate {
-                entity_id: id,
-                label: stored,
+                entity_id: id.clone(),
+                label: stored.clone(),
             });
         }
     }
@@ -548,36 +546,20 @@ pub async fn apply_intent_graph_proposal(
     //     (source = JE) are inserted after the JE row exists.
     let mut anchor_entity_id: Option<String> = None;
     if let Some(je) = &je_create {
+        let ctx = WeaveContext {
+            run_id,
+            links: &graph.links,
+            handle_to_id: &handle_to_id,
+            handle_to_label: &handle_to_label,
+            decisions: &decisions,
+            proposal_id,
+            now_ms,
+        };
         let je_id = match je.existing_id.as_deref().filter(|id| !id.trim().is_empty()) {
             Some(existing_id) => {
-                anchor_reuse_journal_entry(
-                    &mut tx,
-                    run_id,
-                    je,
-                    existing_id,
-                    &graph.links,
-                    &handle_to_id,
-                    &handle_to_label,
-                    &decisions,
-                    proposal_id,
-                    now_ms,
-                )
-                .await?
+                anchor_reuse_journal_entry(&mut tx, je, existing_id, &ctx).await?
             }
-            None => {
-                weave_and_mint_journal_entry(
-                    &mut tx,
-                    run_id,
-                    je,
-                    &graph.links,
-                    &handle_to_id,
-                    &handle_to_label,
-                    &decisions,
-                    proposal_id,
-                    now_ms,
-                )
-                .await?
-            }
+            None => weave_and_mint_journal_entry(&mut tx, je, &ctx).await?,
         };
         first_entity_id.get_or_insert_with(|| je_id.clone());
         anchor_entity_id = Some(je_id);
@@ -717,6 +699,37 @@ async fn mint_create(
     .await
 }
 
+/// The recurring weave-call bundle (formerly 6 of the two weave fns' 9-10
+/// positional params). One instance is built at the single call site in
+/// [`apply_intent_graph_proposal`] and lent to whichever weave strategy the JE
+/// node selects.
+struct WeaveContext<'a> {
+    run_id: Uuid,
+    links: &'a [Link],
+    handle_to_id: &'a std::collections::HashMap<String, String>,
+    handle_to_label: &'a std::collections::HashMap<String, String>,
+    decisions: &'a NodeDecisions,
+    proposal_id: &'a str,
+    now_ms: i64,
+}
+
+/// The surviving `journal_ref` links from the JE node — the ONE filter both
+/// weave strategies open with: kind == `JournalRef`, `from` == the JE handle,
+/// target neither rejected nor unresolved (a dropped target's body placeholder
+/// collapses to text). Yields `(link, target_entity_id)`; everything past this
+/// filter (mint-plan-then-insert vs insert-then-read-authoritative-id) stays
+/// strategy-specific by design — see the dangling-chip comments in each fn.
+fn surviving_journal_refs<'a>(
+    ctx: &'a WeaveContext<'_>,
+    je_handle: &'a str,
+) -> impl Iterator<Item = (&'a Link, &'a String)> {
+    ctx.links
+        .iter()
+        .filter(move |l| matches!(l.kind, LinkKind::JournalRef) && l.from == je_handle)
+        .filter(|l| !ctx.decisions.is_rejected(&l.to))
+        .filter_map(|l| ctx.handle_to_id.get(&l.to).map(|id| (l, id)))
+}
+
 /// Weave the JE node's `journal_ref` body mentions and mint the Journal Entry in
 /// ONE revision (ADR-0042 "Multi-ref Journal Entry weave is one write"). Called
 /// AFTER every referenced entity is resolved, so the placeholder rewrite + the
@@ -738,17 +751,10 @@ async fn mint_create(
 ///    JE row exists before its refs).
 ///
 /// Returns the minted JE id (the graph anchor).
-#[allow(clippy::too_many_arguments)]
 async fn weave_and_mint_journal_entry(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    run_id: Uuid,
     je: &ResolvedCreate,
-    links: &[Link],
-    handle_to_id: &std::collections::HashMap<String, String>,
-    handle_to_label: &std::collections::HashMap<String, String>,
-    decisions: &NodeDecisions,
-    proposal_id: &str,
-    now_ms: i64,
+    ctx: &WeaveContext<'_>,
 ) -> Result<String, ApplyError> {
     // 1. Surviving journal_ref targets → an entity_ref id. A link whose target node
     //    was rejected (or otherwise unresolved) is dropped here, so its body
@@ -770,18 +776,7 @@ async fn weave_and_mint_journal_entry(
     // The ordered weave plan: (ref_id, target_entity_id, label_snapshot), one entry
     // per DISTINCT target entity. Kept ordered so the inserted rows are deterministic.
     let mut weave_plan: Vec<(String, String, Option<String>)> = Vec::new();
-    for link in links
-        .iter()
-        .filter(|l| matches!(l.kind, LinkKind::JournalRef) && l.from == je.handle)
-    {
-        if decisions.is_rejected(&link.to) {
-            continue;
-        }
-        let Some(entity_id) = handle_to_id.get(&link.to) else {
-            // The target resolved to no id (rejected, or a degenerate handle): drop
-            // the ref. Its body placeholder collapses to text.
-            continue;
-        };
+    for (link, entity_id) in surviving_journal_refs(ctx, &je.handle) {
         // Reuse the entity's ref_id if a prior link already targeted it (same entity
         // via another handle, or a duplicate journal_ref); else mint one + plan the
         // single row. Either way this handle's placeholder maps to that ref_id.
@@ -790,7 +785,7 @@ async fn weave_and_mint_journal_entry(
             None => {
                 let ref_id = Uuid::now_v7().to_string();
                 entity_ref_id.insert(entity_id.clone(), ref_id.clone());
-                let label = handle_to_label.get(&link.to).cloned();
+                let label = ctx.handle_to_label.get(&link.to).cloned();
                 weave_plan.push((ref_id.clone(), entity_id.clone(), label));
                 ref_id
             }
@@ -801,7 +796,7 @@ async fn weave_and_mint_journal_entry(
     // 2. Weave the JE body: rewrite each entity_ref placeholder to its ref_id, or
     //    collapse to the target's NAME as plain text when it was rejected/dropped.
     let mut payload = je.payload.clone();
-    weave_journal_body(&mut payload, &target_ref_id, handle_to_label)?;
+    weave_journal_body(&mut payload, &target_ref_id, ctx.handle_to_label)?;
 
     // Defense in depth (ADR-0042): the woven body is Core-constructed, but validate
     // it against the same per-node content rules the client codec enforces before
@@ -833,12 +828,12 @@ async fn weave_and_mint_journal_entry(
     // INSIDE this tx, exactly as `apply_proposal` resolves a message-sourced
     // create. The JE is always newborn in this Run, so the guard row is correct by
     // construction (this Run's user Message).
-    let message_id = queries::user_message_id_for_run(&mut **tx, run_id).await?;
+    let message_id = queries::user_message_id_for_run(&mut **tx, ctx.run_id).await?;
     let source = Some(EntitySource::FromMessage {
         message_id,
         relation: SourceRelation::CreatedFrom.as_str().to_string(),
     });
-    let je_id = mint_create(tx, &woven_je, proposal_id, source, now_ms).await?;
+    let je_id = mint_create(tx, &woven_je, ctx.proposal_id, source, ctx.now_ms).await?;
 
     // 4. Insert the entity_ref rows now that the JE (their source) exists. The id
     //    matches the body's ref_id minted in step 1.
@@ -849,7 +844,7 @@ async fn weave_and_mint_journal_entry(
             &je_id,
             target_entity_id,
             label.as_deref(),
-            now_ms,
+            ctx.now_ms,
         )
         .await?;
     }
@@ -887,22 +882,15 @@ async fn weave_and_mint_journal_entry(
 ///    NOTHING, so re-anchoring an already-anchored entity is a no-op).
 ///
 /// Returns the existing JE id (the graph anchor — unchanged).
-#[allow(clippy::too_many_arguments)]
 async fn anchor_reuse_journal_entry(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    run_id: Uuid,
     je: &ResolvedCreate,
     existing_id: &str,
-    links: &[Link],
-    handle_to_id: &std::collections::HashMap<String, String>,
-    handle_to_label: &std::collections::HashMap<String, String>,
-    decisions: &NodeDecisions,
-    proposal_id: &str,
-    now_ms: i64,
+    ctx: &WeaveContext<'_>,
 ) -> Result<String, ApplyError> {
     // 1. Cross-thread guard: the re-anchored JE's origin user-Message must be in this
     //    Run's Thread. A cross-thread re-scan is refused — nothing is written.
-    if !queries::journal_entry_target_is_valid(&mut **tx, run_id, existing_id).await? {
+    if !queries::journal_entry_target_is_valid(&mut **tx, ctx.run_id, existing_id).await? {
         return Err(ApplyError::InvalidMutation(format!(
             "intent graph anchor-reuse target {existing_id:?} is not a Journal Entry created from \
              this thread; cross-thread re-scan is refused"
@@ -943,17 +931,7 @@ async fn anchor_reuse_journal_entry(
     //    (`apply::reference_existing_entity_from_journal_entry`).
     let mut entity_ref_id: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
-    for link in links
-        .iter()
-        .filter(|l| matches!(l.kind, LinkKind::JournalRef) && l.from == je.handle)
-    {
-        if decisions.is_rejected(&link.to) {
-            continue;
-        }
-        let Some(entity_id) = handle_to_id.get(&link.to) else {
-            // The target resolved to no id (rejected, or a degenerate handle): drop it.
-            continue;
-        };
+    for (link, entity_id) in surviving_journal_refs(ctx, &je.handle) {
         // A re-scan ref needs exactly ONE placement (ADR-0042 amendment, #221):
         // `match_text` splices the chip at a substring already in the entry's prose
         // (the original re-scan path); `append_text` appends a model-proposed clause
@@ -985,14 +963,14 @@ async fn anchor_reuse_journal_entry(
             Some(existing) => existing.clone(),
             None => {
                 let proposed_ref_id = Uuid::now_v7().to_string();
-                let label = handle_to_label.get(&link.to).cloned();
+                let label = ctx.handle_to_label.get(&link.to).cloned();
                 queries::insert_entity_ref(
                     &mut **tx,
                     &proposed_ref_id,
                     existing_id,
                     entity_id,
                     label.as_deref(),
-                    now_ms,
+                    ctx.now_ms,
                 )
                 .await?;
                 // Read the row's id back: on ON CONFLICT this is the EXISTING row's
@@ -1031,7 +1009,7 @@ async fn anchor_reuse_journal_entry(
             // clause CONTENT stays the model's; its label must be a verbatim substring (else
             // fail loud).
             Placement::Append(append_text) => {
-                let label = handle_to_label.get(&link.to).map(String::as_str).ok_or_else(|| {
+                let label = ctx.handle_to_label.get(&link.to).map(String::as_str).ok_or_else(|| {
                     ApplyError::InvalidMutation(format!(
                         "intent graph anchor-reuse journal_ref to {:?} has no recognized name to splice into its append_text clause",
                         link.to
@@ -1072,7 +1050,7 @@ async fn anchor_reuse_journal_entry(
         crate::mutation::EntityType::JournalEntry.as_str(),
         schema_version,
         &data_str,
-        now_ms,
+        ctx.now_ms,
     )
     .await?;
     if updated != 1 {
@@ -1085,8 +1063,8 @@ async fn anchor_reuse_journal_entry(
         existing_id,
         next_seq,
         &data_str,
-        Some(proposal_id),
-        now_ms,
+        Some(ctx.proposal_id),
+        ctx.now_ms,
     )
     .await?;
 
@@ -1361,25 +1339,16 @@ async fn resolve_disposition(
         return Ok(Disposition::Reuse(hint.to_string()));
     }
 
-    // 2. Exact (case-insensitive, trimmed) label + type match. Without a label
-    //    there is nothing to match on, so the node is a fresh `create`.
+    // 2. Exact (case-insensitive, trimmed) label + type match via the shared
+    //    core. Without a label there is nothing to match on → a fresh `create`.
     let Some(label) = node.label.as_deref() else {
         return Ok(Disposition::Create(node.payload.clone()));
     };
-    let needle = label.trim().to_lowercase();
-    let label_key = label_key_for(node.type_str);
-
     let rows = queries::list_by_type(&mut **tx, node.type_str).await?;
-    let mut matches = rows.into_iter().filter(|(_, _, data, _, _)| {
-        serde_json::from_str::<serde_json::Value>(data)
-            .ok()
-            .as_ref()
-            .and_then(|v| v.get(label_key))
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|stored| stored.trim().to_lowercase() == needle)
-    });
+    let labeled = labeled_rows(&rows, node.type_str);
+    let mut matches = exact_label_matches(&labeled, label).into_iter();
 
-    let Some((first_id, ..)) = matches.next() else {
+    let Some((first_id, _)) = matches.next() else {
         return Ok(Disposition::Create(node.payload.clone()));
     };
     if matches.next().is_some() {
@@ -1392,7 +1361,48 @@ async fn resolve_disposition(
             node.handle, node.type_str, node.type_str, label
         )));
     }
-    Ok(Disposition::Reuse(first_id))
+    Ok(Disposition::Reuse(first_id.clone()))
+}
+
+/// Parse each accepted same-type row's display label out of its `data` JSON via
+/// [`label_key_for`], yielding `(entity_id, stored_label)` in row order (rows
+/// whose data is unparseable or label-less drop out). Both resolvers feed
+/// [`exact_label_matches`] from this ONE parse; the plan path additionally runs
+/// its near-match pass over the same parsed labels (one read, one parse).
+fn labeled_rows(
+    rows: &[(String, String, String, i64, i64)],
+    type_str: &str,
+) -> Vec<(String, String)> {
+    let label_key = label_key_for(type_str);
+    rows.iter()
+        .filter_map(|(id, _, data, _, _)| {
+            let stored = serde_json::from_str::<serde_json::Value>(data)
+                .ok()
+                .as_ref()
+                .and_then(|v| v.get(label_key))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)?;
+            Some((id.clone(), stored))
+        })
+        .collect()
+}
+
+/// The ONE exact-match rule both resolvers share (formerly duplicated between
+/// [`resolve_disposition`] and [`resolve_plan_disposition`] and kept equivalent
+/// only by a doc comment): trim+lowercase equality of `label` against each
+/// accepted same-type row's stored label (from [`labeled_rows`] — callers own
+/// the read and the parse). Returns the matching `(entity_id, stored_label)`
+/// pairs in row order. The `plan_and_decide_agree_on_*` tests pin the
+/// agreement this function embodies.
+fn exact_label_matches<'a>(
+    labeled: &'a [(String, String)],
+    label: &str,
+) -> Vec<&'a (String, String)> {
+    let needle = label.trim().to_lowercase();
+    labeled
+        .iter()
+        .filter(|(_, stored)| stored.trim().to_lowercase() == needle)
+        .collect()
 }
 
 /// The `data` key holding a node's exact-match label, per Entity Type (mirrors
@@ -3366,5 +3376,123 @@ mod tests {
         assert!(person_id_named(&pool, "Priya").await.is_none(), "no Person minted");
         let (_, revisions) = je_row_and_revision_counts(&pool, &scaffold.je_id).await;
         assert_eq!(revisions, 1, "the rolled-back neither-set apply writes no revision");
+    }
+
+    // ─── plan/decide exact-match agreement (shared-core lock) ──────────────
+    //
+    // These two tests pin the property the resolve_plan_disposition doc used to
+    // merely PROMISE in prose ("mirrors resolve_disposition's natural path"):
+    // what proposal/get shows at review time is what the decide-time apply does.
+    // They run the plan (pool read) AND the apply (in-tx resolution) against the
+    // same seeded state and assert the two resolvers agree — reuse resolves the
+    // SAME id; ambiguous fails the apply as InvalidMutation.
+
+    /// Seed the run/proposal scaffold for a DIRECT-CAPTURE graph apply (no JE
+    /// node) so the agreement tests can drive `apply_intent_graph_proposal`
+    /// with an arbitrary payload. Reuses the anchor-reuse scaffold; the JE it
+    /// seeds is simply unused by a JE-less payload.
+    async fn seed_direct_capture(pool: &sqlx::SqlitePool) -> Scaffold {
+        seed_anchor_reuse(pool, serde_json::json!([])).await
+    }
+
+    #[tokio::test]
+    async fn plan_and_decide_agree_on_reuse() {
+        let pool = memory_pool().await;
+        let ana = insert_named(&pool, "person", "Ana").await;
+        // Whitespace + case differences must normalize away in BOTH resolvers.
+        // A fresh `@bob` rides along: a reuse-ONLY graph mints nothing and has
+        // no anchor (a documented loud failure), so the minted node keeps the
+        // apply on its happy path while `@ana` exercises the reuse agreement.
+        let payload = serde_json::json!({
+            "entities": [
+                { "handle": "@ana", "type": "person", "name": "  ana " },
+                { "handle": "@bob", "type": "person", "name": "Bob" }
+            ],
+            "links": []
+        });
+
+        // Plan side: proposal/get's badge says `reuse` of the accepted id.
+        let plan = resolved_plan_for(&pool, &payload).await.unwrap();
+        assert_eq!(plan.len(), 2);
+        let ana_node = &plan[node(&plan, "@ana")];
+        assert_eq!(ana_node.disposition, "reuse");
+        assert_eq!(ana_node.entity_id.as_deref(), Some(ana.as_str()));
+        assert_eq!(plan[node(&plan, "@bob")].disposition, "create");
+
+        // Decide side: the apply resolves the SAME id — no second person row.
+        let scaffold = seed_direct_capture(&pool).await;
+        let outcome = apply_intent_graph_proposal(
+            &pool,
+            scaffold.run_id,
+            &scaffold.proposal_id,
+            &scaffold.tool_call_id,
+            &payload,
+            None,
+            None,
+            |anchor| format!("anchor:{anchor}"),
+            crate::db::now_ms(),
+        )
+        .await
+        .expect("reuse+create apply succeeds");
+        // The agreement assertion is on the ROWS: still exactly ONE Ana (the
+        // pre-existing row was reused), while Bob minted fresh.
+        drop(outcome);
+        let ana_rows: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM entities WHERE type = 'person' \
+             AND LOWER(TRIM(json_extract(data, '$.name'))) = 'ana'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("count anas");
+        assert_eq!(ana_rows, 1, "decide reused the accepted Ana; no second row");
+        assert_eq!(
+            person_id_named(&pool, "Ana").await.as_deref(),
+            Some(ana.as_str()),
+            "the surviving row is the pre-seeded one"
+        );
+    }
+
+    #[tokio::test]
+    async fn plan_and_decide_agree_on_ambiguous() {
+        let pool = memory_pool().await;
+        insert_named(&pool, "person", "Ana").await;
+        insert_named(&pool, "person", "ana").await;
+        let payload = serde_json::json!({
+            "entities": [{ "handle": "@ana", "type": "person", "name": "Ana" }],
+            "links": []
+        });
+
+        // Plan side: two exact matches → `ambiguous`, candidates carried.
+        let plan = resolved_plan_for(&pool, &payload).await.unwrap();
+        assert_eq!(plan.len(), 1);
+        assert_eq!(plan[0].disposition, "ambiguous");
+        assert_eq!(
+            plan[0].candidates.as_ref().map(Vec::len),
+            Some(2),
+            "both competing rows surface as candidates"
+        );
+
+        // Decide side: the SAME two matches fail the apply — InvalidMutation,
+        // nothing minted (tx rolled back).
+        let scaffold = seed_direct_capture(&pool).await;
+        let result = apply_intent_graph_proposal(
+            &pool,
+            scaffold.run_id,
+            &scaffold.proposal_id,
+            &scaffold.tool_call_id,
+            &payload,
+            None,
+            None,
+            |anchor| format!("anchor:{anchor}"),
+            crate::db::now_ms(),
+        )
+        .await;
+        match result {
+            Err(ApplyError::InvalidMutation(_)) => {}
+            other => panic!(
+                "ambiguous at decide must be a loud InvalidMutation, got {:?}",
+                other.map(|_| "Applied/RejectedAll").err()
+            ),
+        }
     }
 }
