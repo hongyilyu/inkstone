@@ -5,8 +5,8 @@
 //!   - `GET /<spa-route>`    → `index.html` (SPA client-side routing fallback)
 //!   - `GET /ws`             → WebSocket upgrade (precedence over the fallback)
 //!
-//! Unset (or release) → the bare `"Inkstone Core"` string, so production cannot
-//! serve arbitrary files from disk.
+//! Unset in debug → the bare `"Inkstone Core"` string. Release ignores the env
+//! var and serves the embedded SPA, so production never serves files from disk.
 
 mod common;
 use common::Workspace;

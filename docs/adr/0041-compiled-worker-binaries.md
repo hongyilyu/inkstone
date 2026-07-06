@@ -45,7 +45,7 @@ A full real-provider Run (compiled `inkstone-worker` + a live OpenAI token compl
 ## What stays out of scope
 
 - **Cross-OS release matrix and downloadable artifacts.** `bun build --compile` produces a per-OS binary; a CI matrix that builds mac/linux/windows artifacts and uploads them to a GitHub Release is a separate feature. This ADR adds only a build script and a single-host CI build step that gates compilation.
-- **Embedding the binaries into Core.** ADR-0040's seam is path-based (sibling executable / env override), not embed-based. The web-bundle embed (ADR-0015) is itself still unbuilt; a unified single-binary bundle is deferred to whenever that lands.
+- **Embedding the binaries into Core.** ADR-0040's seam is path-based (sibling executable / env override), not embed-based. The web-bundle embed (ADR-0015) is now built; a unified single-binary bundle remains deferred as a separate decision.
 - **Desktop shell / installer.** No Tauri/Electron/installer exists; none is added.
 - **`pi-ai` version governance.** The worker and helper pin `0.74.0` by hand (ADR-0040); unchanged.
 
@@ -63,4 +63,4 @@ A full real-provider Run (compiled `inkstone-worker` + a live OpenAI token compl
 - [ADR-0023](./0023-provider-oauth-core-owned-credentials.md) — the Provider Helper's reason for existing; unchanged in substance.
 - [ADR-0027](./0027-worker-interpreter-transport-seam.md) — "sole stdio site" scoped to the Worker; the helper is a separate binary, now also a compiled one.
 - [ADR-0040](./0040-provider-helper-own-package.md) — the package split this ADR conforms to; this ADR makes its deferred "packaging" note concrete, choosing sibling auto-detection over env-var-only.
-- [ADR-0015](./0015-web-client-packaging.md) — the single-binary web embed, still unbuilt; a unified bundle waits on it.
+- [ADR-0015](./0015-web-client-packaging.md) — the single-binary web embed, now built; a unified bundle remains a separate deferred decision.

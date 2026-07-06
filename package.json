@@ -11,6 +11,7 @@
 		"check": "pnpm check:ts && pnpm check:rust",
 		"build:worker": "bun build --compile packages/worker/src/cli.ts --outfile target/debug/inkstone-worker",
 		"build:provider-helper": "bun build --compile packages/provider-helper/src/provider.ts --outfile target/debug/inkstone-provider-helper",
+		"build:release": "pnpm -C apps/web build && cargo build --release --locked --manifest-path crates/core/Cargo.toml",
 		"test:e2e": "pnpm -C tests/e2e test:e2e",
 		"test:e2e:install": "pnpm -C tests/e2e test:e2e:install",
 		"eval": "pnpm -C packages/worker eval",

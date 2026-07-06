@@ -207,6 +207,42 @@ jobs:
           echo "--- helper stdout ---"
           cat "$out"
           grep -q '"kind":"authorize_url"' "$out"
+      # build:release boot-smoke (ADR-0015): build the SPA then a release-profile
+      # Core, which embeds apps/web/dist at compile time and serves it from the
+      # same listener as the WebSocket. Boot it hermetically, then assert `/` and
+      # a deep link return the embedded index.html and a hashed asset gets the
+      # right content-type. This is the ONLY automated gate for the
+      # cfg(not(debug_assertions)) embed path — the cargo test suite runs under
+      # the debug profile and can never see it.
+      - name: build:release boot-smoke
+        run: |
+          pnpm build:release
+          out="$(mktemp)"
+          # INKSTONE_WEB_DIR is debug-gated (release never reads it), so booting
+          # with it set to a bogus path makes every assertion below also prove
+          # the env var is ignored — at zero extra boot cost.
+          INKSTONE_WEB_DIR=/nonexistent \
+            INKSTONE_PORT=0 INKSTONE_DB_PATH="$(mktemp -d)/db.sqlite" \
+            INKSTONE_LOG_DIR="$(mktemp -d)" INKSTONE_SKILLS_DIR="$(mktemp -d)/skills" \
+            target/release/core >"$out" 2>&1 &
+          core_pid=$!
+          trap 'kill "$core_pid" 2>/dev/null || true' EXIT
+          url=""
+          for _ in $(seq 1 60); do
+            url="$(grep -o 'INKSTONE_LISTENING http://[^ ]*' "$out" | cut -d' ' -f2 || true)"
+            [ -n "$url" ] && break
+            sleep 0.5
+          done
+          echo "--- core stdout ---"
+          cat "$out"
+          [ -n "$url" ] || { echo "core never announced INKSTONE_LISTENING"; exit 1; }
+          curl -fsS "$url/" | head -c 14 | grep -qi '^<!doctype html'
+          curl -fsS "$url/threads/abc" | head -c 14 | grep -qi '^<!doctype html'
+          asset="$(ls apps/web/dist/assets/*.js | head -n 1 | xargs basename)"
+          curl -fsSI "$url/assets/$asset" | grep -i '^content-type:' | grep -q 'text/javascript'
+          # /ws keeps route precedence over the SPA fallback: a plain GET without
+          # upgrade headers must hit the ws route (400), not serve index.html (200).
+          test "$(curl -s -o /dev/null -w '%{http_code}' "$url/ws")" = "400"
       # globalSetup builds debug Core (cargo build) + the web SPA + bun-compiles
       # the worker fixture binary. CI=true is set by Actions automatically, so
       # playwright.config sets forbidOnly=true and retries=0; workers=4 everywhere
