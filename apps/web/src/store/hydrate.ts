@@ -104,6 +104,40 @@ export function toMessage(view: ThreadGetResult["messages"][number]): Message {
 }
 
 /**
+ * Find the decided (accepted/rejected) proposal outcome carried by `runId`'s
+ * message view, if any — the durable truth `decideProposal`'s -32002 settlement
+ * path reads after a `thread/get` refetch. The wire `status` is a bare string
+ * (Core filters to accepted/rejected, but the type is open): any other value is
+ * skipped rather than coerced, mirroring {@link rehydrateDecidedProposals}.
+ * `entity_id` is omitted for a rejected Proposal or when no Entity resolves.
+ */
+export function decidedProposalSegment(
+	views: ThreadGetResult["messages"],
+	runId: string,
+): { status: "accepted" | "rejected"; entity_id?: string } | undefined {
+	if (runId === "") {
+		return undefined;
+	}
+	for (const view of views) {
+		if (view.run_id !== runId) {
+			continue;
+		}
+		const proposalSegment = view.segments.find(
+			(seg) => seg.kind === "proposal",
+		);
+		if (proposalSegment === undefined) {
+			continue;
+		}
+		const status = proposalSegment.status;
+		if (status !== "accepted" && status !== "rejected") {
+			continue;
+		}
+		return { status, entity_id: proposalSegment.entity_id };
+	}
+	return undefined;
+}
+
+/**
  * Reconstruct the DECIDED Proposals carried by a thread's rehydration views
  * (ADR-0044) and merge them into the `proposals` map, so a settled `ProposalCard`
  * ("Applied.") survives reload. The decided Proposal now arrives as a `proposal`

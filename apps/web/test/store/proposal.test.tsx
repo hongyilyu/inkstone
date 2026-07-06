@@ -2,10 +2,12 @@ import type {
 	ProposalDecideParams,
 	ProposalDecideResult,
 	ProposalGetResult,
+	ThreadGetResult,
 } from "@inkstone/protocol";
 import {
 	InvalidParamsError,
 	type ProposalNotification,
+	ProposalNotPendingError,
 	type RunEventValue,
 	type RunId,
 	stubWsClient,
@@ -53,6 +55,7 @@ function makeStubRuntime(opts: {
 		params: ProposalDecideParams,
 	) => Effect.Effect<ProposalDecideResult, WsError>;
 	onSubscribe?: () => void;
+	threadGet?: (threadId: string) => Effect.Effect<ThreadGetResult, WsError>;
 }) {
 	// Each subscribeRun gets the next queue in runQueues (a fresh hub per subscribe).
 	let subscribeIdx = 0;
@@ -84,6 +87,7 @@ function makeStubRuntime(opts: {
 					status: params.decision === "accept" ? "accepted" : "rejected",
 				} as const)),
 		proposalNotifications: () => Stream.fromQueue(opts.proposalQueue),
+		...(opts.threadGet !== undefined ? { threadGet: opts.threadGet } : {}),
 	});
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 }
@@ -324,6 +328,141 @@ describe("proposal stream + decide", () => {
 		expect(captured[2]?.decision_idempotency_key).not.toBe(
 			captured[0]?.decision_idempotency_key,
 		);
+
+		await runtime.dispose();
+	});
+
+	it("settles an already-decided proposal from thread/get on ProposalNotPendingError", async () => {
+		const proposalQueue = Effect.runSync(
+			Queue.unbounded<ProposalNotification>(),
+		);
+		const runQueue = Effect.runSync(Queue.unbounded<RunEventValue>());
+		let subscribeCount = 0;
+		const runtime = makeStubRuntime({
+			proposalQueue,
+			runQueue,
+			onSubscribe: () => {
+				subscribeCount += 1;
+			},
+			// Another tab already decided: every decide fails proposal-not-pending.
+			onDecide: () =>
+				Effect.fail(
+					new ProposalNotPendingError({
+						message: "proposal is no longer pending",
+					}),
+				),
+			// Durable truth: thread/get carries the decided proposal segment.
+			threadGet: () =>
+				Effect.succeed({
+					thread_id: "thread-1",
+					title: "T",
+					messages: [
+						{
+							id: "m1",
+							role: "assistant",
+							status: "streaming",
+							run_id: "run-1",
+							segments: [
+								{
+									kind: "proposal",
+									proposal_id: "prop-1",
+									mutation_kind: "create_journal_entry",
+									status: "accepted",
+									entity_id: "e-1",
+								},
+							],
+						},
+					],
+				} satisfies ThreadGetResult),
+		});
+
+		// Seed run-1's turn + parked stream so settlement can resume it.
+		const assistantId = nextMessageId();
+		seedAssistantMessage("thread-1", {
+			id: assistantId,
+			role: "assistant",
+			status: "streaming",
+			segments: [],
+			run_id: "",
+		});
+		attachRun("thread-1", assistantId, "run-1");
+		startRunStream(runtime, "thread-1", "run-1");
+		await waitFor(() => subscribeCount === 1);
+
+		startProposalStream(runtime);
+		Queue.unsafeOffer(proposalQueue, {
+			kind: "pending",
+			run_id: "run-1",
+			proposal_id: "prop-1",
+		});
+		await waitFor(() => getChatState().proposals["run-1"] !== undefined);
+
+		await decideProposal(runtime, "run-1", "accept");
+
+		// Settled from durable truth, NOT the dead-end error state.
+		expect(getChatState().proposals["run-1"]).toMatchObject({
+			status: "accepted",
+			entity_id: "e-1",
+		});
+		// The resume tail was re-subscribed, mirroring the success path.
+		await waitFor(() => subscribeCount === 2);
+
+		await runtime.dispose();
+	});
+
+	it("falls back to the error state when thread/get carries no decided segment", async () => {
+		const proposalQueue = Effect.runSync(
+			Queue.unbounded<ProposalNotification>(),
+		);
+		const runQueue = Effect.runSync(Queue.unbounded<RunEventValue>());
+		const runtime = makeStubRuntime({
+			proposalQueue,
+			runQueue,
+			onDecide: () =>
+				Effect.fail(
+					new ProposalNotPendingError({
+						message: "proposal is no longer pending",
+					}),
+				),
+			// The -32002 run-not-parked case: durable truth has no decided outcome.
+			threadGet: () =>
+				Effect.succeed({
+					thread_id: "thread-1",
+					title: "T",
+					messages: [
+						{
+							id: "m1",
+							role: "assistant",
+							status: "streaming",
+							run_id: "run-1",
+							segments: [{ kind: "text", text: "still thinking" }],
+						},
+					],
+				} satisfies ThreadGetResult),
+		});
+
+		const assistantId = nextMessageId();
+		seedAssistantMessage("thread-1", {
+			id: assistantId,
+			role: "assistant",
+			status: "streaming",
+			segments: [],
+			run_id: "",
+		});
+		attachRun("thread-1", assistantId, "run-1");
+		startRunStream(runtime, "thread-1", "run-1");
+
+		startProposalStream(runtime);
+		Queue.unsafeOffer(proposalQueue, {
+			kind: "pending",
+			run_id: "run-1",
+			proposal_id: "prop-1",
+		});
+		await waitFor(() => getChatState().proposals["run-1"] !== undefined);
+
+		await decideProposal(runtime, "run-1", "accept");
+
+		expect(getChatState().proposals["run-1"]?.status).toBe("error");
 
 		await runtime.dispose();
 	});
