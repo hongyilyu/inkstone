@@ -55,21 +55,19 @@ pub(crate) struct EntityMutationSpec<'a> {
 }
 
 /// The entity `data` to store for a `kind`, given its effective payload. The
-/// per-kind extraction/normalization seam: every full-replace update kind
-/// (`update_journal_entry`/`update_person`/`update_project`/`update_media`/
-/// `update_habit`) strips `entity_id` (it targets the row but is not entity
-/// data);
-/// `create_project` injects `status:"active"` when absent so the stored data
-/// always carries an explicit status (validate tolerates a missing status), and
-/// for a resulting active Project with no review fields supplied seeds the
-/// default weekly review ritual (`review_every` + `next_review_at`) from the
-/// review anchor (ADR-0031); `create_todo` unwraps the `{todo, person_refs?}`
-/// envelope to store `payload.todo` (the TodoData) and likewise injects
-/// `status:"active"` when absent; `create_media`/`create_habit` drop null
-/// optionals; every other kind stores its payload as-is. The `now_ms`/
-/// `offset_minutes` inputs anchor that review-date default. The in-tx kinds
-/// (`update_todo`/`mark_project_reviewed`/reference weave) never reach this seam
-/// — their data is computed inside the tx — so they fall to the as-is arm.
+/// per-kind extraction/normalization seam, now policy-driven: each Entity Type
+/// declares its `create_normalize` on the spec row; the shared update policy
+/// lives at [`crate::mutation::UPDATE_NORMALIZE`]. The `now_ms`/`offset_minutes`
+/// inputs anchor the Project review-date default.
+///
+/// The in-tx kinds (`update_todo`/`mark_project_reviewed`/reference weave)
+/// compute their data inside the tx — they never reach this seam, so they fall
+/// to the store-as-is arm.
+/// ApplyIntentGraph never reaches this single-entity seam — decide
+/// short-circuits in slice 1, and slice 2's resolver loops
+/// `apply_entity_mutation` per node (each node carrying its OWN single-entity
+/// kind), never `apply_entity_mutation(ApplyIntentGraph)`. Store as-is to keep
+/// the match total.
 fn entity_data_payload(
     kind: MutationKind,
     payload: &serde_json::Value,
@@ -78,104 +76,33 @@ fn entity_data_payload(
 ) -> serde_json::Value {
     use MutationKind as M;
     match kind {
+        // Full-replace update family: shared policy (strip entity_id +
+        // source_journal_entry_id, null-clear).
         M::UpdateJournalEntry
         | M::UpdatePerson
         | M::UpdateProject
         | M::UpdateMedia
         | M::UpdateHabit => {
-            let Some(obj) = payload.as_object() else {
-                return payload.clone();
-            };
-            let mut data = obj.clone();
-            data.remove("entity_id");
-            // `source_journal_entry_id` is a create-only provenance directive
-            // (honored solely for `created_from`); strip it so an update payload
-            // can never persist this transport field into entity data.
-            data.remove("source_journal_entry_id");
-            // Sentinel-null clear (ADR-0033): a `null`-valued optional field is a
-            // clear directive — drop the key rather than persist a JSON null. The
-            // person/project update is a full-document replace, so an omitted-or-
-            // null optional field is simply absent in the stored data.
-            data.retain(|_, value| !value.is_null());
-            serde_json::Value::Object(data)
+            crate::mutation::UPDATE_NORMALIZE.apply(payload, now_ms, offset_minutes)
         }
-        M::CreatePerson => {
-            // `source_journal_entry_id` is a provenance directive, never Person
-            // data — strip it before storing (validate already accepted it).
-            let Some(obj) = payload.as_object() else {
-                return payload.clone();
-            };
-            let mut data = obj.clone();
-            data.remove("source_journal_entry_id");
-            // A `null` optional field carries no value to store (ADR-0033).
-            data.retain(|_, value| !value.is_null());
-            serde_json::Value::Object(data)
-        }
-        M::CreateProject => {
-            let Some(obj) = payload.as_object() else {
-                return payload.clone();
-            };
-            let mut data = obj.clone();
-            // `source_journal_entry_id` is provenance, never Project data.
-            data.remove("source_journal_entry_id");
-            // A `null` optional field carries no value to store (ADR-0033); drop it
-            // before the review-default seeding so a `null` review field is treated
-            // as absent (and thus seeded for an active Project).
-            data.retain(|_, value| !value.is_null());
-            let status = data
-                .entry("status")
-                .or_insert_with(|| serde_json::json!("active"));
-            let is_active = status.as_str() == Some("active");
-            if is_active
-                && !data.contains_key("review_every")
-                && !data.contains_key("next_review_at")
-            {
-                data.insert(
-                    "review_every".to_string(),
-                    serde_json::json!({ "interval": 1, "unit": "week" }),
-                );
-                data.insert(
-                    "next_review_at".to_string(),
-                    serde_json::json!(crate::localtime::next_review_at_local(
-                        now_ms,
-                        offset_minutes
-                    )),
-                );
-            }
-            serde_json::Value::Object(data)
-        }
-        M::CreateTodo => {
-            // Unwrap the `{todo, person_refs?}` envelope into Todo JSON;
-            // person_refs persist separately in `todo_person_refs`, never in
-            // `entities.data`.
-            let Some(todo) = payload.get("todo").and_then(|t| t.as_object()) else {
-                return payload.clone();
-            };
-            let mut data = todo.clone();
-            data.entry("status")
-                .or_insert_with(|| serde_json::json!("active"));
-            serde_json::Value::Object(data)
-        }
-        M::CreateMedia | M::CreateHabit => {
-            // A `null` optional field carries no value to store (ADR-0033): drop
-            // the key rather than persist a JSON null. No envelope, no defaults.
-            let Some(obj) = payload.as_object() else {
-                return payload.clone();
-            };
-            let mut data = obj.clone();
-            data.retain(|_, value| !value.is_null());
-            serde_json::Value::Object(data)
+        // Create family: per-type policy on the spec row (extract → strip →
+        // null-drop → post).
+        M::CreateJournalEntry
+        | M::CreatePerson
+        | M::CreateProject
+        | M::CreateTodo
+        | M::CreateMedia
+        | M::CreateHabit => {
+            kind.describe()
+                .entity_type
+                .spec()
+                .create_normalize
+                .apply(payload, now_ms, offset_minutes)
         }
         // The delete kinds touch no entity data, and the in-tx kinds
         // (update_todo/mark_project_reviewed/reference weave) compute their data
         // inside the tx — none reach this pre-write seam, so store as-is.
-        // ApplyIntentGraph never reaches this single-entity seam — decide
-        // short-circuits in slice 1, and slice 2's resolver loops
-        // `apply_entity_mutation` per node (each node carrying its OWN
-        // single-entity kind), never `apply_entity_mutation(ApplyIntentGraph)`.
-        // Store as-is to keep the match total.
-        M::CreateJournalEntry
-        | M::DeleteJournalEntry
+        M::DeleteJournalEntry
         | M::ReferenceExistingEntityFromJournalEntry
         | M::DeletePerson
         | M::DeleteProject

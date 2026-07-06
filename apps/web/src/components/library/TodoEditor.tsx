@@ -14,6 +14,7 @@ import {
 	TODO_STATUS_OPTIONS,
 	type TodoStatus,
 } from "@/lib/entityFields";
+import { deriveMutationError } from "@/lib/hooks/useEntityDraftEditor";
 import { useEntityMutation } from "@/lib/hooks/useEntityMutation";
 import { useRecurrenceNextDates } from "@/lib/hooks/useRecurrenceNextDates";
 import {
@@ -239,12 +240,7 @@ export function TodoEditor({ allEntities, onDone, onCancel, ...m }: Props) {
 		});
 	};
 
-	const error =
-		mutation.error == null
-			? null
-			: mutation.error instanceof Error && mutation.error.message
-				? mutation.error.message
-				: "Couldn't save. Try again.";
+	const error = deriveMutationError(mutation.error);
 
 	return (
 		<EntityEditorFrame
