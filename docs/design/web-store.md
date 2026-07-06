@@ -44,6 +44,8 @@ Stale-fiber guard (M2): a parked Run's forwarder closes with NO terminal event, 
 
 Map a wire `MessageView` to the live `Message`, narrowing the wire `role`/`status` STRINGS to the live literal unions WITHOUT casts. The wire schema types both as `S.String` (packages/protocol), but Core only ever emits the known values. We narrow defensively via explicit guards: an unknown role defaults to `assistant`, an unknown status to `completed` — so a malformed frame paints as a finished assistant bubble rather than crashing or leaving a phantom streaming row.
 
+An `incomplete` turn whose owning Run's `terminal_reason` is `'cancelled'` additionally sets the store's `cancelled` flag (ADR-0014: cancel is not an error, so the turn rehydrates as the calm stopped notice, not the failure alert). The `incomplete` guard is load-bearing: a cancelled Run's *user* Message also carries the reason on the wire but is `completed`, and must never be flagged. Any other reason (`errored`, `worker_disconnected`, `core_restarted`) — or no reason — leaves `cancelled` absent, keeping the failure alert.
+
 ## apps/web/src/store/hydrate.ts — hydrateThread
 
 Hydrate a thread from `thread/get` and resume any streaming run (slice 13).
