@@ -199,8 +199,8 @@ export class WsClientConfig extends Context.Tag(
 /**
  * One row per plain request/response verb: the wire `method`, `toParams`
  * (typing the verb's public arguments), the wire `result` schema, and an
- * optional `map` post-processing the decoded result (only `postMessage` uses
- * it today). The `WsClient` tag's request surface, the live layer, AND
+ * optional `map` post-processing the decoded result (e.g. `postMessage`
+ * collapsing to `run_id`). The `WsClient` tag's request surface, the live layer, AND
  * `stubWsClient` all derive from this ONE table, so adding a plain RPC verb
  * costs one row. The 3 stream members (`subscribeRun`,
  * `proposalNotifications`, `connectionStatus`) stay hand-written on the tag —
@@ -407,9 +407,23 @@ export const requestDescriptors = {
 		toParams: (params: ProposalDecideParams) => ({ ...params }),
 		result: ProposalDecideResult,
 	},
-} as const;
+} as const satisfies Record<
+	string,
+	{
+		readonly method: string;
+		// Contravariant param position: every concrete toParams is assignable to
+		// (...a: never[]) => ..., while the Record return keeps each row honest —
+		// the constraint the derivation casts below would otherwise erase.
+		readonly toParams: (...a: never[]) => Record<string, unknown>;
+		readonly result: S.Schema.Any;
+		readonly map?: (r: never) => unknown;
+	}
+>;
 
 type Descriptors = typeof requestDescriptors;
+// `(r: never)` is the contravariant-match trick: every map fn extends it, so
+// the conditional keys on map's PRESENCE and infers its return. Don't "fix" it
+// to `unknown` — that inverts the variance and breaks the inference.
 type VerbResult<K extends keyof Descriptors> = Descriptors[K] extends {
 	readonly map: (r: never) => infer B;
 }
