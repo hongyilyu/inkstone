@@ -5,6 +5,7 @@
 //! files are pure type declarations, so a glob cannot shadow anything.
 
 mod entity;
+mod media;
 mod observation;
 mod proposal;
 mod provider;
@@ -16,6 +17,7 @@ mod worker;
 mod parity;
 
 pub use entity::*;
+pub use media::*;
 pub use observation::*;
 pub use proposal::*;
 pub use provider::*;

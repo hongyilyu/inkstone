@@ -9,11 +9,6 @@
 //! deletes the row first (committing the `media_attachments` cascade), then
 //! unlinks the file. Both orderings lean toward a recoverable
 //! orphan-file-on-disk over a row pointing at missing bytes.
-//!
-//! The whole surface here is Core-internal and reached only by this module's
-//! tests for now — its production consumer (a media wire verb / the Media
-//! entity, #252) lands later, so `dead_code` is allowed module-wide.
-#![allow(dead_code)]
 
 use sha2::{Digest, Sha256};
 use sqlx::SqlitePool;
@@ -54,6 +49,11 @@ pub(crate) struct MediaInput {
 /// One polymorphic attachment target — a media row links to exactly one of these
 /// (ADR-0058). `insert_media` validates each target's existence (and, for a typed
 /// Entity, its type) in the write transaction before inserting the link row.
+///
+/// The variants have no production constructor yet: `media/upload` passes
+/// `attachments: Vec::new()` (the send path links targets in a later slice), so
+/// only this module's tests build them — hence the allow.
+#[allow(dead_code)]
 pub(crate) enum MediaAttachmentTarget {
     Entity {
         id: String,
@@ -72,6 +72,11 @@ pub(crate) enum MediaAttachmentTarget {
 
 /// The metadata `get_media` round-trips. Bytes are not carried here — the caller
 /// reads them from the resolved `storage_path` when it needs them.
+///
+/// Production reads only `mime` + `storage_path` today (the `GET /media/{id}`
+/// route); the remaining metadata columns are read by this module's tests and
+/// await their consumers — hence the allow.
+#[allow(dead_code)]
 pub(crate) struct MediaRow {
     pub id: String,
     pub mime: String,
@@ -89,6 +94,10 @@ pub(crate) struct MediaRow {
     pub updated_at: i64,
 }
 
+// The variant payloads are read only through `Debug` (the upload handler wraps
+// the whole error into `HandlerError::Internal`), which dead-code analysis
+// deliberately ignores — hence the allow on the payload-carrying variants.
+#[allow(dead_code)]
 #[derive(Debug)]
 pub(crate) enum MediaInsertError {
     /// An attachment target does not exist or is the wrong type (rejected in the
@@ -328,6 +337,10 @@ pub(crate) async fn get_media(pool: &SqlitePool, id: &str) -> sqlx::Result<Optio
 /// the future `media_attachments` cascade) before the file, so a crash leaves an
 /// orphan file rather than a row pointing at missing bytes. Unlink is best-effort
 /// (a missing file is ignored).
+///
+/// No production consumer yet (no `media/delete` verb; orphan GC is a non-goal,
+/// ADR-0058) — reached only by this module's tests, hence the fn-level allow.
+#[allow(dead_code)]
 pub(crate) async fn delete_media(pool: &SqlitePool, id: &str) -> sqlx::Result<()> {
     // Resolve the on-disk path before the row is gone.
     let storage_path = queries::media_by_id(pool, id)

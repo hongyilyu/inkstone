@@ -47,11 +47,12 @@ pub use lifecycle::TerminalReason;
 // without naming the db type. The search assembles text live from `message_parts`
 // at query time — no standing projection to maintain or rebuild.
 pub use message_fts::search_messages;
-// The media substrate (ADR-0058) has no production consumer yet — its wire verb /
-// Media entity caller lands later (#252). The `db::media` facade surface
-// (`insert_media`/`get_media`/`delete_media` + `MediaInput`/`MediaRow`/…) is
-// reached only by the module's own tests for now, so it is NOT re-exported from
-// `db` until a real caller exists; `#252` adds the re-export with its consumer.
+// The media substrate (ADR-0058): consumed by the `media/upload` handler
+// (`runs/media.rs`) and the `GET /media/{id}` route (`main.rs`). `MediaRow` is
+// not re-exported: no caller names it (the route reads `.mime`/`.storage_path`
+// off `get_media`'s return), and in a binary-only crate an unreachable
+// re-export trips `unused_imports` — the `MessageRow` precedent below.
+pub(crate) use media::{MediaInput, get_media, insert_media};
 pub(crate) use observations::{
     ObservationFilter, ObservationInsert, ObservationInsertError, ObservationRelationInsert,
     ObservationRevisionRow, ObservationRow, ObservationSourceFilter, ObservationSourceInsert,

@@ -27,6 +27,8 @@ import {
 	EntityMutateResult,
 	JournalEntryRescanParams,
 	JournalEntryRescanResult,
+	MediaUploadParams,
+	MediaUploadResult,
 	MessageSearchParams,
 	MessageSearchResult,
 	ModelCatalogResult,
@@ -292,6 +294,19 @@ export const fixtures: readonly FixtureEntry[] = [
 		message: "JournalEntryRescanParams",
 		file: "journal_entry_rescan_params.json",
 		schema: JournalEntryRescanParams,
+		dir: "authored",
+	},
+	// MediaUploadParams: maximal (width+height present) + bare (omitted).
+	{
+		message: "MediaUploadParams",
+		file: "media_upload_params.json",
+		schema: MediaUploadParams,
+		dir: "authored",
+	},
+	{
+		message: "MediaUploadParams",
+		file: "media_upload_params.bare.json",
+		schema: MediaUploadParams,
 		dir: "authored",
 	},
 	{
@@ -570,6 +585,12 @@ export const fixtures: readonly FixtureEntry[] = [
 		message: "JournalEntryRescanResult",
 		file: "journal_entry_rescan_result.json",
 		schema: JournalEntryRescanResult,
+		dir: "emitted",
+	},
+	{
+		message: "MediaUploadResult",
+		file: "media_upload_result.json",
+		schema: MediaUploadResult,
 		dir: "emitted",
 	},
 	{
@@ -864,6 +885,9 @@ export const CANONICAL_MESSAGES: readonly string[] = [
 	"ProviderHelperLine",
 	// Decision prose (finding F12) — not a wire type; see its registry entry.
 	"DecisionProse",
+	// chat-image-attachments slice 1 — media/upload (ADR-0058)
+	"MediaUploadParams",
+	"MediaUploadResult",
 ];
 
 /** Expected fixture count per tagged-union message (grilling Q10). A union must

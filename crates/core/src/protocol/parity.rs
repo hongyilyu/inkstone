@@ -664,6 +664,13 @@ mod parity_fixtures {
                     thread_id: UUID_B.to_string(),
                 }
             ),
+            // ── media/upload (ADR-0058) ──
+            fx!(
+                "media_upload_result.json",
+                MediaUploadResult {
+                    media_id: UUID_A.to_string(),
+                }
+            ),
             // ── message/search ──
             fx!(
                 "message_search_result.json",
@@ -1062,6 +1069,7 @@ mod parity_fixtures {
             "entity_mutate_result.json",
             "entity_mutate_result.bare.json",
             "journal_entry_rescan_result.json",
+            "media_upload_result.json",
             "message_search_result.json",
             "thread_get_result.json",
             "thread_get_result.bare.json",
@@ -1181,6 +1189,8 @@ mod parity_fixtures {
         parses!(EntityBacklinksParams, "entity_backlinks_params.json");
         parses!(EntityMutateParams, "entity_mutate_params.json");
         parses!(JournalEntryRescanParams, "journal_entry_rescan_params.json");
+        parses!(MediaUploadParams, "media_upload_params.json");
+        parses!(MediaUploadParams, "media_upload_params.bare.json");
         parses!(MessageSearchParams, "message_search_params.json");
         parses!(ThreadGetParams, "thread_get_params.json");
         parses!(ThreadRenameParams, "thread_rename_params.json");
@@ -1279,6 +1289,8 @@ mod parity_fixtures {
         "EntityMutateResult",
         "JournalEntryRescanParams",
         "JournalEntryRescanResult",
+        "MediaUploadParams",
+        "MediaUploadResult",
         "MessageSearchParams",
         "MessageSearchResult",
         "ProviderStatusResult",
@@ -1360,6 +1372,7 @@ mod parity_fixtures {
     const PROTOCOL_SOURCES: &[(&str, &str)] = &[
         ("mod.rs", include_str!("mod.rs")),
         ("entity.rs", include_str!("entity.rs")),
+        ("media.rs", include_str!("media.rs")),
         ("observation.rs", include_str!("observation.rs")),
         ("proposal.rs", include_str!("proposal.rs")),
         ("provider.rs", include_str!("provider.rs")),

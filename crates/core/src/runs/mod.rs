@@ -10,6 +10,7 @@ mod catalog;
 mod entity;
 mod handler;
 mod journal_entry;
+mod media;
 mod message;
 mod observation;
 mod post_message;
@@ -108,6 +109,9 @@ pub async fn dispatch(
         }
         "message/search" => {
             message::handle_search(pool, req.id, req.params, out_tx).await;
+        }
+        "media/upload" => {
+            media::handle_upload(pool, req.id, req.params, out_tx).await;
         }
         "observation/record" => {
             observation::handle_record(pool, req.id, req.params, out_tx).await;

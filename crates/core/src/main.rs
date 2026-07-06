@@ -30,9 +30,10 @@ mod worker;
 mod workflow;
 
 use anyhow::Result;
-use axum::extract::State;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::response::IntoResponse;
+use axum::extract::{Path, State};
+use axum::http::{StatusCode, header};
+use axum::response::{IntoResponse, Response};
 use axum::{Router, routing::get};
 use sqlx::SqlitePool;
 use std::path::PathBuf;
@@ -101,6 +102,7 @@ async fn main() -> Result<()> {
 
     let app = Router::new()
         .route("/ws", get(ws_handler))
+        .route("/media/{id}", get(media_handler))
         .with_state(state);
 
     // SPA serving (ADR-0015 / ADR-0019). In debug builds with `INKSTONE_WEB_DIR`
@@ -160,6 +162,48 @@ fn web_dir_for_serving() -> Option<PathBuf> {
 
 async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
     ws.on_upgrade(move |socket| handle_socket(socket, state))
+}
+
+/// `GET /media/{id}` (ADR-0058): serve a stored media blob's bytes with the
+/// stored `mime` as Content-Type. Unknown id → 404; a row whose bytes are gone
+/// from disk (or whose stored path escapes the media root) is ALSO a 404 — but
+/// loud, per ADR-0058 ("a row pointing at missing bytes is a loud read error").
+/// `db::resolve_media_path` is the trust boundary turning the stored relative
+/// path into a real filesystem path.
+async fn media_handler(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let row = match db::get_media(&state.pool, &id).await {
+        Ok(Some(row)) => row,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(e) => {
+            tracing::error!(event = "media.read_failed", media_id = %id, error = ?e);
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+    let path = match db::resolve_media_path(&row.storage_path) {
+        Ok(path) => path,
+        Err(e) => {
+            tracing::error!(event = "media.read_failed", media_id = %id, error = ?e);
+            return StatusCode::NOT_FOUND.into_response();
+        }
+    };
+    match tokio::fs::read(&path).await {
+        // `nosniff` pins the response to the stored mime: without it a browser
+        // may sniff crafted image bytes into text/html and execute them as a
+        // stored XSS. The mime itself stays unvalidated (ADR-0058: Core stores,
+        // never sniffs or allowlists).
+        Ok(bytes) => (
+            [
+                (header::CONTENT_TYPE, row.mime),
+                (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
+            ],
+            bytes,
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::error!(event = "media.read_failed", media_id = %id, error = ?e);
+            StatusCode::NOT_FOUND.into_response()
+        }
+    }
 }
 
 async fn handle_socket(mut socket: WebSocket, state: AppState) {
