@@ -481,7 +481,11 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 
 			const decoder = new TextDecoder();
 
-			// Fails in-flight requests with connection_lost; no resubscribe-replay — see docs/design/ui-sdk.md
+			// Fails in-flight requests with connection_lost AND injects a synthetic
+			// error event into active run queues so `subscribeRun` streams surface the
+			// drop as a terminal "connection_lost" error event (the bridge's
+			// takeUntil catches it and applies the "lost connection" notice). No
+			// resubscribe-replay — see docs/design/ui-sdk.md.
 			const failPending = Effect.sync(() => {
 				for (const deferred of pending.values()) {
 					runFork(
@@ -492,6 +496,16 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 					);
 				}
 				pending.clear();
+				for (const queue of runQueues.values()) {
+					runFork(
+						Queue.offer(queue, {
+							kind: "error",
+							message:
+								"Lost the connection before this reply finished. Check that Inkstone is running, then try again.",
+						} as RunEventValue).pipe(Effect.zipRight(Queue.shutdown(queue))),
+					);
+				}
+				runQueues.clear();
 			});
 
 			// First-open failure stays a defect; only post-open drops are recoverable (ADR-0020) — see docs/design/ui-sdk.md

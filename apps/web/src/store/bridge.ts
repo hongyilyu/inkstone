@@ -184,22 +184,27 @@ export function startRunStream(
 							event.kind === "cancelled",
 					),
 				),
-			(event) => Effect.sync(() => applyEvent(threadId, runId, event)),
+			(event) =>
+				Effect.sync(() => {
+					// A transport-drop injects a synthetic "error" event into the run
+					// queue (ui-sdk failPending). Skip it when the Run is parked on a
+					// Proposal — parking is non-terminal (ADR-0025), and the pending
+					// Proposal owns the bubble; `proposal/get` rehydrates after reconnect.
+					if (
+						event.kind === "error" &&
+						event.message.startsWith("Lost the connection") &&
+						isRunParked(runId)
+					) {
+						return;
+					}
+					applyEvent(threadId, runId, event);
+				}),
 		);
 	}).pipe(
-		// A transport failure mid-stream (WS drop: laptop sleep, Core restart, network
-		// blip) would otherwise kill the fiber silently, leaving the assistant bubble
-		// stuck "typing" forever with a live-looking Stop button. Settle the turn with a
-		// synthetic terminal error so the user sees an honest "lost connection" notice
-		// and a retry affordance instead of an eternal spinner.
+		// A transport failure that fails the subscribe REQUEST itself (before any
+		// events arrive) still needs the same treatment.
 		Effect.catchAll(() =>
 			Effect.sync(() => {
-				// EXCEPT when the Run is parked on a Proposal: parking is non-terminal
-				// (Core tears the Worker down and resumes on the Decision, surviving a
-				// restart — ADR-0025), and the pending Proposal owns the bubble. Forcing a
-				// terminal `error` here would settle the turn as failed while Accept/Reject
-				// still render beneath it, and could even resume the run on reconnect. Leave
-				// the parked turn alone — `proposal/get` rehydrates it after reconnect.
 				if (isRunParked(runId)) return;
 				applyEvent(threadId, runId, {
 					kind: "error",

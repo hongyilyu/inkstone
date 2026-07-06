@@ -16,6 +16,8 @@ interface GtdSearch {
 	filt?: GtdFilter;
 	/** Selected entity (todo/project) → the shared rail renders its detail. */
 	id?: string;
+	/** When true, the Projects body opens a blank editor in the rail. */
+	new?: boolean;
 }
 
 function GtdRoute() {
@@ -35,6 +37,12 @@ function GtdRoute() {
 			selectedId={id ?? null}
 			onSelect={(next) =>
 				navigate({ to: "/library/gtd", search: { filt, id: next } })
+			}
+			onNewProject={() =>
+				navigate({
+					to: "/library/gtd",
+					search: { filt: "projects", new: true },
+				})
 			}
 		/>
 	);

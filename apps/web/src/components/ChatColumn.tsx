@@ -610,7 +610,7 @@ function AssistantBubble({
 		<li
 			data-role="assistant"
 			data-message-id={message.id}
-			className="group flex flex-col items-start gap-2"
+			className="group flex max-w-full flex-col items-start gap-2"
 		>
 			{/* Render the turn's pieces in event-arrival order (ADR-0045): tool rows,
 			    the Proposal, and text interleave by their timeline position, not a
@@ -642,7 +642,7 @@ function AssistantBubble({
 						// biome-ignore lint/suspicious/noArrayIndexKey: timeline position is the identity here
 						key={`text-${i}`}
 						data-highlighted={highlighted || undefined}
-						className="search-jump-target prose prose-pink dark:prose-invert relative max-w-none break-words rounded-xl"
+						className="search-jump-target prose prose-pink dark:prose-invert relative min-w-0 max-w-full break-words rounded-xl"
 					>
 						<ChatMarkdown text={group.text} />
 					</div>
