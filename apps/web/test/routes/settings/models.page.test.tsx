@@ -793,6 +793,27 @@ describe("Models settings — failed Connect surfaces Core's reason", () => {
 			),
 		);
 	});
+
+	it("falls back to the generic copy for a ProviderLoginFailedError with an empty message", async () => {
+		const user = userEvent.setup();
+		// Core never emits an empty -32003 message today, but an empty string
+		// would render a blank status line — the guard downgrades it.
+		const { runtime } = makeRuntime({
+			connected: false,
+			loginStart: () =>
+				Effect.fail(new ProviderLoginFailedError({ message: "" })),
+		});
+		renderPage(runtime);
+
+		await user.click(await screen.findByRole("button", { name: /^connect$/i }));
+
+		const status = await screen.findByRole("status");
+		await waitFor(() =>
+			expect(status).toHaveTextContent(
+				"Couldn't start the connection. Try Connect again.",
+			),
+		);
+	});
 });
 
 describe("Models settings — key-configurable provider (ADR-0062)", () => {

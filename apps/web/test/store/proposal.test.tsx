@@ -25,6 +25,7 @@ import {
 } from "@/store/bridge.js";
 import {
 	attachRun,
+	clearProposal,
 	concatText,
 	getChatState,
 	nextMessageId,
@@ -424,7 +425,9 @@ describe("proposal stream + decide", () => {
 						message: "proposal is no longer pending",
 					}),
 				),
-			// The -32002 run-not-parked case: durable truth has no decided outcome.
+			// The -32002 run-not-parked case: durable truth has no DECIDED outcome —
+			// the wire status is an open string, so a non-decided value must be
+			// skipped, never coerced into a settled pill.
 			threadGet: () =>
 				Effect.succeed({
 					thread_id: "thread-1",
@@ -435,7 +438,15 @@ describe("proposal stream + decide", () => {
 							role: "assistant",
 							status: "streaming",
 							run_id: "run-1",
-							segments: [{ kind: "text", text: "still thinking" }],
+							segments: [
+								{ kind: "text", text: "still thinking" },
+								{
+									kind: "proposal",
+									proposal_id: "prop-1",
+									mutation_kind: "create_journal_entry",
+									status: "pending",
+								},
+							],
 						},
 					],
 				} satisfies ThreadGetResult),
@@ -463,6 +474,261 @@ describe("proposal stream + decide", () => {
 		await decideProposal(runtime, "run-1", "accept");
 
 		expect(getChatState().proposals["run-1"]?.status).toBe("error");
+
+		await runtime.dispose();
+	});
+
+	it("does not settle from a DIFFERENT proposal's decided segment (multi-park run)", async () => {
+		const proposalQueue = Effect.runSync(
+			Queue.unbounded<ProposalNotification>(),
+		);
+		const runQueue = Effect.runSync(Queue.unbounded<RunEventValue>());
+		const runtime = makeStubRuntime({
+			proposalQueue,
+			runQueue,
+			onDecide: () =>
+				Effect.fail(
+					new ProposalNotPendingError({
+						message: "proposal prop-1 is cancelled (not pending)",
+					}),
+				),
+			// A multi-park run: thread/get carries only the MOST-RECENT decided
+			// proposal (prop-2). The stale card is for prop-1 — settling it to
+			// prop-2's outcome would render an Accept that never happened.
+			threadGet: () =>
+				Effect.succeed({
+					thread_id: "thread-1",
+					title: "T",
+					messages: [
+						{
+							id: "m1",
+							role: "assistant",
+							status: "streaming",
+							run_id: "run-1",
+							segments: [
+								{
+									kind: "proposal",
+									proposal_id: "prop-2",
+									mutation_kind: "create_journal_entry",
+									status: "accepted",
+									entity_id: "e-2",
+								},
+							],
+						},
+					],
+				} satisfies ThreadGetResult),
+		});
+
+		const assistantId = nextMessageId();
+		seedAssistantMessage("thread-1", {
+			id: assistantId,
+			role: "assistant",
+			status: "streaming",
+			segments: [],
+			run_id: "",
+		});
+		attachRun("thread-1", assistantId, "run-1");
+		startRunStream(runtime, "thread-1", "run-1");
+
+		startProposalStream(runtime);
+		Queue.unsafeOffer(proposalQueue, {
+			kind: "pending",
+			run_id: "run-1",
+			proposal_id: "prop-1",
+		});
+		await waitFor(() => getChatState().proposals["run-1"] !== undefined);
+
+		await decideProposal(runtime, "run-1", "accept");
+
+		// prop-2's outcome must NOT be stamped onto prop-1's card.
+		expect(getChatState().proposals["run-1"]).toMatchObject({
+			status: "error",
+		});
+		expect(getChatState().proposals["run-1"]?.entity_id).toBeUndefined();
+
+		await runtime.dispose();
+	});
+
+	it("falls back to the error state when the settle refetch itself fails", async () => {
+		const proposalQueue = Effect.runSync(
+			Queue.unbounded<ProposalNotification>(),
+		);
+		const runQueue = Effect.runSync(Queue.unbounded<RunEventValue>());
+		let subscribeCount = 0;
+		const runtime = makeStubRuntime({
+			proposalQueue,
+			runQueue,
+			onSubscribe: () => {
+				subscribeCount += 1;
+			},
+			onDecide: () =>
+				Effect.fail(
+					new ProposalNotPendingError({
+						message: "proposal is no longer pending",
+					}),
+				),
+			threadGet: () =>
+				Effect.fail(new WsRequestError({ reason: "connection_lost" })),
+		});
+
+		const assistantId = nextMessageId();
+		seedAssistantMessage("thread-1", {
+			id: assistantId,
+			role: "assistant",
+			status: "streaming",
+			segments: [],
+			run_id: "",
+		});
+		attachRun("thread-1", assistantId, "run-1");
+		startRunStream(runtime, "thread-1", "run-1");
+		await waitFor(() => subscribeCount === 1);
+
+		startProposalStream(runtime);
+		Queue.unsafeOffer(proposalQueue, {
+			kind: "pending",
+			run_id: "run-1",
+			proposal_id: "prop-1",
+		});
+		await waitFor(() => getChatState().proposals["run-1"] !== undefined);
+
+		await decideProposal(runtime, "run-1", "accept");
+
+		expect(getChatState().proposals["run-1"]?.status).toBe("error");
+		// The fallback must NOT re-subscribe the resume tail.
+		expect(subscribeCount).toBe(1);
+
+		await runtime.dispose();
+	});
+
+	it("settles a cross-tab REJECTED proposal into the dismissed pill", async () => {
+		const proposalQueue = Effect.runSync(
+			Queue.unbounded<ProposalNotification>(),
+		);
+		const runQueue = Effect.runSync(Queue.unbounded<RunEventValue>());
+		const runtime = makeStubRuntime({
+			proposalQueue,
+			runQueue,
+			onDecide: () =>
+				Effect.fail(
+					new ProposalNotPendingError({
+						message: "proposal is no longer pending",
+					}),
+				),
+			// The other tab REJECTED: the decided segment carries no entity_id.
+			threadGet: () =>
+				Effect.succeed({
+					thread_id: "thread-1",
+					title: "T",
+					messages: [
+						{
+							id: "m1",
+							role: "assistant",
+							status: "streaming",
+							run_id: "run-1",
+							segments: [
+								{
+									kind: "proposal",
+									proposal_id: "prop-1",
+									mutation_kind: "create_journal_entry",
+									status: "rejected",
+								},
+							],
+						},
+					],
+				} satisfies ThreadGetResult),
+		});
+
+		const assistantId = nextMessageId();
+		seedAssistantMessage("thread-1", {
+			id: assistantId,
+			role: "assistant",
+			status: "streaming",
+			segments: [],
+			run_id: "",
+		});
+		attachRun("thread-1", assistantId, "run-1");
+		startRunStream(runtime, "thread-1", "run-1");
+
+		startProposalStream(runtime);
+		Queue.unsafeOffer(proposalQueue, {
+			kind: "pending",
+			run_id: "run-1",
+			proposal_id: "prop-1",
+		});
+		await waitFor(() => getChatState().proposals["run-1"] !== undefined);
+
+		await decideProposal(runtime, "run-1", "accept");
+
+		expect(getChatState().proposals["run-1"]?.status).toBe("rejected");
+		expect(getChatState().proposals["run-1"]?.entity_id).toBeUndefined();
+
+		await runtime.dispose();
+	});
+
+	it("does not write over a proposal cleared while the settle refetch was in flight", async () => {
+		const proposalQueue = Effect.runSync(
+			Queue.unbounded<ProposalNotification>(),
+		);
+		const runQueue = Effect.runSync(Queue.unbounded<RunEventValue>());
+		const runtime = makeStubRuntime({
+			proposalQueue,
+			runQueue,
+			onDecide: () =>
+				Effect.fail(
+					new ProposalNotPendingError({
+						message: "proposal is no longer pending",
+					}),
+				),
+			// A concurrent cancelRun clears the proposal mid-refetch: the currency
+			// guard must bail — no settled pill, no error write, no re-subscribe.
+			threadGet: () => {
+				clearProposal("run-1");
+				return Effect.succeed({
+					thread_id: "thread-1",
+					title: "T",
+					messages: [
+						{
+							id: "m1",
+							role: "assistant",
+							status: "streaming",
+							run_id: "run-1",
+							segments: [
+								{
+									kind: "proposal",
+									proposal_id: "prop-1",
+									mutation_kind: "create_journal_entry",
+									status: "accepted",
+									entity_id: "e-1",
+								},
+							],
+						},
+					],
+				} satisfies ThreadGetResult);
+			},
+		});
+
+		const assistantId = nextMessageId();
+		seedAssistantMessage("thread-1", {
+			id: assistantId,
+			role: "assistant",
+			status: "streaming",
+			segments: [],
+			run_id: "",
+		});
+		attachRun("thread-1", assistantId, "run-1");
+		startRunStream(runtime, "thread-1", "run-1");
+
+		startProposalStream(runtime);
+		Queue.unsafeOffer(proposalQueue, {
+			kind: "pending",
+			run_id: "run-1",
+			proposal_id: "prop-1",
+		});
+		await waitFor(() => getChatState().proposals["run-1"] !== undefined);
+
+		await decideProposal(runtime, "run-1", "accept");
+
+		expect(getChatState().proposals["run-1"]).toBeUndefined();
 
 		await runtime.dispose();
 	});

@@ -1,5 +1,6 @@
 import {
 	type NodeDecision,
+	type ThreadGetResult,
 	type ThreadListResult,
 	ThreadTitledNotification,
 } from "@inkstone/protocol";
@@ -20,6 +21,7 @@ import {
 	Schema as S,
 	Stream,
 } from "effect";
+import { taggedErrorMessage } from "../lib/taggedErrorMessage.js";
 import type { WsRuntime } from "../runtime.js";
 import {
 	appendUserMessage,
@@ -38,7 +40,6 @@ import {
 	setPendingProposal,
 	setProposalStatus,
 } from "./chat.js";
-import { decidedProposalSegment } from "./hydrate.js";
 
 // Thin imperative seam between Effect (owns wire/streams) and the plain React store — see docs/design/web-store.md (ADR-0020).
 // Each run's stream fiber is retained keyed by run id so it can be interrupted on unmount (structured cancellation, Q18 A′).
@@ -73,35 +74,6 @@ export function resetBridge(): void {
 }
 
 const decodeThreadTitled = S.decodeUnknownEither(ThreadTitledNotification);
-
-function invalidParamsMessage(error: unknown): string | undefined {
-	if (
-		error !== null &&
-		typeof error === "object" &&
-		"_tag" in error &&
-		(error as { _tag?: unknown })._tag === "InvalidParamsError" &&
-		"message" in error &&
-		typeof (error as { message?: unknown }).message === "string"
-	) {
-		return (error as { message: string }).message;
-	}
-	return undefined;
-}
-
-/** Duck-typed -32002 message (mirrors {@link invalidParamsMessage}): the decide raced an already-decided Proposal (ADR-0025). */
-function proposalNotPendingMessage(error: unknown): string | undefined {
-	if (
-		error !== null &&
-		typeof error === "object" &&
-		"_tag" in error &&
-		(error as { _tag?: unknown })._tag === "ProposalNotPendingError" &&
-		"message" in error &&
-		typeof (error as { message?: unknown }).message === "string"
-	) {
-		return (error as { message: string }).message;
-	}
-	return undefined;
-}
 
 /**
  * Patch the `["threads"]` cache in place for a `thread/titled` push (ADR-0047):
@@ -511,21 +483,54 @@ export function startProposalStream(runtime: WsRuntime): void {
 }
 
 /**
+ * Find the decided (accepted/rejected) outcome of exactly `proposalId` carried
+ * by `runId`'s message view, if any — the durable truth the -32002 settlement
+ * path reads after a `thread/get` refetch. Core emits only the run's MOST-RECENT
+ * decided Proposal (a multi-park run's earlier decisions are absent), so the
+ * `proposal_id` match is load-bearing: without it a stale card could settle to a
+ * DIFFERENT proposal's outcome. The wire `status` is a bare string (Core filters
+ * to accepted/rejected, but the type is open): any other value is skipped rather
+ * than coerced, mirroring `rehydrateDecidedProposals`. `entity_id` is omitted
+ * for a rejected Proposal or when no Entity resolves.
+ */
+function decidedProposalSegment(
+	views: ThreadGetResult["messages"],
+	runId: string,
+	proposalId: string,
+): { status: "accepted" | "rejected"; entity_id?: string } | undefined {
+	for (const view of views) {
+		if (view.run_id !== runId) {
+			continue;
+		}
+		for (const seg of view.segments) {
+			if (seg.kind !== "proposal" || seg.proposal_id !== proposalId) {
+				continue;
+			}
+			const status = seg.status;
+			if (status !== "accepted" && status !== "rejected") {
+				continue;
+			}
+			return { status, entity_id: seg.entity_id };
+		}
+	}
+	return undefined;
+}
+
+/**
  * Settle a decide that failed -32002 (ProposalNotPendingError) from durable
- * truth: ONE `thread/get` refetch, find the run's decided proposal segment, and
+ * truth: ONE `thread/get` refetch, find THIS proposal's decided segment, and
  * flip the card to its real accepted/rejected pill instead of dead-ending in the
- * error state (the cross-tab race, ADR-0025). No decided segment (the
- * run-not-parked-while-pending case), an unknown run, or a failed refetch all
- * fall back to today's error state — no polling, no `proposal/get` (pending-only,
- * itself -32002).
+ * error state (the cross-tab race, ADR-0025). No decided segment for this
+ * proposal_id (run-not-parked, cancelled, or a later Proposal superseded it),
+ * an unknown run, or a failed refetch all fall back to today's generic error
+ * state — no polling, no `proposal/get` (pending-only, itself -32002).
  */
 async function settleDecidedProposal(
 	runtime: WsRuntime,
 	runId: RunId,
-	errorMessage: string | undefined,
+	proposalId: string,
 ): Promise<void> {
-	const fallback = () =>
-		setProposalStatus(runId, "error", undefined, errorMessage);
+	const fallback = () => setProposalStatus(runId, "error");
 	const threadId = getRunThreadId(runId);
 	if (threadId === undefined) {
 		fallback();
@@ -536,16 +541,18 @@ async function settleDecidedProposal(
 		return yield* client.threadGet(threadId);
 	});
 	const exit = await runtime.runPromiseExit(program);
-	// Currency guard: a concurrent cancelRun may have settled + cleared this
-	// Proposal while the refetch was in flight (cf. decideProposal's guard).
-	if (getChatState().proposals[runId] === undefined) {
+	// Currency guard: while the refetch was in flight, a concurrent cancelRun may
+	// have cleared this Proposal, or the resumed Run may have re-parked on a NEW
+	// one (a fresh pending card we must not overwrite) — settle only if the map
+	// still holds the proposal we decided (cf. decideProposal's guard).
+	if (getChatState().proposals[runId]?.proposal_id !== proposalId) {
 		return;
 	}
 	if (Exit.isFailure(exit)) {
 		fallback();
 		return;
 	}
-	const seg = decidedProposalSegment(exit.value.messages, runId);
+	const seg = decidedProposalSegment(exit.value.messages, runId, proposalId);
 	if (seg === undefined) {
 		fallback();
 		return;
@@ -601,14 +608,20 @@ export async function decideProposal(
 	const exit = await runtime.runPromiseExit(program);
 	if (Exit.isFailure(exit)) {
 		const error = Cause.squash(exit.cause);
-		const notPendingMessage = proposalNotPendingMessage(error);
-		if (notPendingMessage !== undefined) {
-			// -32002: the Proposal was already decided elsewhere (another tab, a
-			// keyed replay race). Settle from durable truth instead of dead-ending.
-			await settleDecidedProposal(runtime, runId, notPendingMessage);
+		if (taggedErrorMessage(error, "ProposalNotPendingError") !== undefined) {
+			// -32002: the Proposal is no longer decidable — decided in another tab,
+			// or the Run advanced past parked. Settle from durable truth instead of
+			// dead-ending. (A same-key replay returns Core's prior result as
+			// success, so it never lands here.)
+			await settleDecidedProposal(runtime, runId, proposal.proposal_id);
 			return;
 		}
-		setProposalStatus(runId, "error", undefined, invalidParamsMessage(error));
+		setProposalStatus(
+			runId,
+			"error",
+			undefined,
+			taggedErrorMessage(error, "InvalidParamsError"),
+		);
 		return;
 	}
 	const result = exit.value;

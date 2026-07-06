@@ -660,10 +660,10 @@ describe("WsClient", () => {
 			);
 			expect(Either.isLeft(result)).toBe(true);
 			if (Either.isLeft(result)) {
-				expect(result.left._tag).toBe("ProposalNotPendingError");
-				if (result.left instanceof ProposalNotPendingError) {
-					expect(result.left.message).toBe("proposal not pending");
-				}
+				expect(result.left).toBeInstanceOf(ProposalNotPendingError);
+				expect((result.left as ProposalNotPendingError).message).toBe(
+					"proposal not pending",
+				);
 			}
 		} finally {
 			await server.close();
@@ -697,12 +697,10 @@ describe("WsClient", () => {
 			);
 			expect(Either.isLeft(result)).toBe(true);
 			if (Either.isLeft(result)) {
-				expect(result.left._tag).toBe("ProviderLoginFailedError");
-				if (result.left instanceof ProviderLoginFailedError) {
-					expect(result.left.message).toBe(
-						"provider login failed: account locked",
-					);
-				}
+				expect(result.left).toBeInstanceOf(ProviderLoginFailedError);
+				expect((result.left as ProviderLoginFailedError).message).toBe(
+					"provider login failed: account locked",
+				);
 			}
 		} finally {
 			await server.close();

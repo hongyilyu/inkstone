@@ -19,6 +19,7 @@ import {
 	type SaveStatus,
 	useOptimisticSetting,
 } from "@/lib/hooks/useOptimisticSetting";
+import { taggedErrorMessage } from "@/lib/taggedErrorMessage";
 import { cn } from "@/lib/utils";
 import { useRuntime } from "@/runtime";
 import {
@@ -331,19 +332,14 @@ function ModelsSettings() {
 			startLogin(runtime, providerId)
 				// A login that can't even start (helper missing, port busy) was
 				// swallowed, leaving the user staring at an unchanged "Not connected"
-				// row. Surface it — a typed -32003 (ProviderLoginFailedError, duck-typed
-				// like invalidParamsMessage) carries Core's sanitized reason verbatim;
-				// anything else gets the generic couldn't-start copy.
+				// row. Surface it — a typed -32003 (ProviderLoginFailedError) carries
+				// Core's sanitized reason verbatim; anything else (or an empty
+				// message) gets the generic couldn't-start copy.
 				.catch((e: unknown) => {
+					const reason = taggedErrorMessage(e, "ProviderLoginFailedError");
 					setConnectError(
-						typeof e === "object" &&
-							e !== null &&
-							"_tag" in e &&
-							e._tag === "ProviderLoginFailedError" &&
-							"message" in e &&
-							typeof e.message === "string" &&
-							e.message.length > 0
-							? e.message
+						reason !== undefined && reason.length > 0
+							? reason
 							: "Couldn't start the connection. Try Connect again.",
 					);
 				})
