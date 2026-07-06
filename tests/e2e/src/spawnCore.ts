@@ -277,6 +277,9 @@ export async function spawnCore(
 	const env: NodeJS.ProcessEnv = {
 		...process.env,
 		INKSTONE_DB_PATH: dbPath,
+		// Pin the media root (ADR-0058) into the tempdir so `media/upload` bytes
+		// land hermetically — never in the dev/CI OS data dir.
+		INKSTONE_MEDIA_DIR: path.join(workspaceDir, "media"),
 		INKSTONE_PORT: String(opts.port ?? 0),
 		INKSTONE_WEB_DIR: opts.webDir ?? WEB_DIST,
 		INKSTONE_LOG_DIR: logDir,
