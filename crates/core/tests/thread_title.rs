@@ -422,8 +422,10 @@ fn generated_title_pushes_notification() {
         let thread_id = create_thread(&mut ws, 1, prompt).await;
 
         // On the SAME socket, read past any interleaved frames until the live
-        // push arrives (bounded, so a missing push fails fast).
-        let params = read_until_method(&mut ws, "thread/titled", Duration::from_secs(2))
+        // push arrives. The budget is generous because this is a POSITIVE wait
+        // (a loaded CI runner can take >2s to spawn the titler fixture); only
+        // absence assertions need a tight window.
+        let params = read_until_method(&mut ws, "thread/titled", Duration::from_secs(15))
             .await
             .expect("a thread/titled notification was pushed on the creating connection");
         assert_eq!(
