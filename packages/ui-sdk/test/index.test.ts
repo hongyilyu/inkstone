@@ -532,6 +532,50 @@ describe("WsClient", () => {
 			expect(result).toBe(runId);
 			expect(captured?.thread_id).toBe("thread-x");
 			expect(captured?.prompt).toBe("hello");
+			// No attachmentIds → the field serializes AWAY, not as [] / undefined.
+			expect(captured && "attachment_ids" in captured).toBe(false);
+		} finally {
+			await server.close();
+		}
+	});
+
+	it("mediaUpload omits width/height when not given; postMessage/threadCreate omit empty attachment_ids", async () => {
+		const frames: WireRequest[] = [];
+		const server = await makeServer((ws, req) => {
+			frames.push(req);
+			const result =
+				req.method === "media/upload"
+					? { media_id: "m-1" }
+					: req.method === "thread/create"
+						? { thread_id: "t-1", run_id: "r-1" }
+						: { run_id: "r-2" };
+			ws.send(JSON.stringify({ jsonrpc: "2.0", id: req.id, result }));
+		});
+
+		const program = Effect.gen(function* () {
+			const client = yield* WsClient;
+			// Dimensions unknown (e.g. a failed Image() decode): the frame carries
+			// ONLY bytes + mime — width/height serialize away, never `undefined`.
+			yield* client.mediaUpload("QUJD", "image/png");
+			// An EMPTY attachmentIds array must also serialize away (an empty
+			// `attachment_ids: []` on the wire is noise Core never needs).
+			yield* client.threadCreate("hi", []);
+			yield* client.postMessage("t-1", "hello", []);
+		});
+
+		try {
+			await Effect.runPromise(provide(server.url)(program));
+			expect(frames.map((f) => f.method)).toEqual([
+				"media/upload",
+				"thread/create",
+				"run/post_message",
+			]);
+			expect(frames[0]?.params).toEqual({
+				bytes_base64: "QUJD",
+				mime: "image/png",
+			});
+			expect(frames[1]?.params).toEqual({ prompt: "hi" });
+			expect(frames[2]?.params).toEqual({ thread_id: "t-1", prompt: "hello" });
 		} finally {
 			await server.close();
 		}
@@ -1482,18 +1526,30 @@ type CannedCase = {
 
 const cannedCases: Record<keyof typeof requestDescriptors, CannedCase> = {
 	threadCreate: {
-		args: ["hi"],
+		args: ["hi", ["m-1"]],
 		method: "thread/create",
-		params: { prompt: "hi" },
+		params: { prompt: "hi", attachment_ids: ["m-1"] },
 		response: { thread_id: "t-1", run_id: "r-1" },
 	},
 	postMessage: {
-		args: ["t-1", "hello"],
+		// Non-empty attachmentIds ride the frame as `attachment_ids` (the empty/
+		// omitted case is covered by the dedicated omission test above).
+		args: ["t-1", "hello", ["m-1", "m-2"]],
 		method: "run/post_message",
-		params: { thread_id: "t-1", prompt: "hello" },
+		params: {
+			thread_id: "t-1",
+			prompt: "hello",
+			attachment_ids: ["m-1", "m-2"],
+		},
 		response: { run_id: "r-2" },
 		// postMessage is the one mapped verb: the decoded result collapses to run_id.
 		expected: "r-2",
+	},
+	mediaUpload: {
+		args: ["QUJD", "image/png", 2, 3],
+		method: "media/upload",
+		params: { bytes_base64: "QUJD", mime: "image/png", width: 2, height: 3 },
+		response: { media_id: "m-1" },
 	},
 	threadList: {
 		args: [],
