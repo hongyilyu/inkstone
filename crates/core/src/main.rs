@@ -24,6 +24,8 @@ mod runs;
 mod settings;
 mod skills;
 mod tools;
+#[cfg(not(debug_assertions))]
+mod web_embed;
 mod worker;
 mod workflow;
 
@@ -104,15 +106,23 @@ async fn main() -> Result<()> {
     // SPA serving (ADR-0015 / ADR-0019). In debug builds with `INKSTONE_WEB_DIR`
     // set, serve the built Web Client from that dir: assets directly, other
     // non-`/ws` paths fall back to `index.html` for the client-side router.
-    // Release builds ignore the env var (never serve arbitrary files from disk).
-    // With no web dir, `/` is the bare liveness string the tests assert against.
+    // Debug without the env var → the bare liveness string the tests assert
+    // against. Release builds serve the SPA embedded at compile time (ADR-0015);
+    // the env var stays ignored (never serve arbitrary files from disk).
     let app = match web_dir_for_serving() {
         Some(dir) => {
             let index = dir.join("index.html");
             let serve_dir = ServeDir::new(&dir).fallback(ServeFile::new(index));
             app.fallback_service(serve_dir)
         }
-        None => app.route("/", get(|| async { "Inkstone Core" })),
+        None => {
+            #[cfg(debug_assertions)]
+            let app = app.route("/", get(|| async { "Inkstone Core" }));
+            // GET/HEAD-only, so other methods 405 like the debug ServeDir path.
+            #[cfg(not(debug_assertions))]
+            let app = app.fallback_service(get(web_embed::serve_embedded));
+            app
+        }
     };
 
     // Port resolution (ADR-0019): `INKSTONE_PORT` overrides the default 8765.
