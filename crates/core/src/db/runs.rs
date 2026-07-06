@@ -666,3 +666,656 @@ pub async fn recover_interrupted_runs(pool: &SqlitePool, now_ms: i64) -> sqlx::R
     tx.commit().await?;
     Ok(swept)
 }
+
+#[cfg(test)]
+mod tests {
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+
+    use super::*;
+
+    /// A migrated in-memory pool so the `runs` CHECK constraints are in force.
+    async fn memory_pool() -> SqlitePool {
+        let options = SqliteConnectOptions::new()
+            .filename(":memory:")
+            .foreign_keys(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .expect("open in-memory sqlite");
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .expect("run migrations");
+        pool
+    }
+
+    /// Insert a Thread + a bare Run row in `status` directly (no Worker), to
+    /// hand-craft `running`/`parked` Runs for the tests.
+    async fn insert_bare_run(pool: &SqlitePool, run_id: &str, status: &str) {
+        let mut tx = pool.begin().await.expect("begin");
+        sqlx::query(
+            "INSERT INTO threads (id, title, created_at, last_activity_at) VALUES (?, ?, ?, ?)",
+        )
+        .bind(format!("thr-{run_id}"))
+        .bind("t")
+        .bind(1_i64)
+        .bind(1_i64)
+        .execute(&mut *tx)
+        .await
+        .expect("insert thread");
+        // user_message_id FK is DEFERRABLE (resolved at COMMIT), so the run can
+        // reference a message inserted later in the same tx.
+        sqlx::query(
+            "INSERT INTO runs \
+             (id, thread_id, workflow_name, workflow_version, provider, model, \
+              thinking_level, user_message_id, status, started_at) \
+             VALUES (?, ?, 'w', '1', 'p', 'm', 'off', ?, ?, ?)",
+        )
+        .bind(run_id)
+        .bind(format!("thr-{run_id}"))
+        .bind(format!("msg-{run_id}"))
+        .bind(status)
+        .bind(1_i64)
+        .execute(&mut *tx)
+        .await
+        .expect("insert run");
+        sqlx::query(
+            "INSERT INTO messages (id, thread_id, run_id, role, status, created_at, updated_at) \
+             VALUES (?, ?, ?, 'assistant', 'streaming', ?, ?)",
+        )
+        .bind(format!("msg-{run_id}"))
+        .bind(format!("thr-{run_id}"))
+        .bind(run_id)
+        .bind(1_i64)
+        .bind(1_i64)
+        .execute(&mut *tx)
+        .await
+        .expect("insert message");
+        tx.commit().await.expect("commit bare run");
+    }
+
+    async fn run_status_of(pool: &SqlitePool, run_id: &str) -> String {
+        sqlx::query_scalar("SELECT status FROM runs WHERE id = ?1")
+            .bind(run_id)
+            .fetch_one(pool)
+            .await
+            .expect("run row")
+    }
+
+    /// The typed read seam fails loudly on an unknown stored status rather than
+    /// degrading to `None` (which means "no such Run"). The `runs.status` CHECK
+    /// constraint keeps a live DB from ever producing this, so the row is forged
+    /// with `PRAGMA ignore_check_constraints` — exercising the defensive
+    /// `from_str` → `Decode` arm in `run_status` and `select_run_snapshot`, and
+    /// proving the unknown-string error stays distinct from the absent-row `None`.
+    #[tokio::test]
+    async fn read_seam_rejects_unknown_stored_status() {
+        let pool = memory_pool().await;
+        // The seam keys on `run_id.to_string()`, so the forged row needs a real
+        // UUID id. Relax the CHECK only to seed an out-of-vocabulary status.
+        let run_id = Uuid::now_v7();
+        sqlx::query("PRAGMA ignore_check_constraints = ON")
+            .execute(&pool)
+            .await
+            .expect("relax checks");
+        insert_bare_run(&pool, &run_id.to_string(), "halfway").await;
+
+        // run_status: unknown stored value → Decode, not Ok(None).
+        let err = run_status(&pool, run_id)
+            .await
+            .expect_err("unknown status must surface as an error, not None");
+        assert!(
+            matches!(err, sqlx::Error::Decode(_)),
+            "unknown stored status is a Decode fault, got {err:?}"
+        );
+
+        // select_run_snapshot: same defensive arm. `insert_bare_run` already
+        // inserted the assistant Message; a `seq=0` part makes the snapshot row
+        // JOIN materialize so the parse (not a missing row) is what's exercised.
+        sqlx::query(
+            "INSERT INTO message_parts (message_id, seq, type, text) \
+             VALUES (?, 0, 'text', 'hi')",
+        )
+        .bind(format!("msg-{run_id}"))
+        .execute(&pool)
+        .await
+        .expect("seed assistant part");
+        let snap_err = select_run_snapshot(&pool, run_id)
+            .await
+            .expect_err("snapshot of an unknown status must error");
+        assert!(
+            matches!(snap_err, sqlx::Error::Decode(_)),
+            "unknown snapshot status is a Decode fault, got {snap_err:?}"
+        );
+
+        // An absent Run stays Ok(None) — the error arm must not swallow that case.
+        let absent = run_status(&pool, Uuid::now_v7())
+            .await
+            .expect("absent read ok");
+        assert!(absent.is_none(), "an absent Run reads as None, never Decode");
+    }
+
+    /// The boot recovery sweep (ADR-0012) errors a `running` Run but preserves a
+    /// `parked` one (ADR-0025), flipping only the swept Run's `streaming` Message
+    /// to `incomplete` (ADR-0017).
+    #[tokio::test]
+    async fn recover_errors_running_preserves_parked() {
+        let pool = memory_pool().await;
+        insert_bare_run(&pool, "run-running", "running").await;
+        insert_bare_run(&pool, "run-parked", "parked").await;
+
+        let swept = recover_interrupted_runs(&pool, 42).await.expect("sweep ok");
+        assert_eq!(swept, 1, "swept exactly the running Run");
+
+        assert_eq!(run_status_of(&pool, "run-running").await, "errored");
+        assert_eq!(
+            run_status_of(&pool, "run-parked").await,
+            "parked",
+            "parked Run preserved across the sweep"
+        );
+
+        // Swept Runs carry the core_restarted terminal_reason + error fields.
+        let reason: Option<String> =
+            sqlx::query_scalar("SELECT terminal_reason FROM runs WHERE id = 'run-running'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(reason.as_deref(), Some("core_restarted"));
+        let ended_at: Option<i64> =
+            sqlx::query_scalar("SELECT ended_at FROM runs WHERE id = 'run-running'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(ended_at, Some(42), "ended_at stamped with the boot now");
+
+        // The swept Run's streaming Message is flipped to incomplete; the parked
+        // Run's stays streaming (it is not terminal).
+        let swept_msg: String =
+            sqlx::query_scalar("SELECT status FROM messages WHERE run_id = 'run-running'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            swept_msg, "incomplete",
+            "swept Run's streaming message → incomplete"
+        );
+        let parked_msg: String =
+            sqlx::query_scalar("SELECT status FROM messages WHERE run_id = 'run-parked'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(parked_msg, "streaming", "parked Run's message untouched");
+
+        // The sweep appends a terminal `error` Run Log milestone for the swept
+        // Run (the raw bulk UPDATE is outside the typed `fail()` verb), so
+        // `run/get_history` reads it as errored, not Running. The preserved
+        // parked Run gets none.
+        assert_eq!(
+            run_event_count(&pool, "run-running", "error").await,
+            1,
+            "swept Run gets one terminal error Run Log row"
+        );
+        assert_eq!(
+            run_event_count(&pool, "run-parked", "error").await,
+            0,
+            "preserved parked Run gets no error row"
+        );
+        let recovered_kind: String = sqlx::query_scalar(
+            "SELECT kind FROM run_log WHERE run_id = 'run-running' \
+             ORDER BY run_seq DESC LIMIT 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            recovered_kind, "error",
+            "the recovered Run's latest milestone is error, so the feed shows it errored not running"
+        );
+    }
+
+    async fn run_event_count(pool: &SqlitePool, run_id: &str, kind: &str) -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM run_log WHERE run_id = ?1 AND kind = ?2")
+            .bind(run_id)
+            .bind(kind)
+            .fetch_one(pool)
+            .await
+            .expect("count run events")
+    }
+
+    #[tokio::test]
+    async fn complete_loses_on_parked_and_writes_no_done_event() {
+        let pool = memory_pool().await;
+        let run_id = Uuid::parse_str("33333333-3333-4333-8333-333333333333").unwrap();
+        insert_bare_run(&pool, &run_id.to_string(), "parked").await;
+
+        let moved = complete_run(&pool, run_id, 42).await.expect("complete");
+
+        assert_eq!(moved, Moved::Lost);
+        assert_eq!(run_status_of(&pool, &run_id.to_string()).await, "parked");
+        assert_eq!(run_event_count(&pool, &run_id.to_string(), "done").await, 0);
+    }
+
+    #[tokio::test]
+    async fn fail_loses_on_parked_and_writes_no_error_event() {
+        let pool = memory_pool().await;
+        let run_id = Uuid::parse_str("44444444-4444-4444-8444-444444444444").unwrap();
+        insert_bare_run(&pool, &run_id.to_string(), "parked").await;
+
+        let moved = error_run(&pool, run_id, 42).await.expect("error");
+
+        assert_eq!(moved, Moved::Lost);
+        assert_eq!(run_status_of(&pool, &run_id.to_string()).await, "parked");
+        assert_eq!(
+            run_event_count(&pool, &run_id.to_string(), "error").await,
+            0
+        );
+    }
+
+    async fn seed_pending_proposal(pool: &SqlitePool, run_id: Uuid, tool_call_id: &str) -> String {
+        let proposal_id = Uuid::now_v7().to_string();
+        let mut tx = pool.begin().await.expect("begin proposal seed");
+        queries::insert_tool_call(
+            &mut *tx,
+            tool_call_id,
+            run_id,
+            "propose_workspace_mutation",
+            r#"{"mutation_kind":"create_journal_entry","payload":{"occurred_at":"2026-06-10T10:30:00","body":[{"type":"text","text":"Bought milk."}]}}"#,
+            2,
+        )
+        .await
+        .expect("insert tool call");
+        queries::insert_tool_call_run_step(&mut *tx, run_id, 2, tool_call_id, 2)
+            .await
+            .expect("insert tool step");
+        queries::insert_proposal(&mut *tx, &proposal_id, tool_call_id, "create_journal_entry")
+            .await
+            .expect("insert proposal");
+        tx.commit().await.expect("commit proposal seed");
+        proposal_id
+    }
+
+    #[tokio::test]
+    async fn cancel_parked_run_records_run_and_proposal_cancel_events() {
+        let pool = memory_pool().await;
+        let run_id = Uuid::parse_str("77777777-7777-4777-8777-777777777777").unwrap();
+        insert_bare_run(&pool, &run_id.to_string(), "parked").await;
+        seed_pending_proposal(&pool, run_id, "tool-cancel").await;
+
+        let cancelled = cancel_parked_run(&pool, run_id, 42).await.expect("cancel");
+
+        assert!(cancelled);
+        assert_eq!(run_status_of(&pool, &run_id.to_string()).await, "cancelled");
+        let proposal_status: String = sqlx::query_scalar(
+            "SELECT p.status FROM proposals p \
+             JOIN tool_calls tc ON tc.id = p.tool_call_id WHERE tc.run_id = ?1",
+        )
+        .bind(run_id.to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("proposal status");
+        assert_eq!(proposal_status, "cancelled");
+        assert_eq!(
+            run_event_count(&pool, &run_id.to_string(), "cancelled").await,
+            2,
+            "one cancelled event for the Proposal and one for the Run"
+        );
+
+        let second = cancel_parked_run(&pool, run_id, 43)
+            .await
+            .expect("second cancel");
+        assert!(!second);
+        assert_eq!(
+            run_event_count(&pool, &run_id.to_string(), "cancelled").await,
+            2,
+            "lost cancel wrote no duplicate event"
+        );
+    }
+
+    /// `mark_run_running` is self-guarding on `status='parked'` (review M2): the
+    /// first flip wins (1 row); a second flip and a never-parked Run are both
+    /// 0-row no-ops, so the caller bails and exactly one resume Worker spawns.
+    #[tokio::test]
+    async fn mark_run_running_guards_on_parked() {
+        let pool = memory_pool().await;
+        let parked = Uuid::parse_str("11111111-1111-4111-8111-111111111111").unwrap();
+        let running = Uuid::parse_str("22222222-2222-4222-8222-222222222222").unwrap();
+        insert_bare_run(&pool, &parked.to_string(), "parked").await;
+        insert_bare_run(&pool, &running.to_string(), "running").await;
+
+        // First flip of the parked Run wins (1 row).
+        let first = mark_run_running(&pool, parked).await.expect("first flip");
+        assert_eq!(first, Moved::Won, "parked → running flips exactly one row");
+        assert_eq!(run_status_of(&pool, &parked.to_string()).await, "running");
+
+        // Second flip is a no-op — the Run already left `parked`.
+        let second = mark_run_running(&pool, parked).await.expect("second flip");
+        assert_eq!(
+            second,
+            Moved::Lost,
+            "a second flip on an already-running Run is a no-op"
+        );
+
+        // A flip of a Run that was never parked is likewise 0 rows.
+        let non_parked = mark_run_running(&pool, running)
+            .await
+            .expect("non-parked flip");
+        assert_eq!(
+            non_parked,
+            Moved::Lost,
+            "flipping a non-parked Run affects no rows"
+        );
+    }
+
+    /// Seed a Thread (with a distinct `title`) + a bare Run, then append one
+    /// Run Log milestone (`kind` at `created_at`) — the minimum to exercise the
+    /// `list_run_history` latest-milestone/recency read directly.
+    async fn seed_run_with_milestone(
+        pool: &SqlitePool,
+        run_id: &str,
+        title: &str,
+        kind: &str,
+        created_at: i64,
+    ) {
+        let mut tx = pool.begin().await.expect("begin");
+        sqlx::query(
+            "INSERT INTO threads (id, title, created_at, last_activity_at) VALUES (?, ?, ?, ?)",
+        )
+        .bind(format!("thr-{run_id}"))
+        .bind(title)
+        .bind(created_at)
+        .bind(created_at)
+        .execute(&mut *tx)
+        .await
+        .expect("insert thread");
+        sqlx::query(
+            "INSERT INTO runs \
+             (id, thread_id, workflow_name, workflow_version, provider, model, \
+              thinking_level, user_message_id, status, started_at) \
+             VALUES (?, ?, 'w', '1', 'p', 'm', 'off', ?, 'running', ?)",
+        )
+        .bind(run_id)
+        .bind(format!("thr-{run_id}"))
+        .bind(format!("msg-{run_id}"))
+        .bind(created_at)
+        .execute(&mut *tx)
+        .await
+        .expect("insert run");
+        sqlx::query(
+            "INSERT INTO messages (id, thread_id, run_id, role, status, created_at, updated_at) \
+             VALUES (?, ?, ?, 'assistant', 'streaming', ?, ?)",
+        )
+        .bind(format!("msg-{run_id}"))
+        .bind(format!("thr-{run_id}"))
+        .bind(run_id)
+        .bind(created_at)
+        .bind(created_at)
+        .execute(&mut *tx)
+        .await
+        .expect("insert message");
+        tx.commit().await.expect("commit seeded run");
+
+        // The creation `running` row at seq 0, then the supplied milestone at
+        // seq 1 (so the latest-milestone selection has more than one row to pick
+        // the max from — exactly the live shape `run_log::append` produces).
+        queries::insert_run_log_entry(pool, Uuid::parse_str(run_id).unwrap(), 0, "running", None, created_at)
+            .await
+            .expect("insert running milestone");
+        if kind != "running" {
+            queries::insert_run_log_entry(
+                pool,
+                Uuid::parse_str(run_id).unwrap(),
+                1,
+                kind,
+                None,
+                created_at,
+            )
+            .await
+            .expect("insert latest milestone");
+        }
+    }
+
+    /// `list_run_history` returns one row per Run carrying its *latest* milestone
+    /// kind verbatim, newest-first by that milestone's `created_at`, capped at
+    /// `limit`; an empty Workspace returns an empty Vec.
+    #[tokio::test]
+    async fn list_run_history_orders_by_recency_with_verbatim_kind() {
+        let pool = memory_pool().await;
+
+        // Empty Workspace → empty feed.
+        let empty = list_run_history(&pool, 50).await.expect("empty read ok");
+        assert!(empty.is_empty(), "a never-run Workspace returns no history");
+
+        // Three Runs at increasing milestone times; the newest is `error`, then
+        // `proposal_decided` (a resumed-still-working Run's latest milestone —
+        // NOT folded to `running`), then `done` oldest.
+        seed_run_with_milestone(
+            &pool,
+            "11111111-1111-4111-8111-111111111111",
+            "oldest done",
+            "done",
+            100,
+        )
+        .await;
+        seed_run_with_milestone(
+            &pool,
+            "22222222-2222-4222-8222-222222222222",
+            "middle resumed",
+            "proposal_decided",
+            200,
+        )
+        .await;
+        seed_run_with_milestone(
+            &pool,
+            "33333333-3333-4333-8333-333333333333",
+            "newest error",
+            "error",
+            300,
+        )
+        .await;
+
+        let rows = list_run_history(&pool, 50).await.expect("history read ok");
+        assert_eq!(rows.len(), 3, "one row per Run");
+
+        // Newest-first by the latest milestone's created_at.
+        assert_eq!(rows[0].2, "newest error");
+        assert_eq!(rows[0].3, "error", "latest milestone kind verbatim");
+        assert_eq!(rows[0].4, 300, "recency key is the milestone created_at");
+
+        assert_eq!(rows[1].2, "middle resumed");
+        assert_eq!(
+            rows[1].3, "proposal_decided",
+            "resumed Run surfaces its proposal_decided milestone, not a folded running"
+        );
+
+        assert_eq!(rows[2].2, "oldest done");
+        assert_eq!(rows[2].3, "done");
+
+        // thread_id is the owning Thread; run_id is the Run.
+        assert_eq!(rows[0].0, "33333333-3333-4333-8333-333333333333");
+        assert_eq!(rows[0].1, "thr-33333333-3333-4333-8333-333333333333");
+
+        // The limit caps the row count, keeping the newest.
+        let capped = list_run_history(&pool, 2).await.expect("capped read ok");
+        assert_eq!(capped.len(), 2, "limit caps the feed");
+        assert_eq!(capped[0].2, "newest error");
+        assert_eq!(capped[1].2, "middle resumed");
+    }
+
+    /// When two Runs' latest milestones share an identical `created_at` (ms ties
+    /// are real at this granularity), the `, rl.run_id DESC` tie-break makes the
+    /// order deterministic — the higher run_id sorts first.
+    #[tokio::test]
+    async fn list_run_history_breaks_created_at_ties_by_run_id() {
+        let pool = memory_pool().await;
+
+        // Two Runs, same latest-milestone created_at (500). Without the tie-break
+        // their relative order would be undefined; with `run_id DESC` the
+        // lexically-greater id ("bbbb…") must precede the lesser ("aaaa…").
+        let lo = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        let hi = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+        seed_run_with_milestone(&pool, lo, "lo id", "done", 500).await;
+        seed_run_with_milestone(&pool, hi, "hi id", "done", 500).await;
+
+        let rows = list_run_history(&pool, 50).await.expect("history read ok");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].0, hi, "higher run_id sorts first on a created_at tie");
+        assert_eq!(rows[1].0, lo);
+    }
+
+    /// ADR-0045 reasoning amendment (correctness-critical): a reasoning part is
+    /// DISPLAY-ONLY — `read_run_timeline` (the resume transcript reader) must NEVER
+    /// surface it as a `TimelineStep::Message`. Replaying thinking without its
+    /// provider signature is a live correctness hazard (#201 defers the signed
+    /// round-trip), so the resume transcript carries only the surrounding text.
+    #[tokio::test]
+    async fn read_run_timeline_excludes_reasoning_parts() {
+        let pool = memory_pool().await;
+        let thread_id = Uuid::now_v7();
+        let run_id = Uuid::now_v7();
+        let assistant_id = Uuid::now_v7();
+
+        let mut tx = pool.begin().await.expect("begin");
+        queries::insert_thread(&mut *tx, thread_id, "T", 1)
+            .await
+            .expect("thread");
+        sqlx::query(
+            "INSERT INTO runs \
+             (id, thread_id, workflow_name, workflow_version, provider, model, \
+              thinking_level, user_message_id, status, started_at) \
+             VALUES (?, ?, 'w', '1', 'p', 'm', 'medium', ?, 'parked', 1)",
+        )
+        .bind(run_id.to_string())
+        .bind(thread_id.to_string())
+        .bind(assistant_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .expect("run");
+        queries::insert_message(
+            &mut *tx,
+            assistant_id,
+            thread_id,
+            run_id,
+            "assistant",
+            "completed",
+            1,
+        )
+        .await
+        .expect("assistant message");
+        // text @ seq 0, reasoning @ seq 1, text @ seq 2 — the reasoning must drop
+        // from the resume transcript while the two text steps replay verbatim.
+        queries::insert_text_part(&mut *tx, assistant_id, 0, "Replying now.")
+            .await
+            .expect("text part 0");
+        queries::insert_message_run_step(&mut *tx, run_id, 0, assistant_id, 0, 10)
+            .await
+            .expect("text step 0");
+        queries::insert_reasoning_part(&mut *tx, assistant_id, 1, "SECRET-REASONING")
+            .await
+            .expect("reasoning part 1");
+        queries::insert_message_run_step(&mut *tx, run_id, 1, assistant_id, 1, 20)
+            .await
+            .expect("reasoning step 1");
+        queries::insert_text_part(&mut *tx, assistant_id, 2, "All set.")
+            .await
+            .expect("text part 2");
+        queries::insert_message_run_step(&mut *tx, run_id, 2, assistant_id, 2, 30)
+            .await
+            .expect("text step 2");
+        tx.commit().await.expect("commit seed");
+
+        let steps = read_run_timeline(&pool, run_id).await.expect("timeline");
+
+        // No step's text equals the reasoning text — it never replays.
+        assert!(
+            !steps.iter().any(|s| matches!(
+                s,
+                TimelineStep::Message { text, .. } if text == "SECRET-REASONING"
+            )),
+            "a reasoning part must never become a resume transcript Message step"
+        );
+        // The surrounding text steps still resolve.
+        let texts: Vec<&str> = steps
+            .iter()
+            .filter_map(|s| match s {
+                TimelineStep::Message { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            texts,
+            vec!["Replying now.", "All set."],
+            "text steps replay verbatim, reasoning is dropped"
+        );
+    }
+
+    /// Drive a bare Run to `errored` directly (terminal fields stamped), to seed
+    /// the retry verb's `from` state. Mirrors what `RunStatus::fail` leaves behind.
+    async fn mark_bare_run_errored(pool: &SqlitePool, run_id: &str) {
+        sqlx::query(
+            "UPDATE runs SET status = 'errored', terminal_reason = 'errored', \
+             error_code = 'agent_error', error_message = 'boom', ended_at = 99 \
+             WHERE id = ?1",
+        )
+        .bind(run_id)
+        .execute(pool)
+        .await
+        .expect("mark errored");
+    }
+
+    /// `RunStatus::retry` lock (ADR-0028 retry amendment, #230): the guarded
+    /// `errored → running` flip wins only from `errored`, clears the four terminal
+    /// fields, and a `running`/`completed`/`parked`/`cancelled` Run loses (0 rows,
+    /// no mutation). The single outbound edge `errored` gains.
+    #[tokio::test]
+    async fn retry_verb_flips_errored_to_running_and_clears_terminal_fields() {
+        let pool = memory_pool().await;
+        let run_id = Uuid::now_v7();
+        let run = run_id.to_string();
+        insert_bare_run(&pool, &run, "running").await;
+        mark_bare_run_errored(&pool, &run).await;
+
+        // Won: errored → running, terminal fields cleared.
+        let mut tx = pool.begin().await.expect("begin");
+        let moved = RunStatus::retry(&mut tx, run_id, 100).await.expect("retry");
+        tx.commit().await.expect("commit");
+        assert_eq!(moved, Moved::Won);
+
+        let (status, tr, ec, em, ended): (String, Option<String>, Option<String>, Option<String>, Option<i64>) =
+            sqlx::query_as(
+                "SELECT status, terminal_reason, error_code, error_message, ended_at \
+                 FROM runs WHERE id = ?1",
+            )
+            .bind(&run)
+            .fetch_one(&pool)
+            .await
+            .expect("read run");
+        assert_eq!(status, "running");
+        assert_eq!(tr, None, "terminal_reason cleared");
+        assert_eq!(ec, None, "error_code cleared");
+        assert_eq!(em, None, "error_message cleared");
+        assert_eq!(ended, None, "ended_at cleared");
+
+        // A retry milestone reuses RunLogKind::Running (no new kind).
+        let last_kind: String = sqlx::query_scalar(
+            "SELECT kind FROM run_log WHERE run_id = ?1 ORDER BY run_seq DESC LIMIT 1",
+        )
+        .bind(&run)
+        .fetch_one(&pool)
+        .await
+        .expect("read run_log");
+        assert_eq!(last_kind, "running");
+
+        // Lost: a non-errored Run matches 0 rows and is untouched.
+        for status in ["running", "completed", "parked", "cancelled"] {
+            let other = Uuid::now_v7();
+            let other_s = other.to_string();
+            insert_bare_run(&pool, &other_s, status).await;
+            let mut tx = pool.begin().await.expect("begin");
+            let moved = RunStatus::retry(&mut tx, other, 100).await.expect("retry lost");
+            tx.commit().await.expect("commit");
+            assert_eq!(moved, Moved::Lost, "{status} run cannot be retried");
+            assert_eq!(run_status_of(&pool, &other_s).await, status, "{status} unchanged");
+        }
+    }
+}

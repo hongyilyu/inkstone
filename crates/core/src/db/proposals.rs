@@ -407,3 +407,634 @@ pub async fn reject_proposal(
     tx.commit().await?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+
+    use super::*;
+    use crate::db::mark_run_running;
+
+    /// A migrated in-memory pool so the `runs` CHECK constraints are in force.
+    async fn memory_pool() -> SqlitePool {
+        let options = SqliteConnectOptions::new()
+            .filename(":memory:")
+            .foreign_keys(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .expect("open in-memory sqlite");
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .expect("run migrations");
+        pool
+    }
+
+    /// Insert a Thread + a bare Run row in `status` directly (no Worker), to
+    /// hand-craft `running`/`parked` Runs for the tests.
+    async fn insert_bare_run(pool: &SqlitePool, run_id: &str, status: &str) {
+        let mut tx = pool.begin().await.expect("begin");
+        sqlx::query(
+            "INSERT INTO threads (id, title, created_at, last_activity_at) VALUES (?, ?, ?, ?)",
+        )
+        .bind(format!("thr-{run_id}"))
+        .bind("t")
+        .bind(1_i64)
+        .bind(1_i64)
+        .execute(&mut *tx)
+        .await
+        .expect("insert thread");
+        // user_message_id FK is DEFERRABLE (resolved at COMMIT), so the run can
+        // reference a message inserted later in the same tx.
+        sqlx::query(
+            "INSERT INTO runs \
+             (id, thread_id, workflow_name, workflow_version, provider, model, \
+              thinking_level, user_message_id, status, started_at) \
+             VALUES (?, ?, 'w', '1', 'p', 'm', 'off', ?, ?, ?)",
+        )
+        .bind(run_id)
+        .bind(format!("thr-{run_id}"))
+        .bind(format!("msg-{run_id}"))
+        .bind(status)
+        .bind(1_i64)
+        .execute(&mut *tx)
+        .await
+        .expect("insert run");
+        sqlx::query(
+            "INSERT INTO messages (id, thread_id, run_id, role, status, created_at, updated_at) \
+             VALUES (?, ?, ?, 'assistant', 'streaming', ?, ?)",
+        )
+        .bind(format!("msg-{run_id}"))
+        .bind(format!("thr-{run_id}"))
+        .bind(run_id)
+        .bind(1_i64)
+        .bind(1_i64)
+        .execute(&mut *tx)
+        .await
+        .expect("insert message");
+        tx.commit().await.expect("commit bare run");
+    }
+
+    async fn run_status_of(pool: &SqlitePool, run_id: &str) -> String {
+        sqlx::query_scalar("SELECT status FROM runs WHERE id = ?1")
+            .bind(run_id)
+            .fetch_one(pool)
+            .await
+            .expect("run row")
+    }
+
+    async fn run_event_count(pool: &SqlitePool, run_id: &str, kind: &str) -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM run_log WHERE run_id = ?1 AND kind = ?2")
+            .bind(run_id)
+            .bind(kind)
+            .fetch_one(pool)
+            .await
+            .expect("count run events")
+    }
+
+    async fn seed_pending_proposal(pool: &SqlitePool, run_id: Uuid, tool_call_id: &str) -> String {
+        let proposal_id = Uuid::now_v7().to_string();
+        let mut tx = pool.begin().await.expect("begin proposal seed");
+        queries::insert_tool_call(
+            &mut *tx,
+            tool_call_id,
+            run_id,
+            "propose_workspace_mutation",
+            r#"{"mutation_kind":"create_journal_entry","payload":{"occurred_at":"2026-06-10T10:30:00","body":[{"type":"text","text":"Bought milk."}]}}"#,
+            2,
+        )
+        .await
+        .expect("insert tool call");
+        queries::insert_tool_call_run_step(&mut *tx, run_id, 2, tool_call_id, 2)
+            .await
+            .expect("insert tool step");
+        queries::insert_proposal(&mut *tx, &proposal_id, tool_call_id, "create_journal_entry")
+            .await
+            .expect("insert proposal");
+        tx.commit().await.expect("commit proposal seed");
+        proposal_id
+    }
+
+    #[tokio::test]
+    async fn park_on_proposal_is_atomic_and_records_events() {
+        let pool = memory_pool().await;
+        let run_id = Uuid::parse_str("55555555-5555-4555-8555-555555555555").unwrap();
+        insert_bare_run(&pool, &run_id.to_string(), "running").await;
+
+        let moved = park_on_proposal(
+            &pool,
+            run_id,
+            "proposal-1",
+            "tool-1",
+            "propose_workspace_mutation",
+            r#"{"mutation_kind":"create_journal_entry","payload":{"occurred_at":"2026-06-10T10:30:00","body":[{"type":"text","text":"Bought milk."}]}}"#,
+            "create_journal_entry",
+            42,
+        )
+        .await
+        .expect("park");
+
+        assert_eq!(moved, Moved::Won);
+        assert_eq!(run_status_of(&pool, &run_id.to_string()).await, "parked");
+        assert_eq!(
+            run_event_count(&pool, &run_id.to_string(), "parked").await,
+            1
+        );
+        assert_eq!(
+            run_event_count(&pool, &run_id.to_string(), "proposal_pending").await,
+            1
+        );
+
+        let second = park_on_proposal(
+            &pool,
+            run_id,
+            "proposal-2",
+            "tool-2",
+            "propose_workspace_mutation",
+            r#"{"mutation_kind":"create_journal_entry","payload":{"occurred_at":"2026-06-10T10:31:00","body":[{"type":"text","text":"Bought eggs."}]}}"#,
+            "create_journal_entry",
+            43,
+        )
+        .await
+        .expect("second park");
+        assert_eq!(second, Moved::Lost);
+        let proposal_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM proposals")
+            .fetch_one(&pool)
+            .await
+            .expect("count proposals");
+        assert_eq!(proposal_count, 1, "lost park rolled back its proposal row");
+    }
+
+    #[tokio::test]
+    async fn accept_records_proposal_decided_and_resume_is_guarded() {
+        let pool = memory_pool().await;
+        let run_id = Uuid::parse_str("66666666-6666-4666-8666-666666666666").unwrap();
+        insert_bare_run(&pool, &run_id.to_string(), "parked").await;
+        let proposal_id = seed_pending_proposal(&pool, run_id, "tool-accept").await;
+
+        let entity_id = apply_proposal(
+            &pool,
+            run_id,
+            &proposal_id,
+            "tool-accept",
+            crate::mutation::MutationKind::CreateJournalEntry,
+            None,
+            &serde_json::json!({
+                "occurred_at": "2026-06-10T10:30:00",
+                "body": [{ "type": "text", "text": "Bought milk." }]
+            }),
+            None,
+            Some(crate::mutation::SourceRelation::CreatedFrom),
+            Some("idem-accept"),
+            |_| r#"{"decision":"accept","content":"Accepted."}"#.to_string(),
+            42,
+        )
+        .await
+        .expect("apply");
+        assert!(!entity_id.is_empty());
+        let source_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM entity_sources es \
+             JOIN runs r ON r.user_message_id = es.source_message_id \
+             WHERE es.entity_id = ?1 AND es.relation = 'created_from' AND r.id = ?2",
+        )
+        .bind(&entity_id)
+        .bind(run_id.to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("count entity_sources");
+        assert_eq!(
+            source_count, 1,
+            "accepted entity records its source Message"
+        );
+        // The stored schema_version is the one the Entity Type owns (derived from
+        // the kind via the descriptor), so this catches apply_proposal stamping
+        // the wrong version for the Journal Entry it created.
+        let stored_schema_version: i64 =
+            sqlx::query_scalar("SELECT schema_version FROM entities WHERE id = ?1")
+                .bind(&entity_id)
+                .fetch_one(&pool)
+                .await
+                .expect("entity schema_version");
+        assert_eq!(
+            stored_schema_version,
+            crate::mutation::JOURNAL_ENTRY_SCHEMA_VERSION
+        );
+        assert_eq!(
+            run_event_count(&pool, &run_id.to_string(), "proposal_decided").await,
+            1
+        );
+
+        let first_resume = mark_run_running(&pool, run_id).await.expect("resume");
+        assert_eq!(first_resume, Moved::Won);
+        let second_resume = mark_run_running(&pool, run_id).await.expect("resume again");
+        assert_eq!(second_resume, Moved::Lost);
+
+        let duplicate = apply_proposal(
+            &pool,
+            run_id,
+            &proposal_id,
+            "tool-accept",
+            crate::mutation::MutationKind::CreateJournalEntry,
+            None,
+            &serde_json::json!({
+                "occurred_at": "2026-06-10T10:30:00",
+                "body": [{ "type": "text", "text": "Bought milk." }]
+            }),
+            None,
+            Some(crate::mutation::SourceRelation::CreatedFrom),
+            Some("idem-accept-2"),
+            |_| r#"{"decision":"accept","content":"Accepted."}"#.to_string(),
+            43,
+        )
+        .await;
+        assert!(matches!(duplicate, Err(ApplyError::NotPending)));
+        assert_eq!(
+            run_event_count(&pool, &run_id.to_string(), "proposal_decided").await,
+            1,
+            "lost apply wrote no duplicate event"
+        );
+    }
+
+    /// Defense-in-depth (ADR-0030/0031): `source_journal_entry_id` is honored
+    /// only for `created_from` (creates). An `updated_from` apply that somehow
+    /// carries the field still sources from the user Message — never from a
+    /// Journal Entry. (Update validators already reject the field at decide; this
+    /// guards the apply layer directly so a future allowlist relaxation can't
+    /// mis-source an update or FK-fail on a stray JE id.)
+    #[tokio::test]
+    async fn update_ignores_source_journal_entry_id_and_stays_message_sourced() {
+        let pool = memory_pool().await;
+        let run_id = Uuid::parse_str("99999999-9999-4999-8999-999999999999").unwrap();
+        insert_bare_run(&pool, &run_id.to_string(), "parked").await;
+
+        // An existing Person to update (created_by='user', no proposal needed).
+        let person_id = Uuid::now_v7().to_string();
+        sqlx::query(
+            "INSERT INTO entities \
+             (id, type, schema_version, data, created_by, created_via_proposal_id, \
+              created_at, updated_at) \
+             VALUES (?, 'person', ?, ?, 'user', NULL, ?, ?)",
+        )
+        .bind(&person_id)
+        .bind(crate::mutation::PERSON_SCHEMA_VERSION)
+        .bind(r#"{"name":"Alice"}"#)
+        .bind(1_i64)
+        .bind(1_i64)
+        .execute(&pool)
+        .await
+        .expect("seed person");
+
+        let proposal_id = seed_pending_proposal(&pool, run_id, "tool-update-src").await;
+
+        // The update payload smuggles a source_journal_entry_id pointing at a
+        // NON-existent entity. The buggy (pre-gate) path would route to
+        // insert_entity_source_from_entity and FK-fail; the gate keeps it on the
+        // Message path because relation == "updated_from".
+        let bogus_journal_entry_id = Uuid::now_v7().to_string();
+        let entity_id = apply_proposal(
+            &pool,
+            run_id,
+            &proposal_id,
+            "tool-update-src",
+            crate::mutation::MutationKind::UpdatePerson,
+            Some(&person_id),
+            &serde_json::json!({
+                "entity_id": person_id,
+                "name": "Alice Updated",
+                "source_journal_entry_id": bogus_journal_entry_id,
+            }),
+            None,
+            Some(crate::mutation::SourceRelation::UpdatedFrom),
+            Some("idem-update-src"),
+            |_| r#"{"decision":"accept","content":"Accepted."}"#.to_string(),
+            42,
+        )
+        .await
+        .expect("update applies (must not FK-fail on the stray JE id)");
+        assert_eq!(entity_id, person_id);
+
+        // The updated_from source points at the user Message, NOT the Journal Entry.
+        let (msg_count, ent_count): (i64, i64) = sqlx::query_as(
+            "SELECT \
+               COUNT(*) FILTER (WHERE source_message_id IS NOT NULL AND source_entity_id IS NULL), \
+               COUNT(*) FILTER (WHERE source_entity_id IS NOT NULL) \
+             FROM entity_sources WHERE entity_id = ?1 AND relation = 'updated_from'",
+        )
+        .bind(&person_id)
+        .fetch_one(&pool)
+        .await
+        .expect("count updated_from sources");
+        assert_eq!(msg_count, 1, "update is sourced from the user Message");
+        assert_eq!(
+            ent_count, 0,
+            "update is never sourced from a Journal Entry (source_journal_entry_id ignored on update)"
+        );
+    }
+
+    /// A parked Proposal whose target Entity was deleted out from under it
+    /// (ADR-0033's user-delete-vs-parked-agent-proposal race): `apply_proposal`'s
+    /// update/delete affected-0-rows path surfaces a distinct
+    /// [`ApplyError::TargetMissing`], NOT an opaque [`ApplyError::Sql`], so the
+    /// caller can resolve the parked Run cleanly (decide maps it to
+    /// `NotDecidable` → `-32002`). Nothing is written and the Proposal's flip
+    /// rolls back with the tx.
+    #[tokio::test]
+    async fn apply_delete_with_vanished_target_is_target_missing() {
+        let pool = memory_pool().await;
+        let run_id = Uuid::parse_str("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap();
+        insert_bare_run(&pool, &run_id.to_string(), "parked").await;
+        let proposal_id = seed_pending_proposal(&pool, run_id, "tool-vanished").await;
+
+        // A delete_journal_entry whose `entity_id` names an Entity that does not
+        // exist — modeling the target deleted after the Proposal parked. The
+        // delete's affected-0-rows check fires.
+        let missing_entity_id = Uuid::now_v7().to_string();
+        let result = apply_proposal(
+            &pool,
+            run_id,
+            &proposal_id,
+            "tool-vanished",
+            crate::mutation::MutationKind::DeleteJournalEntry,
+            Some(&missing_entity_id),
+            &serde_json::json!({ "entity_id": missing_entity_id }),
+            None,
+            None,
+            Some("idem-vanished"),
+            |_| r#"{"decision":"accept","content":"Accepted."}"#.to_string(),
+            42,
+        )
+        .await;
+
+        assert!(
+            matches!(result, Err(ApplyError::TargetMissing)),
+            "a vanished delete target surfaces TargetMissing, not opaque Sql: {result:?}"
+        );
+        let entity_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM entities")
+            .fetch_one(&pool)
+            .await
+            .expect("count entities");
+        assert_eq!(entity_count, 0, "nothing is written on a vanished target");
+        // The guarded Proposal flip rolled back with the tx — still pending.
+        let proposal_status: String =
+            sqlx::query_scalar("SELECT status FROM proposals WHERE id = ?1")
+                .bind(&proposal_id)
+                .fetch_one(&pool)
+                .await
+                .expect("proposal status");
+        assert_eq!(
+            proposal_status, "pending",
+            "the apply tx rolled back, leaving the Proposal pending"
+        );
+    }
+
+    /// The update affected-0-rows path also surfaces [`ApplyError::TargetMissing`]
+    /// (not opaque `Sql`): an `update_person` whose target Entity was deleted out
+    /// from under the parked Proposal. Covers the generic update arm alongside the
+    /// delete arm above.
+    #[tokio::test]
+    async fn apply_update_with_vanished_target_is_target_missing() {
+        let pool = memory_pool().await;
+        let run_id = Uuid::parse_str("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb").unwrap();
+        insert_bare_run(&pool, &run_id.to_string(), "parked").await;
+        let proposal_id = seed_pending_proposal(&pool, run_id, "tool-vanished-upd").await;
+
+        let missing_entity_id = Uuid::now_v7().to_string();
+        let result = apply_proposal(
+            &pool,
+            run_id,
+            &proposal_id,
+            "tool-vanished-upd",
+            crate::mutation::MutationKind::UpdatePerson,
+            Some(&missing_entity_id),
+            &serde_json::json!({ "entity_id": missing_entity_id, "name": "Ghost" }),
+            None,
+            Some(crate::mutation::SourceRelation::UpdatedFrom),
+            Some("idem-vanished-upd"),
+            |_| r#"{"decision":"accept","content":"Accepted."}"#.to_string(),
+            42,
+        )
+        .await;
+
+        assert!(
+            matches!(result, Err(ApplyError::TargetMissing)),
+            "a vanished update target surfaces TargetMissing: {result:?}"
+        );
+        let entity_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM entities")
+            .fetch_one(&pool)
+            .await
+            .expect("count entities");
+        assert_eq!(entity_count, 0, "nothing is written on a vanished target");
+    }
+
+    #[tokio::test]
+    async fn reject_records_proposal_decided_and_is_guarded() {
+        let pool = memory_pool().await;
+        let run_id = Uuid::parse_str("88888888-8888-4888-8888-888888888888").unwrap();
+        insert_bare_run(&pool, &run_id.to_string(), "parked").await;
+        let proposal_id = seed_pending_proposal(&pool, run_id, "tool-reject").await;
+
+        reject_proposal(
+            &pool,
+            run_id,
+            &proposal_id,
+            "tool-reject",
+            Some("idem-reject"),
+            r#"{"decision":"reject","content":"Rejected."}"#,
+            42,
+        )
+        .await
+        .expect("reject");
+
+        let proposal_status: String =
+            sqlx::query_scalar("SELECT status FROM proposals WHERE id = ?1")
+                .bind(&proposal_id)
+                .fetch_one(&pool)
+                .await
+                .expect("proposal status");
+        assert_eq!(proposal_status, "rejected");
+        let tool_status: String =
+            sqlx::query_scalar("SELECT status FROM tool_calls WHERE id = 'tool-reject'")
+                .fetch_one(&pool)
+                .await
+                .expect("tool status");
+        assert_eq!(tool_status, "completed");
+        let entity_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM entities")
+            .fetch_one(&pool)
+            .await
+            .expect("count entities");
+        assert_eq!(entity_count, 0, "reject applies no entity");
+        assert_eq!(
+            run_event_count(&pool, &run_id.to_string(), "proposal_decided").await,
+            1
+        );
+
+        let duplicate = reject_proposal(
+            &pool,
+            run_id,
+            &proposal_id,
+            "tool-reject",
+            Some("idem-reject-2"),
+            r#"{"decision":"reject","content":"Rejected."}"#,
+            43,
+        )
+        .await;
+        assert!(matches!(duplicate, Err(ApplyError::NotPending)));
+        assert_eq!(
+            run_event_count(&pool, &run_id.to_string(), "proposal_decided").await,
+            1,
+            "lost reject wrote no duplicate event"
+        );
+    }
+
+    /// Insert an Entity row directly with the given `type` + `data` JSON, so the
+    /// relationship-read tests can seed Todos/Persons/Projects without a Proposal.
+    async fn seed_entity(pool: &SqlitePool, id: &str, entity_type: &str, data: &str) {
+        sqlx::query(
+            "INSERT INTO entities \
+             (id, type, schema_version, data, created_by, created_via_proposal_id, \
+              created_at, updated_at) \
+             VALUES (?, ?, 1, ?, 'user', NULL, 1, 1)",
+        )
+        .bind(id)
+        .bind(entity_type)
+        .bind(data)
+        .execute(pool)
+        .await
+        .expect("insert entity");
+    }
+
+    /// Seed a Thread + Run + user Message chain so a Message-sourced provenance
+    /// row resolves a real `thread_id`/`thread_title`. The `runs.user_message_id`
+    /// and `messages.run_id` FKs are circular but DEFERRABLE, so the whole chain
+    /// commits in one tx. Returns the seeded user-message id.
+    async fn seed_thread_message(
+        pool: &SqlitePool,
+        thread_id: &str,
+        thread_title: &str,
+        message_id: &str,
+    ) {
+        let mut tx = pool.begin().await.expect("begin");
+        sqlx::query(
+            "INSERT INTO threads (id, title, created_at, last_activity_at) VALUES (?, ?, 1, 1)",
+        )
+        .bind(thread_id)
+        .bind(thread_title)
+        .execute(&mut *tx)
+        .await
+        .expect("insert thread");
+        let run_id = format!("run-for-{message_id}");
+        sqlx::query(
+            "INSERT INTO runs \
+             (id, thread_id, workflow_name, workflow_version, provider, model, \
+              thinking_level, user_message_id, status, started_at) \
+             VALUES (?, ?, 'w', '1', 'p', 'm', 'off', ?, 'completed', 1)",
+        )
+        .bind(&run_id)
+        .bind(thread_id)
+        .bind(message_id)
+        .execute(&mut *tx)
+        .await
+        .expect("insert run");
+        sqlx::query(
+            "INSERT INTO messages (id, thread_id, run_id, role, status, created_at, updated_at) \
+             VALUES (?, ?, ?, 'user', 'completed', 1, 1)",
+        )
+        .bind(message_id)
+        .bind(thread_id)
+        .bind(&run_id)
+        .execute(&mut *tx)
+        .await
+        .expect("insert message");
+        tx.commit().await.expect("commit thread+message");
+    }
+
+    /// Seed one `entity_sources` row. Exactly one of `source_message_id` /
+    /// `source_entity_id` is set (the schema CHECK); pass the other as `None`.
+    async fn seed_source(
+        pool: &SqlitePool,
+        id: &str,
+        entity_id: &str,
+        source_message_id: Option<&str>,
+        source_entity_id: Option<&str>,
+        relation: &str,
+        created_at: i64,
+    ) {
+        sqlx::query(
+            "INSERT INTO entity_sources \
+             (id, entity_id, source_message_id, source_entity_id, relation, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(id)
+        .bind(entity_id)
+        .bind(source_message_id)
+        .bind(source_entity_id)
+        .bind(relation)
+        .bind(created_at)
+        .execute(pool)
+        .await
+        .expect("insert entity_source");
+    }
+
+    /// `journal_entry_origin_thread_id` resolves the Thread a Journal Entry was
+    /// `created_from` (the origin user Message's Thread), the destination a re-scan
+    /// Run starts in. A non-existent id, or an id naming a non-`journal_entry`
+    /// Entity, resolves to `None` — so the rescan handler errors instead of
+    /// spawning into the wrong Thread.
+    #[tokio::test]
+    async fn journal_entry_origin_thread_id_resolves_je_origin_only() {
+        let pool = memory_pool().await;
+        seed_thread_message(&pool, "thr-origin", "Morning dump", "msg-origin").await;
+
+        // (a) A Journal Entry `created_from` the user Message in thr-origin.
+        seed_entity(&pool, "je-1", "journal_entry", r#"{"occurred_at":"x"}"#).await;
+        seed_source(
+            &pool,
+            "src-je",
+            "je-1",
+            Some("msg-origin"),
+            None,
+            "created_from",
+            10,
+        )
+        .await;
+
+        // (b) A non-`journal_entry` Entity that ALSO has a created_from message
+        // source — the query must reject it on the type guard, not resolve its
+        // Thread.
+        seed_entity(&pool, "t-1", "todo", r#"{"title":"Buy milk"}"#).await;
+        seed_source(
+            &pool,
+            "src-todo",
+            "t-1",
+            Some("msg-origin"),
+            None,
+            "created_from",
+            10,
+        )
+        .await;
+
+        assert_eq!(
+            journal_entry_origin_thread_id(&pool, "je-1")
+                .await
+                .expect("query runs"),
+            Some("thr-origin".to_string()),
+            "a journal_entry resolves its created_from origin Thread"
+        );
+        assert_eq!(
+            journal_entry_origin_thread_id(&pool, "missing")
+                .await
+                .expect("query runs"),
+            None,
+            "an unknown id resolves to None"
+        );
+        assert_eq!(
+            journal_entry_origin_thread_id(&pool, "t-1")
+                .await
+                .expect("query runs"),
+            None,
+            "a non-journal_entry Entity resolves to None even with a created_from source"
+        );
+    }
+}
