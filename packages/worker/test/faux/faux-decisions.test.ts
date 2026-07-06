@@ -2,9 +2,9 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
-	DECLINED_TEXT,
 	acceptedReference,
 	acceptedVerb,
+	DECLINED_TEXT,
 	decisionOutcome,
 } from "../../src/faux/faux-decisions.js";
 
