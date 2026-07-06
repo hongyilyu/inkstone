@@ -6,7 +6,6 @@ use sqlx::SqlitePool;
 use uuid::Uuid;
 
 use super::queries;
-use super::segment_rows_for_run;
 
 /// Whether a Thread row exists. `run/post_message` is existing-thread-only
 /// (ADR-0022); an unknown `thread_id` is rejected with `unknown_thread`.
@@ -166,4 +165,138 @@ pub async fn get_thread_with_messages(
     }
 
     Ok(Some((title, messages)))
+}
+
+/// Assemble an assistant Run's ordered `segments[]` for `thread/get` rehydration
+/// (ADR-0045): walk [`queries::segment_timeline`] in `run_steps` `seq` order and
+/// turn each step into a `text` / `tool_call` / `proposal` segment, applying the
+/// settled-history filters ADR-0043/0044 specify (all over the parsed status
+/// strings here, so the one ordered SQL walk is never broken by a per-kind
+/// sub-read):
+///
+/// - `message` step → a `Text` segment, skipping an empty-text part.
+/// - `tool_call` step carrying a `proposals` row → a `Proposal` segment, but only
+///   for a DECIDED (`accepted`/`rejected`) Proposal — a `pending` one renders its
+///   interactive card (deferred) and a `cancelled` one is cleared live (ADR-0044).
+///   A Run that parks more than once (decide, resume, park again) holds several
+///   decided Proposals; only the MOST-RECENT rehydrates, as a single indicator per
+///   turn — the live store shows one card per `run_id`, and the superseded ADR-0044
+///   read collapsed to `decided_at DESC LIMIT 1`. Proposal steps appear in `seq`
+///   order, which is `decided_at` order (a Run must decide its first Proposal before
+///   resuming to park on a second), so the LAST decided step in the walk is the
+///   most-recent; earlier decided Proposals emit nothing.
+/// - `tool_call` step without a `proposals` row → a `ToolCall` segment, skipping a
+///   `pending` call (an in-flight call at reload time is owned by the live tail,
+///   ADR-0043) and any Proposal-named tool that somehow lacks its `proposals` row
+///   (defensive: a Proposal renders as a card, never a tool-activity row).
+///
+/// `message` steps are scoped to `assistant_message_id` (the Run's user-Message
+/// text step belongs to the user `MessageRow`, not this turn — see
+/// [`queries::segment_timeline`]). A `run_id` that does not parse as a UUID yields
+/// no segments (best-effort read; a malformed id has no rehydratable timeline).
+async fn segment_rows_for_run(
+    pool: &SqlitePool,
+    run_id: &str,
+    assistant_message_id: &str,
+) -> sqlx::Result<Vec<MessageSegment>> {
+    let Ok(run_uuid) = Uuid::parse_str(run_id) else {
+        return Ok(Vec::new());
+    };
+    let rows = queries::segment_timeline(pool, run_uuid, assistant_message_id).await?;
+    // The row index of the LAST decided Proposal step — the only Proposal that
+    // rehydrates, so a multi-park Run surfaces one indicator (its most-recent
+    // decision), matching the live store and the superseded ADR-0044 read.
+    let last_decided_proposal = rows.iter().rposition(|row| {
+        row.kind == "tool_call"
+            && row.proposal_id.is_some()
+            && matches!(row.proposal_status.as_deref(), Some("accepted" | "rejected"))
+    });
+    let mut segments = Vec::with_capacity(rows.len());
+    for (idx, row) in rows.into_iter().enumerate() {
+        let queries::SegmentTimelineRow {
+            kind,
+            part_text,
+            part_type,
+            tc_name,
+            tc_status,
+            request_payload,
+            proposal_id,
+            mutation_kind,
+            proposal_status,
+            duration_ms,
+        } = row;
+        match kind.as_str() {
+            "message" => {
+                let text = part_text.unwrap_or_default();
+                if text.is_empty() {
+                    // An empty part renders nothing — for either text or
+                    // reasoning (a thinking block that streamed no content).
+                    continue;
+                }
+                // The part TYPE distinguishes a reasoning segment from text
+                // (ADR-0045 reasoning amendment): both are `kind='message'` steps;
+                // only `message_parts.type` tells them apart. `duration_ms` is the
+                // Core-computed think span (None for text rows or when unknown).
+                if part_type.as_deref() == Some("reasoning") {
+                    segments.push(MessageSegment::Reasoning { text, duration_ms });
+                } else {
+                    segments.push(MessageSegment::Text { text });
+                }
+            }
+            "tool_call" => {
+                let name = tc_name.unwrap_or_default();
+                if let Some(proposal_id) = proposal_id {
+                    // A Proposal step: rehydrate only the DECIDED outcome (ADR-0044),
+                    // and only the MOST-RECENT decided Proposal of a multi-park Run
+                    // (`last_decided_proposal`). Earlier decided Proposals, and any
+                    // pending/cancelled one, emit nothing.
+                    let status = proposal_status.unwrap_or_default();
+                    if (status == "accepted" || status == "rejected")
+                        && Some(idx) == last_decided_proposal
+                    {
+                        // Resolve the durable Entity the decided change created/updated
+                        // (ADR-0044 entity_id amendment) so the decided card can name +
+                        // deep-link it. `entity_id_for_proposal` is JE-anchor
+                        // deterministic, matching the live decide result. Only the
+                        // single decided proposal is resolved (one round-trip). A reject
+                        // created nothing, so this resolves `None`.
+                        let entity_id =
+                            queries::entity_id_for_proposal(pool, &proposal_id).await?;
+                        segments.push(MessageSegment::Proposal {
+                            proposal_id,
+                            mutation_kind: mutation_kind.unwrap_or_default(),
+                            status,
+                            entity_id,
+                        });
+                    }
+                } else if !crate::tools::is_proposal(&name) {
+                    // A non-Proposal tool call → a settled tool-activity row
+                    // (ADR-0043). Skip a `pending` call; map the persisted status to
+                    // the wire spelling, never leaking a non-vocabulary value.
+                    let status = tc_status.unwrap_or_default();
+                    if status != "pending" {
+                        // Derive the display arg from the stored request payload via
+                        // the same per-tool extractor the live `tool_call` Run Event
+                        // uses, so the reloaded row matches the live one. A malformed
+                        // payload yields no arg (best-effort read).
+                        let arg = request_payload
+                            .as_deref()
+                            .and_then(|p| serde_json::from_str::<serde_json::Value>(p).ok())
+                            .and_then(|params| crate::tools::display_arg(&name, &params));
+                        segments.push(MessageSegment::ToolCall {
+                            name,
+                            status: if status == "completed" {
+                                "completed".to_string()
+                            } else {
+                                "error".to_string()
+                            },
+                            arg,
+                        });
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(segments)
 }
