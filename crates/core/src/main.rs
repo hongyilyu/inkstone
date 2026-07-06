@@ -118,7 +118,7 @@ async fn main() -> Result<()> {
         None => {
             #[cfg(debug_assertions)]
             let app = app.route("/", get(|| async { "Inkstone Core" }));
-            // GET/HEAD-only, so non-GET methods 405 like the debug ServeDir path.
+            // GET/HEAD-only, so other methods 405 like the debug ServeDir path.
             #[cfg(not(debug_assertions))]
             let app = app.fallback_service(get(web_embed::serve_embedded));
             app
