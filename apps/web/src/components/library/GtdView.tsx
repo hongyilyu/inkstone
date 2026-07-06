@@ -150,11 +150,13 @@ export function GtdView({
 	onFilterChange,
 	selectedId,
 	onSelect,
+	onNewProject,
 }: {
 	filt: GtdFilter;
 	onFilterChange: (filt: GtdFilter) => void;
 	selectedId: string | null;
 	onSelect: (id: string) => void;
+	onNewProject?: () => void;
 }) {
 	const { data } = useLibraryItems();
 	const items = data ?? [];
@@ -195,7 +197,12 @@ export function GtdView({
 			</div>
 
 			<div className="min-h-0 flex-1">
-				<GtdBody filt={filt} selectedId={selectedId} onSelect={onSelect} />
+				<GtdBody
+					filt={filt}
+					selectedId={selectedId}
+					onSelect={onSelect}
+					onNewProject={onNewProject}
+				/>
 			</div>
 		</section>
 	);
@@ -208,10 +215,12 @@ function GtdBody({
 	filt,
 	selectedId,
 	onSelect,
+	onNewProject,
 }: {
 	filt: GtdFilter;
 	selectedId: string | null;
 	onSelect: (id: string) => void;
+	onNewProject?: () => void;
 }) {
 	if (filt === "review") {
 		return <ProjectReviewView selectedId={selectedId} onSelect={onSelect} />;
@@ -222,6 +231,7 @@ function GtdBody({
 				kind="project"
 				selectedId={selectedId}
 				onSelect={onSelect}
+				onNew={onNewProject}
 			/>
 		);
 	}

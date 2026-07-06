@@ -15,3 +15,5 @@ target
 # Local-only QA audit evidence (feature inventory + UX-audit findings).
 # Generated, large, and branch-local — kept out of the tree (not living docs).
 docs/qa/
+tests/e2e/src/qa-scratch/
+tests/e2e/playwright.qa.config.ts
