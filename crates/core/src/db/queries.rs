@@ -2316,19 +2316,23 @@ where
 }
 
 /// Read a Thread's Messages for `thread/get`, chronological. Returns
-/// `(id, role, status, run_id)` rows. Ordered by `created_at, rowid`: the
-/// `rowid` tiebreaker keeps the user Message ahead of the assistant Message
-/// when both are inserted in the same ms.
+/// `(id, role, status, run_id, terminal_reason)` rows — the last element the
+/// owning Run's `terminal_reason` (NULL → `None` while the Run is live). A
+/// settled Run's user Message carries the reason too (harmless — user Messages
+/// insert as `completed`; the Client keys on `incomplete`). Ordered by
+/// `created_at, rowid`: the `rowid` tiebreaker keeps the user Message ahead of
+/// the assistant Message when both are inserted in the same ms.
 pub(super) async fn messages_by_thread<'e, E>(
     executor: E,
     thread_id: Uuid,
-) -> sqlx::Result<Vec<(String, String, String, String)>>
+) -> sqlx::Result<Vec<(String, String, String, String, Option<String>)>>
 where
     E: Executor<'e, Database = Sqlite>,
 {
     sqlx::query_as(
-        "SELECT id, role, status, run_id FROM messages \
-         WHERE thread_id = ?1 ORDER BY created_at, rowid",
+        "SELECT m.id, m.role, m.status, m.run_id, r.terminal_reason \
+         FROM messages m JOIN runs r ON r.id = m.run_id \
+         WHERE m.thread_id = ?1 ORDER BY m.created_at, m.rowid",
     )
     .bind(thread_id.to_string())
     .fetch_all(executor)

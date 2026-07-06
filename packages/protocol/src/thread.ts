@@ -109,6 +109,11 @@ export const MessageView = S.Struct({
 	role: S.String,
 	status: S.String,
 	run_id: S.String,
+	/** The owning Run's `terminal_reason` — `'cancelled'` lets the Client
+	 * rehydrate a stopped turn calmly (ADR-0014: cancel is not an error).
+	 * Omitted (not null, matching Rust's `skip_serializing_if`) while the Run
+	 * is live. An open string like `status`, not a closed literal set. */
+	terminal_reason: S.optional(S.String),
 	/** The assistant turn's ordered timeline (ADR-0045) — `text | tool_call |
 	 * proposal` items in `run_steps` order — replacing the prior three independent
 	 * buckets (`text`, `tool_calls`, `proposal`). A user Message carries a single

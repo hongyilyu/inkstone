@@ -53,12 +53,10 @@ export interface Message {
 	 * True when this turn settled to `incomplete` because the user cancelled it
 	 * (clicked Stop), NOT because of a failure. A cancel is terminal but not an
 	 * error (ADR-0014), so the bubble renders a calm "stopped" notice rather than
-	 * the destructive failure alert. Live-only: the wire `MessageView.status` is a
-	 * bare `incomplete` for both cancel and error (Core does not durably split them
-	 * at the message level), so a turn cancelled in a PRIOR session rehydrates with
-	 * `cancelled` unset and falls back to the failure-alert style. Distinguishing
-	 * them across reload would need a contract change (a terminal-reason on the
-	 * wire); out of scope here.
+	 * the destructive failure alert. Set live by the `cancelled` Run Event
+	 * (applyEvent) AND on rehydration from the wire
+	 * `MessageView.terminal_reason === 'cancelled'` (hydrate.ts toMessage), so a
+	 * turn cancelled in a PRIOR session reloads as the same calm notice.
 	 */
 	readonly cancelled?: boolean;
 }

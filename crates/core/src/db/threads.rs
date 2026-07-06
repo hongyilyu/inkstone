@@ -106,6 +106,9 @@ pub struct MessageRow {
     pub role: String,
     pub status: String,
     pub run_id: String,
+    /// The owning Run's `terminal_reason` (`None` while the Run is live) — lets
+    /// the Client rehydrate a cancelled Run's `incomplete` turn as "stopped".
+    pub terminal_reason: Option<String>,
     pub segments: Vec<MessageSegment>,
 }
 
@@ -139,7 +142,7 @@ pub async fn get_thread_with_messages(
 
     let rows = queries::messages_by_thread(pool, thread_id).await?;
     let mut messages = Vec::with_capacity(rows.len());
-    for (id, role, status, run_id) in rows {
+    for (id, role, status, run_id, terminal_reason) in rows {
         // The assistant turn replays its ORDERED segment timeline from `run_steps`
         // (text/tool_call/proposal interleaved in seq order, ADR-0045). A user
         // Message has no run-step timeline of its own — it is a single text
@@ -160,6 +163,7 @@ pub async fn get_thread_with_messages(
             role,
             status,
             run_id,
+            terminal_reason,
             segments,
         });
     }
@@ -494,6 +498,100 @@ mod tests {
                 .iter()
                 .any(|s| matches!(s, MessageSegment::Proposal { .. })),
             "a still-pending Proposal must not rehydrate as a segment"
+        );
+    }
+
+    /// `thread/get` carries the owning Run's `terminal_reason` on each MessageRow
+    /// so the Client can rehydrate a stopped turn calmly (ADR-0014: cancel is not
+    /// an error): a cancelled Run's `incomplete` assistant Message reads
+    /// `Some("cancelled")`, while a still-`running` Run's Message reads `None`
+    /// (NULL column → omitted on the wire).
+    #[tokio::test]
+    async fn thread_get_carries_cancelled_terminal_reason() {
+        let pool = memory_pool().await;
+        let thread_id = Uuid::now_v7();
+        let cancelled_run_id = Uuid::now_v7();
+        let cancelled_assistant_id = Uuid::now_v7();
+        let running_run_id = Uuid::now_v7();
+        let running_assistant_id = Uuid::now_v7();
+
+        let mut tx = pool.begin().await.expect("begin");
+        queries::insert_thread(&mut *tx, thread_id, "T", 1)
+            .await
+            .expect("thread");
+        // The CANCELLED Run: settled with `terminal_reason='cancelled'` + `ended_at`,
+        // its assistant Message finalized `incomplete` (the stop path's spelling).
+        sqlx::query(
+            "INSERT INTO runs \
+             (id, thread_id, workflow_name, workflow_version, provider, model, \
+              thinking_level, user_message_id, status, started_at, ended_at, \
+              terminal_reason) \
+             VALUES (?, ?, 'w', '1', 'p', 'm', 'off', ?, 'cancelled', 1, 2, 'cancelled')",
+        )
+        .bind(cancelled_run_id.to_string())
+        .bind(thread_id.to_string())
+        .bind(cancelled_assistant_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .expect("cancelled run");
+        queries::insert_message(
+            &mut *tx,
+            cancelled_assistant_id,
+            thread_id,
+            cancelled_run_id,
+            "assistant",
+            "incomplete",
+            1,
+        )
+        .await
+        .expect("cancelled assistant message");
+        // A SECOND Run left `running` — no terminal_reason yet (NULL column).
+        sqlx::query(
+            "INSERT INTO runs \
+             (id, thread_id, workflow_name, workflow_version, provider, model, \
+              thinking_level, user_message_id, status, started_at) \
+             VALUES (?, ?, 'w', '1', 'p', 'm', 'off', ?, 'running', 3)",
+        )
+        .bind(running_run_id.to_string())
+        .bind(thread_id.to_string())
+        .bind(running_assistant_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .expect("running run");
+        queries::insert_message(
+            &mut *tx,
+            running_assistant_id,
+            thread_id,
+            running_run_id,
+            "assistant",
+            "streaming",
+            3,
+        )
+        .await
+        .expect("running assistant message");
+        tx.commit().await.expect("commit seed");
+
+        let (_title, rows) = get_thread_with_messages(&pool, thread_id)
+            .await
+            .expect("read ok")
+            .expect("thread exists");
+
+        let cancelled = rows
+            .iter()
+            .find(|m| m.run_id == cancelled_run_id.to_string())
+            .expect("cancelled run's assistant row");
+        assert_eq!(
+            cancelled.terminal_reason,
+            Some("cancelled".to_string()),
+            "a cancelled Run's Message carries its terminal_reason"
+        );
+        let running = rows
+            .iter()
+            .find(|m| m.run_id == running_run_id.to_string())
+            .expect("running run's assistant row");
+        assert_eq!(
+            running.terminal_reason, None,
+            "a live Run's Message carries no terminal_reason (NULL → None)"
         );
     }
 

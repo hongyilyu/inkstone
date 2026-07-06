@@ -696,6 +696,9 @@ mod parity_fixtures {
                         role: "assistant".to_string(),
                         status: "complete".to_string(),
                         run_id: UUID_RUN.to_string(),
+                        // The owning Run settled normally — covers the emitted
+                        // leg of the optional terminal_reason.
+                        terminal_reason: Some("completed".to_string()),
                         segments: vec![
                             Segment::ToolCall {
                                 name: "search_entities".to_string(),
@@ -738,6 +741,8 @@ mod parity_fixtures {
                         role: "user".to_string(),
                         status: "complete".to_string(),
                         run_id: UUID_RUN.to_string(),
+                        // Live Run — terminal_reason omitted (skip_serializing_if).
+                        terminal_reason: None,
                         segments: vec![Segment::Text {
                             text: "I bought milk.".to_string(),
                         }],

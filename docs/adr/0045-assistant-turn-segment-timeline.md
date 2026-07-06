@@ -64,7 +64,9 @@ markers in seq order." The write path never honored it; this ADR does.
   empty-`seq=0` artifact that resume reconstruction used to skip.
 
 - **`segments[]` replaces the three buckets on the wire.** `MessageView` becomes
-  `{ id, role, status, run_id, segments[] }`. The non-render consumers that read the
+  `{ id, role, status, run_id, terminal_reason?, segments[] }` (the optional
+  `terminal_reason` arrived later — see the terminal_reason amendment below). The
+  non-render consumers that read the
   flat reply text — the copy button, the ⌘K search-match, the streaming
   typing-indicator — derive it through one `concatText(segments)` helper. There is no
   denormalized `text` field alongside `segments`: a single source of truth, no
@@ -178,6 +180,20 @@ a Proposal without the trace ever competing with the reply or the approval.
   the existing `type='text'` filter on the subscribe-snapshot / `read_thread` SQL excludes it
   for free. The expand transition gates behind `motion-safe:` (the repo's reduced-motion
   convention — instant toggle by default).
+
+### Amendment: MessageView carries the owning Run's terminal_reason
+
+`MessageView` gains an optional `terminal_reason` — the owning Run's terminal reason
+(`runs.terminal_reason`, already durable since 0001) joined into the `thread/get` read.
+Omitted (not `null`; Rust `skip_serializing_if` ↔ TS `S.optional`) while the Run is
+live. A plain open string like `status`, not a wire union — the domain is pinned by the
+DB CHECK. Purpose: `'cancelled'` on an `incomplete` assistant turn lets the Client
+rehydrate a stopped turn as the calm stopped notice instead of the failure alert
+(ADR-0014: cancel is not an error), closing the last live-vs-reload rendering
+divergence for cancelled turns. The hydrate mapping guards on `status === "incomplete"`
+— a cancelled Run's user Message carries the reason too (it shares the JOIN) but is
+`completed`, and must never be flagged. Same atomic-slice rule as the reshape above:
+Rust struct + Effect schema + emitted fixture move together or the parity gate reds.
 
 ## Consequences
 
