@@ -314,6 +314,57 @@ describe("refresh-durable hydration", () => {
 		await runtime.dispose();
 	});
 
+	it("rehydrates an attachment segment: maps wire media_id → store mediaId, dims kept or omitted", async () => {
+		const result: ThreadGetResult = {
+			thread_id: "tAtt",
+			title: "T",
+			messages: [
+				{
+					id: "m1",
+					role: "user",
+					status: "completed",
+					run_id: "r1",
+					segments: [
+						{ kind: "text", text: "look at this" },
+						{
+							kind: "attachment",
+							media_id: "med-png",
+							mime: "image/png",
+							width: 640,
+							height: 480,
+						},
+						// width/height OMITTED (not null) when the upload didn't supply them.
+						{ kind: "attachment", media_id: "med-jpg", mime: "image/jpeg" },
+					],
+				},
+			],
+		};
+		const stub = stubWsClient({
+			threadGet: (id) =>
+				id === "tAtt" ? Effect.succeed(result) : Effect.die("unknown thread"),
+		});
+		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
+
+		await hydrateThread(runtime, "tAtt");
+
+		const user = getChatState().threads.tAtt?.messages[0];
+		expect(user?.segments).toEqual([
+			{ kind: "text", text: "look at this" },
+			{
+				kind: "attachment",
+				mediaId: "med-png",
+				mime: "image/png",
+				width: 640,
+				height: 480,
+			},
+			{ kind: "attachment", mediaId: "med-jpg", mime: "image/jpeg" },
+		]);
+		// The image reference never leaks into the copyable reply text.
+		expect(concatText(user?.segments ?? [])).toBe("look at this");
+
+		await runtime.dispose();
+	});
+
 	it("reconstructs a decided Proposal (ADR-0044) so the settled card survives reload", async () => {
 		const result: ThreadGetResult = {
 			thread_id: "tProp",

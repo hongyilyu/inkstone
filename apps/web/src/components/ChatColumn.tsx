@@ -501,6 +501,13 @@ function UserBubble({
 	message: Message;
 	highlighted?: boolean;
 }) {
+	// Attachment segments (ADR-0058) render as inline images below the text — the
+	// bytes are served at `GET /media/{mediaId}`. `width`/`height` attrs (when the
+	// upload knew them) reserve the box before the bytes arrive, so hydration
+	// doesn't shift the scroll. Decorative `alt=""` — the message text is the label.
+	const attachments = message.segments.filter(
+		(seg) => seg.kind === "attachment",
+	);
 	return (
 		<li
 			data-role="user"
@@ -513,6 +520,18 @@ function UserBubble({
 			>
 				{concatText(message.segments)}
 			</div>
+			{attachments.map((seg, i) => (
+				<img
+					// biome-ignore lint/suspicious/noArrayIndexKey: timeline position is the identity here
+					key={`attachment-${i}`}
+					src={`/media/${seg.mediaId}`}
+					alt=""
+					loading="lazy"
+					width={seg.width}
+					height={seg.height}
+					className="max-w-[80%] rounded-xl border border-secondary/50"
+				/>
+			))}
 		</li>
 	);
 }
@@ -563,6 +582,11 @@ function toRenderGroups(segments: readonly Segment[]): RenderGroup[] {
 				break;
 			case "proposal":
 				groups.push({ kind: "proposal", runId: seg.runId });
+				break;
+			case "attachment":
+				// Attachments only occur on USER messages (ADR-0058: the composer sends
+				// them; the assistant never authors one) — UserBubble renders them. An
+				// assistant timeline never carries this kind, so it folds to nothing here.
 				break;
 			default:
 				// A new Segment kind is a compile error here until handled (ADR-0045).

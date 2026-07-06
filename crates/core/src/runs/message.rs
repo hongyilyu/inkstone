@@ -102,6 +102,7 @@ mod tests {
             assistant_message_id,
             &fixture_workflow(),
             prompt,
+            &[],
             title,
             now_ms,
         )

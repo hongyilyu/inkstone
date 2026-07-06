@@ -691,50 +691,75 @@ mod parity_fixtures {
             // order (ADR-0045) — two tool_call segments (one with arg, one without —
             // covers Segment::ToolCall optional arg), then the decided proposal
             // segment (Segment::Proposal), then a reasoning segment (Segment::Reasoning,
-            // ADR-0045 reasoning amendment), then the reply text (Segment::Text). All
-            // four Segment variants are thus covered transitively here.
+            // ADR-0045 reasoning amendment), then the reply text (Segment::Text) —
+            // plus a user turn carrying an attachment segment (Segment::Attachment,
+            // ADR-0058, width+height present). All FIVE Segment variants are thus
+            // covered transitively here.
             fx!(
                 "thread_get_result.json",
                 ThreadGetResult {
                     thread_id: UUID_A.to_string(),
                     title: "Morning brain dump".to_string(),
-                    messages: vec![MessageView {
-                        id: UUID_B.to_string(),
-                        role: "assistant".to_string(),
-                        status: "complete".to_string(),
-                        run_id: UUID_RUN.to_string(),
-                        // The owning Run settled normally — covers the emitted
-                        // leg of the optional terminal_reason.
-                        terminal_reason: Some("completed".to_string()),
-                        segments: vec![
-                            Segment::ToolCall {
-                                name: "search_entities".to_string(),
-                                status: "completed".to_string(),
-                                arg: Some("Lev".to_string()),
-                            },
-                            Segment::ToolCall {
-                                name: "read_thread".to_string(),
-                                status: "completed".to_string(),
-                                arg: None,
-                            },
-                            Segment::Proposal {
-                                proposal_id: UUID_A.to_string(),
-                                mutation_kind: "apply_intent_graph".to_string(),
-                                status: "accepted".to_string(),
-                                // The anchor Entity the accepted apply created/updated
-                                // (ADR-0044 entity_id amendment) — the decided card
-                                // names + deep-links it. Omitted when absent (S.optional).
-                                entity_id: Some(UUID_B.to_string()),
-                            },
-                            Segment::Reasoning {
-                                text: "Checking the journal schema…".to_string(),
-                                duration_ms: Some(1500),
-                            },
-                            Segment::Text {
-                                text: "Logged.".to_string(),
-                            },
-                        ],
-                    }],
+                    messages: vec![
+                        // The user turn: the prompt text plus an attachment
+                        // segment (ADR-0058, maximal — width+height present).
+                        MessageView {
+                            id: UUID_A.to_string(),
+                            role: "user".to_string(),
+                            status: "complete".to_string(),
+                            run_id: UUID_RUN.to_string(),
+                            // Live Run — terminal_reason omitted (skip_serializing_if).
+                            terminal_reason: None,
+                            segments: vec![
+                                Segment::Text {
+                                    text: "I bought milk.".to_string(),
+                                },
+                                Segment::Attachment {
+                                    media_id: UUID_B.to_string(),
+                                    mime: "image/png".to_string(),
+                                    width: Some(640),
+                                    height: Some(480),
+                                },
+                            ],
+                        },
+                        MessageView {
+                            id: UUID_B.to_string(),
+                            role: "assistant".to_string(),
+                            status: "complete".to_string(),
+                            run_id: UUID_RUN.to_string(),
+                            // The owning Run settled normally — covers the emitted
+                            // leg of the optional terminal_reason.
+                            terminal_reason: Some("completed".to_string()),
+                            segments: vec![
+                                Segment::ToolCall {
+                                    name: "search_entities".to_string(),
+                                    status: "completed".to_string(),
+                                    arg: Some("Lev".to_string()),
+                                },
+                                Segment::ToolCall {
+                                    name: "read_thread".to_string(),
+                                    status: "completed".to_string(),
+                                    arg: None,
+                                },
+                                Segment::Proposal {
+                                    proposal_id: UUID_A.to_string(),
+                                    mutation_kind: "apply_intent_graph".to_string(),
+                                    status: "accepted".to_string(),
+                                    // The anchor Entity the accepted apply created/updated
+                                    // (ADR-0044 entity_id amendment) — the decided card
+                                    // names + deep-links it. Omitted when absent (S.optional).
+                                    entity_id: Some(UUID_B.to_string()),
+                                },
+                                Segment::Reasoning {
+                                    text: "Checking the journal schema…".to_string(),
+                                    duration_ms: Some(1500),
+                                },
+                                Segment::Text {
+                                    text: "Logged.".to_string(),
+                                },
+                            ],
+                        },
+                    ],
                 }
             ),
             // Bare: a user turn — a single text segment.
@@ -1145,6 +1170,7 @@ mod parity_fixtures {
 
         parses!(SubscribeParams, "subscribe_params.json");
         parses!(PostMessageParams, "post_message_params.json");
+        parses!(PostMessageParams, "post_message_params.bare.json");
         parses!(RunCancelParams, "run_cancel_params.json");
         parses!(RunRetryParams, "run_retry_params.json");
         parses!(ProposalGetParams, "proposal_get_params.json");
@@ -1152,6 +1178,7 @@ mod parity_fixtures {
         parses!(ProposalDecideParams, "proposal_decide_params.edit.json");
         parses!(ProposalDecideParams, "proposal_decide_params.bare.json");
         parses!(ThreadCreateParams, "thread_create_params.json");
+        parses!(ThreadCreateParams, "thread_create_params.bare.json");
         parses!(RunGetHistoryParams, "run_get_history_params.json");
         parses!(RunGetHistoryParams, "run_get_history_params.bare.json");
         parses!(
@@ -1336,7 +1363,7 @@ mod parity_fixtures {
         ("TodoPersonRefView", "entity_list_result.json"),
         ("MessageHit", "message_search_result.json"),
         ("MessageView", "thread_get_result.json"),
-        ("Segment", "thread_get_result.json (all four variants)"),
+        ("Segment", "thread_get_result.json (all five variants)"),
         ("ToolCallStatus", "run_event.tool_call.*.json (one per value)"),
         ("ToolOutcome", "tool_result.ok.json / tool_result.err.json"),
         ("AgentToolResult", "tool_result.ok.json"),

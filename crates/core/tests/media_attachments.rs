@@ -4,6 +4,12 @@
 //! route serves them back with the stored `mime` as Content-Type. Unknown ids
 //! and rows pointing at missing bytes both 404 (the latter loudly, per
 //! ADR-0058); invalid base64 and >10 MB decoded payloads reject `-32602`.
+//!
+//! The send path (chat-image-attachments slice 2): `thread/create` /
+//! `run/post_message` accept `attachment_ids` from prior uploads, persisting
+//! one attachment part per id in the initial-run transaction; `thread/get`
+//! rehydrates the user message as `[text, attachment…]` segments (ADR-0045
+//! fifth kind). An unknown id rejects `-32602` with zero rows persisted.
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -132,6 +138,309 @@ fn media_get_unknown_id_is_404() {
     let got = reqwest::blocking::get(format!("{}/media/unknown-id", core.http_url()))
         .expect("GET /media/unknown-id succeeds");
     assert_eq!(got.status().as_u16(), 404, "unknown media id is 404");
+}
+
+/// Upload `bytes` with the given metadata and return the new `media_id`.
+async fn upload(ws: &mut Ws, id: i64, params: serde_json::Value) -> String {
+    send(ws, upload_frame(id, params)).await;
+    let resp = read_response_with_id(ws, id).await;
+    assert!(resp.get("error").is_none(), "media/upload succeeds — {resp}");
+    resp["result"]["media_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("result.media_id is a string — {resp}"))
+        .to_string()
+}
+
+/// Subscribe to `run_id` and drain the event tail until `done`, so the Run
+/// settles before the test reads the Thread back (thread_get.rs idiom).
+async fn drain_run_to_done(ws: &mut Ws, req_id: i64, run_id: &str) {
+    send(
+        ws,
+        format!(
+            r#"{{"jsonrpc":"2.0","id":{req_id},"method":"run/subscribe","params":{{"run_id":"{run_id}"}}}}"#
+        ),
+    )
+    .await;
+    let _sub_resp = read_response_with_id(ws, req_id).await;
+    loop {
+        let body = next_text(ws).await;
+        let v: serde_json::Value = serde_json::from_str(&body)
+            .unwrap_or_else(|e| panic!("tail frame is JSON: {e} — body: {body}"));
+        if v["params"]["event"]["kind"] == serde_json::json!("done") {
+            break;
+        }
+    }
+}
+
+/// `thread/get` and return the result object.
+async fn thread_get(ws: &mut Ws, req_id: i64, thread_id: &str) -> serde_json::Value {
+    send(
+        ws,
+        format!(
+            r#"{{"jsonrpc":"2.0","id":{req_id},"method":"thread/get","params":{{"thread_id":"{thread_id}"}}}}"#
+        ),
+    )
+    .await;
+    let resp = read_response_with_id(ws, req_id).await;
+    assert!(
+        resp.get("error").is_none(),
+        "thread/get is not an error — {resp}"
+    );
+    resp["result"].clone()
+}
+
+/// The send path persists attachment parts and `thread/get` rehydrates them:
+/// `thread/create` with two uploaded ids yields a user message whose segments
+/// are `[text, attachment(id1), attachment(id2)]` in that order — each
+/// attachment carrying `media_id` + `mime`, and `width`/`height` exactly when
+/// the upload supplied them (omitted, not null, otherwise). A follow-up
+/// `run/post_message` with one id yields the same shape on its user message.
+#[test]
+fn send_with_attachment_ids_rehydrates_attachment_segments() {
+    let workspace = Workspace::new();
+    let core = workspace.core().worker_fixture("slow-worker.ts").spawn();
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime builds");
+
+    rt.block_on(async {
+        let mut ws = core.connect().await;
+
+        // Two uploads: the first with dimensions, the second without — so both
+        // the present and the omitted width/height branches are exercised.
+        let id1 = upload(
+            &mut ws,
+            1,
+            serde_json::json!({
+                "bytes_base64": BASE64.encode(b"first image bytes"),
+                "mime": "image/png",
+                "width": 4,
+                "height": 3,
+            }),
+        )
+        .await;
+        let id2 = upload(
+            &mut ws,
+            2,
+            serde_json::json!({
+                "bytes_base64": BASE64.encode(b"second image bytes"),
+                "mime": "image/jpeg",
+            }),
+        )
+        .await;
+
+        // thread/create carrying both attachment ids.
+        let create_frame = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "thread/create",
+            "params": { "prompt": "look at these", "attachment_ids": [id1, id2] },
+        })
+        .to_string();
+        send(&mut ws, create_frame).await;
+        let create = read_response_with_id(&mut ws, 3).await;
+        assert!(
+            create.get("error").is_none(),
+            "thread/create with valid attachment_ids succeeds — {create}"
+        );
+        let thread_id = create["result"]["thread_id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("result.thread_id is a string — {create}"))
+            .to_string();
+        let run_id = create["result"]["run_id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("result.run_id is a string — {create}"))
+            .to_string();
+        drain_run_to_done(&mut ws, 4, &run_id).await;
+
+        let got = thread_get(&mut ws, 5, &thread_id).await;
+        let user = &got["messages"][0];
+        assert_eq!(user["role"], serde_json::json!("user"), "messages[0] is the user turn — {got}");
+        let segments = user["segments"]
+            .as_array()
+            .unwrap_or_else(|| panic!("user segments is an array — {got}"));
+        assert_eq!(
+            segments.len(),
+            3,
+            "user segments are [text, attachment, attachment] — {got}"
+        );
+        assert_eq!(
+            segments[0],
+            serde_json::json!({ "kind": "text", "text": "look at these" }),
+            "segment[0] is the prompt text — {got}"
+        );
+        // Attachment segments follow in attachment_ids order. The first carries
+        // the uploaded dimensions; the second OMITS width/height (not null).
+        assert_eq!(
+            segments[1],
+            serde_json::json!({
+                "kind": "attachment",
+                "media_id": id1,
+                "mime": "image/png",
+                "width": 4,
+                "height": 3,
+            }),
+            "segment[1] is the first attachment with dimensions — {got}"
+        );
+        assert_eq!(
+            segments[2],
+            serde_json::json!({
+                "kind": "attachment",
+                "media_id": id2,
+                "mime": "image/jpeg",
+            }),
+            "segment[2] is the second attachment, width/height omitted — {got}"
+        );
+
+        // run/post_message on the same thread with ONE attachment id → the new
+        // user message rehydrates the same [text, attachment] shape.
+        let post_frame = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 6,
+            "method": "run/post_message",
+            "params": {
+                "thread_id": thread_id,
+                "prompt": "and this one again",
+                "attachment_ids": [id1],
+            },
+        })
+        .to_string();
+        send(&mut ws, post_frame).await;
+        let post = read_response_with_id(&mut ws, 6).await;
+        assert!(
+            post.get("error").is_none(),
+            "run/post_message with a valid attachment_id succeeds — {post}"
+        );
+        let run2 = post["result"]["run_id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("result.run_id is a string — {post}"))
+            .to_string();
+        drain_run_to_done(&mut ws, 7, &run2).await;
+
+        let got = thread_get(&mut ws, 8, &thread_id).await;
+        let messages = got["messages"]
+            .as_array()
+            .unwrap_or_else(|| panic!("messages is an array — {got}"));
+        assert_eq!(messages.len(), 4, "two turns → four messages — {got}");
+        let user2 = &messages[2];
+        assert_eq!(user2["role"], serde_json::json!("user"), "messages[2] is the second user turn — {got}");
+        let segments = user2["segments"]
+            .as_array()
+            .unwrap_or_else(|| panic!("second user segments is an array — {got}"));
+        assert_eq!(
+            segments.as_slice(),
+            &[
+                serde_json::json!({ "kind": "text", "text": "and this one again" }),
+                serde_json::json!({
+                    "kind": "attachment",
+                    "media_id": id1,
+                    "mime": "image/png",
+                    "width": 4,
+                    "height": 3,
+                }),
+            ],
+            "posted message rehydrates [text, attachment] — {got}"
+        );
+
+        ws.close(None).await.ok();
+    });
+}
+
+/// An unknown attachment id rejects `-32602` with ZERO rows persisted:
+/// `run/post_message` leaves the thread's message count unchanged, and
+/// `thread/create` mints no thread at all.
+#[test]
+fn unknown_attachment_id_rejects_invalid_params_with_zero_rows() {
+    let workspace = Workspace::new();
+    let core = workspace.core().worker_fixture("slow-worker.ts").spawn();
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime builds");
+
+    rt.block_on(async {
+        let mut ws = core.connect().await;
+
+        // Seed one real thread (no attachments) to post against.
+        send(
+            &mut ws,
+            r#"{"jsonrpc":"2.0","id":1,"method":"thread/create","params":{"prompt":"hi"}}"#
+                .to_string(),
+        )
+        .await;
+        let create = read_response_with_id(&mut ws, 1).await;
+        let thread_id = create["result"]["thread_id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("result.thread_id is a string — {create}"))
+            .to_string();
+
+        // run/post_message with a nonexistent media id → -32602, zero new rows.
+        let post_frame = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "run/post_message",
+            "params": {
+                "thread_id": thread_id,
+                "prompt": "with a ghost attachment",
+                "attachment_ids": ["nonexistent"],
+            },
+        })
+        .to_string();
+        send(&mut ws, post_frame).await;
+        let post = read_response_with_id(&mut ws, 2).await;
+        assert_eq!(
+            post["error"]["code"],
+            serde_json::json!(-32602),
+            "an unknown attachment id is invalid_params — {post}"
+        );
+
+        // The rejected post persisted NOTHING: still the seed turn's 2 messages.
+        let got = thread_get(&mut ws, 3, &thread_id).await;
+        let messages = got["messages"]
+            .as_array()
+            .unwrap_or_else(|| panic!("messages is an array — {got}"));
+        assert_eq!(
+            messages.len(),
+            2,
+            "rejected post_message added no messages — {got}"
+        );
+
+        // thread/create with a nonexistent media id → -32602, no thread minted.
+        let create_frame = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "thread/create",
+            "params": { "prompt": "ghost thread", "attachment_ids": ["nonexistent"] },
+        })
+        .to_string();
+        send(&mut ws, create_frame).await;
+        let create = read_response_with_id(&mut ws, 4).await;
+        assert_eq!(
+            create["error"]["code"],
+            serde_json::json!(-32602),
+            "thread/create with an unknown attachment id is invalid_params — {create}"
+        );
+
+        send(
+            &mut ws,
+            r#"{"jsonrpc":"2.0","id":5,"method":"thread/list","params":{}}"#.to_string(),
+        )
+        .await;
+        let list = read_response_with_id(&mut ws, 5).await;
+        let threads = list["result"]["threads"]
+            .as_array()
+            .unwrap_or_else(|| panic!("threads is an array — {list}"));
+        assert_eq!(
+            threads.len(),
+            1,
+            "the rejected create minted no thread — {list}"
+        );
+
+        ws.close(None).await.ok();
+    });
 }
 
 #[test]

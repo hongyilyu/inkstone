@@ -510,6 +510,53 @@ describe("ChatColumn", () => {
 		await runtime.dispose();
 	});
 
+	it("renders a user message's attachment segments as inline /media images below the text", async () => {
+		const runtime = makeStubRuntime({ runId: "run-att", events: [] });
+		appendUserMessage("threadA", {
+			id: "u-att",
+			role: "user",
+			status: "completed",
+			run_id: "",
+			segments: [
+				{ kind: "text", text: "look at this" },
+				{
+					kind: "attachment",
+					mediaId: "m1",
+					mime: "image/png",
+					width: 640,
+					height: 480,
+				},
+				// Dimensionless attachment: renders without width/height attrs.
+				{ kind: "attachment", mediaId: "m2", mime: "image/jpeg" },
+			],
+		});
+
+		const { container } = await renderFocused(runtime, "threadA");
+
+		// The text still renders in the user bubble…
+		const userBubble = screen.getByText("look at this");
+		expect(userBubble.closest('[data-role="user"]')).toBeInTheDocument();
+		// …and each attachment renders as an <img> served from /media/{id}, inside
+		// the same user row (decorative alt="" — the surrounding text is the label).
+		const imgs = Array.from(
+			container.querySelectorAll<HTMLImageElement>(
+				'[data-role="user"] img[src^="/media/"]',
+			),
+		);
+		expect(imgs.map((img) => img.getAttribute("src"))).toEqual([
+			"/media/m1",
+			"/media/m2",
+		]);
+		// Known dimensions become width/height attrs (prevents layout shift)…
+		expect(imgs[0]).toHaveAttribute("width", "640");
+		expect(imgs[0]).toHaveAttribute("height", "480");
+		// …and omitted dimensions stay off the element.
+		expect(imgs[1]).not.toHaveAttribute("width");
+		expect(imgs[1]).not.toHaveAttribute("height");
+
+		await runtime.dispose();
+	});
+
 	it("shows a typing indicator for a streaming assistant message with no text", async () => {
 		const runtime = makeStubRuntime({ runId: "run-3", events: [] });
 		seedAssistantMessage("threadA", {

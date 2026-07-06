@@ -6,11 +6,16 @@ use serde::{Deserialize, Serialize};
 /// `run/post_message` params: add a message (and its Run) to an existing Thread
 /// (ADR-0022). Minting a new Thread is `thread/create`'s job, so `thread_id` is
 /// required; malformed → `invalid_params` (-32602), unknown → `unknown_thread`
-/// (-32001).
+/// (-32001). `attachment_ids` are media ids from prior `media/upload` calls to
+/// link to the user Message (ADR-0058); `#[serde(default)]` keeps the field
+/// optional on the wire (the TS side is `S.optional`) — an unknown id rejects
+/// `invalid_params` with zero rows.
 #[derive(Debug, Deserialize)]
 pub struct PostMessageParams {
     pub thread_id: uuid::Uuid,
     pub prompt: String,
+    #[serde(default)]
+    pub attachment_ids: Vec<String>,
 }
 
 /// `run/subscribe` params: the Run to attach to. Snapshot-then-tail (ADR-0022) —

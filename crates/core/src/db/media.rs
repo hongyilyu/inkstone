@@ -73,24 +73,34 @@ pub(crate) enum MediaAttachmentTarget {
 /// The metadata `get_media` round-trips. Bytes are not carried here — the caller
 /// reads them from the resolved `storage_path` when it needs them.
 ///
-/// Production reads only `mime` + `storage_path` today (the `GET /media/{id}`
-/// route); the remaining metadata columns are read by this module's tests and
-/// await their consumers — hence the allow.
-#[allow(dead_code)]
+/// Production reads `mime` + `storage_path` (the `GET /media/{id}` route) and
+/// `id`/`mime`/`width`/`height` (the send-path attachment validation copies them
+/// into `AttachmentSeed`s); the remaining metadata columns are read only by this
+/// module's tests and await their consumers — the field-level allows name
+/// exactly those, so a new production read must drop its allow.
 pub(crate) struct MediaRow {
     pub id: String,
     pub mime: String,
+    #[allow(dead_code)]
     pub byte_size: i64,
+    #[allow(dead_code)]
     pub digest: String,
     pub storage_path: String,
     pub width: Option<i64>,
     pub height: Option<i64>,
+    #[allow(dead_code)]
     pub duration_ms: Option<i64>,
+    #[allow(dead_code)]
     pub capture_time: Option<i64>,
+    #[allow(dead_code)]
     pub thumbnail_path: Option<String>,
+    #[allow(dead_code)]
     pub created_by: String,
+    #[allow(dead_code)]
     pub created_via_proposal_id: Option<String>,
+    #[allow(dead_code)]
     pub created_at: i64,
+    #[allow(dead_code)]
     pub updated_at: i64,
 }
 

@@ -21,6 +21,9 @@ export interface ToolCall {
  * amendment, #202) is now realized — the model's thinking, default-collapsed, with
  * an optional `durationMs` (web-clocked live open→seal, Core-computed on reload). It
  * is EXCLUDED from {@link concatText}, so the trace never leaks into the reply text.
+ * The `attachment` kind (ADR-0058) is an image on a user Message — the bytes live
+ * at `GET /media/{mediaId}`; `width`/`height` are pixel dims when known. It carries
+ * no text, so {@link concatText} excludes it by construction.
  */
 export type Segment =
 	| { readonly kind: "text"; readonly text: string }
@@ -30,6 +33,13 @@ export type Segment =
 			readonly kind: "reasoning";
 			readonly text: string;
 			readonly durationMs?: number;
+	  }
+	| {
+			readonly kind: "attachment";
+			readonly mediaId: string;
+			readonly mime: string;
+			readonly width?: number;
+			readonly height?: number;
 	  };
 
 /** The canonical live UI message; mirrors the wire `MessageView` shape. */

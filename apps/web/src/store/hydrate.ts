@@ -65,6 +65,17 @@ function toSegment(
 				text: segment.text,
 				durationMs: segment.duration_ms,
 			};
+		case "attachment":
+			// An image on a user Message (ADR-0058): the bytes live at
+			// `GET /media/{media_id}`; `width`/`height` are omitted (not null) when the
+			// upload didn't supply them. Carries no text, so concatText excludes it.
+			return {
+				kind: "attachment",
+				mediaId: segment.media_id,
+				mime: segment.mime,
+				width: segment.width,
+				height: segment.height,
+			};
 	}
 }
 

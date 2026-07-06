@@ -10,8 +10,33 @@ use sqlx::SqlitePool;
 use tokio::sync::mpsc::UnboundedSender;
 
 use super::handler::{self, HandlerError};
-use crate::db::{self, MediaInput};
+use crate::db::{self, AttachmentSeed, MediaInput, MediaRow};
 use crate::protocol::{MediaUploadParams, MediaUploadResult};
+
+/// Resolve each `attachment_ids` entry to an [`AttachmentSeed`] via
+/// `db::get_media` (ADR-0058 send path), copying the row's `mime` and
+/// dimensions. Shared by `thread/create` and `run/post_message`, called BEFORE
+/// any persistence: an unknown id is `invalid_params` with zero rows written —
+/// the unknown-thread precedent.
+pub(super) async fn resolve_attachments(
+    pool: &SqlitePool,
+    attachment_ids: &[String],
+) -> Result<Vec<AttachmentSeed>, HandlerError> {
+    let mut seeds = Vec::with_capacity(attachment_ids.len());
+    for id in attachment_ids {
+        let row: MediaRow = db::get_media(pool, id)
+            .await
+            .map_err(|e| HandlerError::Internal(e.into()))?
+            .ok_or_else(|| HandlerError::InvalidParams(format!("unknown media id: {id}")))?;
+        seeds.push(AttachmentSeed {
+            media_id: row.id,
+            mime: row.mime,
+            width: row.width,
+            height: row.height,
+        });
+    }
+    Ok(seeds)
+}
 
 /// Decoded-size cap (10 MB). Its base64 text (~13.4 MB) stays under
 /// tungstenite's 16 MiB default frame cap, so the limit needs no transport

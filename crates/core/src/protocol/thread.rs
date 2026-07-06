@@ -16,9 +16,15 @@ pub struct ThreadTitledNotification {
 /// `thread/create` params: the first user message (ADR-0022, message-first
 /// creation). An empty/whitespace `prompt` is rejected with `invalid_params`;
 /// the trim-empty guard lives in [`crate::runs::handle_thread_create`].
+/// `attachment_ids` are media ids from prior `media/upload` calls to link to
+/// the user Message (ADR-0058); `#[serde(default)]` keeps the field optional on
+/// the wire (the TS side is `S.optional`) — an unknown id rejects
+/// `invalid_params` with zero rows (no Thread minted).
 #[derive(Debug, Deserialize)]
 pub struct ThreadCreateParams {
     pub prompt: String,
+    #[serde(default)]
+    pub attachment_ids: Vec<String>,
 }
 
 /// `thread/create` result: the freshly-minted Thread and its first Run
@@ -99,9 +105,10 @@ pub struct ThreadGetParams {
 /// [`RunEvent`]. The variant field shapes are exactly what each row renders — the
 /// former `ToolCallView` (`name`/`status`/optional `arg`) and `MessageProposalView`
 /// (`proposal_id`/`mutation_kind`/`status`) — inlined here, not wrapped, because the
-/// `kind` tag IS the discriminant. The union is left OPEN for a future `reasoning`
-/// kind (#202) without reshaping `MessageView`. This SUPERSEDES the read-path shapes
-/// of ADR-0043 (`tool_calls`) and ADR-0044 (`proposal`): both fold into `segments`.
+/// `kind` tag IS the discriminant. `attachment` is the FIFTH kind (ADR-0058
+/// consumer): an image/media reference on a user Message, its bytes served at
+/// `GET /media/{media_id}`. This SUPERSEDES the read-path shapes of ADR-0043
+/// (`tool_calls`) and ADR-0044 (`proposal`): both fold into `segments`.
 #[derive(Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Segment {
@@ -142,6 +149,19 @@ pub enum Segment {
         text: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         duration_ms: Option<i64>,
+    },
+    /// An image/media reference on a user Message (ADR-0058 consumer, the fifth
+    /// segment kind): the bytes are served at `GET /media/{media_id}` and `mime`
+    /// is the stored Content-Type. `width`/`height` are pixel dimensions when the
+    /// upload supplied them — omitted (not `null`, matching the TS `S.optional`)
+    /// when unknown.
+    Attachment {
+        media_id: String,
+        mime: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        width: Option<i64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        height: Option<i64>,
     },
 }
 

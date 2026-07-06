@@ -20,10 +20,12 @@ export default defineConfig({
 			"@": path.resolve(import.meta.dirname, "./src"),
 		},
 	},
-	// Dev only: proxy same-origin `/ws` to Core's listener (ADR-0015); production embeds the SPA in Core with no proxy.
+	// Dev only: proxy same-origin `/ws` (ADR-0015) and `GET /media/{id}` (ADR-0058)
+	// to Core's listener; production embeds the SPA in Core with no proxy.
 	server: {
 		proxy: {
 			"/ws": { target: "ws://127.0.0.1:8765", ws: true },
+			"/media": { target: "http://127.0.0.1:8765" },
 		},
 	},
 });

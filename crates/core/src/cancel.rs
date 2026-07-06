@@ -164,6 +164,7 @@ mod tests {
             Uuid::now_v7(),
             &test_workflow(),
             "prompt",
+            &[],
             "t",
             db::now_ms(),
         )

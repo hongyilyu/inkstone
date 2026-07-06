@@ -83,6 +83,8 @@ pub(super) async fn handle(
             assistant_message_id,
             &workflow,
             &prompt,
+            // A rescan prompt is synthetic — it never carries attachments.
+            &[],
             now,
         )
         .await

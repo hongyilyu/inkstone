@@ -2438,6 +2438,33 @@ where
     .map(|_| ())
 }
 
+/// Insert one `type='attachment'` `message_parts` row — the first writer of the
+/// dormant `data` column (`data_json` is the attachment metadata sidecar:
+/// `{media_id, mime, width?, height?}`). Deliberately NOT a [`PartType`] variant:
+/// that enum is the STREAMING part discriminant (the open/append machine), and an
+/// attachment part is never streamed — it is written whole in the initial-run
+/// transaction (ADR-0058 send path), with `text` left `''`.
+pub(super) async fn insert_attachment_part<'e, E>(
+    executor: E,
+    message_id: Uuid,
+    seq: i64,
+    data_json: &str,
+) -> sqlx::Result<()>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query(
+        "INSERT INTO message_parts (message_id, seq, type, text, data) \
+         VALUES (?1, ?2, 'attachment', '', ?3)",
+    )
+    .bind(message_id.to_string())
+    .bind(seq)
+    .bind(data_json)
+    .execute(executor)
+    .await
+    .map(|_| ())
+}
+
 pub(super) async fn append_text_part<'e, E>(
     executor: E,
     message_id: Uuid,
@@ -2475,6 +2502,27 @@ where
     sqlx::query_scalar(
         "SELECT text FROM message_parts \
          WHERE message_id = ?1 AND type = 'text' ORDER BY seq",
+    )
+    .bind(message_id)
+    .fetch_all(executor)
+    .await
+}
+
+/// Read ALL of a Message's parts for the `thread/get` user branch, ordered by
+/// `seq`, as `(type, text, data)` rows — the caller builds one Text segment from
+/// the `type='text'` rows' concatenated text and one Attachment segment per
+/// `type='attachment'` row's `data` JSON (ADR-0058 send path). The assistant
+/// branch keeps its `run_steps`-ordered [`segment_timeline`] walk instead.
+pub(super) async fn parts_by_message<'e, E>(
+    executor: E,
+    message_id: &str,
+) -> sqlx::Result<Vec<(String, String, Option<String>)>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_as(
+        "SELECT type, text, data FROM message_parts \
+         WHERE message_id = ?1 ORDER BY seq",
     )
     .bind(message_id)
     .fetch_all(executor)

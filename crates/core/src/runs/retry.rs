@@ -259,6 +259,7 @@ mod tests {
             Uuid::now_v7(),
             default_workflow(),
             "the original prompt",
+            &[],
             "t",
             1,
         )
@@ -284,6 +285,7 @@ mod tests {
             assistant_message_id,
             default_workflow(),
             "the original prompt",
+            &[],
             "t",
             1,
         )

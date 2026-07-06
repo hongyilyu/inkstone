@@ -14,6 +14,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use uuid::Uuid;
 
 use super::handler::{self, HandlerError};
+use super::media::resolve_attachments;
 use crate::db;
 use crate::dispatcher;
 use crate::hub::{self, Hubs};
@@ -61,6 +62,10 @@ pub(super) async fn handle(
         // credential (ADR-0062) — no Thread/Run rows, no doomed tokenless Worker.
         handler::ensure_provider_connected(&workflow.provider)?;
 
+        // Resolve each attachment id via the media substrate (ADR-0058) BEFORE
+        // any persistence — an unknown id is invalid_params with NO Thread minted.
+        let attachments = resolve_attachments(pool, &params.attachment_ids).await?;
+
         db::persist_thread_with_first_run(
             pool,
             thread_id,
@@ -69,6 +74,7 @@ pub(super) async fn handle(
             assistant_message_id,
             &workflow,
             &params.prompt,
+            &attachments,
             &title,
             now,
         )
