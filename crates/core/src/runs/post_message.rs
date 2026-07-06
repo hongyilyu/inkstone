@@ -51,9 +51,12 @@ pub(super) async fn handle(
         handler::ensure_provider_connected(&workflow.provider)?;
 
         // Resolve each attachment id via the media substrate (ADR-0058) BEFORE
-        // any persistence — an unknown id is invalid_params with zero rows,
-        // matching the unknown-thread precedent above.
-        let attachments = resolve_attachments(pool, &params.attachment_ids).await?;
+        // any persistence — an unknown id is invalid_params, an unreadable file
+        // internal, both with zero rows, matching the unknown-thread precedent
+        // above. `manifest_attachments` carries the bytes (base64) for the
+        // fresh spawn manifest so the model sees the current turn's images.
+        let (attachments, manifest_attachments) =
+            resolve_attachments(pool, &params.attachment_ids).await?;
 
         let run_id = Uuid::now_v7();
         let user_message_id = Uuid::now_v7();
@@ -93,6 +96,7 @@ pub(super) async fn handle(
             workflow,
             params.prompt,
             history,
+            manifest_attachments,
             pool.clone(),
             assistant_message_id,
             hubs.clone(),

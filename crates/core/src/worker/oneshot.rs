@@ -105,6 +105,8 @@ where
         messages: vec![],
         mode: None,
         access_token: spec.access_token,
+        // One-shot workers (titler, liveness probe) are text-only.
+        attachments: None,
     };
     let manifest_line = super::serialize_manifest(&manifest);
 

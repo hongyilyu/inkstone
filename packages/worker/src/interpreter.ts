@@ -8,7 +8,12 @@ import {
 	runAgentLoop,
 	runAgentLoopContinue,
 } from "@earendil-works/pi-agent-core";
-import type { Message, Model } from "@earendil-works/pi-ai";
+import type {
+	ImageContent,
+	Message,
+	Model,
+	TextContent,
+} from "@earendil-works/pi-ai";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import type { WorkerManifest } from "@inkstone/protocol";
 import { Effect } from "effect";
@@ -71,9 +76,25 @@ export function runInterpreter(
 		const { emit, callTool } = yield* WorkerTransport;
 
 		const model = deps.resolveModel(manifest.workflow);
+		// Current-turn images ride the manifest as raw base64 (never data:-prefixed
+		// — providers build their own). With attachments the prompt content becomes
+		// the [text, image, …] vision array; without, the plain string is unchanged.
+		const content: string | (TextContent | ImageContent)[] =
+			manifest.attachments !== undefined && manifest.attachments.length > 0
+				? [
+						{ type: "text", text: manifest.prompt },
+						...manifest.attachments.map(
+							(a): ImageContent => ({
+								type: "image",
+								data: a.data_base64,
+								mimeType: a.mime,
+							}),
+						),
+					]
+				: manifest.prompt;
 		const prompt: AgentMessage = {
 			role: "user",
-			content: manifest.prompt,
+			content,
 			timestamp: Date.now(),
 		};
 

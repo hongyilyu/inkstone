@@ -130,6 +130,12 @@ export const WorkerManifest = S.Struct({
 	messages: S.Array(ManifestMessage),
 	mode: S.optional(S.Literal("fresh", "resume")),
 	access_token: S.optional(S.String),
+	/** The current Turn's image attachments: raw base64 (NO `data:` URL prefix —
+	 * providers build their own). Forwarded fresh-mode only (a parked-resume Run
+	 * does not replay images); absent = text-only turn. */
+	attachments: S.optional(
+		S.Array(S.Struct({ mime: S.String, data_base64: S.String })),
+	),
 });
 
 export type WorkerManifest = S.Schema.Type<typeof WorkerManifest>;

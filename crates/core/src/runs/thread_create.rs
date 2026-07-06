@@ -63,8 +63,11 @@ pub(super) async fn handle(
         handler::ensure_provider_connected(&workflow.provider)?;
 
         // Resolve each attachment id via the media substrate (ADR-0058) BEFORE
-        // any persistence — an unknown id is invalid_params with NO Thread minted.
-        let attachments = resolve_attachments(pool, &params.attachment_ids).await?;
+        // any persistence — an unknown id is invalid_params, an unreadable file
+        // internal, both with NO Thread minted. `manifest_attachments` carries
+        // the bytes (base64) for the fresh spawn manifest.
+        let (attachments, manifest_attachments) =
+            resolve_attachments(pool, &params.attachment_ids).await?;
 
         db::persist_thread_with_first_run(
             pool,
@@ -108,6 +111,7 @@ pub(super) async fn handle(
             params.prompt,
             // A brand-new Thread has no prior exchange — empty history.
             Vec::new(),
+            manifest_attachments,
             pool.clone(),
             assistant_message_id,
             hubs.clone(),

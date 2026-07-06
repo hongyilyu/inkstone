@@ -52,7 +52,7 @@ pub use message_fts::search_messages;
 // attachment validation (`runs/post_message.rs` / `runs/thread_create.rs`),
 // which names `MediaRow` to copy its `mime`/`width`/`height` into
 // `AttachmentSeed`s — hence the re-export.
-pub(crate) use media::{MediaInput, MediaRow, get_media, insert_media};
+pub(crate) use media::{MediaInput, MediaRow, get_media, insert_media, media_ids_for_message};
 pub(crate) use observations::{
     ObservationFilter, ObservationInsert, ObservationInsertError, ObservationRelationInsert,
     ObservationRevisionRow, ObservationRow, ObservationSourceFilter, ObservationSourceInsert,

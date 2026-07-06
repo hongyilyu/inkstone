@@ -1,5 +1,11 @@
 {
   "access_token": "tok_abc",
+  "attachments": [
+    {
+      "data_base64": "aW1hZ2UgYnl0ZXM=",
+      "mime": "image/png"
+    }
+  ],
   "messages": [
     {
       "role": "user",

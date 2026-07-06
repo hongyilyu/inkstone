@@ -508,14 +508,16 @@ pub async fn assistant_message_id_for_run(
     Ok(id.and_then(|s| Uuid::parse_str(&s).ok()))
 }
 
-/// A Run's original user prompt (its user Message's concatenated text) and
-/// `thread_id` (run-retry, ADR-0028 amendment, #230). `None` when the Run does
-/// not exist or its `thread_id` is unparseable. Retry re-drives this prompt as a
-/// fresh turn after re-resolving the Workflow from the Thread + prompt.
+/// A Run's original user prompt (its user Message's concatenated text),
+/// `thread_id`, and user Message id (run-retry, ADR-0028 amendment, #230).
+/// `None` when the Run does not exist or its `thread_id` is unparseable. Retry
+/// re-drives this prompt as a fresh turn after re-resolving the Workflow from
+/// the Thread + prompt; the user Message id keys the `media_attachments` read
+/// that replays the turn's images (chat-image-attachments).
 pub async fn run_prompt_and_thread(
     pool: &SqlitePool,
     run_id: Uuid,
-) -> sqlx::Result<Option<(String, Uuid)>> {
+) -> sqlx::Result<Option<(String, Uuid, String)>> {
     let Some(thread_id) = queries::thread_id_for_run(pool, run_id).await? else {
         return Ok(None);
     };
@@ -526,7 +528,7 @@ pub async fn run_prompt_and_thread(
     let prompt = queries::text_parts_by_message(pool, &user_message_id)
         .await?
         .concat();
-    Ok(Some((prompt, thread_uuid)))
+    Ok(Some((prompt, thread_uuid, user_message_id)))
 }
 
 /// One element of a Run's timeline for resume reconstruction (ADR-0025).

@@ -26,6 +26,7 @@ use sqlx::SqlitePool;
 use tokio::sync::mpsc::UnboundedSender;
 
 use super::handler::{self, HandlerError};
+use super::media::encode_manifest_attachments;
 use super::reply::send_response;
 use crate::db;
 use crate::dispatcher;
@@ -79,6 +80,11 @@ pub(super) async fn handle_retry(
             spawn.workflow,
             spawn.prompt,
             spawn.history,
+            // Retry REPLAYS the original turn's images (re-read + re-encoded in
+            // `prepare`): a retried "what's in this image?" must reach the model
+            // WITH the image, exactly like the original send. (Parked-resume
+            // still passes None — that cut stands.)
+            spawn.attachments,
             pool.clone(),
             spawn.assistant_message_id,
             hubs.clone(),
@@ -109,6 +115,9 @@ struct Spawn {
     workflow: crate::workflow::Workflow,
     prompt: String,
     history: Vec<(String, String)>,
+    /// The original turn's images, re-read + re-encoded so the retried fresh
+    /// manifest carries them like the original send did.
+    attachments: Vec<crate::protocol::ManifestAttachment>,
     assistant_message_id: uuid::Uuid,
     run_hub: crate::hub::RunHub,
 }
@@ -127,7 +136,7 @@ async fn prepare(
     // This is the single unknown-run gate: its first read is `thread_id_for_run`
     // (`SELECT … FROM runs`), so a missing Run resolves `None` here — a separate
     // `run_status` probe would catch nothing this does not.
-    let Some((prompt, thread_id)) = db::run_prompt_and_thread(pool, run_id)
+    let Some((prompt, thread_id, user_message_id)) = db::run_prompt_and_thread(pool, run_id)
         .await
         .map_err(|e| HandlerError::Internal(e.into()))?
     else {
@@ -179,6 +188,17 @@ async fn prepare(
             HandlerError::Internal(anyhow::anyhow!("retried run {run_id} has no assistant message"))
         })?;
 
+    // Re-read + re-encode the original turn's attachments (the durable
+    // `media_attachments` rows keyed by the user Message) so the retried fresh
+    // manifest replays them — a retried "what's in this image?" must reach the
+    // model WITH the image. Like the send path, a read failure is Internal with
+    // no spawn; placed BEFORE the committing flip so the failure leaves the Run
+    // in its true `errored` state (still retryable) and no producer-less hub.
+    let media_ids = db::media_ids_for_message(pool, &user_message_id)
+        .await
+        .map_err(|e| HandlerError::Internal(e.into()))?;
+    let attachments = encode_manifest_attachments(pool, &media_ids).await?;
+
     // The guarded flip + clear-failed-output + re-snapshot, in one tx. A lost flip
     // (the Run raced out of `errored` since the read above) maps to not_errored,
     // with nothing cleared — the transition stays authoritative even though the
@@ -209,6 +229,7 @@ async fn prepare(
         workflow,
         prompt,
         history,
+        attachments,
         assistant_message_id,
         run_hub,
     })))

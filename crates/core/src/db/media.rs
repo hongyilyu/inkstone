@@ -343,6 +343,16 @@ pub(crate) async fn get_media(pool: &SqlitePool, id: &str) -> sqlx::Result<Optio
     }))
 }
 
+/// The media ids attached to `message_id`, in insertion (send-request) order.
+/// Run-retry re-resolves these through the send path's read+encode seam so a
+/// retried turn replays its original images (chat-image-attachments).
+pub(crate) async fn media_ids_for_message(
+    pool: &SqlitePool,
+    message_id: &str,
+) -> sqlx::Result<Vec<String>> {
+    queries::media_ids_for_message(pool, message_id).await
+}
+
 /// Delete a media row and unlink its on-disk file. The row is removed (committing
 /// the future `media_attachments` cascade) before the file, so a crash leaves an
 /// orphan file rather than a row pointing at missing bytes. Unlink is best-effort

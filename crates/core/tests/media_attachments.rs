@@ -10,6 +10,10 @@
 //! one attachment part per id in the initial-run transaction; `thread/get`
 //! rehydrates the user message as `[text, attachment…]` segments (ADR-0045
 //! fifth kind). An unknown id rejects `-32602` with zero rows persisted.
+//!
+//! Manifest forwarding (slice 3): a fresh spawn's WorkerManifest carries the
+//! CURRENT turn's attachments as `{mime, data_base64}` so the model sees the
+//! images — observed via the manifest-capture worker echoing what it received.
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -151,9 +155,11 @@ async fn upload(ws: &mut Ws, id: i64, params: serde_json::Value) -> String {
         .to_string()
 }
 
-/// Subscribe to `run_id` and drain the event tail until `done`, so the Run
-/// settles before the test reads the Thread back (thread_get.rs idiom).
-async fn drain_run_to_done(ws: &mut Ws, req_id: i64, run_id: &str) {
+/// Subscribe to `run_id` and drain the event tail until the given terminal
+/// `kind` frame arrives, so the Run settles before the test reads back
+/// (thread_get.rs idiom). Terminal events publish AFTER the terminal DB tx,
+/// so seeing one means the Run's status is already committed.
+async fn drain_run_until(ws: &mut Ws, req_id: i64, run_id: &str, kind: &str) {
     send(
         ws,
         format!(
@@ -166,10 +172,15 @@ async fn drain_run_to_done(ws: &mut Ws, req_id: i64, run_id: &str) {
         let body = next_text(ws).await;
         let v: serde_json::Value = serde_json::from_str(&body)
             .unwrap_or_else(|e| panic!("tail frame is JSON: {e} — body: {body}"));
-        if v["params"]["event"]["kind"] == serde_json::json!("done") {
+        if v["params"]["event"]["kind"] == serde_json::json!(kind) {
             break;
         }
     }
+}
+
+/// Subscribe to `run_id` and drain the event tail until `done`.
+async fn drain_run_to_done(ws: &mut Ws, req_id: i64, run_id: &str) {
+    drain_run_until(ws, req_id, run_id, "done").await;
 }
 
 /// `thread/get` and return the result object.
@@ -342,6 +353,231 @@ fn send_with_attachment_ids_rehydrates_attachment_segments() {
                 }),
             ],
             "posted message rehydrates [text, attachment] — {got}"
+        );
+
+        ws.close(None).await.ok();
+    });
+}
+
+/// Concatenate a message's `text` segments (the manifest-capture worker echoes
+/// the manifest as one text_delta, so this is the echo line).
+fn concat_text_segments(message: &serde_json::Value) -> String {
+    message["segments"]
+        .as_array()
+        .unwrap_or_else(|| panic!("segments is an array — {message}"))
+        .iter()
+        .filter(|s| s["kind"] == serde_json::json!("text"))
+        .filter_map(|s| s["text"].as_str())
+        .collect()
+}
+
+/// The fresh WorkerManifest forwards the CURRENT turn's attachments as
+/// `{mime, data_base64}` (slice 3): a `thread/create` carrying one uploaded
+/// image yields a manifest whose `attachments` array the capture worker echoes
+/// back — count, first mime, and the first 12 base64 chars proving the REAL
+/// bytes flowed (not just metadata). A follow-up send WITHOUT attachments
+/// echoes `attachments=0` (no attachments key serialized at all).
+#[test]
+fn fresh_manifest_forwards_attachments_as_base64() {
+    let workspace = Workspace::new();
+    let core = workspace
+        .core()
+        .worker_fixture("manifest-capture.ts")
+        .spawn();
+
+    // Known bytes so the echoed base64 prefix is predictable.
+    let bytes = b"known image bytes for the manifest-capture worker";
+    let encoded = BASE64.encode(bytes);
+    let expected_prefix = &encoded[..12];
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime builds");
+
+    rt.block_on(async {
+        let mut ws = core.connect().await;
+
+        let media_id = upload(
+            &mut ws,
+            1,
+            serde_json::json!({
+                "bytes_base64": encoded,
+                "mime": "image/png",
+            }),
+        )
+        .await;
+
+        // thread/create with the attachment: the capture worker echoes what the
+        // manifest carried.
+        let create_frame = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "thread/create",
+            "params": { "prompt": "see this image", "attachment_ids": [media_id] },
+        })
+        .to_string();
+        send(&mut ws, create_frame).await;
+        let create = read_response_with_id(&mut ws, 2).await;
+        assert!(
+            create.get("error").is_none(),
+            "thread/create with an attachment succeeds — {create}"
+        );
+        let thread_id = create["result"]["thread_id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("result.thread_id is a string — {create}"))
+            .to_string();
+        let run_id = create["result"]["run_id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("result.run_id is a string — {create}"))
+            .to_string();
+        drain_run_to_done(&mut ws, 3, &run_id).await;
+
+        let got = thread_get(&mut ws, 4, &thread_id).await;
+        let assistant = &got["messages"][1];
+        assert_eq!(
+            assistant["role"],
+            serde_json::json!("assistant"),
+            "messages[1] is the assistant echo — {got}"
+        );
+        let text = concat_text_segments(assistant);
+        assert!(
+            text.contains(&format!(
+                "attachments=1|amime=image/png|adata={expected_prefix}"
+            )),
+            "the manifest carried one attachment with real base64 bytes — got {text:?}"
+        );
+
+        // A no-attachment follow-up on the same thread: the manifest carries NO
+        // attachments (the capture worker sees the key absent → count 0).
+        let post_frame = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 5,
+            "method": "run/post_message",
+            "params": { "thread_id": thread_id, "prompt": "text only" },
+        })
+        .to_string();
+        send(&mut ws, post_frame).await;
+        let post = read_response_with_id(&mut ws, 5).await;
+        assert!(
+            post.get("error").is_none(),
+            "run/post_message without attachments succeeds — {post}"
+        );
+        let run2 = post["result"]["run_id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("result.run_id is a string — {post}"))
+            .to_string();
+        drain_run_to_done(&mut ws, 6, &run2).await;
+
+        let got = thread_get(&mut ws, 7, &thread_id).await;
+        let assistant2 = &got["messages"][3];
+        assert_eq!(
+            assistant2["role"],
+            serde_json::json!("assistant"),
+            "messages[3] is the second assistant echo — {got}"
+        );
+        let text = concat_text_segments(assistant2);
+        assert!(
+            text.contains("|attachments=0") && !text.contains("amime"),
+            "a text-only send forwards no attachments — got {text:?}"
+        );
+
+        ws.close(None).await.ok();
+    });
+}
+
+/// `run/retry` REPLAYS the original turn's attachments: a send with one image
+/// whose first Worker attempt errors, retried, produces a fresh manifest that
+/// carries the SAME `{mime, data_base64}` — the retried "what's in this image?"
+/// must reach the model WITH the image, exactly like the original send. Driven
+/// via the manifest-capture worker's fail-once hook (first spawn errors, the
+/// retry spawn echoes what the manifest carried).
+#[test]
+fn retry_replays_the_original_turns_attachments() {
+    let workspace = Workspace::new();
+    let fail_marker = workspace.path().join("fail-once");
+    let core = workspace
+        .core()
+        .worker_fixture("manifest-capture.ts")
+        .env("INKSTONE_FIXTURE_FAIL_ONCE", &fail_marker)
+        .spawn();
+
+    let bytes = b"retry replays these image bytes";
+    let encoded = BASE64.encode(bytes);
+    let expected_prefix = &encoded[..12];
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime builds");
+
+    rt.block_on(async {
+        let mut ws = core.connect().await;
+
+        let media_id = upload(
+            &mut ws,
+            1,
+            serde_json::json!({
+                "bytes_base64": encoded,
+                "mime": "image/png",
+            }),
+        )
+        .await;
+
+        // First attempt: the fail-once worker errors the Run.
+        let create_frame = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "thread/create",
+            "params": { "prompt": "what's in this image?", "attachment_ids": [media_id] },
+        })
+        .to_string();
+        send(&mut ws, create_frame).await;
+        let create = read_response_with_id(&mut ws, 2).await;
+        assert!(
+            create.get("error").is_none(),
+            "thread/create succeeds — {create}"
+        );
+        let thread_id = create["result"]["thread_id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("result.thread_id is a string — {create}"))
+            .to_string();
+        let run_id = create["result"]["run_id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("result.run_id is a string — {create}"))
+            .to_string();
+        drain_run_until(&mut ws, 3, &run_id, "error").await;
+
+        // Retry the errored Run — the fail-once marker now exists, so the
+        // re-spawned capture worker echoes the manifest it received.
+        send(
+            &mut ws,
+            format!(
+                r#"{{"jsonrpc":"2.0","id":4,"method":"run/retry","params":{{"run_id":"{run_id}"}}}}"#
+            ),
+        )
+        .await;
+        let retry = read_response_with_id(&mut ws, 4).await;
+        assert_eq!(
+            retry["result"]["outcome"],
+            serde_json::json!("accepted"),
+            "the errored Run's retry is accepted — {retry}"
+        );
+        drain_run_to_done(&mut ws, 5, &run_id).await;
+
+        let got = thread_get(&mut ws, 6, &thread_id).await;
+        let assistant = &got["messages"][1];
+        assert_eq!(
+            assistant["role"],
+            serde_json::json!("assistant"),
+            "messages[1] is the retried assistant echo — {got}"
+        );
+        let text = concat_text_segments(assistant);
+        assert!(
+            text.contains(&format!(
+                "attachments=1|amime=image/png|adata={expected_prefix}"
+            )),
+            "the retried manifest replays the original attachment's bytes — got {text:?}"
         );
 
         ws.close(None).await.ok();

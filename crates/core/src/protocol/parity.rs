@@ -955,8 +955,9 @@ mod parity_fixtures {
             // WorkerManifest (ser-only, borrowed-lifetime <'a> — owned literals live
             // to the serialize call inside `fx!`). Maximal: resume mode, all THREE
             // ManifestMessage variants (user / assistant-with-tool_calls /
-            // tool_result), access_token present, a tool descriptor (covers
-            // WorkflowManifest + CoreToolDescriptor + ManifestToolCall transitively).
+            // tool_result), access_token present, a tool descriptor, an attachment
+            // (covers WorkflowManifest + CoreToolDescriptor + ManifestToolCall +
+            // ManifestAttachment transitively).
             fx!(
                 "worker_manifest.json",
                 WorkerManifest {
@@ -994,9 +995,14 @@ mod parity_fixtures {
                     ],
                     mode: Some("resume"),
                     access_token: Some("tok_abc"),
+                    attachments: Some(vec![ManifestAttachment {
+                        mime: "image/png".to_string(),
+                        data_base64: "aW1hZ2UgYnl0ZXM=".to_string(),
+                    }]),
                 }
             ),
-            // WorkerManifest bare: fresh start, empty history, no mode / token.
+            // WorkerManifest bare: fresh start, empty history, no mode / token /
+            // attachments (the key is skipped, not null).
             fx!(
                 "worker_manifest.bare.json",
                 WorkerManifest {
@@ -1014,6 +1020,7 @@ mod parity_fixtures {
                     messages: vec![],
                     mode: None,
                     access_token: None,
+                    attachments: None,
                 }
             ),
             // ── Decision prose (finding F12): NOT a wire type — the machine-
@@ -1372,6 +1379,7 @@ mod parity_fixtures {
         ("ProviderStatus", "provider_status_result.json"),
         ("ModelInfo", "model_catalog_result.json"),
         ("ProviderModels", "model_catalog_result.json"),
+        ("ManifestAttachment", "worker_manifest.json attachments"),
         ("ManifestToolCall", "worker_manifest.json"),
         ("ManifestMessage", "worker_manifest.json (all three variants)"),
         ("WorkflowManifest", "worker_manifest.json"),

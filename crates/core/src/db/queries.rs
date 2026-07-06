@@ -1044,6 +1044,26 @@ where
     .await
 }
 
+/// The media ids attached to one message, in insertion order (`rowid` —
+/// `created_at` ties within one send's transaction, so it can't order them).
+/// Run-retry reads these to replay the original turn's attachments into the
+/// fresh spawn manifest (chat-image-attachments).
+pub(super) async fn media_ids_for_message<'e, E>(
+    executor: E,
+    message_id: &str,
+) -> sqlx::Result<Vec<String>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_scalar(
+        "SELECT media_id FROM media_attachments \
+         WHERE target_kind = 'message' AND target_message_id = ?1 ORDER BY rowid",
+    )
+    .bind(message_id)
+    .fetch_all(executor)
+    .await
+}
+
 /// Delete a media row by id. The caller (`media::delete_media`) has already
 /// confirmed the row via `media_by_id`, so the affected count isn't needed here.
 pub(super) async fn delete_media<'e, E>(executor: E, id: &str) -> sqlx::Result<()>

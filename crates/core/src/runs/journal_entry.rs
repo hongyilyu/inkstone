@@ -104,6 +104,8 @@ pub(super) async fn handle(
             workflow,
             prompt,
             history,
+            // A synthetic rescan prompt never carries attachments.
+            Vec::new(),
             pool.clone(),
             assistant_message_id,
             hubs.clone(),
