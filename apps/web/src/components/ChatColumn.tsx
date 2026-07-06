@@ -350,13 +350,13 @@ export function ChatColumn() {
 				onStop={() => {
 					if (activeRunId !== null) void cancelRun(runtime, activeRunId);
 				}}
-				onSend={async (text) => {
+				onSend={async (text, files) => {
 					// Send into the focused thread, or mint a new one; then refresh the
 					// reads this surface shows: the sidebar's thread/list and the
 					// right-rail recent-Runs feed (a send births/advances a Run).
 					setSendError(null);
 					if (focusedThreadId !== null) {
-						const result = await send(runtime, focusedThreadId, text);
+						const result = await send(runtime, focusedThreadId, text, files);
 						if (!result.ok) {
 							setSendError(
 								connectionFailureCopy(result.error) ?? GENERIC_SEND_FAILURE,
@@ -367,7 +367,7 @@ export function ChatColumn() {
 						// navigate to the new thread's route. The thread is pre-seeded and
 						// marked `ready`, so the post-navigate remount reads it without a
 						// re-hydrate; on failure stay on `/` and surface the error.
-						const result = await sendNewThread(runtime, text);
+						const result = await sendNewThread(runtime, text, files);
 						if (result.ok) {
 							void navigate({
 								to: "/thread/$threadId",

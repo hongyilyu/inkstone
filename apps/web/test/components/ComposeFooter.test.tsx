@@ -1,13 +1,37 @@
 import { stubWsClient, WsClient } from "@inkstone/ui-sdk";
 import { renderWithQuery } from "@test/test-utils/renderWithQuery";
-import { cleanup, screen } from "@testing-library/react";
+import { cleanup, fireEvent, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Effect, Layer, ManagedRuntime } from "effect";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ComposeFooter } from "@/components/ComposeFooter.js";
 import { RuntimeProvider } from "@/runtime";
 
 afterEach(cleanup);
+
+// jsdom ships no URL.createObjectURL/revokeObjectURL; the pending-thumbnail
+// strip mints an object URL per attached file, so stub both with observable
+// fakes (unique per call — two same-named files must not collide as keys).
+let objectUrlSeq = 0;
+const createObjectURL = vi.fn(() => `blob:mock-${objectUrlSeq++}`);
+const revokeObjectURL = vi.fn();
+Object.assign(URL, { createObjectURL, revokeObjectURL });
+
+beforeEach(() => {
+	createObjectURL.mockClear();
+	revokeObjectURL.mockClear();
+});
+
+function makeImageFile(name = "photo.png") {
+	return new File(["png-bytes"], name, { type: "image/png" });
+}
+
+/** The hidden file input behind the Attach chip. */
+function fileInput(container: HTMLElement): HTMLInputElement {
+	const input = container.querySelector<HTMLInputElement>('input[type="file"]');
+	if (!input) throw new Error("hidden file input not rendered");
+	return input;
+}
 
 /** A stub runtime whose catalog + settings feed the composer's ModelPicker. */
 function makeRuntime() {
@@ -62,7 +86,7 @@ describe("ComposeFooter", () => {
 		await user.click(screen.getByRole("button", { name: /send/i }));
 
 		expect(onSend).toHaveBeenCalledTimes(1);
-		expect(onSend).toHaveBeenCalledWith("hello");
+		expect(onSend).toHaveBeenCalledWith("hello", []);
 
 		// The model picker trigger is present; once the preferred model loads
 		// (`gpt-5.5`), the trigger's accessible name reflects it WITH its provider
@@ -77,15 +101,13 @@ describe("ComposeFooter", () => {
 		).toBeInTheDocument();
 		expect(await screen.findByText(/^Off$/)).toBeInTheDocument();
 
-		// Search + Attach have no Core backing yet, so they ship disabled rather
-		// than masquerading as live controls. Their accessible name carries the
-		// "(coming soon)" reason (see the dedicated test below).
+		// Search has no Core backing yet, so it ships disabled rather than
+		// masquerading as a live control. Attach IS live now (slice 5) — the media
+		// substrate backs it — so it must be enabled.
 		expect(
 			screen.getByRole("button", { name: /search \(coming soon\)/i }),
 		).toBeDisabled();
-		expect(
-			screen.getByRole("button", { name: /attach \(coming soon\)/i }),
-		).toBeDisabled();
+		expect(screen.getByRole("button", { name: /^attach$/i })).toBeEnabled();
 
 		await runtime.dispose();
 	});
@@ -104,9 +126,6 @@ describe("ComposeFooter", () => {
 		// accessible name instead.
 		expect(
 			screen.getByRole("button", { name: /search \(coming soon\)/i }),
-		).toBeInTheDocument();
-		expect(
-			screen.getByRole("button", { name: /attach \(coming soon\)/i }),
 		).toBeInTheDocument();
 
 		await runtime.dispose();
@@ -158,6 +177,164 @@ describe("ComposeFooter", () => {
 		// Enter must not start a second turn over the live Run.
 		await user.type(screen.getByRole("textbox"), "queued{Enter}");
 		expect(onSend).not.toHaveBeenCalled();
+
+		await runtime.dispose();
+	});
+
+	it("shows a pending thumbnail when a file is picked via the Attach chip's input", async () => {
+		const user = userEvent.setup();
+		const onSend = vi.fn();
+		const runtime = makeRuntime();
+		const { container } = renderWithQuery(
+			<RuntimeProvider runtime={runtime}>
+				<ComposeFooter onSend={onSend} />
+			</RuntimeProvider>,
+		);
+
+		// The picker input is hidden chrome behind the chip — image/* + multiple so
+		// one pick can carry several photos.
+		const input = fileInput(container);
+		expect(input.accept).toBe("image/*");
+		expect(input.multiple).toBe(true);
+
+		await user.upload(input, makeImageFile());
+
+		// A pending thumbnail materializes from an object URL of the picked file.
+		const thumb = await screen.findByRole("img", { name: /photo\.png/i });
+		expect(thumb).toHaveAttribute("src", expect.stringMatching(/^blob:/));
+		expect(createObjectURL).toHaveBeenCalledTimes(1);
+
+		await runtime.dispose();
+	});
+
+	it("adds a pending thumbnail for a pasted image but ignores non-image pastes", async () => {
+		const onSend = vi.fn();
+		const runtime = makeRuntime();
+		renderWithQuery(
+			<RuntimeProvider runtime={runtime}>
+				<ComposeFooter onSend={onSend} />
+			</RuntimeProvider>,
+		);
+		const textbox = screen.getByRole("textbox");
+
+		// Pasting an image from the clipboard attaches it (screenshot workflow).
+		fireEvent.paste(textbox, {
+			clipboardData: { files: [makeImageFile("pasted.png")] },
+		});
+		expect(
+			await screen.findByRole("img", { name: /pasted\.png/i }),
+		).toBeInTheDocument();
+
+		// A non-image file on the clipboard is NOT attached (composer is image/*
+		// only) — no second thumbnail appears.
+		fireEvent.paste(textbox, {
+			clipboardData: {
+				files: [new File(["%PDF"], "doc.pdf", { type: "application/pdf" })],
+			},
+		});
+		expect(screen.getAllByRole("img")).toHaveLength(1);
+
+		await runtime.dispose();
+	});
+
+	it("adds a pending thumbnail for an image dropped onto the composer", async () => {
+		const onSend = vi.fn();
+		const runtime = makeRuntime();
+		renderWithQuery(
+			<RuntimeProvider runtime={runtime}>
+				<ComposeFooter onSend={onSend} />
+			</RuntimeProvider>,
+		);
+
+		fireEvent.drop(screen.getByRole("textbox"), {
+			dataTransfer: { files: [makeImageFile("dropped.png")] },
+		});
+
+		expect(
+			await screen.findByRole("img", { name: /dropped\.png/i }),
+		).toBeInTheDocument();
+
+		await runtime.dispose();
+	});
+
+	it("submits (text, files), clears the pending strip, and revokes the object URLs", async () => {
+		const user = userEvent.setup();
+		const onSend = vi.fn();
+		const runtime = makeRuntime();
+		const { container } = renderWithQuery(
+			<RuntimeProvider runtime={runtime}>
+				<ComposeFooter onSend={onSend} />
+			</RuntimeProvider>,
+		);
+
+		const file = makeImageFile();
+		await user.upload(fileInput(container), file);
+		await screen.findByRole("img", { name: /photo\.png/i });
+		await user.type(screen.getByRole("textbox"), "look at this");
+		await user.click(screen.getByRole("button", { name: /send/i }));
+
+		expect(onSend).toHaveBeenCalledTimes(1);
+		expect(onSend).toHaveBeenCalledWith("look at this", [file]);
+
+		// The pending strip clears with the text, and its object URL is released
+		// (the sent bubble re-renders from /media/{id}, not the blob).
+		expect(screen.queryByRole("img")).toBeNull();
+		expect(revokeObjectURL).toHaveBeenCalledTimes(1);
+
+		await runtime.dispose();
+	});
+
+	it("removes a single pending attachment via its per-item remove button", async () => {
+		const user = userEvent.setup();
+		const onSend = vi.fn();
+		const runtime = makeRuntime();
+		const { container } = renderWithQuery(
+			<RuntimeProvider runtime={runtime}>
+				<ComposeFooter onSend={onSend} />
+			</RuntimeProvider>,
+		);
+
+		const keep = makeImageFile("keep.png");
+		const drop = makeImageFile("drop.png");
+		await user.upload(fileInput(container), [keep, drop]);
+		expect(await screen.findAllByRole("img")).toHaveLength(2);
+
+		await user.click(screen.getByRole("button", { name: /remove drop\.png/i }));
+
+		// Only the removed thumbnail goes; its object URL is revoked; the survivor
+		// still rides the next send.
+		expect(screen.getAllByRole("img")).toHaveLength(1);
+		expect(screen.getByRole("img", { name: /keep\.png/i })).toBeInTheDocument();
+		expect(revokeObjectURL).toHaveBeenCalledTimes(1);
+
+		await user.type(screen.getByRole("textbox"), "just the keeper");
+		await user.click(screen.getByRole("button", { name: /send/i }));
+		expect(onSend).toHaveBeenCalledWith("just the keeper", [keep]);
+
+		await runtime.dispose();
+	});
+
+	it("still requires text: submit with pending files but no text no-ops", async () => {
+		const user = userEvent.setup();
+		const onSend = vi.fn();
+		const runtime = makeRuntime();
+		const { container } = renderWithQuery(
+			<RuntimeProvider runtime={runtime}>
+				<ComposeFooter onSend={onSend} />
+			</RuntimeProvider>,
+		);
+
+		await user.upload(fileInput(container), makeImageFile());
+		await screen.findByRole("img", { name: /photo\.png/i });
+
+		// Image-only sends are out of scope — text is still the gate. The pending
+		// thumbnail must survive the no-op (nothing was sent, nothing clears).
+		await user.click(screen.getByRole("button", { name: /send/i }));
+		await user.type(screen.getByRole("textbox"), "{Enter}");
+		expect(onSend).not.toHaveBeenCalled();
+		expect(
+			screen.getByRole("img", { name: /photo\.png/i }),
+		).toBeInTheDocument();
 
 		await runtime.dispose();
 	});
