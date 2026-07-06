@@ -1467,8 +1467,11 @@ const cannedCases: Record<keyof typeof requestDescriptors, CannedCase> = {
 		response: { run_id: "r-3", thread_id: "t-2" },
 	},
 	messageSearch: { args: ["hello"], response: { hits: [] } },
-	cancelRun: { args: ["r-1"], response: { outcome: "accepted" } },
-	retryRun: { args: ["r-1"], response: { outcome: "accepted" } },
+	// Discriminating literals (already_terminal vs not_errored — each decodes
+	// ONLY under its own schema) so a swapped cancel/retry table row fails the
+	// decode here rather than passing on the shared "accepted" value.
+	cancelRun: { args: ["r-1"], response: { outcome: "already_terminal" } },
+	retryRun: { args: ["r-1"], response: { outcome: "not_errored" } },
 	providerStatus: {
 		args: [],
 		response: {
