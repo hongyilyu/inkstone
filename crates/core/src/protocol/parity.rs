@@ -884,7 +884,7 @@ mod parity_fixtures {
     #[test]
     fn emitted_fixtures_match_committed() {
         // (filename, committed bytes). `include_str!` resolves relative to this
-        // source file (`crates/core/src/protocol.rs`): `../../../tests/contract/…`.
+        // source file (`crates/core/src/protocol/parity.rs`): `../../../../tests/contract/…`.
         macro_rules! committed {
             ($($file:literal),+ $(,)?) => {
                 &[$((
