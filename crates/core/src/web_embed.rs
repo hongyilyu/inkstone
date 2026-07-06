@@ -1,8 +1,9 @@
 //! Embedded SPA serving for release builds (ADR-0015). The built Web Client
 //! (`apps/web/dist/`) is compiled into the binary via `rust-embed` and served
-//! from the same listener as the WebSocket: `/` → embedded `index.html`,
-//! `/assets/*` → embedded asset with its guessed content-type, any other path
-//! → embedded `index.html` so deep links reach the client-side router.
+//! from the same listener as the WebSocket: any embedded file (`index.html`,
+//! `/assets/*`, top-level icons) is served with its guessed content-type; any
+//! other path falls back to embedded `index.html` so deep links reach the
+//! client-side router. Mounted GET/HEAD-only in `main.rs`.
 //!
 //! The derive requires `apps/web/dist/` to exist at compile time, so any
 //! release-profile cargo command fails without a prior `pnpm -C apps/web build`
@@ -27,7 +28,9 @@ pub async fn serve_embedded(uri: Uri) -> Response {
     match file {
         Some(f) => {
             let mime = f.metadata.mimetype().to_string();
-            ([(header::CONTENT_TYPE, mime)], Body::from(f.data.into_owned())).into_response()
+            // `f.data` is `Cow::Borrowed(&'static [u8])` in release; passing the
+            // Cow through keeps it zero-copy (no per-request asset memcpy).
+            ([(header::CONTENT_TYPE, mime)], Body::from(f.data)).into_response()
         }
         None => (StatusCode::NOT_FOUND, "not found").into_response(),
     }
