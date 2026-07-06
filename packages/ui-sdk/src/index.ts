@@ -104,7 +104,24 @@ export class InvalidParamsError extends Data.TaggedError("InvalidParamsError")<{
 	message: string;
 }> {}
 
-export type WsError = WsRequestError | UnknownThreadError | InvalidParamsError;
+export class ProposalNotPendingError extends Data.TaggedError(
+	"ProposalNotPendingError",
+)<{
+	message: string;
+}> {}
+
+export class ProviderLoginFailedError extends Data.TaggedError(
+	"ProviderLoginFailedError",
+)<{
+	message: string;
+}> {}
+
+export type WsError =
+	| WsRequestError
+	| UnknownThreadError
+	| InvalidParamsError
+	| ProposalNotPendingError
+	| ProviderLoginFailedError;
 
 // Wire frame: response-with-result | response-with-error | notification.
 const WireError = S.Struct({ code: S.Number, message: S.String });
@@ -185,6 +202,12 @@ const mapWireError = (error: {
 }): WsError => {
 	if (error.code === -32001) {
 		return new UnknownThreadError({ message: error.message });
+	}
+	if (error.code === -32002) {
+		return new ProposalNotPendingError({ message: error.message });
+	}
+	if (error.code === -32003) {
+		return new ProviderLoginFailedError({ message: error.message });
 	}
 	if (error.code === -32602) {
 		return new InvalidParamsError({ message: error.message });

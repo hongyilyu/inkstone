@@ -12,6 +12,8 @@ import { WebSocketServer, type WebSocket as WsConn } from "ws";
 import {
 	type ConnectionStatus,
 	clearNotificationHandler,
+	ProposalNotPendingError,
+	ProviderLoginFailedError,
 	requestDescriptors,
 	resetNotificationHandlers,
 	setNotificationHandler,
@@ -625,6 +627,82 @@ describe("WsClient", () => {
 			expect(Either.isLeft(result)).toBe(true);
 			if (Either.isLeft(result)) {
 				expect(result.left._tag).toBe("UnknownThreadError");
+			}
+		} finally {
+			await server.close();
+		}
+	});
+
+	it("maps a -32002 error envelope to a typed failure in the E channel", async () => {
+		const server = await makeServer((ws, req) => {
+			if (req.method === "proposal/decide") {
+				ws.send(
+					JSON.stringify({
+						jsonrpc: "2.0",
+						id: req.id,
+						error: { code: -32002, message: "proposal not pending" },
+					}),
+				);
+			}
+		});
+
+		const program = Effect.gen(function* () {
+			const client = yield* WsClient;
+			return yield* client.proposalDecide({
+				proposal_id: "01900000-0000-7000-8000-000000000010",
+				decision: "accept",
+			});
+		});
+
+		try {
+			const result = await Effect.runPromise(
+				provide(server.url)(Effect.either(program)),
+			);
+			expect(Either.isLeft(result)).toBe(true);
+			if (Either.isLeft(result)) {
+				expect(result.left._tag).toBe("ProposalNotPendingError");
+				if (result.left instanceof ProposalNotPendingError) {
+					expect(result.left.message).toBe("proposal not pending");
+				}
+			}
+		} finally {
+			await server.close();
+		}
+	});
+
+	it("maps a -32003 error envelope to a typed failure in the E channel", async () => {
+		const server = await makeServer((ws, req) => {
+			if (req.method === "provider/login_start") {
+				ws.send(
+					JSON.stringify({
+						jsonrpc: "2.0",
+						id: req.id,
+						error: {
+							code: -32003,
+							message: "provider login failed: account locked",
+						},
+					}),
+				);
+			}
+		});
+
+		const program = Effect.gen(function* () {
+			const client = yield* WsClient;
+			return yield* client.providerLoginStart("codex");
+		});
+
+		try {
+			const result = await Effect.runPromise(
+				provide(server.url)(Effect.either(program)),
+			);
+			expect(Either.isLeft(result)).toBe(true);
+			if (Either.isLeft(result)) {
+				expect(result.left._tag).toBe("ProviderLoginFailedError");
+				if (result.left instanceof ProviderLoginFailedError) {
+					expect(result.left.message).toBe(
+						"provider login failed: account locked",
+					);
+				}
 			}
 		} finally {
 			await server.close();
