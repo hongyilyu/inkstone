@@ -33,6 +33,7 @@ pub(super) async fn handle(
                 role: row.role,
                 status: row.status,
                 run_id: row.run_id,
+                terminal_reason: row.terminal_reason,
                 // Map each db-side timeline item to its wire `Segment` variant,
                 // preserving order (ADR-0045). The variants are 1:1.
                 segments: row

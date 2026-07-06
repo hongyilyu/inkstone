@@ -146,18 +146,24 @@ pub enum Segment {
 }
 
 /// A Message in a `thread/get` result. `run_id` lets a refreshed Client resubscribe
-/// to a `streaming` Message's Run. `segments` is the assistant turn's ordered
-/// timeline (ADR-0045) — `text | tool_call | proposal` items in `run_steps` order —
-/// replacing the prior three independent buckets (`text`, `tool_calls`, `proposal`).
-/// A user Message carries a single `text` segment. There is no denormalized flat
-/// `text`: the Client derives it via one `concatText(segments)` helper, a single
-/// source of truth (ADR-0045).
+/// to a `streaming` Message's Run. `terminal_reason` carries how the owning Run
+/// settled, so a reload can tell a stopped turn from an errored one. `segments` is
+/// the assistant turn's ordered timeline (ADR-0045) — `text | tool_call | proposal`
+/// items in `run_steps` order — replacing the prior three independent buckets
+/// (`text`, `tool_calls`, `proposal`). A user Message carries a single `text`
+/// segment. There is no denormalized flat `text`: the Client derives it via one
+/// `concatText(segments)` helper, a single source of truth (ADR-0045).
 #[derive(Debug, Serialize)]
 pub struct MessageView {
     pub id: String,
     pub role: String,
     pub status: String,
     pub run_id: String,
+    /// The owning Run's `terminal_reason` — `'cancelled'` lets the Client
+    /// rehydrate a stopped turn calmly (ADR-0014: cancel is not an error);
+    /// omitted (not `null`, matching the TS `S.optional`) while the Run is live.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub terminal_reason: Option<String>,
     pub segments: Vec<Segment>,
 }
 
