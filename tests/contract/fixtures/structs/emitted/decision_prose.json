@@ -1,0 +1,46 @@
+{
+  "accepted_examples": [
+    {
+      "kind": "Journal Entry",
+      "sample": "Accepted. Created Journal Entry (entity_id=0190d3c1-0000-7000-8000-000000000001, occurred_at=2026-06-10T10:30:00, body=Bought milk.).",
+      "verb": "Created"
+    },
+    {
+      "kind": "Journal Entry",
+      "sample": "Accepted. Updated Journal Entry (occurred_at=2026-06-10T10:30:00, body=Bought milk.).",
+      "verb": "Updated"
+    },
+    {
+      "kind": "Journal Entry",
+      "sample": "Accepted. Deleted Journal Entry (entity_id=0190d3c1-0000-7000-8000-000000000001).",
+      "verb": "Deleted"
+    },
+    {
+      "kind": "Entity",
+      "sample": "Accepted. Referenced Entity (source_entity_id=0190d3c1-0000-7000-8000-000000000001, target_entity_id=0190d3c1-0000-7000-8000-000000000002, body=See [entity_ref:0190d3c1-0000-7000-8000-000000000002]).",
+      "verb": "Referenced"
+    },
+    {
+      "kind": "Person",
+      "sample": "Accepted. Created Person (entity_id=0190d3c1-0000-7000-8000-000000000001, name=Morris).",
+      "verb": "Created"
+    },
+    {
+      "kind": "Project",
+      "sample": "Accepted. Created Project (entity_id=0190d3c1-0000-7000-8000-000000000001, name=Lead Ads, status=active).",
+      "verb": "Created"
+    },
+    {
+      "kind": "Todo",
+      "sample": "Accepted. Created Todo (entity_id=0190d3c1-0000-7000-8000-000000000001, title=Buy milk, status=active).",
+      "verb": "Created"
+    },
+    {
+      "kind": "Observations",
+      "sample": "Accepted. Recorded 1 observations (bodyweight at 2026-06-01T07:30:00, values={\"kg\":72.4}).",
+      "verb": "Recorded"
+    }
+  ],
+  "accepted_prefix": "Accepted.",
+  "declined_text": "User declined this proposal."
+}
