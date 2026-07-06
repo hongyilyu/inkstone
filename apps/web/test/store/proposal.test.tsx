@@ -242,6 +242,92 @@ describe("proposal stream + decide", () => {
 		await runtime.dispose();
 	});
 
+	it("mints one stable decision_idempotency_key across a failed decide and its retry", async () => {
+		const proposalQueue = Effect.runSync(
+			Queue.unbounded<ProposalNotification>(),
+		);
+		const runQueue = Effect.runSync(Queue.unbounded<RunEventValue>());
+		const captured: ProposalDecideParams[] = [];
+		let decideCalls = 0;
+		const runtime = makeStubRuntime({
+			proposalQueue,
+			runQueue,
+			// Per-run proposal ids so the fresh-proposal assertion sees a distinct key.
+			proposalGet: (runId) =>
+				Effect.succeed({
+					proposal_id: `prop-${runId}`,
+					run_id: runId,
+					mutation_kind: "create_journal_entry",
+					payload: JOURNAL_ENTRY,
+					rationale: "the user asked to remember this",
+					status: "pending",
+				}),
+			onDecide: (params) => {
+				captured.push(params);
+				decideCalls += 1;
+				if (decideCalls === 1) {
+					// The first decide is lost mid-flight; the retry must replay the SAME key.
+					return Effect.fail(new WsRequestError({ reason: "connection_lost" }));
+				}
+				return Effect.succeed({ status: "accepted" } as const);
+			},
+		});
+
+		// Seed run-1's turn + parked stream so the retry's success path can resume it.
+		const assistantId = nextMessageId();
+		seedAssistantMessage("thread-1", {
+			id: assistantId,
+			role: "assistant",
+			status: "streaming",
+			segments: [],
+			run_id: "",
+		});
+		attachRun("thread-1", assistantId, "run-1");
+		startRunStream(runtime, "thread-1", "run-1");
+
+		startProposalStream(runtime);
+		Queue.unsafeOffer(proposalQueue, {
+			kind: "pending",
+			run_id: "run-1",
+			proposal_id: "prop-run-1",
+		});
+		await waitFor(() => getChatState().proposals["run-1"] !== undefined);
+
+		// First decide fails (lost response) → error state with Try again.
+		await decideProposal(runtime, "run-1", "accept");
+		expect(getChatState().proposals["run-1"]?.status).toBe("error");
+
+		// The retry replays the same decision and succeeds.
+		await decideProposal(runtime, "run-1", "accept");
+		expect(getChatState().proposals["run-1"]?.status).toBe("accepted");
+
+		const UUID_RE =
+			/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+		expect(captured).toHaveLength(2);
+		expect(captured[0]?.decision_idempotency_key).toMatch(UUID_RE);
+		expect(captured[1]?.decision_idempotency_key).toMatch(UUID_RE);
+		expect(captured[0]?.decision_idempotency_key).toBe(
+			captured[1]?.decision_idempotency_key,
+		);
+
+		// A different proposal (fresh run) mints a DIFFERENT key.
+		Queue.unsafeOffer(proposalQueue, {
+			kind: "pending",
+			run_id: "run-2",
+			proposal_id: "prop-run-2",
+		});
+		await waitFor(() => getChatState().proposals["run-2"] !== undefined);
+		await decideProposal(runtime, "run-2", "accept");
+
+		expect(captured).toHaveLength(3);
+		expect(captured[2]?.decision_idempotency_key).toMatch(UUID_RE);
+		expect(captured[2]?.decision_idempotency_key).not.toBe(
+			captured[0]?.decision_idempotency_key,
+		);
+
+		await runtime.dispose();
+	});
+
 	it("a double decide does not flip an accepted card to error (M1)", async () => {
 		const proposalQueue = Effect.runSync(
 			Queue.unbounded<ProposalNotification>(),

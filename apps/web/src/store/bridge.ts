@@ -43,6 +43,9 @@ import {
 // Each run's stream fiber is retained keyed by run id so it can be interrupted on unmount (structured cancellation, Q18 A′).
 const fibers = new Map<RunId, Fiber.RuntimeFiber<void, WsError>>();
 
+// One decision_idempotency_key per proposal_id, reused across retries so Core's keyed replay recognizes a repeat (ADR-0014 retry-safety).
+const decisionKeys = new Map<string, string>();
+
 /** The global proposal-notification stream fiber, if started. */
 let proposalFiber: Fiber.RuntimeFiber<void> | undefined;
 
@@ -63,6 +66,7 @@ export function setOnRunSettled(fn: (() => void) | undefined): void {
 /** Clear retained fibers — for test isolation (runtime disposal interrupts them). */
 export function resetBridge(): void {
 	fibers.clear();
+	decisionKeys.clear();
 	proposalFiber = undefined;
 	onRunSettled = undefined;
 }
@@ -511,11 +515,21 @@ export async function decideProposal(
 	}
 	setProposalStatus(runId, "deciding");
 
+	// Mint once per proposal_id, reuse on retry — a lost-response "Try again"
+	// replays the SAME key so Core's keyed replay returns the prior result
+	// instead of double-applying (ADR-0014 retry-safety, ADR-0025 precedence).
+	let key = decisionKeys.get(proposal.proposal_id);
+	if (key === undefined) {
+		key = crypto.randomUUID();
+		decisionKeys.set(proposal.proposal_id, key);
+	}
+
 	const program = Effect.gen(function* () {
 		const client = yield* WsClient;
 		return yield* client.proposalDecide({
 			proposal_id: proposal.proposal_id,
 			decision,
+			decision_idempotency_key: key,
 			...(decision === "edit" ? { edited_payload: editedPayload } : {}),
 			...(decisions !== undefined ? { decisions } : {}),
 		});
