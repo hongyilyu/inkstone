@@ -2679,7 +2679,7 @@ where
 /// + `decided_proposal_for_run` (ADR-0044) reads — one walk yields the whole
 /// ordered turn. Returns
 /// `(kind, part_text, tc_name, tc_status, request_payload, proposal_id,
-/// mutation_kind, proposal_status)` tuples; the caller ([`super::segment_rows_for_run`])
+/// mutation_kind, proposal_status)` tuples; the caller ([`super::threads`]'s segment assembly)
 /// turns each row into a `text` / `tool_call` / `proposal` segment, in this order:
 ///
 /// - `kind='message'` → a `text` segment from `part_text` (the resolved
@@ -2795,7 +2795,7 @@ where
 }
 
 /// One row of the [`segment_timeline`] walk, named so the caller
-/// ([`super::segment_rows_for_run`]) reads it by field instead of unpacking a
+/// ([`super::threads`]'s segment assembly) reads it by field instead of unpacking a
 /// 10-wide positional tuple with `_` holes (ADR-0045). The raw SQL still selects a
 /// wide tuple; this is the resolved, caller-facing shape (duration already folded
 /// from the next-step/`ended_at` seam). `part_type` is the `message_parts.type`

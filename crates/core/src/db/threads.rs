@@ -307,8 +307,7 @@ mod tests {
 
     use super::*;
     use crate::db::{
-        mark_run_running, park_on_proposal, persist_thread_with_first_run, persist_tool_call,
-        resolve_tool_call,
+        park_on_proposal, persist_thread_with_first_run, persist_tool_call, resolve_tool_call,
     };
     use crate::workflow::Workflow;
 
@@ -1679,6 +1678,8 @@ mod tests {
             .await
             .expect("update of an absent thread is a no-op Ok");
     }
+
+    // ─── thread archive lifecycle (ADR-0052) ──────────────────────────────
 
     /// Seed a Thread carrying a Run, a Message, an Entity, and an
     /// `entity_sources` row pointing at that Message — the minimal provenance

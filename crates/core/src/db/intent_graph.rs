@@ -3367,4 +3367,122 @@ mod tests {
         let (_, revisions) = je_row_and_revision_counts(&pool, &scaffold.je_id).await;
         assert_eq!(revisions, 1, "the rolled-back neither-set apply writes no revision");
     }
+
+    // ─── plan/decide exact-match agreement (shared-core lock) ──────────────
+    //
+    // These two tests pin the property the resolve_plan_disposition doc used to
+    // merely PROMISE in prose ("mirrors resolve_disposition's natural path"):
+    // what proposal/get shows at review time is what the decide-time apply does.
+    // They run the plan (pool read) AND the apply (in-tx resolution) against the
+    // same seeded state and assert the two resolvers agree — reuse resolves the
+    // SAME id; ambiguous fails the apply as InvalidMutation.
+
+    /// Seed the run/proposal scaffold for a DIRECT-CAPTURE graph apply (no JE
+    /// node) so the agreement tests can drive `apply_intent_graph_proposal`
+    /// with an arbitrary payload. Reuses the anchor-reuse scaffold; the JE it
+    /// seeds is simply unused by a JE-less payload.
+    async fn seed_direct_capture(pool: &sqlx::SqlitePool) -> Scaffold {
+        seed_anchor_reuse(pool, serde_json::json!([])).await
+    }
+
+    #[tokio::test]
+    async fn plan_and_decide_agree_on_reuse() {
+        let pool = memory_pool().await;
+        let ana = insert_named(&pool, "person", "Ana").await;
+        // Whitespace + case differences must normalize away in BOTH resolvers.
+        // A fresh `@bob` rides along: a reuse-ONLY graph mints nothing and has
+        // no anchor (a documented loud failure), so the minted node keeps the
+        // apply on its happy path while `@ana` exercises the reuse agreement.
+        let payload = serde_json::json!({
+            "entities": [
+                { "handle": "@ana", "type": "person", "name": "  ana " },
+                { "handle": "@bob", "type": "person", "name": "Bob" }
+            ],
+            "links": []
+        });
+
+        // Plan side: proposal/get's badge says `reuse` of the accepted id.
+        let plan = resolved_plan_for(&pool, &payload).await.unwrap();
+        assert_eq!(plan.len(), 2);
+        let ana_node = &plan[node(&plan, "@ana")];
+        assert_eq!(ana_node.disposition, "reuse");
+        assert_eq!(ana_node.entity_id.as_deref(), Some(ana.as_str()));
+        assert_eq!(plan[node(&plan, "@bob")].disposition, "create");
+
+        // Decide side: the apply resolves the SAME id — no second person row.
+        let scaffold = seed_direct_capture(&pool).await;
+        let outcome = apply_intent_graph_proposal(
+            &pool,
+            scaffold.run_id,
+            &scaffold.proposal_id,
+            &scaffold.tool_call_id,
+            &payload,
+            None,
+            None,
+            |anchor| format!("anchor:{anchor}"),
+            crate::db::now_ms(),
+        )
+        .await
+        .expect("reuse+create apply succeeds");
+        // The agreement assertion is on the ROWS: still exactly ONE Ana (the
+        // pre-existing row was reused), while Bob minted fresh.
+        drop(outcome);
+        let ana_rows: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM entities WHERE type = 'person' \
+             AND LOWER(TRIM(json_extract(data, '$.name'))) = 'ana'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("count anas");
+        assert_eq!(ana_rows, 1, "decide reused the accepted Ana; no second row");
+        assert_eq!(
+            person_id_named(&pool, "Ana").await.as_deref(),
+            Some(ana.as_str()),
+            "the surviving row is the pre-seeded one"
+        );
+    }
+
+    #[tokio::test]
+    async fn plan_and_decide_agree_on_ambiguous() {
+        let pool = memory_pool().await;
+        insert_named(&pool, "person", "Ana").await;
+        insert_named(&pool, "person", "ana").await;
+        let payload = serde_json::json!({
+            "entities": [{ "handle": "@ana", "type": "person", "name": "Ana" }],
+            "links": []
+        });
+
+        // Plan side: two exact matches → `ambiguous`, candidates carried.
+        let plan = resolved_plan_for(&pool, &payload).await.unwrap();
+        assert_eq!(plan.len(), 1);
+        assert_eq!(plan[0].disposition, "ambiguous");
+        assert_eq!(
+            plan[0].candidates.as_ref().map(Vec::len),
+            Some(2),
+            "both competing rows surface as candidates"
+        );
+
+        // Decide side: the SAME two matches fail the apply — InvalidMutation,
+        // nothing minted (tx rolled back).
+        let scaffold = seed_direct_capture(&pool).await;
+        let result = apply_intent_graph_proposal(
+            &pool,
+            scaffold.run_id,
+            &scaffold.proposal_id,
+            &scaffold.tool_call_id,
+            &payload,
+            None,
+            None,
+            |anchor| format!("anchor:{anchor}"),
+            crate::db::now_ms(),
+        )
+        .await;
+        match result {
+            Err(ApplyError::InvalidMutation(_)) => {}
+            other => panic!(
+                "ambiguous at decide must be a loud InvalidMutation, got {:?}",
+                other.map(|_| "Applied/RejectedAll").err()
+            ),
+        }
+    }
 }

@@ -858,6 +858,8 @@ mod tests {
         );
     }
 
+    // ─── entity/backlinks read (ADR-0050) ──────────────────────────────────
+
     /// Seed one `entities` row with an explicit `created_at`/`updated_at`, so a
     /// read's newest-first ordering can be exercised (the bare `seed_entity`
     /// pins both to `1`).
@@ -1004,6 +1006,7 @@ mod tests {
         )
         .await;
 
+        // ── Person target ──────────────────────────────────────────────────
         let person = backlinks_for_entity(&pool, "person-a")
             .await
             .expect("backlinks for person");
@@ -1060,6 +1063,7 @@ mod tests {
             "linked Todo carries its person_refs"
         );
 
+        // ── Project target (same result shape) ───────────────────────────────
         let project = backlinks_for_entity(&pool, "proj-a")
             .await
             .expect("backlinks for project");
@@ -1084,6 +1088,7 @@ mod tests {
             "Project's linked todos via project_id"
         );
 
+        // ── Todo target (Mentioned-in only; no linked todos) ─────────────────
         let todo = backlinks_for_entity(&pool, "todo-standalone")
             .await
             .expect("backlinks for todo");
@@ -1098,6 +1103,7 @@ mod tests {
             "a Todo has no linked todos (Mentioned-in only)"
         );
 
+        // ── Zero-backlink entity → both sets empty ───────────────────────────
         let empty = backlinks_for_entity(&pool, "person-zero")
             .await
             .expect("backlinks for zero-backlink person");
