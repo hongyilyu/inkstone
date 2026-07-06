@@ -149,56 +149,9 @@ pub fn spawn_title_generation(
     );
 }
 
-/// The collector timeout for the title Worker (ADR-0046), read from
-/// `INKSTONE_TITLE_TIMEOUT_MS` via the shared [`oneshot::timeout_from_env`]
-/// (unset/unparseable/`0` → 15s).
+/// The collector timeout for the title Worker (ADR-0046): the boot-resolved
+/// `INKSTONE_TITLE_TIMEOUT_MS` (unset/unparseable/`0` → 15s, parsed in
+/// [`crate::config::Config::from_lookup`]).
 fn title_timeout() -> std::time::Duration {
-    oneshot::timeout_from_env("INKSTONE_TITLE_TIMEOUT_MS")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::time::Duration;
-
-    /// Serializes the `INKSTONE_TITLE_TIMEOUT_MS` env mutation across the two
-    /// `title_timeout` cases so they don't race (the process env is global).
-    static TIMEOUT_ENV_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    /// Unset or unparseable `INKSTONE_TITLE_TIMEOUT_MS` → the 15s default; a
-    /// valid `u64` → that many milliseconds. Pins the env seam the timeout test
-    /// relies on, independent of any spawned Worker.
-    #[test]
-    fn title_timeout_parses_env_with_15s_default() {
-        let _guard = TIMEOUT_ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
-
-        // Unset → default 15s.
-        unsafe {
-            std::env::remove_var("INKSTONE_TITLE_TIMEOUT_MS");
-        }
-        assert_eq!(title_timeout(), Duration::from_millis(15_000));
-
-        // A valid u64 → that many ms.
-        unsafe {
-            std::env::set_var("INKSTONE_TITLE_TIMEOUT_MS", "200");
-        }
-        assert_eq!(title_timeout(), Duration::from_millis(200));
-
-        // Garbage → default 15s (never panics, never a zero-length timeout).
-        unsafe {
-            std::env::set_var("INKSTONE_TITLE_TIMEOUT_MS", "not-a-number");
-        }
-        assert_eq!(title_timeout(), Duration::from_millis(15_000));
-
-        // Zero → default 15s. A 0ms timeout fires instantly, so every title
-        // attempt would be a silent no-op; reject it (CodeRabbit #208).
-        unsafe {
-            std::env::set_var("INKSTONE_TITLE_TIMEOUT_MS", "0");
-        }
-        assert_eq!(title_timeout(), Duration::from_millis(15_000));
-
-        unsafe {
-            std::env::remove_var("INKSTONE_TITLE_TIMEOUT_MS");
-        }
-    }
+    crate::config::get().title_timeout
 }

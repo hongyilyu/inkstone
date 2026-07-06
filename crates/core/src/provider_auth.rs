@@ -147,22 +147,23 @@ async fn refresh_via_helper(refresh_token: &str) -> Result<Credentials> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::credentials::{OPENAI_CODEX, env_lock};
+    use crate::credentials::{OPENAI_CODEX, test_credentials_dir};
 
     /// A static API-key credential resolves to its stored key directly — no
     /// refresh, no helper spawn (the helper command is unset; if the ApiKey arm
     /// touched it, this would error). The codex OAuth path stays untouched.
     #[test]
     fn api_key_resolves_to_stored_key_without_refresh() {
-        let _guard = env_lock();
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let dir = tmp.path().join("credentials");
-        // SAFETY: single-threaded test guarded by ENV_LOCK.
-        unsafe {
-            std::env::set_var("INKSTONE_CREDENTIALS_DIR", &dir);
-            // No provider-helper command: an accidental refresh would surface.
-            std::env::remove_var("INKSTONE_PROVIDER_HELPER_CMD");
-        }
+        let _creds = test_credentials_dir();
+        // The no-refresh tripwire: with no helper command override, an ApiKey
+        // arm that accidentally reached the refresh path would resolve the tsx
+        // default and fail at `Command::spawn` in `refresh_via_helper` (no
+        // CWD-relative tsx under crates/core). Assert (read-only, no mutation)
+        // that the ambient env doesn't defeat it.
+        assert!(
+            std::env::var_os("INKSTONE_PROVIDER_HELPER_CMD").is_none(),
+            "test requires no ambient INKSTONE_PROVIDER_HELPER_CMD"
+        );
 
         credentials::write(
             "openrouter",
@@ -178,23 +179,13 @@ mod tests {
             .block_on(resolve_access_token("openrouter", 0))
             .expect("resolve");
         assert_eq!(resolved.as_deref(), Some("sk-or-static"), "static key returned as-is");
-
-        unsafe {
-            std::env::remove_var("INKSTONE_CREDENTIALS_DIR");
-        }
     }
 
     /// A valid (non-expired) OAuth credential for codex resolves to its access
     /// token with no refresh — the existing OAuth fast path, behavior-identical.
     #[test]
     fn valid_oauth_resolves_to_access_token() {
-        let _guard = env_lock();
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let dir = tmp.path().join("credentials");
-        // SAFETY: single-threaded test guarded by ENV_LOCK.
-        unsafe {
-            std::env::set_var("INKSTONE_CREDENTIALS_DIR", &dir);
-        }
+        let _creds = test_credentials_dir();
 
         credentials::write(
             OPENAI_CODEX,
@@ -215,22 +206,12 @@ mod tests {
             .block_on(resolve_access_token(OPENAI_CODEX, 0))
             .expect("resolve");
         assert_eq!(resolved.as_deref(), Some("fresh_access"), "valid oauth access token");
-
-        unsafe {
-            std::env::remove_var("INKSTONE_CREDENTIALS_DIR");
-        }
     }
 
     /// An unconfigured provider (no stored credential) resolves to `None`.
     #[test]
     fn unconfigured_provider_resolves_to_none() {
-        let _guard = env_lock();
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let dir = tmp.path().join("credentials");
-        // SAFETY: single-threaded test guarded by ENV_LOCK.
-        unsafe {
-            std::env::set_var("INKSTONE_CREDENTIALS_DIR", &dir);
-        }
+        let _creds = test_credentials_dir();
 
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -240,9 +221,5 @@ mod tests {
             .block_on(resolve_access_token("openrouter", 0))
             .expect("resolve");
         assert_eq!(resolved, None, "no stored credential resolves to None");
-
-        unsafe {
-            std::env::remove_var("INKSTONE_CREDENTIALS_DIR");
-        }
     }
 }

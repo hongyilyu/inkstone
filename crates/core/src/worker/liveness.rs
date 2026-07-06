@@ -134,53 +134,16 @@ fn dead(message: String) -> ProviderTestResult {
     }
 }
 
-/// The collector timeout for the probe Worker (ADR-0062), read from
-/// `INKSTONE_PROVIDER_TEST_TIMEOUT_MS` via the shared [`oneshot::timeout_from_env`]
-/// (unset/unparseable/`0` → 15s).
+/// The collector timeout for the probe Worker (ADR-0062): the boot-resolved
+/// `INKSTONE_PROVIDER_TEST_TIMEOUT_MS` (unset/unparseable/`0` → 15s, parsed in
+/// [`crate::config::Config::from_lookup`]).
 fn probe_timeout() -> std::time::Duration {
-    oneshot::timeout_from_env("INKSTONE_PROVIDER_TEST_TIMEOUT_MS")
+    crate::config::get().provider_test_timeout
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
-
-    /// Serializes the `INKSTONE_PROVIDER_TEST_TIMEOUT_MS` env mutation across the
-    /// cases so they don't race (the process env is global).
-    static TIMEOUT_ENV_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    /// Unset or unparseable `INKSTONE_PROVIDER_TEST_TIMEOUT_MS` → the 15s
-    /// default; a valid `u64` → that many milliseconds; `0` → default (never a
-    /// zero-length timeout). Pins the env seam independent of any spawned Worker.
-    #[test]
-    fn probe_timeout_parses_env_with_15s_default() {
-        let _guard = TIMEOUT_ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
-
-        unsafe {
-            std::env::remove_var("INKSTONE_PROVIDER_TEST_TIMEOUT_MS");
-        }
-        assert_eq!(probe_timeout(), Duration::from_millis(15_000));
-
-        unsafe {
-            std::env::set_var("INKSTONE_PROVIDER_TEST_TIMEOUT_MS", "200");
-        }
-        assert_eq!(probe_timeout(), Duration::from_millis(200));
-
-        unsafe {
-            std::env::set_var("INKSTONE_PROVIDER_TEST_TIMEOUT_MS", "not-a-number");
-        }
-        assert_eq!(probe_timeout(), Duration::from_millis(15_000));
-
-        unsafe {
-            std::env::set_var("INKSTONE_PROVIDER_TEST_TIMEOUT_MS", "0");
-        }
-        assert_eq!(probe_timeout(), Duration::from_millis(15_000));
-
-        unsafe {
-            std::env::remove_var("INKSTONE_PROVIDER_TEST_TIMEOUT_MS");
-        }
-    }
 
     /// The alive/dead constructors match their wire contract: alive omits the
     /// message, dead carries it.
