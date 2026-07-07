@@ -3,13 +3,13 @@
 //! [`apply`] owns the whole transaction: idempotency precedence, the guarded
 //! apply/reject (lost race → [`DecideError::LostRace`]), and one trailing resume
 //! gate. The `resume` seam is a closure so this module takes no `worker`
-//! dependency (ADR-0026). Mutation dispatch stays behind [`crate::entities`].
+//! dependency (ADR-0026). Mutation dispatch stays behind the write contract
+//! ([`MutationKind::describe`]'s facets).
 
 use sqlx::SqlitePool;
 use uuid::Uuid;
 
 use crate::db::{self, RunStatus};
-use crate::entities;
 use crate::mutation::{self, MutationKind, ProposableMutation};
 use crate::protocol::NodeDecision;
 
@@ -289,7 +289,7 @@ async fn prior_outcome(
 }
 
 /// The fresh guarded transaction: render the Decision as the awaited tool's
-/// result, validate accept/edit (not reject) via [`crate::entities`], then one
+/// result, validate accept/edit (not reject) via the contract's facets, then one
 /// atomic [`db::apply_proposal`] / [`db::decide_proposal::reject`]. `NotPending` →
 /// `LostRace`; `InvalidMutation` → `Invalid`; `Sql` → `Internal`. Also where an
 /// `edit` without an `edited_payload` is rejected as `Invalid` (late, so the
@@ -425,7 +425,7 @@ async fn apply_or_reject(
         ))
     })?;
 
-    entities::validate(kind, applied_payload).map_err(DecideError::Invalid)?;
+    (kind.describe().validate)(applied_payload).map_err(DecideError::Invalid)?;
     validate_mutation_target(pool, proposal.run_id, kind, applied_payload).await?;
 
     match db::apply_proposal(
@@ -442,13 +442,7 @@ async fn apply_or_reject(
         &proposal.payload,
         edited_payload,
         kind.describe().write_op.source_relation(),
-        |entity_id| {
-            serde_json::json!({
-                "decision": "accept",
-                "content": entities::render_accept(kind, applied_payload, Some(entity_id)),
-            })
-            .to_string()
-        },
+        |entity_id| accept_content(kind, applied_payload, entity_id),
     )
     .await
     {
@@ -458,6 +452,23 @@ async fn apply_or_reject(
         }),
         Err(e) => Err(e.into()),
     }
+}
+
+/// The accepted tool call's result payload: the kind's accept text (the
+/// Decision prose the resumed model reads, ADR-0025) wrapped in the
+/// `{decision, content}` envelope. Shared by the single-entity and
+/// intent-graph accept paths; panics for a user-only kind (no proposal accept
+/// text), which can never legitimately reach an accept.
+fn accept_content(kind: MutationKind, payload: &serde_json::Value, entity_id: &str) -> String {
+    let render = kind
+        .describe()
+        .render_accept
+        .expect("user-only mutation has no proposal accept text");
+    serde_json::json!({
+        "decision": "accept",
+        "content": render(payload, Some(entity_id)),
+    })
+    .to_string()
 }
 
 async fn apply_record_observations(
@@ -531,7 +542,7 @@ async fn apply_intent_graph(
     // checked before the tx opens. The cross-node graph invariants (handle
     // references, duplicate handles, journal_ref-without-journal_entry) are the
     // resolver's pre-checks.
-    entities::validate(kind, &proposal.payload).map_err(DecideError::Invalid)?;
+    (kind.describe().validate)(&proposal.payload).map_err(DecideError::Invalid)?;
     // Run-independent target-ref check — a no-op for the graph (it has no single
     // target; link endpoints are validated inside the resolver against the
     // surviving node set, see the cascade below).
@@ -548,13 +559,7 @@ async fn apply_intent_graph(
         },
         &proposal.payload,
         decisions,
-        |entity_id| {
-            serde_json::json!({
-                "decision": "accept",
-                "content": entities::render_accept(kind, &proposal.payload, Some(entity_id)),
-            })
-            .to_string()
-        },
+        |entity_id| accept_content(kind, &proposal.payload, entity_id),
     )
     .await
     {

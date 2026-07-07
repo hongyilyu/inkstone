@@ -11,7 +11,7 @@ use uuid::Uuid;
 use super::ApplyError;
 use super::queries;
 use crate::mutation::{
-    EntityType, MutationKind, OBSERVATION_RELATIONS, ObservationRelation, WriteOp,
+    EntityType, MutationKind, OBSERVATION_RELATIONS, ObservationRelation, WriteClass, WriteOp,
 };
 
 /// An already-resolved Entity Source row to write for this mutation (ADR-0030,
@@ -55,63 +55,42 @@ pub(crate) struct EntityMutationSpec<'a> {
 }
 
 /// The entity `data` to store for a `kind`, given its effective payload. The
-/// per-kind extraction/normalization seam, now policy-driven: each Entity Type
+/// pre-write extraction/normalization seam, routed by the contract's
+/// `write_class` facet and policy-driven in its bodies: each Entity Type
 /// declares its `create_normalize` on the spec row; the shared update policy
 /// lives at [`crate::mutation::UPDATE_NORMALIZE`]. The `now_ms`/`offset_minutes`
 /// inputs anchor the Project review-date default.
 ///
-/// The in-tx kinds (`update_todo`/`mark_project_reviewed`/reference weave)
-/// compute their data inside the tx — they never reach this seam, so they fall
-/// to the store-as-is arm.
+/// The `InTx` kinds (`update_todo`/`mark_project_reviewed`/reference weave)
+/// compute their data inside the tx — they never reach this seam — and the
+/// `NoData` deletes touch no entity data; both store as-is here.
 /// ApplyIntentGraph never reaches this single-entity seam — decide
 /// short-circuits in slice 1, and slice 2's resolver loops
 /// `apply_entity_mutation` per node (each node carrying its OWN single-entity
-/// kind), never `apply_entity_mutation(ApplyIntentGraph)`. Store as-is to keep
-/// the match total.
+/// kind), never `apply_entity_mutation(ApplyIntentGraph)`.
 fn entity_data_payload(
     kind: MutationKind,
     payload: &serde_json::Value,
     now_ms: i64,
     offset_minutes: i64,
 ) -> serde_json::Value {
-    use MutationKind as M;
-    match kind {
-        // Full-replace update family: shared policy (strip entity_id +
-        // source_journal_entry_id, null-clear).
-        M::UpdateJournalEntry
-        | M::UpdatePerson
-        | M::UpdateProject
-        | M::UpdateMedia
-        | M::UpdateHabit => {
-            crate::mutation::UPDATE_NORMALIZE.apply(payload, now_ms, offset_minutes)
+    let desc = kind.describe();
+    match desc.write_class {
+        WriteClass::Normalized => {
+            if desc.write_op == WriteOp::Create {
+                // Create family: per-type policy on the spec row (extract →
+                // strip → null-drop → post).
+                desc.entity_type
+                    .spec()
+                    .create_normalize
+                    .apply(payload, now_ms, offset_minutes)
+            } else {
+                // Full-replace update family: shared policy (strip entity_id +
+                // source_journal_entry_id, null-clear).
+                crate::mutation::UPDATE_NORMALIZE.apply(payload, now_ms, offset_minutes)
+            }
         }
-        // Create family: per-type policy on the spec row (extract → strip →
-        // null-drop → post).
-        M::CreateJournalEntry
-        | M::CreatePerson
-        | M::CreateProject
-        | M::CreateTodo
-        | M::CreateMedia
-        | M::CreateHabit => {
-            kind.describe()
-                .entity_type
-                .spec()
-                .create_normalize
-                .apply(payload, now_ms, offset_minutes)
-        }
-        // The delete kinds touch no entity data, and the in-tx kinds
-        // (update_todo/mark_project_reviewed/reference weave) compute their data
-        // inside the tx — none reach this pre-write seam, so store as-is.
-        M::DeleteJournalEntry
-        | M::ReferenceExistingEntityFromJournalEntry
-        | M::DeletePerson
-        | M::DeleteProject
-        | M::MarkProjectReviewed
-        | M::DeleteTodo
-        | M::UpdateTodo
-        | M::DeleteMedia
-        | M::DeleteHabit
-        | M::ApplyIntentGraph => payload.clone(),
+        WriteClass::NoData | WriteClass::InTx => payload.clone(),
     }
 }
 
@@ -251,7 +230,7 @@ async fn apply_update_todo(
         .unwrap_or("active")
         .to_string();
 
-    if let Some(partial) = payload.get("todo").and_then(|t| t.as_object()) {
+    if let Some(partial) = crate::entities::todo_envelope(payload).and_then(|t| t.as_object()) {
         for (key, value) in partial {
             // Three-way overlay (ADR-0033): a `null` value clears the field
             // (remove the key); any other value sets it. Absent keys never reach
@@ -605,10 +584,11 @@ pub(crate) async fn apply_entity_mutation(
     // `apply_entity_mutation` is the SINGLE-ENTITY write core. The intent graph
     // (ADR-0042) is not a single-entity mutation: its slice-2 resolver loops THIS
     // function once per resolved node (each with its own single-entity kind), and
-    // is never called with `ApplyIntentGraph` itself. Reject it here so the two
-    // exhaustive `match kind` blocks below can stay over single-entity kinds and a
-    // graph that somehow reaches here fails loud rather than mis-applying. (Slice 1
-    // decide short-circuits before apply, so this is unreached today.)
+    // is never called with `ApplyIntentGraph` itself. Reject it here so the
+    // routing below (the `write_class` data seam and the in-tx write dispatch)
+    // stays over single-entity kinds and a graph that somehow reaches here fails
+    // loud rather than mis-applying. (Slice 1 decide short-circuits before
+    // apply, so this is unreached today.)
     if kind == MutationKind::ApplyIntentGraph {
         return Err(ApplyError::InvalidMutation(
             "apply_intent_graph is not a single-entity mutation".to_string(),
@@ -639,47 +619,23 @@ pub(crate) async fn apply_entity_mutation(
             .and_then(|v| v.parse::<i64>().ok())
             .unwrap_or(0);
     // Effective entity data: edited payload when present, else the proposed
-    // data, run through the per-kind extraction seam. Delete kinds touch no
-    // entity data; `update_todo` MERGES against current DB state inside the tx,
-    // so it computes its data there, not here; the
-    // `reference_existing_entity_from_journal_entry` kind likewise rewrites the
-    // target Journal Entry body against current state inside the tx (it needs the
-    // freshly-minted entity_ref id), so it is computed there too.
-    let mut data_str = match kind {
-        // `update_todo` MERGES, `mark_project_reviewed` recomputes from current
-        // state, and the reference kind rewrites the target body against current
-        // state — all compute their data inside the tx below, not at this seam.
-        // Deletes touch no entity data. This is an exhaustive `match kind` (no
-        // wildcard) so a new Entity Type must DECLARE its data-seam routing here —
-        // it cannot silently default to the pre-write `entity_data_payload` path,
-        // which would be wrong for a new in-tx-computed kind. (The reference weave
-        // is a WriteOp::Update, so a `match write_op` could not express this.)
-        MutationKind::UpdateTodo
-        | MutationKind::MarkProjectReviewed
-        | MutationKind::ReferenceExistingEntityFromJournalEntry
-        | MutationKind::DeleteJournalEntry
-        | MutationKind::DeletePerson
-        | MutationKind::DeleteProject
-        | MutationKind::DeleteTodo
-        | MutationKind::DeleteMedia
-        | MutationKind::DeleteHabit => None,
-        MutationKind::CreateJournalEntry
-        | MutationKind::CreatePerson
-        | MutationKind::CreateProject
-        | MutationKind::CreateTodo
-        | MutationKind::CreateMedia
-        | MutationKind::CreateHabit
-        | MutationKind::UpdateJournalEntry
-        | MutationKind::UpdatePerson
-        | MutationKind::UpdateProject
-        | MutationKind::UpdateMedia
-        | MutationKind::UpdateHabit => Some(
+    // data, routed by the contract's `write_class` facet. `NoData` deletes touch
+    // no entity data; the `InTx` kinds compute their data inside the tx below,
+    // not at this seam — `update_todo` MERGES against current DB state,
+    // `mark_project_reviewed` recomputes from current state, and the
+    // `reference_existing_entity_from_journal_entry` kind rewrites the target
+    // Journal Entry body against current state (it needs the freshly-minted
+    // entity_ref id). A new Entity Type must DECLARE its `write_class` in
+    // `describe()` — it cannot silently default to the pre-write
+    // `entity_data_payload` path, which would be wrong for a new in-tx-computed
+    // kind. (The reference weave is a WriteOp::Update, so `write_op` alone could
+    // not express this.) ApplyIntentGraph's facet value is never read: the graph
+    // is rejected at the guard above (ADR-0042).
+    let mut data_str = match desc.write_class {
+        WriteClass::NoData | WriteClass::InTx => None,
+        WriteClass::Normalized => Some(
             entity_data_payload(kind, effective_payload, now_ms, review_anchor_offset).to_string(),
         ),
-        // Rejected at the guard above (the graph is not a single-entity mutation).
-        MutationKind::ApplyIntentGraph => {
-            unreachable!("apply_intent_graph is rejected before this seam")
-        }
     };
 
     if kind == MutationKind::UpdateJournalEntry {
@@ -760,12 +716,18 @@ pub(crate) async fn apply_entity_mutation(
         );
     }
 
+    // The in-tx write dispatch: the THREE kinds with irreducibly per-kind write
+    // bodies keep named arms (DeleteProject's cascade, UpdateTodo's merge,
+    // MarkProjectReviewed's recompute — the residual in-tx dispatch the write
+    // contract deliberately leaves here), ApplyIntentGraph keeps its
+    // unreachable-after-guard arm, and every other kind routes generically by
+    // the contract's `write_op`.
     match kind {
         // delete_project is the ONE non-FK cascade (ADR-0031): project_id lives in
         // the Todo JSON, not an FK column. In THIS tx, unset project_id on every
         // owning Todo (rewriting each Todo's data + a new revision) FIRST, then
         // delete the Project entity. Only project_id is removed — the Todo's
-        // title/note and its todo_person_refs are untouched. Handled ahead of the
+        // title/note and its todo_person_refs are untouched. Named ahead of the
         // generic delete arm so the plain delete does not also run for it.
         MutationKind::DeleteProject => {
             textualize_journal_refs_targeting_deleted_entity(tx, &entity_id, proposal_id, now_ms)
@@ -812,64 +774,6 @@ pub(crate) async fn apply_entity_mutation(
                 return Err(ApplyError::TargetMissing);
             }
         }
-        // Delete kinds (journal_entry, person, todo, media, habit): remove the entity
-        // of this `entity_type`. Its revisions/sources and a Person's or Todo's
-        // `todo_person_refs` rows cascade away via FK ON DELETE CASCADE — no
-        // explicit ref-delete SQL here.
-        MutationKind::DeleteJournalEntry
-        | MutationKind::DeletePerson
-        | MutationKind::DeleteTodo
-        | MutationKind::DeleteMedia
-        | MutationKind::DeleteHabit => {
-            // Surface a gone/wrong-type target as TargetMissing BEFORE the
-            // descriptor-block below — otherwise a future `OBSERVATION_RELATIONS`
-            // entry targeting another entity type could report `InvalidMutation`
-            // for a missing target that only appears in observation history,
-            // which would also force re-touching this guard per new descriptor.
-            // (Other delete kinds otherwise get TargetMissing from `delete_entity`'s
-            // rowcount below; this just moves that check earlier, behavior-preserving.)
-            if !queries::entity_is_type(&mut **tx, &entity_id, entity_type.as_str()).await? {
-                return Err(ApplyError::TargetMissing);
-            }
-            // Descriptor-driven delete-block (ADR-0053): deleting an Entity is
-            // blocked while any relation-bearing observation — current row OR
-            // historical revision — still references it. The blocking schemas are
-            // the `OBSERVATION_RELATIONS` whose `target` is this `entity_type`;
-            // today only habit.checkin→Habit exists, so only DeleteHabit is
-            // affected (every other delete kind gets an empty subset → skipped).
-            let relations: Vec<ObservationRelation> = OBSERVATION_RELATIONS
-                .iter()
-                .filter(|relation| relation.target == entity_type)
-                .copied()
-                .collect();
-            if !relations.is_empty()
-                && queries::entity_referenced_by_observation(&mut **tx, &entity_id, &relations)
-                    .await?
-            {
-                return Err(ApplyError::InvalidMutation(format!(
-                    "delete_{0} is blocked while observations reference the {0}",
-                    entity_type.as_str()
-                )));
-            }
-            if matches!(
-                kind,
-                MutationKind::DeletePerson | MutationKind::DeleteTodo
-            ) {
-                textualize_journal_refs_targeting_deleted_entity(
-                    tx,
-                    &entity_id,
-                    proposal_id,
-                    now_ms,
-                )
-                .await?;
-            }
-            let deleted =
-                queries::delete_entity(&mut **tx, &entity_id, entity_type.as_str()).await?;
-            if deleted != 1 {
-                // The delete target vanished under the parked Proposal (ADR-0033).
-                return Err(ApplyError::TargetMissing);
-            }
-        }
         // update_todo MERGES a Partial<TodoData> onto the current Todo, then
         // performs its ref ops, all in THIS tx (ADR-0031 atomicity). The merge
         // needs committed state, so it loads current data here rather than via
@@ -901,103 +805,168 @@ pub(crate) async fn apply_entity_mutation(
             )
             .await?;
         }
-        // Update kinds (journal_entry, person, project, media, habit): replace the
-        // target entity's data of this `entity_type` + append the next revision
-        // snapshot. The journal-entry body-ref check above is gated to journal
-        // kinds; person/project/media carry no body refs.
-        // `reference_existing_entity_from_journal_entry` also writes a new
-        // revision of the target Journal Entry (the body rewritten above to carry
-        // the new entity_ref placeholder), so it joins this update branch.
-        MutationKind::UpdateJournalEntry
-        | MutationKind::UpdatePerson
-        | MutationKind::UpdateProject
-        | MutationKind::UpdateMedia
-        | MutationKind::UpdateHabit
-        | MutationKind::ReferenceExistingEntityFromJournalEntry => {
-            let data_str = data_str
-                .as_deref()
-                .expect("non-delete mutations always carry entity data");
-            let updated = queries::update_entity(
-                &mut **tx,
-                &entity_id,
-                entity_type.as_str(),
-                schema_version,
-                data_str,
-                now_ms,
-            )
-            .await?;
-            if updated != 1 {
-                // The update target vanished under the parked Proposal (ADR-0033).
-                return Err(ApplyError::TargetMissing);
-            }
-            let next_seq = queries::next_entity_revision_seq(&mut **tx, &entity_id).await?;
-            queries::insert_entity_revision(
-                &mut **tx,
-                &entity_id,
-                next_seq,
-                data_str,
-                proposal_id,
-                now_ms,
-            )
-            .await?;
-        }
-        // Create kinds (journal_entry, person, project, todo, media, habit): insert
-        // the entity of this `entity_type` + its seq-1 revision. The query is
-        // already generic on `entity_type`.
-        MutationKind::CreateJournalEntry
-        | MutationKind::CreatePerson
-        | MutationKind::CreateProject
-        | MutationKind::CreateTodo
-        | MutationKind::CreateMedia
-        | MutationKind::CreateHabit => {
-            let data_str = data_str
-                .as_deref()
-                .expect("non-delete mutations always carry entity data");
-            if kind == MutationKind::CreateTodo
-                && let Some(todo) = effective_payload.get("todo")
-            {
-                // Re-check the new Todo's project link in THIS tx: a concurrent
-                // delete_project could otherwise persist a dangling project_id
-                // (ADR-0033). Auxiliary ref → InvalidMutation, not TargetMissing.
-                recheck_todo_project_link(tx, todo).await?;
-            }
-            queries::insert_entity(
-                &mut **tx,
-                &entity_id,
-                entity_type.as_str(),
-                schema_version,
-                data_str,
-                created_by,
-                proposal_id,
-                now_ms,
-            )
-            .await?;
-            queries::insert_entity_revision(
-                &mut **tx,
-                &entity_id,
-                1,
-                data_str,
-                proposal_id,
-                now_ms,
-            )
-            .await?;
-            if kind == MutationKind::CreateTodo {
-                // Persist the Todo's Person References (ADR-0031) in the SAME tx
-                // so the refs are atomic with the Todo entity. They live in
-                // `todo_person_refs`, NOT in the Todo JSON, so read them from the
-                // proposal envelope (`effective_payload`), not the stored data.
-                for (person_id, role) in deduped_person_refs(effective_payload) {
-                    queries::insert_todo_person_ref(
-                        &mut **tx, &entity_id, &person_id, role, now_ms,
-                    )
-                    .await?;
-                }
-            }
-        }
-        // Rejected at the guard above (the graph is not a single-entity mutation).
+        // Rejected at the guard above (the graph is not a single-entity
+        // mutation) — named BEFORE the generic write_op arms so its
+        // `write_op: Create` cannot route it onto the create path.
         MutationKind::ApplyIntentGraph => {
             unreachable!("apply_intent_graph is rejected before this seam")
         }
+        // Every remaining kind routes generically by the contract's `write_op`
+        // (an exhaustive inner match — a new WriteOp variant must declare its
+        // write body here; a new KIND is forced through `describe()`'s contract
+        // block instead of this dispatch). TRAP for a future `InTx` kind: an
+        // InTx kind reaching these generic Update/Create arms must have
+        // computed its `data_str` BEFORE this match — the reference weave does,
+        // in its pre-match blocks above. A new InTx kind without that hits the
+        // "carry entity data" expect below; give it a named arm instead. (No
+        // blanket InTx guard here: the weave legitimately rides the generic
+        // update arm.)
+        _ => match desc.write_op {
+            // Generic delete (journal_entry, person, todo, media, habit): remove
+            // the entity of this `entity_type`. Its revisions/sources and a
+            // Person's or Todo's `todo_person_refs` rows cascade away via FK ON
+            // DELETE CASCADE — no explicit ref-delete SQL here. (delete_project
+            // took its named cascade arm above.)
+            WriteOp::Delete => {
+                // Surface a gone/wrong-type target as TargetMissing BEFORE the
+                // descriptor-block below — otherwise a future `OBSERVATION_RELATIONS`
+                // entry targeting another entity type could report `InvalidMutation`
+                // for a missing target that only appears in observation history,
+                // which would also force re-touching this guard per new descriptor.
+                // (Other delete kinds otherwise get TargetMissing from `delete_entity`'s
+                // rowcount below; this just moves that check earlier, behavior-preserving.)
+                if !queries::entity_is_type(&mut **tx, &entity_id, entity_type.as_str()).await? {
+                    return Err(ApplyError::TargetMissing);
+                }
+                // Descriptor-driven delete-block (ADR-0053): deleting an Entity is
+                // blocked while any relation-bearing observation — current row OR
+                // historical revision — still references it. The blocking schemas are
+                // the `OBSERVATION_RELATIONS` whose `target` is this `entity_type`;
+                // today only habit.checkin→Habit exists, so only DeleteHabit is
+                // affected (every other delete kind gets an empty subset → skipped).
+                let relations: Vec<ObservationRelation> = OBSERVATION_RELATIONS
+                    .iter()
+                    .filter(|relation| relation.target == entity_type)
+                    .copied()
+                    .collect();
+                if !relations.is_empty()
+                    && queries::entity_referenced_by_observation(&mut **tx, &entity_id, &relations)
+                        .await?
+                {
+                    return Err(ApplyError::InvalidMutation(format!(
+                        "delete_{0} is blocked while observations reference the {0}",
+                        entity_type.as_str()
+                    )));
+                }
+                // A deleted REFERENCEABLE Entity may be woven into Journal Entry
+                // bodies as entity_refs — textualize those to their label snapshots.
+                // Within this arm referenceable = exactly Person and Todo (Project
+                // takes the named cascade arm above; journal/media/habit types are
+                // not referenceable).
+                if desc.entity_type.is_referenceable() {
+                    textualize_journal_refs_targeting_deleted_entity(
+                        tx,
+                        &entity_id,
+                        proposal_id,
+                        now_ms,
+                    )
+                    .await?;
+                }
+                let deleted =
+                    queries::delete_entity(&mut **tx, &entity_id, entity_type.as_str()).await?;
+                if deleted != 1 {
+                    // The delete target vanished under the parked Proposal (ADR-0033).
+                    return Err(ApplyError::TargetMissing);
+                }
+            }
+            // Generic update (journal_entry, person, project, media, habit):
+            // replace the target entity's data of this `entity_type` + append
+            // the next revision snapshot. The journal-entry body-ref check above
+            // is gated to journal kinds; person/project/media carry no body
+            // refs. `reference_existing_entity_from_journal_entry` is a
+            // `WriteOp::Update` too, so it joins this branch (its data_str was
+            // rewritten above to carry the new entity_ref placeholder);
+            // update_todo and mark_project_reviewed took their named in-tx arms
+            // above.
+            WriteOp::Update => {
+                let data_str = data_str
+                    .as_deref()
+                    .expect("non-delete mutations always carry entity data");
+                let updated = queries::update_entity(
+                    &mut **tx,
+                    &entity_id,
+                    entity_type.as_str(),
+                    schema_version,
+                    data_str,
+                    now_ms,
+                )
+                .await?;
+                if updated != 1 {
+                    // The update target vanished under the parked Proposal (ADR-0033).
+                    return Err(ApplyError::TargetMissing);
+                }
+                let next_seq = queries::next_entity_revision_seq(&mut **tx, &entity_id).await?;
+                queries::insert_entity_revision(
+                    &mut **tx,
+                    &entity_id,
+                    next_seq,
+                    data_str,
+                    proposal_id,
+                    now_ms,
+                )
+                .await?;
+            }
+            // Generic create (journal_entry, person, project, todo, media,
+            // habit): insert the entity of this `entity_type` + its seq-1
+            // revision. The query is already generic on `entity_type`; the
+            // CreateTodo-only blocks inside are per-kind residuals (the
+            // envelope's refs live outside entity data).
+            WriteOp::Create => {
+                let data_str = data_str
+                    .as_deref()
+                    .expect("non-delete mutations always carry entity data");
+                if kind == MutationKind::CreateTodo
+                    && let Some(todo) = crate::entities::todo_envelope(effective_payload)
+                {
+                    // Re-check the new Todo's project link in THIS tx: a concurrent
+                    // delete_project could otherwise persist a dangling project_id
+                    // (ADR-0033). Auxiliary ref → InvalidMutation, not TargetMissing.
+                    recheck_todo_project_link(tx, todo).await?;
+                }
+                queries::insert_entity(
+                    &mut **tx,
+                    &entity_id,
+                    entity_type.as_str(),
+                    schema_version,
+                    data_str,
+                    created_by,
+                    proposal_id,
+                    now_ms,
+                )
+                .await?;
+                queries::insert_entity_revision(
+                    &mut **tx,
+                    &entity_id,
+                    1,
+                    data_str,
+                    proposal_id,
+                    now_ms,
+                )
+                .await?;
+                if kind == MutationKind::CreateTodo {
+                    // Persist the Todo's Person References (ADR-0031) in the SAME tx
+                    // so the refs are atomic with the Todo entity. They live in
+                    // `todo_person_refs`, NOT in the Todo JSON, so read them from the
+                    // proposal envelope (`effective_payload`), not the stored data.
+                    for (person_id, role) in deduped_person_refs(effective_payload) {
+                        queries::insert_todo_person_ref(
+                            &mut **tx, &entity_id, &person_id, role, now_ms,
+                        )
+                        .await?;
+                    }
+                }
+            }
+        },
     }
 
     // Write the already-resolved Entity Source row, if any. The run-coupled

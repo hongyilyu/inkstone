@@ -186,7 +186,9 @@ fn todo_create_defaults(
 /// `payload.todo` (the TodoData); `person_refs` persist separately in
 /// `todo_person_refs`, never in `entities.data`.
 fn todo_envelope_extract(payload: &Value) -> Option<Value> {
-    payload.get("todo").filter(|todo| todo.is_object()).cloned()
+    crate::entities::todo_envelope(payload)
+        .filter(|todo| todo.is_object())
+        .cloned()
 }
 
 /// Closed policy row for an Entity Type. This is the trait-like dispatch point
@@ -1197,6 +1199,66 @@ impl TargetKey {
     }
 }
 
+/// The shape of a kind's run-independent target-reference check — which
+/// referenced Entities `mutation_target::validate_mutation_target_refs` must
+/// resolve against tier 2 BEFORE apply (ADR-0030/0031/0033).
+///
+/// Design decision (a): the check rides the `Copy` contract as this DECLARATIVE
+/// facet, interpreted by one kind-generic driver in `crate::mutation_target`
+/// (whose async checkers stay private there) — NOT as a boxed-future fn pointer
+/// on the descriptor. Only ~6 shapes exist across all 21 kinds, and the checks
+/// need async + a DB pool: plain fn pointers cannot be async, and boxing a
+/// future would cost the descriptor its `Copy`. A kind with no run-independent
+/// reference declares [`TargetRefs::NoCheck`] explicitly, so a newly-added kind
+/// is a COMPILE ERROR in `describe()` until it states its target policy — it can
+/// never silently fall through to "no check".
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum TargetRefs {
+    /// Resolve the optional `source_journal_entry_id` anchor only (the
+    /// Person/Project creates).
+    SourceAnchor,
+    /// The Todo create: the source anchor FIRST, then its `todo.project_id` /
+    /// `person_refs` references — sequential, in that order.
+    SourceAnchorAndTodoCreateRefs,
+    /// `update_todo`'s envelope-aware walk: the `todo_id` primary target, the
+    /// set/add person refs, and a supplied `todo.project_id`.
+    TodoUpdateRefs,
+    /// An update/delete whose only reference is the primary target Entity id,
+    /// type-checked against the kind's own Entity Type.
+    GenericTarget,
+    /// The reference weave: its source Journal Entry (primary anchor) and its
+    /// referenceable target Entity.
+    ReferenceWeave,
+    /// NO run-independent target reference: direct creates with no auxiliary
+    /// refs, and `apply_intent_graph` (which owns its graph-level resolution in
+    /// the graph apply path).
+    NoCheck,
+}
+
+/// How `db::apply` routes a kind's entity `data` — the data-route facet of the
+/// write contract. Normalization itself stays policy-driven (the
+/// [`NormalizePolicy`] rows: each type's `create_normalize` on its spec row and
+/// the shared [`UPDATE_NORMALIZE`]); this facet only classifies WHICH route the
+/// apply seam takes, so `db::apply` reads the contract instead of matching
+/// kinds. A new kind is a COMPILE ERROR in `describe()` until it declares its
+/// route — it can never silently default onto the pre-write normalize path,
+/// which would be wrong for a new in-tx-computed kind.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum WriteClass {
+    /// The kind touches no entity data (the deletes).
+    NoData,
+    /// The stored data is the effective payload run through the pre-write
+    /// normalize policy — the type's `create_normalize` for a create, the
+    /// shared [`UPDATE_NORMALIZE`] for a full-replace update; `db::apply`
+    /// derives the choice from the contract's `write_op`.
+    Normalized,
+    /// The kind computes its data INSIDE the apply tx against current DB state:
+    /// `update_todo`'s three-way merge (ADR-0033), `mark_project_reviewed`'s
+    /// review recompute (ADR-0034), and the reference weave's body rewrite
+    /// (which needs the freshly-minted entity_ref id).
+    InTx,
+}
+
 /// The path-independent classification + policy of a `mutation_kind` — the facets
 /// both write paths (agent `decide`, user `mutate`) share. Resolved once via
 /// [`MutationKind::describe`]; `Copy` so it threads cheaply.
@@ -1211,6 +1273,32 @@ pub(crate) struct Descriptor {
     /// Which payload key holds the target id, or `None` for a create (which
     /// mints a fresh id and targets nothing).
     pub(crate) target_key: Option<TargetKey>,
+    /// Pre-write payload validation for this kind (ADR-0016): the schema walk
+    /// plus any cross-field invariant hook. `Err(reason)` surfaces as the
+    /// `invalid_params` message on `proposal/decide` / `entity/mutate`.
+    /// Design decision (b): the per-kind validator BODIES stay in
+    /// `crate::entities`, grouped per Entity Type; the contract references them
+    /// here by fn pointer — fn pointers are `Copy`, so the descriptor stays
+    /// `Copy` and the contract table stays scannable while bodies keep their
+    /// locality.
+    pub(crate) validate: fn(&Value) -> Result<(), String>,
+    /// Renders the human-readable Decision text the model reads on resume as
+    /// the awaited tool's result (ADR-0025 — byte-for-byte sacred). `None` for
+    /// the 7 user-only kinds (media, habits, `mark_project_reviewed`), which
+    /// never reach the proposal accept path — the accept driver `expect`s, so
+    /// a user-only kind arriving there stays a loud bug (the legacy router's
+    /// `unreachable!` arm). Bodies live in `crate::entities` per design
+    /// decision (b) above; `entity_id` is the freshly minted id on creates
+    /// (and the graph anchor), `None` on updates/deletes.
+    pub(crate) render_accept: Option<fn(&Value, Option<&str>) -> String>,
+    /// The shape of this kind's run-independent target-reference check —
+    /// interpreted by `crate::mutation_target`'s kind-generic driver (design
+    /// decision (a) — see [`TargetRefs`]).
+    pub(crate) target_refs: TargetRefs,
+    /// How `db::apply` routes this kind's entity data (see [`WriteClass`]).
+    /// The normalize BODIES stay on the [`NormalizePolicy`] rows; this facet
+    /// is only the route classification.
+    pub(crate) write_class: WriteClass,
 }
 
 /// Every Entity-like Workspace mutation kind (ADR-0016, ADR-0025, ADR-0036,
@@ -1295,56 +1383,218 @@ impl MutationKind {
             .expect("every MutationKind is in the WIRE table")
     }
 
-    /// The single home of the path-independent taxonomy: one row per kind. A new
-    /// Entity Type adds one arm here and the compiler flags every consumer.
+    /// The single home of the path-independent taxonomy: one contract block per
+    /// kind. A new Entity Type adds its per-kind blocks here and the compiler
+    /// flags every consumer. Behavior facets (`validate`) are fn pointers into
+    /// `crate::entities`, where the per-kind bodies live grouped per Entity Type
+    /// (design decision (b) — see [`Descriptor::validate`]).
     pub(crate) fn describe(self) -> Descriptor {
+        use crate::entities as e;
         use EntityType as E;
         use MutationKind as M;
         use TargetKey as K;
+        use TargetRefs as T;
+        use WriteClass as C;
         use WriteOp as W;
         match self {
-            // ── Regular creates ──
-            M::CreateJournalEntry
-            | M::CreatePerson
-            | M::CreateProject
-            | M::CreateTodo
-            | M::CreateMedia
-            | M::CreateHabit => regular(W::Create, self.regular_entity_type(), None),
-            // ── Regular updates (target = entity_id) ──
-            M::UpdateJournalEntry
-            | M::UpdatePerson
-            | M::UpdateProject
-            | M::UpdateMedia
-            | M::UpdateHabit => regular(W::Update, self.regular_entity_type(), Some(K::EntityId)),
-            // ── Regular deletes (target = entity_id) ──
-            M::DeleteJournalEntry
-            | M::DeletePerson
-            | M::DeleteProject
-            | M::DeleteTodo
-            | M::DeleteMedia
-            | M::DeleteHabit => regular(W::Delete, self.regular_entity_type(), Some(K::EntityId)),
+            // ── Journal Entry ──
+            M::CreateJournalEntry => Descriptor {
+                write_op: W::Create,
+                entity_type: E::JournalEntry,
+                target_key: None,
+                validate: e::validate_journal_entry,
+                render_accept: Some(e::render_accept_create_journal_entry),
+                target_refs: T::NoCheck,
+                write_class: C::Normalized,
+            },
+            M::UpdateJournalEntry => Descriptor {
+                write_op: W::Update,
+                entity_type: E::JournalEntry,
+                target_key: Some(K::EntityId),
+                validate: e::validate_update_journal_entry,
+                render_accept: Some(e::render_accept_update_journal_entry),
+                target_refs: T::GenericTarget,
+                write_class: C::Normalized,
+            },
+            M::DeleteJournalEntry => Descriptor {
+                write_op: W::Delete,
+                entity_type: E::JournalEntry,
+                target_key: Some(K::EntityId),
+                validate: e::validate_delete_journal_entry,
+                render_accept: Some(e::render_accept_delete_journal_entry),
+                target_refs: T::GenericTarget,
+                write_class: C::NoData,
+            },
+            // ── Person ──
+            M::CreatePerson => Descriptor {
+                write_op: W::Create,
+                entity_type: E::Person,
+                target_key: None,
+                validate: e::validate_create_person,
+                render_accept: Some(e::render_accept_create_person),
+                target_refs: T::SourceAnchor,
+                write_class: C::Normalized,
+            },
+            M::UpdatePerson => Descriptor {
+                write_op: W::Update,
+                entity_type: E::Person,
+                target_key: Some(K::EntityId),
+                validate: e::validate_update_person,
+                render_accept: Some(e::render_accept_update_person),
+                target_refs: T::GenericTarget,
+                write_class: C::Normalized,
+            },
+            M::DeletePerson => Descriptor {
+                write_op: W::Delete,
+                entity_type: E::Person,
+                target_key: Some(K::EntityId),
+                validate: e::validate_delete_person,
+                render_accept: Some(e::render_accept_delete_person),
+                target_refs: T::GenericTarget,
+                write_class: C::NoData,
+            },
+            // ── Project ──
+            M::CreateProject => Descriptor {
+                write_op: W::Create,
+                entity_type: E::Project,
+                target_key: None,
+                validate: e::validate_create_project,
+                render_accept: Some(e::render_accept_create_project),
+                target_refs: T::SourceAnchor,
+                write_class: C::Normalized,
+            },
+            M::UpdateProject => Descriptor {
+                write_op: W::Update,
+                entity_type: E::Project,
+                target_key: Some(K::EntityId),
+                validate: e::validate_update_project,
+                render_accept: Some(e::render_accept_update_project),
+                target_refs: T::GenericTarget,
+                write_class: C::Normalized,
+            },
+            M::DeleteProject => Descriptor {
+                write_op: W::Delete,
+                entity_type: E::Project,
+                target_key: Some(K::EntityId),
+                validate: e::validate_delete_project,
+                render_accept: Some(e::render_accept_delete_project),
+                target_refs: T::GenericTarget,
+                write_class: C::NoData,
+            },
+            // ── Todo ──
+            M::CreateTodo => Descriptor {
+                write_op: W::Create,
+                entity_type: E::Todo,
+                target_key: None,
+                validate: e::validate_todo,
+                render_accept: Some(e::render_accept_create_todo),
+                target_refs: T::SourceAnchorAndTodoCreateRefs,
+                write_class: C::Normalized,
+            },
+            M::DeleteTodo => Descriptor {
+                write_op: W::Delete,
+                entity_type: E::Todo,
+                target_key: Some(K::EntityId),
+                validate: e::validate_delete_todo,
+                render_accept: Some(e::render_accept_delete_todo),
+                target_refs: T::GenericTarget,
+                write_class: C::NoData,
+            },
+            // ── Media (user-only: no proposal accept text) ──
+            M::CreateMedia => Descriptor {
+                write_op: W::Create,
+                entity_type: E::Media,
+                target_key: None,
+                validate: e::validate_media,
+                render_accept: None,
+                target_refs: T::NoCheck,
+                write_class: C::Normalized,
+            },
+            M::UpdateMedia => Descriptor {
+                write_op: W::Update,
+                entity_type: E::Media,
+                target_key: Some(K::EntityId),
+                validate: e::validate_update_media,
+                render_accept: None,
+                target_refs: T::GenericTarget,
+                write_class: C::Normalized,
+            },
+            M::DeleteMedia => Descriptor {
+                write_op: W::Delete,
+                entity_type: E::Media,
+                target_key: Some(K::EntityId),
+                validate: e::validate_delete_media,
+                render_accept: None,
+                target_refs: T::GenericTarget,
+                write_class: C::NoData,
+            },
+            // ── Habit (user-only: no proposal accept text) ──
+            M::CreateHabit => Descriptor {
+                write_op: W::Create,
+                entity_type: E::Habit,
+                target_key: None,
+                validate: e::validate_habit,
+                render_accept: None,
+                target_refs: T::NoCheck,
+                write_class: C::Normalized,
+            },
+            M::UpdateHabit => Descriptor {
+                write_op: W::Update,
+                entity_type: E::Habit,
+                target_key: Some(K::EntityId),
+                validate: e::validate_update_habit,
+                render_accept: None,
+                target_refs: T::GenericTarget,
+                write_class: C::Normalized,
+            },
+            M::DeleteHabit => Descriptor {
+                write_op: W::Delete,
+                entity_type: E::Habit,
+                target_key: Some(K::EntityId),
+                validate: e::validate_delete_habit,
+                render_accept: None,
+                target_refs: T::GenericTarget,
+                write_class: C::NoData,
+            },
             // ── Irregular kinds (comment-held invariants) ──
             // The reference weave writes a new revision of the SOURCE Journal
             // Entry (its body gains the entity_ref), so it is an Update whose
-            // target key is `source_entity_id`.
+            // target key is `source_entity_id`. InTx: the stored body is
+            // rewritten against current state and needs the freshly-minted
+            // entity_ref id, so it is computed inside the apply tx.
             M::ReferenceExistingEntityFromJournalEntry => Descriptor {
                 write_op: W::Update,
                 entity_type: E::JournalEntry,
                 target_key: Some(K::SourceEntityId),
+                validate: e::validate_reference_existing_entity_from_journal_entry,
+                render_accept: Some(e::render_accept_reference_existing_entity_from_journal_entry),
+                target_refs: T::ReferenceWeave,
+                write_class: C::InTx,
             },
             // A read-modify-write of the Project's review fields (ADR-0034): an
-            // Update targeting `entity_id`.
+            // Update targeting `entity_id`, recomputed in-tx from current state.
+            // User-only: no proposal accept text.
             M::MarkProjectReviewed => Descriptor {
                 write_op: W::Update,
                 entity_type: E::Project,
                 target_key: Some(K::EntityId),
+                validate: e::validate_mark_project_reviewed,
+                render_accept: None,
+                target_refs: T::GenericTarget,
+                write_class: C::InTx,
             },
             // update_todo's target key is `todo_id` (its envelope wraps a
-            // Partial<TodoData> under `todo`), NOT `entity_id`.
+            // Partial<TodoData> under `todo`), NOT `entity_id`. InTx: the
+            // three-way merge reads the current Todo inside the apply tx
+            // (ADR-0033).
             M::UpdateTodo => Descriptor {
                 write_op: W::Update,
                 entity_type: E::Todo,
                 target_key: Some(K::TodoId),
+                validate: e::validate_update_todo,
+                render_accept: Some(e::render_accept_update_todo),
+                target_refs: T::TodoUpdateRefs,
+                write_class: C::InTx,
             },
             // A graph spans many entities, so it has NO single target id — like a
             // create, `target_key` is None. `entity_type` is the JE anchor; the
@@ -1352,46 +1602,21 @@ impl MutationKind {
             // slice-2 resolver (which loops `apply_entity_mutation` per node with
             // each node's own type). `write_op: Create` keeps the descriptor total
             // and matches the create-and-link-only nature of the kind (ADR-0042).
+            // NoCheck: the graph owns its graph-level resolution in the graph
+            // apply path, so it carries no run-independent target reference.
+            // write_class is never read — `apply_entity_mutation` rejects the
+            // graph at its guard before any routing (ADR-0042); NoData is the
+            // truthful placeholder (the guarded path stores no entity data).
             M::ApplyIntentGraph => Descriptor {
                 write_op: W::Create,
                 entity_type: E::JournalEntry,
                 target_key: None,
+                validate: e::validate_apply_intent_graph,
+                render_accept: Some(e::render_accept_apply_intent_graph),
+                target_refs: T::NoCheck,
+                write_class: C::NoData,
             },
         }
-    }
-
-    /// The Entity Type of a regular CRUD kind. Panics for the non-CRUD irregulars
-    /// (reference weave, mark_project_reviewed, intent graph) which have explicit
-    /// arms in `describe`.
-    fn regular_entity_type(self) -> EntityType {
-        use MutationKind as M;
-        match self {
-            M::CreateJournalEntry | M::UpdateJournalEntry | M::DeleteJournalEntry => {
-                EntityType::JournalEntry
-            }
-            M::CreatePerson | M::UpdatePerson | M::DeletePerson => EntityType::Person,
-            M::CreateProject | M::UpdateProject | M::DeleteProject => EntityType::Project,
-            M::CreateTodo | M::DeleteTodo => EntityType::Todo,
-            M::CreateMedia | M::UpdateMedia | M::DeleteMedia => EntityType::Media,
-            M::CreateHabit | M::UpdateHabit | M::DeleteHabit => EntityType::Habit,
-            M::ReferenceExistingEntityFromJournalEntry
-            | M::MarkProjectReviewed
-            | M::UpdateTodo
-            | M::ApplyIntentGraph => {
-                panic!("regular_entity_type called on irregular kind {:?}", self)
-            }
-        }
-    }
-}
-
-/// Helper for the mechanical rows in `describe`: a pure `(WriteOp, EntityType,
-/// TargetKey)` triple. Named explicitly (not a closure) so it reads alongside the
-/// irregular arms.
-fn regular(write_op: WriteOp, entity_type: EntityType, target_key: Option<TargetKey>) -> Descriptor {
-    Descriptor {
-        write_op,
-        entity_type,
-        target_key,
     }
 }
 
@@ -1814,6 +2039,132 @@ mod tests {
     }
 
     #[test]
+    fn target_refs_facet_covers_every_kind() {
+        use MutationKind as M;
+        use TargetRefs as T;
+        // Closed-set mapping: the contract's target-ref facet pins the exact
+        // 6-shape partition of all 21 kinds (in wire order), the shapes
+        // `validate_mutation_target_refs` drives. Person/Project creates
+        // resolve only the optional source Journal Entry anchor; a Todo create
+        // additionally resolves its project/person refs; update_todo has its own
+        // envelope-aware ref walk; every update/delete whose only reference is
+        // the primary target rides the generic check; the reference weave
+        // resolves both endpoints; and the kinds with NO run-independent target
+        // reference declare that explicitly (never a silent fall-through).
+        let expected: [(MutationKind, TargetRefs); 21] = [
+            (M::CreateJournalEntry, T::NoCheck),
+            (M::UpdateJournalEntry, T::GenericTarget),
+            (M::DeleteJournalEntry, T::GenericTarget),
+            (
+                M::ReferenceExistingEntityFromJournalEntry,
+                T::ReferenceWeave,
+            ),
+            (M::CreatePerson, T::SourceAnchor),
+            (M::UpdatePerson, T::GenericTarget),
+            (M::DeletePerson, T::GenericTarget),
+            (M::CreateProject, T::SourceAnchor),
+            (M::UpdateProject, T::GenericTarget),
+            (M::DeleteProject, T::GenericTarget),
+            (M::MarkProjectReviewed, T::GenericTarget),
+            (M::CreateTodo, T::SourceAnchorAndTodoCreateRefs),
+            (M::UpdateTodo, T::TodoUpdateRefs),
+            (M::DeleteTodo, T::GenericTarget),
+            (M::CreateMedia, T::NoCheck),
+            (M::UpdateMedia, T::GenericTarget),
+            (M::DeleteMedia, T::GenericTarget),
+            (M::CreateHabit, T::NoCheck),
+            (M::UpdateHabit, T::GenericTarget),
+            (M::DeleteHabit, T::GenericTarget),
+            (M::ApplyIntentGraph, T::NoCheck),
+        ];
+        assert_eq!(
+            expected.len(),
+            WIRE.len(),
+            "every MutationKind declares its target-ref shape"
+        );
+        // Wire-order zip: a duplicated kind in the table can't mask an omission.
+        for (i, ((kind, _), (_, wire_kind))) in expected.iter().zip(WIRE.iter()).enumerate() {
+            assert_eq!(*kind, *wire_kind, "row {i} must follow WIRE order");
+        }
+        for (kind, shape) in expected {
+            assert_eq!(
+                kind.describe().target_refs,
+                shape,
+                "{} declares its target-ref shape",
+                kind.as_wire()
+            );
+        }
+    }
+
+    #[test]
+    fn write_class_facet_covers_every_kind() {
+        use MutationKind as M;
+        use WriteClass as C;
+        // Closed-set mapping: the contract's write-class facet pins the exact
+        // 3-way partition of all 21 kinds (in wire order) that routes the
+        // `db::apply` data seam. Deletes carry no entity data; creates and the
+        // full-replace updates route through the pre-write normalize policies
+        // (`create_normalize` / `UPDATE_NORMALIZE`); and exactly the three
+        // read-modify-write kinds (`update_todo`, `mark_project_reviewed`, the
+        // reference weave) compute their data inside the apply tx.
+        // `apply_intent_graph`'s value is never read — `apply_entity_mutation`
+        // rejects the graph at its guard before any routing — but the contract
+        // still declares it so the partition stays total.
+        let expected: [(MutationKind, WriteClass); 21] = [
+            (M::CreateJournalEntry, C::Normalized),
+            (M::UpdateJournalEntry, C::Normalized),
+            (M::DeleteJournalEntry, C::NoData),
+            (M::ReferenceExistingEntityFromJournalEntry, C::InTx),
+            (M::CreatePerson, C::Normalized),
+            (M::UpdatePerson, C::Normalized),
+            (M::DeletePerson, C::NoData),
+            (M::CreateProject, C::Normalized),
+            (M::UpdateProject, C::Normalized),
+            (M::DeleteProject, C::NoData),
+            (M::MarkProjectReviewed, C::InTx),
+            (M::CreateTodo, C::Normalized),
+            (M::UpdateTodo, C::InTx),
+            (M::DeleteTodo, C::NoData),
+            (M::CreateMedia, C::Normalized),
+            (M::UpdateMedia, C::Normalized),
+            (M::DeleteMedia, C::NoData),
+            (M::CreateHabit, C::Normalized),
+            (M::UpdateHabit, C::Normalized),
+            (M::DeleteHabit, C::NoData),
+            (M::ApplyIntentGraph, C::NoData),
+        ];
+        assert_eq!(
+            expected.len(),
+            WIRE.len(),
+            "every MutationKind declares its write class"
+        );
+        // Wire-order zip: a duplicated kind in the table can't mask an omission.
+        for (i, ((kind, _), (_, wire_kind))) in expected.iter().zip(WIRE.iter()).enumerate() {
+            assert_eq!(*kind, *wire_kind, "row {i} must follow WIRE order");
+        }
+        for (kind, class) in expected {
+            let desc = kind.describe();
+            assert_eq!(
+                desc.write_class,
+                class,
+                "{} declares its write class",
+                kind.as_wire()
+            );
+            // The target-key invariant the apply entity-id minting relies on:
+            // every create (including apply_intent_graph, which mints its own
+            // anchor) targets nothing; every update/delete names its target key
+            // (update_todo via todo_id, the reference weave via source_entity_id,
+            // the rest via entity_id).
+            assert_eq!(
+                desc.target_key.is_none(),
+                desc.write_op == WriteOp::Create,
+                "{} pairs its write_op with the matching target_key presence",
+                kind.as_wire()
+            );
+        }
+    }
+
+    #[test]
     fn entity_type_round_trips_and_classifies_referenceable() {
         for et in EntityType::ALL {
             assert_eq!(EntityType::from_str(et.as_str()), Some(et));
@@ -1879,6 +2230,312 @@ mod tests {
         assert_eq!(
             EntityType::JournalEntry.spec().schema_version,
             JOURNAL_ENTRY_SCHEMA_VERSION
+        );
+    }
+
+    #[test]
+    fn descriptor_validate_facet_covers_every_entity_type() {
+        use serde_json::json;
+        // One kind per Entity Type: the contract's `validate` facet accepts a
+        // valid payload and rejects an invalid one with the exact error text
+        // (pinned — this is the `invalid_params` message clients read). The
+        // invalid payloads are chosen to exercise each kind's full validator
+        // body (spec walk AND, where one exists, the cross-field invariant
+        // hook) — no SQLite involved.
+        let cases: [(MutationKind, Value, Value, &str); 6] = [
+            (
+                MutationKind::CreateJournalEntry,
+                json!({
+                    "occurred_at": "2026-06-10T10:30:00",
+                    "body": [{ "type": "text", "text": "Talked to Alice." }]
+                }),
+                json!({ "body": [{ "type": "text", "text": "Talked to Alice." }] }),
+                "occurred_at is required",
+            ),
+            (
+                // The invalid case is a payload PROJECT would accept (`status`
+                // is a Project field, not a Person one), so a CreatePerson→
+                // CreateProject validator mis-wire fails here instead of
+                // passing both ways.
+                MutationKind::CreatePerson,
+                json!({ "name": "Alice" }),
+                json!({ "name": "Alice", "status": "active" }),
+                "unsupported person field \"status\"",
+            ),
+            (
+                // The invalid case fails the status↔timestamp invariant HOOK
+                // (not the spec walk), proving CreateProject's two-step body.
+                MutationKind::CreateProject,
+                json!({ "name": "Ship v1" }),
+                json!({ "name": "Ship v1", "status": "completed" }),
+                "completed project requires completed_at",
+            ),
+            (
+                // The invalid case fails inside the `todo` envelope's TodoData
+                // hook, proving the envelope unwrap survives on the facet.
+                MutationKind::CreateTodo,
+                json!({ "todo": { "title": "Email Alice" } }),
+                json!({ "todo": { "title": "" } }),
+                "title must not be empty",
+            ),
+            (
+                // The invalid case fails the state↔finish-data invariant HOOK.
+                MutationKind::CreateMedia,
+                json!({ "title": "Dune", "medium": "book", "state": "backlog" }),
+                json!({ "title": "Dune", "medium": "book", "state": "backlog", "rating": 5 }),
+                "rating is only valid when state is done or abandoned",
+            ),
+            (
+                MutationKind::CreateHabit,
+                json!({ "name": "Meditate", "cadence": { "interval": 1, "unit": "day" } }),
+                json!({ "name": "Meditate" }),
+                "cadence is required",
+            ),
+        ];
+        for (kind, valid, invalid, expected_err) in cases {
+            let validate = kind.describe().validate;
+            assert_eq!(
+                validate(&valid),
+                Ok(()),
+                "{} accepts a valid payload",
+                kind.as_wire()
+            );
+            assert_eq!(
+                validate(&invalid),
+                Err(expected_err.to_string()),
+                "{} rejects with the exact pinned error text",
+                kind.as_wire()
+            );
+        }
+    }
+
+    #[test]
+    fn descriptor_validate_facet_keeps_id_only_error_nouns_per_kind() {
+        use serde_json::json;
+        // The id-only kinds (deletes + mark_project_reviewed) share one spec
+        // shape but weave their own wire kind into the unsupported-field error —
+        // the per-kind facet fns must keep that text byte-identical to the old
+        // shared `validate_entity_id_only(kind, _)` dispatch.
+        let valid = json!({ "entity_id": "00000000-0000-4000-8000-000000000000" });
+        let invalid = json!({
+            "entity_id": "00000000-0000-4000-8000-000000000000",
+            "extra": 1
+        });
+        for kind in [
+            MutationKind::DeleteJournalEntry,
+            MutationKind::DeletePerson,
+            MutationKind::DeleteProject,
+            MutationKind::DeleteTodo,
+            MutationKind::DeleteMedia,
+            MutationKind::DeleteHabit,
+            MutationKind::MarkProjectReviewed,
+        ] {
+            let validate = kind.describe().validate;
+            assert_eq!(
+                validate(&valid),
+                Ok(()),
+                "{} accepts an id-only payload",
+                kind.as_wire()
+            );
+            assert_eq!(
+                validate(&invalid),
+                Err(format!("unsupported {} field \"extra\"", kind.as_wire())),
+                "{} keeps its wire noun in the error text",
+                kind.as_wire()
+            );
+        }
+    }
+
+    #[test]
+    fn descriptor_render_accept_facet_pins_exact_accept_text() {
+        use serde_json::json;
+        // Every renderable kind: the accept text is the Decision text the
+        // resumed model reads (ADR-0025) — pinned exactly, byte-for-byte.
+        // Covers all four delete nouns, so the per-kind delete wrappers cannot
+        // drift from the shared body. No SQLite involved.
+        let cases: [(MutationKind, Value, Option<&str>, &str); 14] = [
+            (
+                MutationKind::CreateJournalEntry,
+                json!({
+                    "occurred_at": "2026-06-10T10:30:00",
+                    "body": [{ "type": "text", "text": "Talked to Alice." }]
+                }),
+                Some("je-1"),
+                "Accepted. Created Journal Entry (entity_id=je-1, occurred_at=2026-06-10T10:30:00, body=Talked to Alice.).",
+            ),
+            (
+                MutationKind::UpdateJournalEntry,
+                json!({
+                    "occurred_at": "2026-06-10T10:30:00",
+                    "body": [{ "type": "text", "text": "Talked to Alice." }]
+                }),
+                None,
+                "Accepted. Updated Journal Entry (occurred_at=2026-06-10T10:30:00, body=Talked to Alice.).",
+            ),
+            (
+                MutationKind::DeleteJournalEntry,
+                json!({ "entity_id": "e-1" }),
+                None,
+                "Accepted. Deleted Journal Entry (entity_id=e-1).",
+            ),
+            (
+                // The reference weave renders both endpoint ids plus the woven
+                // body, entity_ref placeholders included.
+                MutationKind::ReferenceExistingEntityFromJournalEntry,
+                json!({
+                    "source_entity_id": "s-1",
+                    "target_entity_id": "t-1",
+                    "body": [
+                        { "type": "text", "text": "See " },
+                        { "type": "entity_ref", "ref_id": "t-1" }
+                    ]
+                }),
+                None,
+                "Accepted. Referenced Entity (source_entity_id=s-1, target_entity_id=t-1, body=See [entity_ref:t-1]).",
+            ),
+            (
+                MutationKind::CreatePerson,
+                json!({ "name": "Alice" }),
+                Some("p-1"),
+                "Accepted. Created Person (entity_id=p-1, name=Alice).",
+            ),
+            (
+                MutationKind::UpdatePerson,
+                json!({ "name": "Alice" }),
+                None,
+                "Accepted. Updated Person (name=Alice).",
+            ),
+            (
+                MutationKind::DeletePerson,
+                json!({ "entity_id": "e-2" }),
+                None,
+                "Accepted. Deleted Person (entity_id=e-2).",
+            ),
+            (
+                MutationKind::CreateProject,
+                json!({ "name": "Ship v1", "status": "active" }),
+                Some("pr-1"),
+                "Accepted. Created Project (entity_id=pr-1, name=Ship v1, status=active).",
+            ),
+            (
+                MutationKind::UpdateProject,
+                json!({ "name": "Ship v1", "status": "completed" }),
+                None,
+                "Accepted. Updated Project (name=Ship v1, status=completed).",
+            ),
+            (
+                MutationKind::DeleteProject,
+                json!({ "entity_id": "e-3" }),
+                None,
+                "Accepted. Deleted Project (entity_id=e-3).",
+            ),
+            (
+                // CreateTodo reads title/status through the `{todo}` envelope.
+                MutationKind::CreateTodo,
+                json!({ "todo": { "title": "Email Alice", "status": "active" } }),
+                Some("td-1"),
+                "Accepted. Created Todo (entity_id=td-1, title=Email Alice, status=active).",
+            ),
+            (
+                MutationKind::UpdateTodo,
+                json!({ "todo_id": "td-9", "todo": { "status": "done" } }),
+                None,
+                "Accepted. Updated Todo (todo_id=td-9).",
+            ),
+            (
+                MutationKind::DeleteTodo,
+                json!({ "entity_id": "e-4" }),
+                None,
+                "Accepted. Deleted Todo (entity_id=e-4).",
+            ),
+            (
+                // JE-less graph: no "with a Journal Entry" note; the count is the
+                // PROPOSED node count ("up to N" — some may have been declined).
+                MutationKind::ApplyIntentGraph,
+                json!({ "entities": [{}, {}] }),
+                Some("anchor-1"),
+                "Accepted. Applied intent graph (anchor entity_id=anchor-1, up to 2 entities; some may have been declined).",
+            ),
+        ];
+        for (kind, payload, entity_id, expected) in cases {
+            let render = kind
+                .describe()
+                .render_accept
+                .expect("renderable kind carries a render facet");
+            assert_eq!(
+                render(&payload, entity_id),
+                expected,
+                "{} renders the exact pinned accept text",
+                kind.as_wire()
+            );
+        }
+
+        // The with-Journal-Entry graph variant pins the `je_note` branch.
+        let render = MutationKind::ApplyIntentGraph
+            .describe()
+            .render_accept
+            .expect("apply_intent_graph carries a render facet");
+        assert_eq!(
+            render(
+                &json!({ "journal_entry": { "body": [] }, "entities": [{}] }),
+                Some("anchor-2"),
+            ),
+            "Accepted. Applied intent graph with a Journal Entry (anchor entity_id=anchor-2, up to 1 entities; some may have been declined).",
+            "apply_intent_graph notes the Journal Entry when one is proposed"
+        );
+    }
+
+    #[test]
+    fn descriptor_render_accept_facet_partitions_user_only_kinds() {
+        use MutationKind as M;
+        // The 7 user-only kinds never reach the proposal accept path (they
+        // arrive via `entity/mutate` only), so the contract carries no renderer
+        // — the accept driver's `expect` keeps "user-only kind on the accept
+        // path" a loud bug.
+        let user_only = [
+            M::CreateMedia,
+            M::UpdateMedia,
+            M::DeleteMedia,
+            M::CreateHabit,
+            M::UpdateHabit,
+            M::DeleteHabit,
+            M::MarkProjectReviewed,
+        ];
+        for kind in user_only {
+            assert!(
+                kind.describe().render_accept.is_none(),
+                "{} is user-only: no proposal accept text",
+                kind.as_wire()
+            );
+        }
+        // Every kind on the proposable accept path carries a renderer.
+        let renderable = [
+            M::CreateJournalEntry,
+            M::UpdateJournalEntry,
+            M::DeleteJournalEntry,
+            M::ReferenceExistingEntityFromJournalEntry,
+            M::CreatePerson,
+            M::UpdatePerson,
+            M::DeletePerson,
+            M::CreateProject,
+            M::UpdateProject,
+            M::DeleteProject,
+            M::CreateTodo,
+            M::UpdateTodo,
+            M::DeleteTodo,
+            M::ApplyIntentGraph,
+        ];
+        for kind in renderable {
+            assert!(
+                kind.describe().render_accept.is_some(),
+                "{} renders proposal accept text",
+                kind.as_wire()
+            );
+        }
+        assert_eq!(
+            user_only.len() + renderable.len(),
+            WIRE.len(),
+            "every kind must be in exactly one partition"
         );
     }
 

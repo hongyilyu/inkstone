@@ -12,7 +12,7 @@ use sqlx::SqlitePool;
 
 use crate::db;
 use crate::entities;
-use crate::mutation::{self, EntityType, MutationKind};
+use crate::mutation::{self, EntityType, MutationKind, TargetRefs};
 
 /// A run-independent target-validation failure.
 ///
@@ -34,57 +34,39 @@ pub(crate) enum TargetError {
     Internal(anyhow::Error),
 }
 
-/// Validate a mutation's referenced Entities (ADR-0030/0031/0033), dispatched on
-/// `mutation_kind`. Run-independent only — the same-thread Journal guard is the
-/// caller's (`decide`'s) responsibility. Checked BEFORE apply so a bad reference
-/// writes nothing.
+/// Validate a mutation's referenced Entities (ADR-0030/0031/0033), driven by the
+/// kind's declarative [`TargetRefs`] contract facet. Run-independent only — the
+/// same-thread Journal guard is the caller's (`decide`'s) responsibility. Checked
+/// BEFORE apply so a bad reference writes nothing.
 ///
-/// The dispatch is an EXHAUSTIVE `match` over the closed [`MutationKind`]: a kind
-/// that carries no run-independent reference declares an explicit `Ok(())` arm, so
-/// a newly-added Entity kind is a COMPILE ERROR here until it states its target
-/// policy — it can never silently fall through to "no check" (the trap the earlier
-/// trailing `Ok(())` fall-through left open).
+/// This is the kind-GENERIC interpreter over the contract (design decision (a) —
+/// see [`TargetRefs`]): the per-kind dispatch lives solely in
+/// [`MutationKind::describe`], whose exhaustive match forces a newly-added kind
+/// to declare its target policy at COMPILE time — it can never silently fall
+/// through to "no check". The async checkers below are this interpreter's
+/// private implementation.
 pub(crate) async fn validate_mutation_target_refs(
     pool: &SqlitePool,
     kind: MutationKind,
     payload: &serde_json::Value,
 ) -> Result<(), TargetError> {
-    match kind {
+    match kind.describe().target_refs {
         // Person/Project creates only resolve the optional source Journal Entry
-        // anchor. A Todo create additionally resolves its project/person refs.
-        MutationKind::CreatePerson | MutationKind::CreateProject => {
-            check_source_journal_entry(pool, payload).await
-        }
-        MutationKind::CreateTodo => {
+        // anchor. A Todo create additionally resolves its project/person refs —
+        // sequentially, anchor first.
+        TargetRefs::SourceAnchor => check_source_journal_entry(pool, payload).await,
+        TargetRefs::SourceAnchorAndTodoCreateRefs => {
             check_source_journal_entry(pool, payload).await?;
             check_create_todo_refs(pool, payload).await
         }
-        MutationKind::UpdateTodo => check_update_todo_refs(pool, payload).await,
+        TargetRefs::TodoUpdateRefs => check_update_todo_refs(pool, payload).await,
         // Every update/delete whose only reference is the primary target Entity id.
-        MutationKind::UpdateJournalEntry
-        | MutationKind::DeleteJournalEntry
-        | MutationKind::UpdatePerson
-        | MutationKind::DeletePerson
-        | MutationKind::UpdateProject
-        | MutationKind::DeleteProject
-        | MutationKind::MarkProjectReviewed
-        | MutationKind::DeleteTodo
-        | MutationKind::UpdateMedia
-        | MutationKind::DeleteMedia
-        | MutationKind::UpdateHabit
-        | MutationKind::DeleteHabit => check_generic_target(pool, kind, payload).await,
-        MutationKind::ReferenceExistingEntityFromJournalEntry => {
-            check_reference_existing_entity(pool, payload).await
-        }
-        // Kinds with NO run-independent target reference. Named explicitly (not a
-        // wildcard) so adding a kind forces a deliberate decision here rather than a
-        // silent skip: direct creates with no auxiliary refs have nothing to
-        // resolve, and apply_intent_graph owns its graph-level resolution in the
-        // graph apply path.
-        MutationKind::CreateJournalEntry
-        | MutationKind::CreateMedia
-        | MutationKind::CreateHabit
-        | MutationKind::ApplyIntentGraph => Ok(()),
+        TargetRefs::GenericTarget => check_generic_target(pool, kind, payload).await,
+        TargetRefs::ReferenceWeave => check_reference_existing_entity(pool, payload).await,
+        // Kinds with NO run-independent target reference: direct creates with no
+        // auxiliary refs have nothing to resolve, and apply_intent_graph owns its
+        // graph-level resolution in the graph apply path.
+        TargetRefs::NoCheck => Ok(()),
     }
 }
 
@@ -117,8 +99,7 @@ async fn check_create_todo_refs(
     pool: &SqlitePool,
     payload: &serde_json::Value,
 ) -> Result<(), TargetError> {
-    let project_id = payload
-        .get("todo")
+    let project_id = entities::todo_envelope(payload)
         .and_then(|todo| todo.get("project_id"))
         .and_then(serde_json::Value::as_str)
         .filter(|id| !id.is_empty());
@@ -214,8 +195,7 @@ async fn check_update_todo_refs(
         }
     }
 
-    let project_id = payload
-        .get("todo")
+    let project_id = entities::todo_envelope(payload)
         .and_then(|todo| todo.get("project_id"))
         .and_then(serde_json::Value::as_str)
         .filter(|id| !id.is_empty());

@@ -51,7 +51,7 @@ pub async fn apply(
     })?;
     let desc = kind.describe();
 
-    entities::validate(kind, payload).map_err(MutateError::Invalid)?;
+    (desc.validate)(payload).map_err(MutateError::Invalid)?;
 
     // A direct Library create is anchor-less by design (ADR-0033: "source row iff
     // a real source" — the user path has no Run, user Message, or Journal-Entry

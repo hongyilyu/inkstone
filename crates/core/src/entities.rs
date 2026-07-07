@@ -6,211 +6,216 @@
 //! The closed Entity-Type taxonomy ([`MutationKind`]/[`crate::mutation::ProposableMutation`]
 //! and the descriptor) lives in [`crate::mutation`]; this module is the per-kind
 //! *schema* layer — the validator bodies plus the accept-text rendering. Both
-//! `validate` and `render_accept` dispatch on the typed kind, so a new kind is a
-//! compile error here, not a runtime panic.
+//! are resolved per kind via the write contract ([`MutationKind::describe`]'s
+//! `validate` and `render_accept` facets, whose fn pointers name the bodies
+//! below), so a new kind is a compile error, not a runtime panic.
 
 use serde_json::Value;
 use uuid::Uuid;
 
 use crate::localtime::parse_local_datetime;
-use crate::mutation::{todo_data_spec, Mode, MutationKind};
+use crate::mutation::{todo_data_spec, EntityType, Mode, MutationKind};
 
-/// Validate a proposed mutation payload against its schema (ADR-0016),
-/// dispatched on the typed [`MutationKind`]. `Err(reason)` is surfaced as the
-/// `invalid_params` message on `proposal/decide` / `entity/mutate`. Total over
-/// the closed kind set — an unknown wire string is rejected at the edge by
+/// Validate a proposed mutation payload against its schema (ADR-0016) — the
+/// ergonomic `(kind, payload)` entry over the contract's `validate` facet, for
+/// callers that hold a kind; per-kind dispatch lives in the ONE exhaustive
+/// [`MutationKind::describe`] match, and the validator bodies stay below,
+/// grouped per Entity Type. `Err(reason)` is surfaced as the `invalid_params`
+/// message on `proposal/decide` / `entity/mutate`. Total over the closed kind
+/// set — an unknown wire string is rejected at the edge by
 /// [`MutationKind::from_wire`], so this never sees one.
 pub(crate) fn validate(kind: MutationKind, payload: &Value) -> Result<(), String> {
-    match kind {
-        MutationKind::CreateJournalEntry => validate_journal_entry(payload),
-        MutationKind::UpdateJournalEntry => validate_update_journal_entry(payload),
-        MutationKind::ReferenceExistingEntityFromJournalEntry => {
-            validate_reference_existing_entity_from_journal_entry(payload)
-        }
-        MutationKind::DeleteJournalEntry
-        | MutationKind::DeletePerson
-        | MutationKind::DeleteProject
-        | MutationKind::DeleteTodo
-        | MutationKind::DeleteMedia
-        | MutationKind::DeleteHabit
-        // A user-path-only review touch (ADR-0034): `{entity_id}` only — Core reads
-        // the Project and recomputes the review fields, so the client sends no data.
-        // Deliberately absent from the agent `propose_workspace_mutation` schema; it
-        // can only arrive via `entity/mutate`.
-        | MutationKind::MarkProjectReviewed => validate_entity_id_only(kind, payload),
-        // Create routes the FULL payload (entity data + the `source_journal_entry_id`
-        // provenance directive) through its single-source spec, so that field's
-        // shape is owned by `mutation.rs` like every other — no separate strip.
-        MutationKind::CreatePerson => MutationKind::CreatePerson.payload_spec().check(payload),
-        MutationKind::UpdatePerson => validate_update_person(payload),
-        MutationKind::CreateProject => {
-            MutationKind::CreateProject.payload_spec().check(payload)?;
-            project_status_timestamp_invariant(payload.as_object().expect("check accepted an object"))
-        }
-        MutationKind::UpdateProject => validate_update_project(payload),
-        MutationKind::CreateTodo => validate_todo(payload),
-        MutationKind::UpdateTodo => validate_update_todo(payload),
-        MutationKind::CreateMedia => validate_media(payload),
-        MutationKind::UpdateMedia => validate_update_media(payload),
-        MutationKind::CreateHabit => validate_habit(payload),
-        MutationKind::UpdateHabit => validate_update_habit(payload),
-        // The intent graph (ADR-0042) validates its STRUCTURE via the single-source
-        // spec (optional journal_entry, >= 1 typed entity nodes, the three link
-        // kinds). The cross-node graph invariants (handle references, duplicate
-        // handles, journal_ref-without-journal_entry) are the resolver's job (slice
-        // 2+); slice 1 short-circuits before apply, so structural acceptance is all
-        // the agent path needs here.
-        MutationKind::ApplyIntentGraph => MutationKind::ApplyIntentGraph.payload_spec().check(payload),
-    }
+    (kind.describe().validate)(payload)
 }
 
-/// Render the human-readable Decision text the model reads on resume as the
-/// awaited tool's result (ADR-0025). Only Entity-backed accept paths call this;
-/// non-Entity proposals such as `record_observations` render in their owning
-/// modules.
+/// Test-only adapter over the contract's `render_accept` facet for callers
+/// holding a `(kind, payload)` pair — kept solely for the parity fixture
+/// emitter (`protocol/parity.rs`, itself `#[cfg(test)]`), which builds the
+/// Decision-prose samples through the real renderers. Production accept paths
+/// read the facet off [`MutationKind::describe`] directly; panics for
+/// user-only kinds (no proposal accept text).
+#[cfg(test)]
 pub(crate) fn render_accept(
     kind: MutationKind,
     payload: &Value,
     entity_id: Option<&str>,
 ) -> String {
-    use MutationKind as M;
-    match kind {
-        M::CreateJournalEntry => {
-            let entity_id = entity_id.expect("create accept rendering requires entity_id");
-            let occurred_at = payload
-                .get("occurred_at")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown");
-            let body = journal_body_text(payload);
-            format!(
-                "Accepted. Created Journal Entry (entity_id={entity_id}, occurred_at={occurred_at}, body={body})."
-            )
-        }
-        M::UpdateJournalEntry => {
-            let occurred_at = payload
-                .get("occurred_at")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown");
-            let body = journal_body_text(payload);
-            format!("Accepted. Updated Journal Entry (occurred_at={occurred_at}, body={body}).")
-        }
-        M::DeleteJournalEntry | M::DeletePerson | M::DeleteProject | M::DeleteTodo => {
-            let noun = kind.describe().entity_type.spec().noun;
-            let entity_id = payload
-                .get("entity_id")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown");
-            format!("Accepted. Deleted {noun} (entity_id={entity_id}).")
-        }
-        M::ReferenceExistingEntityFromJournalEntry => {
-            let source_entity_id = payload
-                .get("source_entity_id")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown");
-            let target_entity_id = payload
-                .get("target_entity_id")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown");
-            let body = journal_body_text(payload);
-            format!(
-                "Accepted. Referenced Entity (source_entity_id={source_entity_id}, target_entity_id={target_entity_id}, body={body})."
-            )
-        }
-        M::CreatePerson => {
-            let entity_id = entity_id.expect("create accept rendering requires entity_id");
-            let name = payload
-                .get("name")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown");
-            format!("Accepted. Created Person (entity_id={entity_id}, name={name}).")
-        }
-        M::UpdatePerson => {
-            let name = payload
-                .get("name")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown");
-            format!("Accepted. Updated Person (name={name}).")
-        }
-        M::CreateProject => {
-            let entity_id = entity_id.expect("create accept rendering requires entity_id");
-            let name = payload
-                .get("name")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown");
-            let status = payload
-                .get("status")
-                .and_then(Value::as_str)
-                .unwrap_or("active");
-            format!(
-                "Accepted. Created Project (entity_id={entity_id}, name={name}, status={status})."
-            )
-        }
-        M::UpdateProject => {
-            let name = payload
-                .get("name")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown");
-            let status = payload
-                .get("status")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown");
-            format!("Accepted. Updated Project (name={name}, status={status}).")
-        }
-        M::CreateTodo => {
-            let entity_id = entity_id.expect("create accept rendering requires entity_id");
-            let todo = payload.get("todo");
-            let title = todo
-                .and_then(|t| t.get("title"))
-                .and_then(Value::as_str)
-                .unwrap_or("unknown");
-            let status = todo
-                .and_then(|t| t.get("status"))
-                .and_then(Value::as_str)
-                .unwrap_or("active");
-            format!(
-                "Accepted. Created Todo (entity_id={entity_id}, title={title}, status={status})."
-            )
-        }
-        M::UpdateTodo => {
-            let todo_id = payload
-                .get("todo_id")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown");
-            format!("Accepted. Updated Todo (todo_id={todo_id}).")
-        }
-        // The graph applies many entities in one tx (ADR-0042); the model reads
-        // this on resume and re-reads the created entities via `entity/changed`.
-        // `entity_id` is the anchor (the Journal Entry node, or the first created
-        // entity for a JE-less direct-capture graph). render_accept sees only the
-        // PROPOSED payload, not the per-node decision vector, so the count is the
-        // proposed node count and is phrased "up to N" — the user may have rejected
-        // some; the model re-reads what actually landed via `entity/changed`.
-        M::ApplyIntentGraph => {
-            let anchor = entity_id.unwrap_or("unknown");
-            let proposed_count = payload
-                .get("entities")
-                .and_then(Value::as_array)
-                .map_or(0, Vec::len);
-            let has_journal_entry = payload
-                .get("journal_entry")
-                .is_some_and(|je| !je.is_null());
-            let je_note = if has_journal_entry {
-                " with a Journal Entry"
-            } else {
-                ""
-            };
-            format!(
-                "Accepted. Applied intent graph{je_note} (anchor entity_id={anchor}, up to {proposed_count} entities; some may have been declined)."
-            )
-        }
-        M::CreateMedia
-        | M::UpdateMedia
-        | M::DeleteMedia
-        | M::CreateHabit
-        | M::UpdateHabit
-        | M::DeleteHabit
-        | M::MarkProjectReviewed => unreachable!("user-only mutation has no proposal accept text"),
-    }
+    (kind.describe().render_accept).expect("user-only mutation has no proposal accept text")(
+        payload, entity_id,
+    )
+}
+
+// ── Accept-text renderers (ADR-0025) ──────────────────────────────────────
+// The human-readable Decision text the model reads on resume as the awaited
+// tool's result — byte-for-byte sacred. One fn per renderable kind, named by
+// the contract's `render_accept` facet ([`MutationKind::describe`]); the 7
+// user-only kinds (media, habits, `mark_project_reviewed`) carry no renderer
+// because they never reach the proposal accept path. Non-Entity proposals
+// such as `record_observations` render in their owning modules.
+
+pub(crate) fn render_accept_create_journal_entry(
+    payload: &Value,
+    entity_id: Option<&str>,
+) -> String {
+    let entity_id = entity_id.expect("create accept rendering requires entity_id");
+    let occurred_at = payload
+        .get("occurred_at")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let body = journal_body_text(payload);
+    format!(
+        "Accepted. Created Journal Entry (entity_id={entity_id}, occurred_at={occurred_at}, body={body})."
+    )
+}
+
+pub(crate) fn render_accept_update_journal_entry(
+    payload: &Value,
+    _entity_id: Option<&str>,
+) -> String {
+    let occurred_at = payload
+        .get("occurred_at")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let body = journal_body_text(payload);
+    format!("Accepted. Updated Journal Entry (occurred_at={occurred_at}, body={body}).")
+}
+
+/// Shared body for the four renderable deletes. The Entity Type threads
+/// through so the text keeps its per-kind noun; the contract's per-kind facet
+/// fns below are thin wrappers pinning the type (mirroring the id-only
+/// validators).
+fn render_accept_delete(entity_type: EntityType, payload: &Value) -> String {
+    let noun = entity_type.spec().noun;
+    let entity_id = payload
+        .get("entity_id")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    format!("Accepted. Deleted {noun} (entity_id={entity_id}).")
+}
+
+pub(crate) fn render_accept_delete_journal_entry(
+    payload: &Value,
+    _entity_id: Option<&str>,
+) -> String {
+    render_accept_delete(EntityType::JournalEntry, payload)
+}
+
+pub(crate) fn render_accept_delete_person(payload: &Value, _entity_id: Option<&str>) -> String {
+    render_accept_delete(EntityType::Person, payload)
+}
+
+pub(crate) fn render_accept_delete_project(payload: &Value, _entity_id: Option<&str>) -> String {
+    render_accept_delete(EntityType::Project, payload)
+}
+
+pub(crate) fn render_accept_delete_todo(payload: &Value, _entity_id: Option<&str>) -> String {
+    render_accept_delete(EntityType::Todo, payload)
+}
+
+pub(crate) fn render_accept_reference_existing_entity_from_journal_entry(
+    payload: &Value,
+    _entity_id: Option<&str>,
+) -> String {
+    let source_entity_id = payload
+        .get("source_entity_id")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let target_entity_id = payload
+        .get("target_entity_id")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let body = journal_body_text(payload);
+    format!(
+        "Accepted. Referenced Entity (source_entity_id={source_entity_id}, target_entity_id={target_entity_id}, body={body})."
+    )
+}
+
+pub(crate) fn render_accept_create_person(payload: &Value, entity_id: Option<&str>) -> String {
+    let entity_id = entity_id.expect("create accept rendering requires entity_id");
+    let name = payload
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    format!("Accepted. Created Person (entity_id={entity_id}, name={name}).")
+}
+
+pub(crate) fn render_accept_update_person(payload: &Value, _entity_id: Option<&str>) -> String {
+    let name = payload
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    format!("Accepted. Updated Person (name={name}).")
+}
+
+pub(crate) fn render_accept_create_project(payload: &Value, entity_id: Option<&str>) -> String {
+    let entity_id = entity_id.expect("create accept rendering requires entity_id");
+    let name = payload
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let status = payload
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("active");
+    format!("Accepted. Created Project (entity_id={entity_id}, name={name}, status={status}).")
+}
+
+pub(crate) fn render_accept_update_project(payload: &Value, _entity_id: Option<&str>) -> String {
+    let name = payload
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let status = payload
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    format!("Accepted. Updated Project (name={name}, status={status}).")
+}
+
+pub(crate) fn render_accept_create_todo(payload: &Value, entity_id: Option<&str>) -> String {
+    let entity_id = entity_id.expect("create accept rendering requires entity_id");
+    let todo = todo_envelope(payload);
+    let title = todo
+        .and_then(|t| t.get("title"))
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let status = todo
+        .and_then(|t| t.get("status"))
+        .and_then(Value::as_str)
+        .unwrap_or("active");
+    format!("Accepted. Created Todo (entity_id={entity_id}, title={title}, status={status}).")
+}
+
+pub(crate) fn render_accept_update_todo(payload: &Value, _entity_id: Option<&str>) -> String {
+    let todo_id = payload
+        .get("todo_id")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    format!("Accepted. Updated Todo (todo_id={todo_id}).")
+}
+
+// The graph applies many entities in one tx (ADR-0042); the model reads
+// this on resume and re-reads the created entities via `entity/changed`.
+// `entity_id` is the anchor (the Journal Entry node, or the first created
+// entity for a JE-less direct-capture graph). render_accept sees only the
+// PROPOSED payload, not the per-node decision vector, so the count is the
+// proposed node count and is phrased "up to N" — the user may have rejected
+// some; the model re-reads what actually landed via `entity/changed`.
+pub(crate) fn render_accept_apply_intent_graph(payload: &Value, entity_id: Option<&str>) -> String {
+    let anchor = entity_id.unwrap_or("unknown");
+    let proposed_count = payload
+        .get("entities")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+    let has_journal_entry = payload.get("journal_entry").is_some_and(|je| !je.is_null());
+    let je_note = if has_journal_entry {
+        " with a Journal Entry"
+    } else {
+        ""
+    };
+    format!(
+        "Accepted. Applied intent graph{je_note} (anchor entity_id={anchor}, up to {proposed_count} entities; some may have been declined)."
+    )
 }
 
 fn journal_body_text(payload: &Value) -> String {
@@ -255,7 +260,7 @@ enum BodyNodePolicy {
     TextOrNewEntityRef,
 }
 
-fn validate_journal_entry(payload: &Value) -> Result<(), String> {
+pub(crate) fn validate_journal_entry(payload: &Value) -> Result<(), String> {
     // Flat shell (occurred_at/ended_at presence + datetime parse, the body-union
     // schema) from the single source; the ended_at≥occurred_at + body-content
     // invariants are the hook.
@@ -380,7 +385,7 @@ fn required_body_node_string<'a>(
     }
 }
 
-fn validate_update_journal_entry(payload: &Value) -> Result<(), String> {
+pub(crate) fn validate_update_journal_entry(payload: &Value) -> Result<(), String> {
     // Flat shell (entity_id target + occurred_at/ended_at + body-union schema)
     // from the single source; the cross-field invariants are the hook. The body
     // policy admits an `entity_ref` carrying a `ref_id`.
@@ -390,7 +395,9 @@ fn validate_update_journal_entry(payload: &Value) -> Result<(), String> {
     validate_journal_body_and_times(payload, BodyNodePolicy::TextOrExistingEntityRef)
 }
 
-fn validate_reference_existing_entity_from_journal_entry(payload: &Value) -> Result<(), String> {
+pub(crate) fn validate_reference_existing_entity_from_journal_entry(
+    payload: &Value,
+) -> Result<(), String> {
     // Flat shell (source/target UUIDs, optional label_snapshot, body-union schema)
     // from the single source; the body content + exactly-one-entity_ref invariant
     // are the hook.
@@ -476,8 +483,42 @@ pub(crate) fn body_entity_ref_ids(payload: &Value) -> Vec<&str> {
 /// Validate an `{entity_id}`-only payload (the deletes + `mark_project_reviewed`)
 /// against the kind's id-only spec: a single required UUID `entity_id` and no
 /// other field. A delete carries no entity data, so the spec is the whole schema.
+/// The kind threads through so the error text keeps its per-kind wire noun; the
+/// contract's per-kind facet fns below are thin wrappers pinning the kind.
 fn validate_entity_id_only(kind: MutationKind, payload: &Value) -> Result<(), String> {
     kind.payload_spec().check(payload)
+}
+
+pub(crate) fn validate_delete_journal_entry(payload: &Value) -> Result<(), String> {
+    validate_entity_id_only(MutationKind::DeleteJournalEntry, payload)
+}
+
+pub(crate) fn validate_delete_person(payload: &Value) -> Result<(), String> {
+    validate_entity_id_only(MutationKind::DeletePerson, payload)
+}
+
+pub(crate) fn validate_delete_project(payload: &Value) -> Result<(), String> {
+    validate_entity_id_only(MutationKind::DeleteProject, payload)
+}
+
+pub(crate) fn validate_delete_todo(payload: &Value) -> Result<(), String> {
+    validate_entity_id_only(MutationKind::DeleteTodo, payload)
+}
+
+pub(crate) fn validate_delete_media(payload: &Value) -> Result<(), String> {
+    validate_entity_id_only(MutationKind::DeleteMedia, payload)
+}
+
+pub(crate) fn validate_delete_habit(payload: &Value) -> Result<(), String> {
+    validate_entity_id_only(MutationKind::DeleteHabit, payload)
+}
+
+/// A user-path-only review touch (ADR-0034): `{entity_id}` only — Core reads
+/// the Project and recomputes the review fields, so the client sends no data.
+/// Deliberately absent from the agent `propose_workspace_mutation` schema; it
+/// can only arrive via `entity/mutate`.
+pub(crate) fn validate_mark_project_reviewed(payload: &Value) -> Result<(), String> {
+    validate_entity_id_only(MutationKind::MarkProjectReviewed, payload)
 }
 
 #[cfg(test)]
@@ -491,11 +532,19 @@ fn validate_person(payload: &Value) -> Result<(), String> {
         .check(payload)
 }
 
+/// Validate a `create_person` payload. Create routes the FULL payload (entity
+/// data + the `source_journal_entry_id` provenance directive) through its
+/// single-source spec, so that field's shape is owned by `mutation.rs` like
+/// every other — no separate strip.
+pub(crate) fn validate_create_person(payload: &Value) -> Result<(), String> {
+    MutationKind::CreatePerson.payload_spec().check(payload)
+}
+
 /// Validate an `update_person` payload against the kind's full spec: the
 /// `entity_id` target prepended to the `PersonData` core (the single source).
 /// PersonData has no cross-field invariant, so the spec walk is the whole
 /// validator.
-fn validate_update_person(payload: &Value) -> Result<(), String> {
+pub(crate) fn validate_update_person(payload: &Value) -> Result<(), String> {
     MutationKind::UpdatePerson.payload_spec().check(payload)
 }
 
@@ -506,7 +555,7 @@ fn validate_update_person(payload: &Value) -> Result<(), String> {
 /// `media_state_finish_invariant` hook). Each optional field is CLEARABLE: a
 /// `null` value is the ADR-0033 sentinel-clear directive (accepted; the apply
 /// path drops null keys).
-fn validate_media(payload: &Value) -> Result<(), String> {
+pub(crate) fn validate_media(payload: &Value) -> Result<(), String> {
     MutationKind::CreateMedia.payload_data_spec().check(payload)?;
     media_state_finish_invariant(payload.as_object().expect("check accepted an object"))
 }
@@ -516,7 +565,7 @@ fn validate_media(payload: &Value) -> Result<(), String> {
 /// the finish-data invariant over the whole merged doc. Update is a full-document
 /// replace (like person/project), so the data is a complete MediaData
 /// (ADR-0059); the same cross-field rule applies.
-fn validate_update_media(payload: &Value) -> Result<(), String> {
+pub(crate) fn validate_update_media(payload: &Value) -> Result<(), String> {
     MutationKind::UpdateMedia.payload_spec().check(payload)?;
     media_state_finish_invariant(payload.as_object().expect("check accepted an object"))
 }
@@ -550,19 +599,27 @@ fn media_state_finish_invariant(obj: &serde_json::Map<String, Value>) -> Result<
 /// Validate a `HabitData` object: required `name`, required cadence
 /// `{interval, unit}`, optional clearable `target`/`note`, and optional status.
 /// Check-ins are Observations, so no time-series data belongs here.
-fn validate_habit(payload: &Value) -> Result<(), String> {
+pub(crate) fn validate_habit(payload: &Value) -> Result<(), String> {
     MutationKind::CreateHabit.payload_data_spec().check(payload)
 }
 
 /// Validate an `update_habit` full-document replace payload: `entity_id` plus a
 /// complete HabitData object.
-fn validate_update_habit(payload: &Value) -> Result<(), String> {
+pub(crate) fn validate_update_habit(payload: &Value) -> Result<(), String> {
     MutationKind::UpdateHabit.payload_spec().check(payload)
 }
 
 #[cfg(test)]
 fn validate_project(payload: &Value) -> Result<(), String> {
     validate_project_data(payload)
+}
+
+/// Validate a `create_project` payload: the FULL payload (data core + the
+/// `source_journal_entry_id` provenance directive) through the single-source
+/// spec, then the status↔timestamp invariant hook the flat walk cannot express.
+pub(crate) fn validate_create_project(payload: &Value) -> Result<(), String> {
+    MutationKind::CreateProject.payload_spec().check(payload)?;
+    project_status_timestamp_invariant(payload.as_object().expect("check accepted an object"))
 }
 
 /// Validate a complete Project `data` object against the Project schema (ADR-0031).
@@ -656,7 +713,7 @@ fn status_timestamp_invariant(
 /// then the status↔timestamp invariant — same hook order as create dispatch and
 /// [`validate_project_data`]. The spec tolerates an absent status, which is fine
 /// for an update (status optional on update).
-fn validate_update_project(payload: &Value) -> Result<(), String> {
+pub(crate) fn validate_update_project(payload: &Value) -> Result<(), String> {
     MutationKind::UpdateProject.payload_spec().check(payload)?;
     project_status_timestamp_invariant(payload.as_object().expect("check accepted an object"))
 }
@@ -777,22 +834,33 @@ fn validate_recurrence_end(value: &Value) -> Result<(), String> {
     Ok(())
 }
 
+/// The `todo` value of a `{todo, person_refs?}` envelope (ADR-0031) — the ONE
+/// owner of the where-does-`todo`-live shape question. Returns the RAW value —
+/// a present non-object is `Some(raw)`, NOT filtered to `None` — because the
+/// sites disagree on non-object/absent handling and each keeps its own
+/// semantics: the validators must see the raw value to emit the exact "todo
+/// must be a JSON object" text, the create normalization filters non-objects
+/// locally, the update overlay `as_object`s it away, and the
+/// renderer/ref-checkers read fields defensively (a `get` on a non-object is
+/// `None`). Absence semantics likewise stay per-site (`validate_todo` requires
+/// it; the overlay treats absence as a no-op).
+pub(crate) fn todo_envelope(payload: &Value) -> Option<&Value> {
+    payload.get("todo")
+}
+
 /// Validate a `create_todo` payload: an ENVELOPE `{todo: TodoData, person_refs?}`
 /// (ADR-0031). `todo` is required and validated as `TodoData`; `person_refs`, when
 /// present, must be an array of refs, each an object with a required non-empty
 /// `person_id` and an optional `role` ∈ {waiting_on, related} (a missing role
 /// defaults to `related` at apply-time). Any other top-level key is rejected.
 /// `person_id` existence (an Accepted Person) is checked at decide-time, not here.
-fn validate_todo(payload: &Value) -> Result<(), String> {
+pub(crate) fn validate_todo(payload: &Value) -> Result<(), String> {
     // Envelope shape (`{todo, person_refs?, source_journal_entry_id?}`) from the
     // single source — including the person_refs element shape, now spec-driven —
     // then the TodoData hook validates the `todo` value (its cross-field
     // invariants exceed a flat walk).
     MutationKind::CreateTodo.payload_spec().check(payload)?;
-    let obj = payload.as_object().expect("check accepted an object");
-    let todo = obj
-        .get("todo")
-        .ok_or_else(|| "todo is required".to_string())?;
+    let todo = todo_envelope(payload).ok_or_else(|| "todo is required".to_string())?;
     validate_todo_data(todo)
 }
 
@@ -850,13 +918,12 @@ fn todo_recurrence_invariant(obj: &serde_json::Map<String, Value>) -> Result<(),
 /// re-validates the MERGED whole via [`validate_todo_data`]. Optional
 /// `set_person_refs`/`add_person_refs` (each a ref array) and `remove_person_ids`
 /// (an array of non-empty strings). Any other top-level key is rejected.
-fn validate_update_todo(payload: &Value) -> Result<(), String> {
+pub(crate) fn validate_update_todo(payload: &Value) -> Result<(), String> {
     // Envelope shape (`todo_id`, set/add `person_refs`, `remove_person_ids`) from
     // the single source; the partial `todo` value's recurrence rule (a non-null
     // value validated in isolation) is the one cross-field bit the spec defers.
     MutationKind::UpdateTodo.payload_spec().check(payload)?;
-    let obj = payload.as_object().expect("check accepted an object");
-    if let Some(todo) = obj.get("todo") {
+    if let Some(todo) = todo_envelope(payload) {
         validate_partial_todo_data(todo)?;
     }
     Ok(())
@@ -887,6 +954,17 @@ fn validate_partial_todo_data(payload: &Value) -> Result<(), String> {
     }
 }
 
+/// Validate an `apply_intent_graph` payload. The intent graph (ADR-0042)
+/// validates its STRUCTURE via the single-source spec (optional journal_entry,
+/// >= 1 typed entity nodes, the three link kinds). The cross-node graph
+/// invariants (handle references, duplicate handles,
+/// journal_ref-without-journal_entry) are the resolver's job (slice 2+); slice 1
+/// short-circuits before apply, so structural acceptance is all the agent path
+/// needs here.
+pub(crate) fn validate_apply_intent_graph(payload: &Value) -> Result<(), String> {
+    MutationKind::ApplyIntentGraph.payload_spec().check(payload)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -901,7 +979,7 @@ mod tests {
     /// surfaces as the same "not supported" reason the old `_` arm returned.
     fn validate(kind: &str, payload: &Value) -> Result<(), String> {
         match MutationKind::from_wire(kind) {
-            Some(k) => super::validate(k, payload),
+            Some(k) => (k.describe().validate)(payload),
             None => Err(format!("mutation_kind {kind:?} not supported")),
         }
     }
@@ -1825,6 +1903,44 @@ mod tests {
                 "reason names the unsupported field {field}: {reason}"
             );
         }
+    }
+
+    #[test]
+    fn todo_envelope_exposes_the_raw_shape() {
+        // Present object → Some(&object): the common envelope.
+        let payload = json!({ "todo": { "title": "x" }, "person_refs": [] });
+        assert_eq!(todo_envelope(&payload), Some(&json!({ "title": "x" })));
+        // Absent → None: each site keeps its own absence semantics
+        // (validate_todo errors "todo is required"; the update overlay no-ops).
+        assert_eq!(todo_envelope(&json!({ "person_refs": [] })), None);
+        // Present NON-object → Some(raw), NOT filtered to None: the validators
+        // must see the raw value to emit the exact "todo must be a JSON object"
+        // text; the one filtering site (mutation.rs's todo_envelope_extract)
+        // filters locally.
+        assert_eq!(
+            todo_envelope(&json!({ "todo": "not-an-object" })),
+            Some(&json!("not-an-object"))
+        );
+    }
+
+    #[test]
+    fn non_object_todo_envelope_keeps_exact_validator_error_text() {
+        // Pins the error path [`todo_envelope`]'s doc cites for its RAW
+        // (non-filtering) semantics: the validators must SEE a non-object
+        // `todo` to emit this exact text. A future `.filter(is_object)` inside
+        // the accessor would silently change these outcomes — this test breaks
+        // first.
+        assert_eq!(
+            validate_todo(&json!({ "todo": "x" })),
+            Err("todo must be a JSON object".to_string())
+        );
+        assert_eq!(
+            validate_update_todo(&json!({
+                "todo_id": "00000000-0000-4000-8000-000000000000",
+                "todo": "x"
+            })),
+            Err("todo must be a JSON object".to_string())
+        );
     }
 
     #[test]
