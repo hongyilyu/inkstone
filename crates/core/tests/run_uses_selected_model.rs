@@ -97,9 +97,11 @@ fn assert_run_resolves(model: &str, expected_provider: &str) {
                     "runs.provider is DERIVED from the selected model"
                 );
                 if !text.is_empty() {
+                    // `attachments=0`: the capture worker also echoes the manifest's
+                    // attachment count (chat-image-attachments slice 3) — none here.
                     assert_eq!(
                         text,
-                        format!("model={model}|effort=high|provider={expected_provider}"),
+                        format!("model={model}|effort=high|provider={expected_provider}|attachments=0"),
                         "manifest carried the selected model + global effort + derived provider"
                     );
                     break;

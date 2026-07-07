@@ -3,9 +3,13 @@
 
 import { Schema as S } from "effect";
 
+/** `run/post_message` params: the target Thread + `prompt`, plus optional
+ * `attachment_ids` — ids from prior `media/upload` calls to link to the user
+ * Message (ADR-0058); omitted = no attachments. */
 export const PostMessageParams = S.Struct({
 	thread_id: S.String,
 	prompt: S.String,
+	attachment_ids: S.optional(S.Array(S.String)),
 });
 
 export type PostMessageParams = S.Schema.Type<typeof PostMessageParams>;

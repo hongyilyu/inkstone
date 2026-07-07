@@ -94,6 +94,15 @@ pub enum MessageSegment {
     /// created_at − this step's, or run.ended_at when last; None when unknown).
     /// Display-only — never replayed into the worker transcript (resume excludes it).
     Reasoning { text: String, duration_ms: Option<i64> },
+    /// An image/media reference on a user Message (ADR-0058 send path): read
+    /// from a `type='attachment'` `message_parts` row's `data` JSON sidecar.
+    /// `width`/`height` are pixel dimensions when the upload supplied them.
+    Attachment {
+        media_id: String,
+        mime: String,
+        width: Option<i64>,
+        height: Option<i64>,
+    },
 }
 
 /// One Message in a `thread/get` read. `segments` is the assistant turn's ordered
@@ -145,18 +154,17 @@ pub async fn get_thread_with_messages(
     for (id, role, status, run_id, terminal_reason) in rows {
         // The assistant turn replays its ORDERED segment timeline from `run_steps`
         // (text/tool_call/proposal interleaved in seq order, ADR-0045). A user
-        // Message has no run-step timeline of its own — it is a single text
-        // segment from its concatenated text parts. Both forms drop an empty text
-        // segment so a blank part never renders.
+        // Message has no run-step timeline of its own — one Text segment from its
+        // concatenated text parts (an empty concat yields NO text segment, so a
+        // blank part never renders), then one Attachment per `type='attachment'`
+        // part in seq order (ADR-0058 send path). A part whose `data` JSON is
+        // missing or malformed is skipped (best-effort read, mirroring
+        // `segment_rows_for_run`'s tolerant arg parsing) with a Diagnostic Log
+        // warning (ADR-0038) so the vanished image stays greppable.
         let segments = if role == "assistant" {
             segment_rows_for_run(pool, &run_id, &id).await?
         } else {
-            let text = queries::text_parts_by_message(pool, &id).await?.concat();
-            if text.is_empty() {
-                Vec::new()
-            } else {
-                vec![MessageSegment::Text { text }]
-            }
+            user_segments(&id, queries::parts_by_message(pool, &id).await?)
         };
         messages.push(MessageRow {
             id,
@@ -169,6 +177,64 @@ pub async fn get_thread_with_messages(
     }
 
     Ok(Some((title, messages)))
+}
+
+/// Assemble a USER Message's segments from its ordered `message_parts` rows
+/// (`(type, text, data)` tuples in `seq` order): one Text segment from the
+/// concatenated `type='text'` rows (an empty concat yields NO text segment —
+/// the pre-attachment behavior, preserved), then one Attachment per
+/// `type='attachment'` row, parsing its `data` JSON `{media_id, mime, width?,
+/// height?}` (the [`super::runs::AttachmentSeed`] shape the write side
+/// serialized). A missing/malformed `data` skips that segment (best-effort
+/// read, mirroring [`segment_rows_for_run`]'s tolerant arg parsing) but logs a
+/// `db.attachment_part_unparsable` Diagnostic Log warning (ADR-0038): a
+/// corrupted row makes an image vanish, and that must stay greppable.
+fn user_segments(
+    message_id: &str,
+    parts: Vec<(String, String, Option<String>)>,
+) -> Vec<MessageSegment> {
+    let text: String = parts
+        .iter()
+        .filter(|(part_type, ..)| part_type == "text")
+        .map(|(_, text, _)| text.as_str())
+        .collect();
+    let mut segments = Vec::new();
+    if !text.is_empty() {
+        segments.push(MessageSegment::Text { text });
+    }
+    for (part_type, _, data) in parts {
+        if part_type != "attachment" {
+            continue;
+        }
+        let seed = match data.as_deref() {
+            None => {
+                tracing::warn!(
+                    event = "db.attachment_part_unparsable",
+                    message_id,
+                    reason = "data column is NULL"
+                );
+                continue;
+            }
+            Some(raw) => match serde_json::from_str::<super::runs::AttachmentSeed>(raw) {
+                Ok(seed) => seed,
+                Err(e) => {
+                    tracing::warn!(
+                        event = "db.attachment_part_unparsable",
+                        message_id,
+                        error = ?e
+                    );
+                    continue;
+                }
+            },
+        };
+        segments.push(MessageSegment::Attachment {
+            media_id: seed.media_id,
+            mime: seed.mime,
+            width: seed.width,
+            height: seed.height,
+        });
+    }
+    segments
 }
 
 /// Assemble an assistant Run's ordered `segments[]` for `thread/get` rehydration
@@ -1715,6 +1781,99 @@ mod tests {
         }
     }
 
+    /// ADR-0058 + ADR-0038: an attachment part whose `data` sidecar is corrupt
+    /// (malformed JSON, valid-JSON-wrong-shape, or NULL) is SKIPPED — the user
+    /// Message still reads back with its text segment, no attachment segment, no
+    /// error — while a healthy sibling part still rehydrates. Pins the tolerant
+    /// branch of `user_segments` (the `db.attachment_part_unparsable` warn path);
+    /// the happy path is pinned end-to-end in tests/media_attachments.rs.
+    #[tokio::test]
+    async fn thread_get_skips_unparsable_attachment_part_data() {
+        let pool = memory_pool().await;
+        let thread_id = Uuid::now_v7();
+        let run_id = Uuid::now_v7();
+        let user_id = Uuid::now_v7();
+
+        // Seed Thread + Run + a completed USER Message (the branch under test
+        // reads message_parts directly — no run_steps timeline involved).
+        let mut tx = pool.begin().await.expect("begin");
+        queries::insert_thread(&mut *tx, thread_id, "T", 1)
+            .await
+            .expect("thread");
+        sqlx::query(
+            "INSERT INTO runs \
+             (id, thread_id, workflow_name, workflow_version, provider, model, \
+              thinking_level, user_message_id, status, started_at) \
+             VALUES (?, ?, 'w', '1', 'p', 'm', 'off', ?, 'completed', 1)",
+        )
+        .bind(run_id.to_string())
+        .bind(thread_id.to_string())
+        .bind(user_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .expect("run");
+        queries::insert_message(&mut *tx, user_id, thread_id, run_id, "user", "completed", 1)
+            .await
+            .expect("user message");
+        queries::insert_text_part(&mut *tx, user_id, 0, "hello")
+            .await
+            .expect("text part");
+        // seq 1: malformed JSON. seq 2: valid JSON but not the AttachmentSeed
+        // shape (media_id/mime missing). seq 3: NULL data (direct SQL — the
+        // inserter always binds a value, so forge the NULL by hand).
+        queries::insert_attachment_part(&mut *tx, user_id, 1, "{not json")
+            .await
+            .expect("garbage attachment part");
+        queries::insert_attachment_part(&mut *tx, user_id, 2, r#"{"unexpected":true}"#)
+            .await
+            .expect("wrong-shape attachment part");
+        sqlx::query(
+            "INSERT INTO message_parts (message_id, seq, type, text, data) \
+             VALUES (?1, 3, 'attachment', '', NULL)",
+        )
+        .bind(user_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .expect("null-data attachment part");
+        // seq 4: a HEALTHY part — it must survive the corrupt siblings.
+        queries::insert_attachment_part(
+            &mut *tx,
+            user_id,
+            4,
+            r#"{"media_id":"media-ok","mime":"image/png"}"#,
+        )
+        .await
+        .expect("healthy attachment part");
+        tx.commit().await.expect("commit seed");
+
+        let (_title, rows) = get_thread_with_messages(&pool, thread_id)
+            .await
+            .expect("read ok — corrupt data never fails the read")
+            .expect("thread exists");
+        let user = rows.iter().find(|m| m.role == "user").expect("user row");
+
+        // Text first, then ONLY the healthy attachment — the three corrupt
+        // parts (malformed / wrong-shape / NULL) each emit nothing.
+        match user.segments.as_slice() {
+            [
+                MessageSegment::Text { text },
+                MessageSegment::Attachment {
+                    media_id,
+                    mime,
+                    width,
+                    height,
+                },
+            ] => {
+                assert_eq!(text, "hello");
+                assert_eq!(media_id, "media-ok");
+                assert_eq!(mime, "image/png");
+                assert_eq!(*width, None);
+                assert_eq!(*height, None);
+            }
+            other => panic!("expected [text, healthy attachment], got {other:?}"),
+        }
+    }
+
     fn fixture_workflow() -> Workflow {
         Workflow {
             name: "w".to_string(),
@@ -1742,6 +1901,7 @@ mod tests {
             Uuid::now_v7(),
             &fixture_workflow(),
             "hello",
+            &[],
             "old",
             7,
         )

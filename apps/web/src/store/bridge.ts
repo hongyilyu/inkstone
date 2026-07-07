@@ -35,6 +35,7 @@ import {
 	markMessageIncomplete,
 	nextMessageId,
 	resetMessageForRetry,
+	type Segment,
 	seedAssistantMessage,
 	setHydrationStatus,
 	setPendingProposal,
@@ -128,17 +129,24 @@ export type NewThreadResult =
 	| { ok: true; threadId: string }
 	| { ok: false; error: unknown };
 
-/** Optimistically seed a turn into `threadId` (completed user + live assistant), returning the seeded assistant id. */
-function seedTurn(threadId: string, text: string): string {
+/** Optimistically seed a turn into `threadId` (completed user + live assistant), returning the seeded assistant id.
+ * `attachmentSegments` (ADR-0058) follow the text segment so the user bubble shows
+ * its images instantly — the media ids exist pre-send, so `/media/{id}` already resolves. */
+function seedTurn(
+	threadId: string,
+	text: string,
+	attachmentSegments: readonly Segment[] = [],
+): string {
 	// The user message is its single `text` segment (ADR-0045: segments is the sole
-	// source; there is no flat `text` field). The assistant opens with an empty
-	// timeline the live `text_delta`/`tool_call` builders then fill.
+	// source; there is no flat `text` field) plus any attachment segments. The
+	// assistant opens with an empty timeline the live `text_delta`/`tool_call`
+	// builders then fill.
 	appendUserMessage(threadId, {
 		id: nextMessageId(),
 		role: "user",
 		status: "completed",
 		run_id: "",
-		segments: [{ kind: "text", text }],
+		segments: [{ kind: "text", text }, ...attachmentSegments],
 	});
 	const assistantId = nextMessageId();
 	seedAssistantMessage(threadId, {
@@ -227,19 +235,119 @@ export function startRunStream(
 	fibers.set(runId, self);
 }
 
-/** Send a prompt into a focused thread: seed the turn, start the Run, fork its stream; a failed send returns `{ ok: false }`. */
+/** Read a File's bytes as RAW base64 — FileReader `readAsDataURL` with the
+ * `data:<mime>;base64,` prefix stripped. pi-ai providers (Anthropic/Google/
+ * Bedrock) corrupt on a data:-prefixed payload, so the wire carries raw base64 only. */
+function readAsBase64(file: File): Promise<string> {
+	return new Promise((resolve, reject) => {
+		const reader = new FileReader();
+		reader.onload = () => {
+			const dataUrl = reader.result as string;
+			resolve(dataUrl.slice(dataUrl.indexOf(",") + 1));
+		};
+		reader.onerror = () => reject(reader.error);
+		reader.readAsDataURL(file);
+	});
+}
+
+/** Best-effort pixel dimensions via `createImageBitmap` (decodes a Blob directly —
+ * no object-URL/Image() event juggling, and jsdom's Image never fires load/error
+ * so that route hangs under test). Resolves `undefined` when the environment
+ * can't decode (jsdom lacks createImageBitmap) or the bytes aren't a decodable
+ * image: dimensions are a nicety on the wire (Core never sniffs, ADR-0058),
+ * never an upload gate. */
+async function imageDimensions(
+	file: File,
+): Promise<{ width: number; height: number } | undefined> {
+	if (typeof createImageBitmap !== "function") {
+		return undefined;
+	}
+	try {
+		const bitmap = await createImageBitmap(file);
+		const dims = { width: bitmap.width, height: bitmap.height };
+		bitmap.close();
+		return dims;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * Upload `files` via `media/upload` (ADR-0058), returning the minted ids (for the
+ * send's `attachment_ids`) plus the matching attachment seed segments (for the
+ * optimistic user bubble) in file order. ANY single failure — a file read, the
+ * upload RPC — fails the whole batch with the squashed error and uploads nothing
+ * further: the caller short-circuits to `{ ok: false }` before seeding or posting.
+ */
+async function uploadFiles(
+	runtime: WsRuntime,
+	files: readonly File[],
+): Promise<
+	| { ok: true; ids: readonly string[]; segments: readonly Segment[] }
+	| { ok: false; error: unknown }
+> {
+	const ids: string[] = [];
+	const segments: Segment[] = [];
+	for (const file of files) {
+		let bytesBase64: string;
+		try {
+			bytesBase64 = await readAsBase64(file);
+		} catch (error) {
+			return { ok: false, error };
+		}
+		const dims = await imageDimensions(file);
+		const exit = await runtime.runPromiseExit(
+			Effect.gen(function* () {
+				const client = yield* WsClient;
+				return yield* client.mediaUpload(
+					bytesBase64,
+					file.type,
+					dims?.width,
+					dims?.height,
+				);
+			}),
+		);
+		if (Exit.isFailure(exit)) {
+			return { ok: false, error: Cause.squash(exit.cause) };
+		}
+		const mediaId = exit.value.media_id;
+		ids.push(mediaId);
+		segments.push({
+			kind: "attachment",
+			mediaId,
+			mime: file.type,
+			...(dims !== undefined ? { width: dims.width, height: dims.height } : {}),
+		});
+	}
+	return { ok: true, ids, segments };
+}
+
+/** Send a prompt into a focused thread: upload any `files` (ADR-0058), seed the
+ * turn, start the Run, fork its stream; a failed upload or send returns `{ ok: false }`. */
 export async function send(
 	runtime: WsRuntime,
 	threadId: string,
 	text: string,
+	files?: readonly File[],
 ): Promise<SendResult> {
+	// Upload attachments BEFORE the optimistic seed so a failed upload
+	// short-circuits with nothing seeded — no orphaned bubble to unwind.
+	const uploaded = await uploadFiles(runtime, files ?? []);
+	if (!uploaded.ok) {
+		return { ok: false, error: uploaded.error };
+	}
+
 	// Mark hydrated so the hydrate-on-focus effect does not re-hydrate a thread we're actively sending into (slice 13 guard).
 	setHydrationStatus(threadId, "ready");
-	const assistantId = seedTurn(threadId, text);
+	const assistantId = seedTurn(threadId, text, uploaded.segments);
 
 	const post = Effect.gen(function* () {
 		const client = yield* WsClient;
-		return yield* client.postMessage(threadId, text);
+		// Arity-split so a plain text send keeps its two-arg frame (the SDK also
+		// omits an empty list, but never even reaching the third param is clearer).
+		return yield* uploaded.ids.length
+			? client.postMessage(threadId, text, uploaded.ids)
+			: client.postMessage(threadId, text);
 	});
 
 	// Run via `runPromiseExit` + `Cause.squash` (mirrors useEntityMutation/
@@ -271,10 +379,20 @@ export async function send(
 export async function sendNewThread(
 	runtime: WsRuntime,
 	text: string,
+	files?: readonly File[],
 ): Promise<NewThreadResult> {
+	// Upload attachments BEFORE thread/create (ADR-0058): a failed upload
+	// short-circuits with no thread minted, mirroring {@link send}'s seed order.
+	const uploaded = await uploadFiles(runtime, files ?? []);
+	if (!uploaded.ok) {
+		return { ok: false, error: uploaded.error };
+	}
+
 	const create = Effect.gen(function* () {
 		const client = yield* WsClient;
-		return yield* client.threadCreate(text);
+		return yield* uploaded.ids.length
+			? client.threadCreate(text, uploaded.ids)
+			: client.threadCreate(text);
 	});
 
 	// `runPromiseExit` + `Cause.squash` so the failure carries the real `WsError`,
@@ -284,7 +402,7 @@ export async function sendNewThread(
 		const { thread_id, run_id } = exit.value;
 		// Mark hydrated so navigating onto a freshly-minted thread does NOT trigger a thread/get hydrate (slice 13 guard).
 		setHydrationStatus(thread_id, "ready");
-		const assistantId = seedTurn(thread_id, text);
+		const assistantId = seedTurn(thread_id, text, uploaded.segments);
 		attachRun(thread_id, assistantId, run_id);
 		startRunStream(runtime, thread_id, run_id);
 		return { ok: true, threadId: thread_id };

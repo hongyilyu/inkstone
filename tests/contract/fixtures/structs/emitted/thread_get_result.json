@@ -1,6 +1,25 @@
 {
   "messages": [
     {
+      "id": "0190d3c1-0000-7000-8000-000000000001",
+      "role": "user",
+      "run_id": "0190d3c1-0000-7000-8000-000000000003",
+      "segments": [
+        {
+          "kind": "text",
+          "text": "I bought milk."
+        },
+        {
+          "height": 480,
+          "kind": "attachment",
+          "media_id": "0190d3c1-0000-7000-8000-000000000002",
+          "mime": "image/png",
+          "width": 640
+        }
+      ],
+      "status": "complete"
+    },
+    {
       "id": "0190d3c1-0000-7000-8000-000000000002",
       "role": "assistant",
       "run_id": "0190d3c1-0000-7000-8000-000000000003",

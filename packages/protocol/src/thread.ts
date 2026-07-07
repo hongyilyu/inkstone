@@ -3,7 +3,13 @@
 
 import { Schema as S } from "effect";
 
-export const ThreadCreateParams = S.Struct({ prompt: S.String });
+/** `thread/create` params: the opening `prompt`, plus optional `attachment_ids`
+ * — ids from prior `media/upload` calls to link to the user Message (ADR-0058);
+ * omitted = no attachments. */
+export const ThreadCreateParams = S.Struct({
+	prompt: S.String,
+	attachment_ids: S.optional(S.Array(S.String)),
+});
 
 export type ThreadCreateParams = S.Schema.Type<typeof ThreadCreateParams>;
 
@@ -99,6 +105,16 @@ export const Segment = S.Union(
 		kind: S.Literal("reasoning"),
 		text: S.String,
 		duration_ms: S.optional(S.Number),
+	}),
+	// An image/media reference on a user Message (ADR-0058 consumer): the bytes are
+	// served at `GET /media/{media_id}`; `width`/`height` are pixel dimensions when
+	// known (omitted not null). Joins the ADR-0045 segment timeline as a fifth kind.
+	S.Struct({
+		kind: S.Literal("attachment"),
+		media_id: S.String,
+		mime: S.String,
+		width: S.optional(S.Number),
+		height: S.optional(S.Number),
 	}),
 );
 

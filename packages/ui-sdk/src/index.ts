@@ -5,6 +5,7 @@ import {
 	type EntityMutateParams,
 	EntityMutateResult,
 	JournalEntryRescanResult,
+	MediaUploadResult,
 	MessageSearchResult,
 	ModelCatalogResult,
 	type ObservationQueryParams,
@@ -234,19 +235,49 @@ export class WsClientConfig extends Context.Tag(
  * `WsClient` tag, never the table.
  */
 export const requestDescriptors = {
+	// thread/create + run/post_message (ADR-0058): optional `attachmentIds`
+	// (ids from prior mediaUpload calls) ride as `attachment_ids` ONLY when
+	// non-empty — an omitted/empty list serializes away, keeping the plain
+	// text-send frame byte-identical to before.
 	threadCreate: {
 		method: "thread/create",
-		toParams: (prompt: string) => ({ prompt }),
+		toParams: (prompt: string, attachmentIds?: readonly string[]) =>
+			attachmentIds?.length
+				? { prompt, attachment_ids: attachmentIds }
+				: { prompt },
 		result: ThreadCreateResult,
 	},
 	postMessage: {
 		method: "run/post_message",
-		toParams: (threadId: string, prompt: string) => ({
-			thread_id: threadId,
-			prompt,
-		}),
+		toParams: (
+			threadId: string,
+			prompt: string,
+			attachmentIds?: readonly string[],
+		) =>
+			attachmentIds?.length
+				? { thread_id: threadId, prompt, attachment_ids: attachmentIds }
+				: { thread_id: threadId, prompt },
 		result: PostMessageResult,
 		map: (r: PostMessageResult): RunId => r.run_id,
+	},
+	// media/upload (ADR-0058): store image bytes ahead of a send — the minted
+	// media_id then rides the send's `attachment_ids`. Bytes are RAW base64 (no
+	// data: URL prefix); width/height are optional pixel dims the CLIENT
+	// determined (Core never sniffs) and serialize away when unknown.
+	mediaUpload: {
+		method: "media/upload",
+		toParams: (
+			bytesBase64: string,
+			mime: string,
+			width?: number,
+			height?: number,
+		) => ({
+			bytes_base64: bytesBase64,
+			mime,
+			...(width !== undefined ? { width } : {}),
+			...(height !== undefined ? { height } : {}),
+		}),
+		result: MediaUploadResult,
 	},
 	threadList: {
 		method: "thread/list",

@@ -45,10 +45,29 @@ pub async fn history_for_run(
     Ok(history)
 }
 
+/// One resolved attachment on the user Message being persisted (ADR-0058 send
+/// path): the handler validated the media id via `db::get_media` and copied the
+/// row's `mime`/`width`/`height` here. `insert_initial_run_rows` serializes this
+/// struct verbatim into the attachment part's `data` JSON (optionals omitted,
+/// not null) and the read side (`threads::user_segments`) deserializes the same
+/// shape back — one struct, both directions.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct AttachmentSeed {
+    pub media_id: String,
+    pub mime: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub width: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub height: Option<i64>,
+}
+
 /// Persist a Run's initial rows in one deferred-FK transaction: the FK cycle
 /// between `runs.user_message_id` and `messages.run_id` resolves only at COMMIT.
 /// Inserts the assistant `messages` row (`streaming`) with NO text part yet —
 /// [`open_assistant_part`] opens the first one on the first delta (ADR-0045).
+/// `attachments` are the user Message's resolved media links (ADR-0058) —
+/// persisted in the SAME transaction, so a failure rolls everything back.
+#[allow(clippy::too_many_arguments)]
 pub async fn persist_initial_run(
     pool: &SqlitePool,
     run_id: Uuid,
@@ -57,6 +76,7 @@ pub async fn persist_initial_run(
     assistant_message_id: Uuid,
     workflow: &Workflow,
     prompt: &str,
+    attachments: &[AttachmentSeed],
     now_ms: i64,
 ) -> sqlx::Result<()> {
     let mut tx = pool.begin().await?;
@@ -69,6 +89,7 @@ pub async fn persist_initial_run(
         assistant_message_id,
         workflow,
         prompt,
+        attachments,
         now_ms,
     )
     .await?;
@@ -78,7 +99,8 @@ pub async fn persist_initial_run(
 
 /// Message-first thread creation (ADR-0022): mint a new Thread row then the
 /// same initial-run rows as [`persist_initial_run`], all in one transaction, so
-/// `thread/create` births the Thread and its first message atomically.
+/// `thread/create` births the Thread and its first message atomically —
+/// including the user Message's resolved `attachments` (ADR-0058).
 #[allow(clippy::too_many_arguments)]
 pub async fn persist_thread_with_first_run(
     pool: &SqlitePool,
@@ -88,6 +110,7 @@ pub async fn persist_thread_with_first_run(
     assistant_message_id: Uuid,
     workflow: &Workflow,
     prompt: &str,
+    attachments: &[AttachmentSeed],
     title: &str,
     now_ms: i64,
 ) -> sqlx::Result<()> {
@@ -103,6 +126,7 @@ pub async fn persist_thread_with_first_run(
         assistant_message_id,
         workflow,
         prompt,
+        attachments,
         now_ms,
     )
     .await?;
@@ -112,8 +136,10 @@ pub async fn persist_thread_with_first_run(
 
 /// Shared initial-run inserts inside the caller's open transaction (caller owns
 /// begin/commit): the Run row, user Message + `seq=0` text part + its message
-/// run step, the assistant Message (`streaming`, NO eager text part/step —
-/// ADR-0045), the `running` run-log row, and the Thread activity touch.
+/// run step, one attachment part + `media_attachments` link per resolved
+/// attachment at seq 1..N (ADR-0058 — same tx, so atomicity is free), the
+/// assistant Message (`streaming`, NO eager text part/step — ADR-0045), the
+/// `running` run-log row, and the Thread activity touch.
 #[allow(clippy::too_many_arguments)]
 async fn insert_initial_run_rows(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
@@ -123,6 +149,7 @@ async fn insert_initial_run_rows(
     assistant_message_id: Uuid,
     workflow: &Workflow,
     prompt: &str,
+    attachments: &[AttachmentSeed],
     now_ms: i64,
 ) -> sqlx::Result<()> {
     queries::insert_run(
@@ -150,6 +177,36 @@ async fn insert_initial_run_rows(
     )
     .await?;
     queries::insert_text_part(&mut **tx, user_message_id, 0, prompt).await?;
+
+    // The user Message's attachments (ADR-0058 send path), one per resolved id
+    // in request order: an attachment part at seq 1..N whose `data` JSON carries
+    // the seed (`{media_id, mime, width?, height?}`, nulls omitted — the read
+    // side deserializes the same struct), plus the durable `media_attachments`
+    // link row targeting the user Message. Same tx as everything else, so a
+    // failure rolls the whole initial run back.
+    for (i, seed) in attachments.iter().enumerate() {
+        let data_json =
+            serde_json::to_string(seed).expect("AttachmentSeed serializes to JSON");
+        queries::insert_attachment_part(
+            &mut **tx,
+            user_message_id,
+            (i + 1) as i64,
+            &data_json,
+        )
+        .await?;
+        queries::insert_media_attachment(
+            &mut **tx,
+            &Uuid::now_v7().to_string(),
+            &seed.media_id,
+            "message",
+            None,
+            Some(&user_message_id.to_string()),
+            None,
+            None,
+            now_ms,
+        )
+        .await?;
+    }
 
     queries::insert_message(
         &mut **tx,
@@ -451,14 +508,16 @@ pub async fn assistant_message_id_for_run(
     Ok(id.and_then(|s| Uuid::parse_str(&s).ok()))
 }
 
-/// A Run's original user prompt (its user Message's concatenated text) and
-/// `thread_id` (run-retry, ADR-0028 amendment, #230). `None` when the Run does
-/// not exist or its `thread_id` is unparseable. Retry re-drives this prompt as a
-/// fresh turn after re-resolving the Workflow from the Thread + prompt.
+/// A Run's original user prompt (its user Message's concatenated text),
+/// `thread_id`, and user Message id (run-retry, ADR-0028 amendment, #230).
+/// `None` when the Run does not exist or its `thread_id` is unparseable. Retry
+/// re-drives this prompt as a fresh turn after re-resolving the Workflow from
+/// the Thread + prompt; the user Message id keys the `media_attachments` read
+/// that replays the turn's images (chat-image-attachments).
 pub async fn run_prompt_and_thread(
     pool: &SqlitePool,
     run_id: Uuid,
-) -> sqlx::Result<Option<(String, Uuid)>> {
+) -> sqlx::Result<Option<(String, Uuid, String)>> {
     let Some(thread_id) = queries::thread_id_for_run(pool, run_id).await? else {
         return Ok(None);
     };
@@ -469,7 +528,7 @@ pub async fn run_prompt_and_thread(
     let prompt = queries::text_parts_by_message(pool, &user_message_id)
         .await?
         .concat();
-    Ok(Some((prompt, thread_uuid)))
+    Ok(Some((prompt, thread_uuid, user_message_id)))
 }
 
 /// One element of a Run's timeline for resume reconstruction (ADR-0025).

@@ -1,5 +1,8 @@
-import { ArrowUp, Paperclip, Search, Square } from "lucide-react";
+import { ArrowUp, Paperclip, Search, Square, X } from "lucide-react";
 import {
+	type ChangeEvent,
+	type ClipboardEvent,
+	type DragEvent,
 	type FormEvent,
 	type KeyboardEvent,
 	type MouseEvent,
@@ -17,7 +20,7 @@ export function ComposeFooter({
 	onStop,
 	disabled = false,
 }: {
-	onSend: (text: string) => void;
+	onSend: (text: string, files: File[]) => void;
 	/** A Run is streaming or parked → swap Send for a Stop control. */
 	isRunning?: boolean;
 	/** Cancel the active Run (ADR-0014); required when `isRunning`. */
@@ -30,7 +33,58 @@ export function ComposeFooter({
 	disabled?: boolean;
 }) {
 	const [value, setValue] = useState("");
+	// Pending image attachments (ADR-0058), paired with the object URL that backs
+	// each thumbnail so remove/send can revoke exactly the URLs it minted.
+	const [files, setFiles] = useState<{ file: File; url: string }[]>([]);
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
+	const fileInputRef = useRef<HTMLInputElement>(null);
+
+	// Unmounting with attachments still pending would leak their blob URLs —
+	// revoke whatever is left via a ref so the cleanup runs once, at unmount.
+	const filesRef = useRef(files);
+	filesRef.current = files;
+	useEffect(() => {
+		return () => {
+			for (const f of filesRef.current) URL.revokeObjectURL(f.url);
+		};
+	}, []);
+
+	const addFiles = (added: File[]) => {
+		const images = added.filter((f) => f.type.startsWith("image/"));
+		if (images.length === 0) return;
+		setFiles((prev) => [
+			...prev,
+			...images.map((file) => ({ file, url: URL.createObjectURL(file) })),
+		]);
+	};
+
+	const removeFile = (index: number) => {
+		setFiles((prev) => {
+			const removed = prev[index];
+			if (removed) URL.revokeObjectURL(removed.url);
+			return prev.filter((_, i) => i !== index);
+		});
+	};
+
+	const handlePick = (e: ChangeEvent<HTMLInputElement>) => {
+		addFiles(Array.from(e.target.files ?? []));
+		// Reset so re-picking the SAME file fires change again.
+		e.target.value = "";
+	};
+
+	const handlePaste = (e: ClipboardEvent<HTMLTextAreaElement>) => {
+		const images = Array.from(e.clipboardData.files).filter((f) =>
+			f.type.startsWith("image/"),
+		);
+		if (images.length === 0) return; // plain text paste stays native
+		e.preventDefault();
+		addFiles(images);
+	};
+
+	const handleDrop = (e: DragEvent<HTMLFormElement>) => {
+		e.preventDefault();
+		addFiles(Array.from(e.dataTransfer.files));
+	};
 
 	// Auto-grow the composer with its content so a multi-line or pasted message is
 	// fully visible instead of hidden in a single scrolling row. Reset to `auto`
@@ -53,9 +107,18 @@ export function ComposeFooter({
 		// No provider connected → Send is gated (covers both Enter via handleKey and
 		// the form submit); the textarea stays editable so a draft isn't lost.
 		if (disabled) return;
+		// Text stays required even with pending files — image-only sends are out
+		// of scope (kickoff decision).
 		const trimmed = value.trim();
 		if (!trimmed) return;
-		onSend(trimmed);
+		onSend(
+			trimmed,
+			files.map((f) => f.file),
+		);
+		// The sent bubble renders from /media/{id} (bridge upload), not these
+		// blobs — release them with the strip.
+		for (const f of files) URL.revokeObjectURL(f.url);
+		setFiles([]);
 		setValue("");
 	};
 
@@ -84,6 +147,8 @@ export function ComposeFooter({
 			<form
 				onSubmit={handleSubmit}
 				onClick={focusTextarea}
+				onDrop={handleDrop}
+				onDragOver={(e) => e.preventDefault()}
 				className="cursor-text rounded-2xl border border-border bg-card p-4"
 			>
 				<textarea
@@ -92,10 +157,32 @@ export function ComposeFooter({
 					value={value}
 					onChange={(e) => setValue(e.target.value)}
 					onKeyDown={handleKey}
+					onPaste={handlePaste}
 					rows={1}
 					placeholder="Type your message here…"
 					className="max-h-[200px] w-full resize-none overflow-y-auto bg-transparent text-base text-foreground outline-none placeholder:text-muted-foreground"
 				/>
+				{files.length > 0 && (
+					<div className="mt-3 flex flex-wrap gap-2">
+						{files.map((f, i) => (
+							<div key={f.url} className="relative">
+								<img
+									src={f.url}
+									alt={f.file.name}
+									className="h-16 w-16 rounded-xl border border-secondary/50 object-cover"
+								/>
+								<button
+									type="button"
+									aria-label={`Remove ${f.file.name}`}
+									onClick={() => removeFile(i)}
+									className="absolute -top-1.5 -right-1.5 inline-flex size-5 cursor-pointer items-center justify-center rounded-full border border-border bg-card text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+								>
+									<X className="size-3" aria-hidden />
+								</button>
+							</div>
+						))}
+					</div>
+				)}
 				<div className="mt-3 flex items-end justify-between gap-2">
 					<div className="flex flex-wrap items-center gap-2">
 						<ModelPicker />
@@ -113,13 +200,20 @@ export function ComposeFooter({
 						<Button
 							variant="chip"
 							size="pill"
-							disabled
-							aria-label="Attach (coming soon)"
-							title="Attachments aren't available yet"
+							aria-label="Attach"
+							onClick={() => fileInputRef.current?.click()}
 						>
 							<Paperclip className="h-4 w-4" aria-hidden />
 							<span>Attach</span>
 						</Button>
+						<input
+							ref={fileInputRef}
+							type="file"
+							accept="image/*"
+							multiple
+							onChange={handlePick}
+							className="hidden"
+						/>
 					</div>
 					{isRunning ? (
 						<Button

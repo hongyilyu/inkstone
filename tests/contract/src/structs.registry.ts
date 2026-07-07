@@ -27,6 +27,8 @@ import {
 	EntityMutateResult,
 	JournalEntryRescanParams,
 	JournalEntryRescanResult,
+	MediaUploadParams,
+	MediaUploadResult,
 	MessageSearchParams,
 	MessageSearchResult,
 	ModelCatalogResult,
@@ -141,9 +143,17 @@ export const fixtures: readonly FixtureEntry[] = [
 	// it); TS decode is the consumer side. UUID-typed Rust fields require valid
 	// UUID strings even though TS types them `S.String`. Optional-bearing params
 	// get a `.bare` companion exercising the omitted branch.
+	// PostMessageParams: maximal (attachment_ids present, chat-image-attachments
+	// slice 2) + bare (omitted).
 	{
 		message: "PostMessageParams",
 		file: "post_message_params.json",
+		schema: PostMessageParams,
+		dir: "authored",
+	},
+	{
+		message: "PostMessageParams",
+		file: "post_message_params.bare.json",
 		schema: PostMessageParams,
 		dir: "authored",
 	},
@@ -185,9 +195,17 @@ export const fixtures: readonly FixtureEntry[] = [
 		schema: ProposalDecideParams,
 		dir: "authored",
 	},
+	// ThreadCreateParams: maximal (attachment_ids present, chat-image-attachments
+	// slice 2) + bare (omitted).
 	{
 		message: "ThreadCreateParams",
 		file: "thread_create_params.json",
+		schema: ThreadCreateParams,
+		dir: "authored",
+	},
+	{
+		message: "ThreadCreateParams",
+		file: "thread_create_params.bare.json",
 		schema: ThreadCreateParams,
 		dir: "authored",
 	},
@@ -292,6 +310,19 @@ export const fixtures: readonly FixtureEntry[] = [
 		message: "JournalEntryRescanParams",
 		file: "journal_entry_rescan_params.json",
 		schema: JournalEntryRescanParams,
+		dir: "authored",
+	},
+	// MediaUploadParams: maximal (width+height present) + bare (omitted).
+	{
+		message: "MediaUploadParams",
+		file: "media_upload_params.json",
+		schema: MediaUploadParams,
+		dir: "authored",
+	},
+	{
+		message: "MediaUploadParams",
+		file: "media_upload_params.bare.json",
+		schema: MediaUploadParams,
 		dir: "authored",
 	},
 	{
@@ -573,14 +604,21 @@ export const fixtures: readonly FixtureEntry[] = [
 		dir: "emitted",
 	},
 	{
+		message: "MediaUploadResult",
+		file: "media_upload_result.json",
+		schema: MediaUploadResult,
+		dir: "emitted",
+	},
+	{
 		message: "MessageSearchResult",
 		file: "message_search_result.json",
 		schema: MessageSearchResult,
 		dir: "emitted",
 	},
-	// ThreadGetResult: maximal (assistant turn whose ordered segments[] cover all
-	// three Segment variants — tool_call with + without arg, proposal, text) + bare
-	// (user turn, a single text segment). ADR-0045.
+	// ThreadGetResult: maximal (a user turn carrying an attachment segment plus an
+	// assistant turn whose ordered segments[] cover the remaining Segment variants
+	// — tool_call with + without arg, proposal, reasoning, text; all FIVE covered)
+	// + bare (user turn, a single text segment). ADR-0045 / ADR-0058.
 	{
 		message: "ThreadGetResult",
 		file: "thread_get_result.json",
@@ -864,6 +902,9 @@ export const CANONICAL_MESSAGES: readonly string[] = [
 	"ProviderHelperLine",
 	// Decision prose (finding F12) — not a wire type; see its registry entry.
 	"DecisionProse",
+	// chat-image-attachments slice 1 — media/upload (ADR-0058)
+	"MediaUploadParams",
+	"MediaUploadResult",
 ];
 
 /** Expected fixture count per tagged-union message (grilling Q10). A union must

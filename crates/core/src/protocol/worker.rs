@@ -165,12 +165,27 @@ pub struct WorkflowManifest<'a> {
     pub tools: Vec<CoreToolDescriptor>,
 }
 
+/// One current-turn image attachment shipped in the spawn manifest
+/// (chat-image-attachments, ADR-0058 consumer). `data_base64` is the RAW
+/// base64 of the stored bytes — never `data:`-URL prefixed (providers build
+/// their own framing; Anthropic/Google/Bedrock corrupt on a prefix). Owned
+/// `String`s deliberately: the `<'a>` manifest borrows everything else from
+/// long-lived Workflow state, but these bytes are read+encoded per spawn and
+/// have no owner to borrow from.
+#[derive(Debug, Serialize)]
+pub struct ManifestAttachment {
+    pub mime: String,
+    pub data_base64: String,
+}
+
 /// The full spawn manifest written to the Worker's stdin (ADR-0018, ADR-0013).
 /// `run_id` carries the Run's id in-band so the Worker can stamp its trail.
 /// `messages` is the assembled prior history. `mode` selects the loop entry
 /// point (ADR-0025): absent/`"fresh"` starts a new prompt, `"resume"` continues
 /// a reconstructed transcript. `access_token` is `Some` only for OAuth providers
-/// (ADR-0023), skipped on the wire otherwise.
+/// (ADR-0023), skipped on the wire otherwise. `attachments` carries the CURRENT
+/// turn's images (fresh mode only — resume never replays them), skipped when
+/// the turn has none.
 #[derive(Debug, Serialize)]
 pub struct WorkerManifest<'a> {
     /// The Run's id, carried in-band (ADR-0038 / #146) so the Worker stamps its
@@ -184,6 +199,8 @@ pub struct WorkerManifest<'a> {
     pub mode: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub access_token: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attachments: Option<Vec<ManifestAttachment>>,
 }
 
 /// Mirror tests: lock the Rust serde shapes to the canonical snake_case wire

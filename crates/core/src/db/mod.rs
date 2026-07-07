@@ -47,11 +47,12 @@ pub use lifecycle::TerminalReason;
 // without naming the db type. The search assembles text live from `message_parts`
 // at query time — no standing projection to maintain or rebuild.
 pub use message_fts::search_messages;
-// The media substrate (ADR-0058) has no production consumer yet — its wire verb /
-// Media entity caller lands later (#252). The `db::media` facade surface
-// (`insert_media`/`get_media`/`delete_media` + `MediaInput`/`MediaRow`/…) is
-// reached only by the module's own tests for now, so it is NOT re-exported from
-// `db` until a real caller exists; `#252` adds the re-export with its consumer.
+// The media substrate (ADR-0058): consumed by the `media/upload` handler
+// (`runs/media.rs`), the `GET /media/{id}` route (`main.rs`), and the send-path
+// attachment validation (`runs/post_message.rs` / `runs/thread_create.rs`),
+// which names `MediaRow` to copy its `mime`/`width`/`height` into
+// `AttachmentSeed`s — hence the re-export.
+pub(crate) use media::{MediaInput, MediaRow, get_media, insert_media, media_ids_for_message};
 pub(crate) use observations::{
     ObservationFilter, ObservationInsert, ObservationInsertError, ObservationRelationInsert,
     ObservationRevisionRow, ObservationRow, ObservationSourceFilter, ObservationSourceInsert,
@@ -73,7 +74,7 @@ pub(crate) use queries::PartType;
 // `RunSnapshot` is not re-exported: its one consumer (`run/subscribe`) reads
 // fields off `select_run_snapshot`'s return without naming the type.
 pub use runs::{
-    TimelineStep, append_assistant_part, assistant_message_id_for_run,
+    AttachmentSeed, TimelineStep, append_assistant_part, assistant_message_id_for_run,
     cancel_parked_run, cancel_running_run, complete_run, error_run, error_run_with_message,
     history_for_run, list_run_history, mark_run_running, open_assistant_part,
     persist_initial_run, persist_thread_with_first_run, persist_tool_call, prepare_retry,

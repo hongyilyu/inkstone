@@ -354,6 +354,7 @@ mod tests {
             Uuid::now_v7(),
             &workflow,
             "prompt",
+            &[],
             "t",
             1,
         )

@@ -732,4 +732,16 @@ describe("concatText", () => {
 			]),
 		).toBe("A");
 	});
+
+	it("excludes an attachment segment — the image reference never enters the flat text", () => {
+		// The attachment kind carries no text (it's an image reference, ADR-0058);
+		// concatText is text-only by construction, so copy/⌘K/typing never see it.
+		expect(
+			concatText([
+				{ kind: "text", text: "see" },
+				{ kind: "attachment", mediaId: "m-att", mime: "image/png" },
+				{ kind: "text", text: " this" },
+			]),
+		).toBe("see this");
+	});
 });

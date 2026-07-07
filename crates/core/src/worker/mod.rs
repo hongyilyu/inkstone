@@ -24,7 +24,7 @@ use uuid::Uuid;
 
 use crate::db;
 use crate::hub::{self, Hubs, RunHub};
-use crate::protocol::{ManifestMessage, WorkerManifest, WorkflowManifest};
+use crate::protocol::{ManifestAttachment, ManifestMessage, WorkerManifest, WorkflowManifest};
 use crate::workflow::Workflow;
 
 use crate::launch::{self, Role};
@@ -49,13 +49,16 @@ fn resolve_worker_cmd(run_id: Uuid) -> Option<launch::ResolvedCommand> {
 /// builds the manifest, spawns the Worker, and drives it via [`run::run_loop`].
 /// A pre-spawn failure (token resolution or process spawn) terminates the Run
 /// via [`finalize_error`]. `text_delta`s append to the assistant row
-/// pre-inserted at `seq=0`.
+/// pre-inserted at `seq=0`. `attachments` is the CURRENT turn's images, already
+/// read + base64-encoded by the handler (so a read failure fails the RPC, not
+/// this detached task).
 #[allow(clippy::too_many_arguments)]
 pub fn spawn(
     run_id: Uuid,
     workflow: Workflow,
     prompt: String,
     history: Vec<(String, String)>,
+    attachments: Vec<ManifestAttachment>,
     pool: SqlitePool,
     assistant_message_id: Uuid,
     hubs: Hubs,
@@ -73,7 +76,9 @@ pub fn spawn(
                 hub::remove(&hubs, run_id);
                 return;
             }
-            let Some(line) = fresh_manifest_line(run_id, &workflow, &prompt, &history).await else {
+            let Some(line) =
+                fresh_manifest_line(run_id, &workflow, &prompt, &history, attachments).await
+            else {
                 finalize_error(&pool, &hubs, run_id).await;
                 return;
             };
@@ -204,14 +209,16 @@ pub async fn resume(run_id: Uuid, pool: &SqlitePool, hubs: &Hubs) -> anyhow::Res
 }
 
 /// Build the fresh-spawn manifest line (ADR-0018): Workflow fields, prompt,
-/// prior history as typed message blocks, allowlisted tool descriptors, and —
-/// for OAuth providers — a short-lived access token (ADR-0023). `None` if token
-/// resolution fails (the caller runs `finalize_error`).
+/// prior history as typed message blocks, allowlisted tool descriptors, the
+/// current turn's pre-encoded image `attachments` (chat-image-attachments),
+/// and — for OAuth providers — a short-lived access token (ADR-0023). `None`
+/// if token resolution fails (the caller runs `finalize_error`).
 async fn fresh_manifest_line(
     run_id: Uuid,
     workflow: &Workflow,
     prompt: &str,
     history: &[(String, String)],
+    attachments: Vec<ManifestAttachment>,
 ) -> Option<String> {
     let messages: Vec<ManifestMessage> = history
         .iter()
@@ -236,6 +243,7 @@ async fn fresh_manifest_line(
         messages,
         mode: None,
         access_token: access_token.as_deref(),
+        attachments: (!attachments.is_empty()).then_some(attachments),
     };
     Some(serialize_manifest(&manifest))
 }
@@ -257,6 +265,10 @@ async fn resume_manifest_line(
         messages,
         mode: Some("resume"),
         access_token: access_token.as_deref(),
+        // Parked-resume does not replay images — accepted cut (plan §out-of-scope):
+        // only the CURRENT turn's attachments ever reach a model, and a resumed
+        // Run's turn already started without them.
+        attachments: None,
     };
     Some(serialize_manifest(&manifest))
 }

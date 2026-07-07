@@ -292,6 +292,86 @@ describe("generic interpreter (faux provider)", () => {
 		expect(events.some((e) => e.kind === "reasoning_delta")).toBe(false);
 	});
 
+	it("forwards manifest attachments as [text, image] vision content", async () => {
+		// The faux response factory inspects the current-turn user message (the last
+		// user entry in its context), proving the interpreter built the vision array.
+		const faux = fauxProvider({ provider: "faux" });
+		let currentTurnContent: unknown;
+		faux.setResponses([
+			(context) => {
+				const users = context.messages.filter((m) => m.role === "user");
+				currentTurnContent = users[users.length - 1]?.content;
+				return fauxAssistantMessage("ack");
+			},
+		]);
+
+		const deps = fauxDeps(faux);
+
+		const manifest = fauxManifest({
+			prompt: "what is in this image?",
+			attachments: [{ mime: "image/png", data_base64: "aGVsbG8=" }],
+		});
+
+		await runChat(manifest, deps);
+
+		expect(currentTurnContent).toEqual([
+			{ type: "text", text: "what is in this image?" },
+			{ type: "image", data: "aGVsbG8=", mimeType: "image/png" },
+		]);
+		// RAW base64, never a data: URL — providers build their own prefix.
+		const image = (currentTurnContent as { data: string }[])[1];
+		expect(image.data.startsWith("data:")).toBe(false);
+	});
+
+	it("keeps plain-string content when the manifest has no attachments", async () => {
+		const faux = fauxProvider({ provider: "faux" });
+		let currentTurnContent: unknown;
+		faux.setResponses([
+			(context) => {
+				const users = context.messages.filter((m) => m.role === "user");
+				currentTurnContent = users[users.length - 1]?.content;
+				return fauxAssistantMessage("ack");
+			},
+		]);
+
+		const deps = fauxDeps(faux);
+
+		await runChat(fauxManifest(), deps);
+
+		// Not a one-element array — the text-only path stays byte-identical.
+		expect(currentTurnContent).toBe("hello");
+	});
+
+	it("forwards two attachments as three content items in order", async () => {
+		const faux = fauxProvider({ provider: "faux" });
+		let currentTurnContent: unknown;
+		faux.setResponses([
+			(context) => {
+				const users = context.messages.filter((m) => m.role === "user");
+				currentTurnContent = users[users.length - 1]?.content;
+				return fauxAssistantMessage("ack");
+			},
+		]);
+
+		const deps = fauxDeps(faux);
+
+		const manifest = fauxManifest({
+			prompt: "compare these",
+			attachments: [
+				{ mime: "image/png", data_base64: "Zmlyc3Q=" },
+				{ mime: "image/jpeg", data_base64: "c2Vjb25k" },
+			],
+		});
+
+		await runChat(manifest, deps);
+
+		expect(currentTurnContent).toEqual([
+			{ type: "text", text: "compare these" },
+			{ type: "image", data: "Zmlyc3Q=", mimeType: "image/png" },
+			{ type: "image", data: "c2Vjb25k", mimeType: "image/jpeg" },
+		]);
+	});
+
 	it("drops redacted reasoning but keeps the reply text", async () => {
 		// Anthropic delivers the "[Reasoning redacted]" placeholder as one block, not
 		// character-streamed — a large tokenSize makes faux emit it as a single delta so

@@ -58,6 +58,17 @@ pub(super) async fn handle(
                         MessageSegment::Reasoning { text, duration_ms } => {
                             Segment::Reasoning { text, duration_ms }
                         }
+                        MessageSegment::Attachment {
+                            media_id,
+                            mime,
+                            width,
+                            height,
+                        } => Segment::Attachment {
+                            media_id,
+                            mime,
+                            width,
+                            height,
+                        },
                     })
                     .collect(),
             })

@@ -237,6 +237,13 @@ impl<'a> CoreBuilder<'a> {
             // making the bundled skills the default fixture for any test that
             // boots Core without overriding.
             .env("INKSTONE_SKILLS_DIR", self.ws.path().join("skills"))
+            // Default the media root (ADR-0058) into the Workspace tempdir so a
+            // test that doesn't set it stays hermetic — otherwise `media/upload`
+            // writes uploaded bytes into the developer's/CI real OS data dir.
+            // Per-test `.env(...)` overrides still win (the `self.envs` loop
+            // below runs after this; last `cmd.env` for a key wins).
+            // `insert_media` creates the dir itself, so it need not pre-exist.
+            .env("INKSTONE_MEDIA_DIR", self.ws.path().join("media"))
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());
         if let Some(ref worker_cmd) = self.worker_cmd {

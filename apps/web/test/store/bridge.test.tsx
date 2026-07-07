@@ -20,6 +20,7 @@ import {
 	interruptRun,
 	registerThreadTitledHandler,
 	resetBridge,
+	send,
 	sendNewThread,
 	setOnRunSettled,
 	startRunStream,
@@ -55,6 +56,142 @@ describe("sendNewThread failure handling", () => {
 
 		// No threadId is surfaced for the caller to navigate to, and nothing was seeded.
 		expect(result).toEqual({ ok: false, error: expect.anything() });
+		expect(Object.keys(getChatState().threads)).toHaveLength(0);
+
+		await runtime.dispose();
+	});
+});
+
+describe("send path with image attachments (upload-then-post, ADR-0058)", () => {
+	// base64("ABC") = "QUJD", base64("DEF") = "REVG" — tiny deterministic payloads.
+	const filePng = () => new File(["ABC"], "a.png", { type: "image/png" });
+	const fileJpg = () => new File(["DEF"], "b.jpg", { type: "image/jpeg" });
+
+	/** Stub runtime capturing mediaUpload/postMessage/threadCreate calls; uploads mint m1, m2, … */
+	function makeUploadRuntime() {
+		let n = 0;
+		const mediaUpload = vi.fn(
+			(
+				_bytesBase64: string,
+				_mime: string,
+				_width?: number,
+				_height?: number,
+			) => {
+				n += 1;
+				return Effect.succeed({ media_id: `m${n}` });
+			},
+		);
+		const postMessage = vi.fn(
+			(
+				_threadId: string,
+				_prompt: string,
+				_attachmentIds?: readonly string[],
+			) => Effect.succeed("r-1" as RunId),
+		);
+		const threadCreate = vi.fn(
+			(_prompt: string, _attachmentIds?: readonly string[]) =>
+				Effect.succeed({ thread_id: "t-new", run_id: "r-1" }),
+		);
+		const stub = stubWsClient({ mediaUpload, postMessage, threadCreate });
+		return {
+			runtime: ManagedRuntime.make(Layer.succeed(WsClient, stub)),
+			mediaUpload,
+			postMessage,
+			threadCreate,
+		};
+	}
+
+	it("send(files): uploads each file, posts with the minted attachment_ids, and seeds the user bubble with attachment segments", async () => {
+		const { runtime, mediaUpload, postMessage } = makeUploadRuntime();
+
+		const result = await send(runtime, "t1", "hi", [filePng(), fileJpg()]);
+
+		expect(result).toEqual({ ok: true });
+		// Each file was uploaded as RAW base64 (no data: prefix) with its own mime.
+		expect(mediaUpload).toHaveBeenCalledTimes(2);
+		expect(mediaUpload.mock.calls[0]?.[0]).toBe("QUJD");
+		expect(mediaUpload.mock.calls[0]?.[1]).toBe("image/png");
+		expect(mediaUpload.mock.calls[1]?.[0]).toBe("REVG");
+		expect(mediaUpload.mock.calls[1]?.[1]).toBe("image/jpeg");
+		// The post carries the minted ids, in file order.
+		expect(postMessage).toHaveBeenCalledWith("t1", "hi", ["m1", "m2"]);
+		// The optimistic user bubble seeds text + one attachment segment per file,
+		// so the images render instantly (the ids exist pre-post; /media/{id} resolves).
+		const user = getChatState().threads.t1?.messages.find(
+			(m) => m.role === "user",
+		);
+		expect(user?.segments).toEqual([
+			{ kind: "text", text: "hi" },
+			{ kind: "attachment", mediaId: "m1", mime: "image/png" },
+			{ kind: "attachment", mediaId: "m2", mime: "image/jpeg" },
+		]);
+
+		await runtime.dispose();
+	});
+
+	it("send without files keeps the plain two-arg post (no attachment_ids on the wire)", async () => {
+		const { runtime, mediaUpload, postMessage } = makeUploadRuntime();
+
+		const result = await send(runtime, "t1", "hi");
+
+		expect(result).toEqual({ ok: true });
+		expect(mediaUpload).not.toHaveBeenCalled();
+		// EXACTLY two args — a trailing undefined/[] would fail this matcher.
+		expect(postMessage).toHaveBeenCalledWith("t1", "hi");
+
+		await runtime.dispose();
+	});
+
+	it("a failed upload short-circuits: { ok: false }, no post, nothing seeded", async () => {
+		const mediaUpload = vi.fn(() =>
+			Effect.fail(new WsRequestError({ reason: "too_large", code: -32602 })),
+		);
+		const postMessage = vi.fn(() => Effect.succeed("r-1" as RunId));
+		const stub = stubWsClient({ mediaUpload, postMessage });
+		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
+
+		const result = await send(runtime, "t1", "hi", [filePng()]);
+
+		expect(result).toEqual({ ok: false, error: expect.anything() });
+		expect(postMessage).not.toHaveBeenCalled();
+		// Short-circuit BEFORE the optimistic seed: no orphaned bubble to clean up.
+		expect(Object.keys(getChatState().threads)).toHaveLength(0);
+
+		await runtime.dispose();
+	});
+
+	it("sendNewThread(files): uploads, creates with attachment_ids, and seeds the minted thread with attachment segments", async () => {
+		const { runtime, threadCreate } = makeUploadRuntime();
+
+		const result = await sendNewThread(runtime, "hi", [filePng()]);
+
+		expect(result).toEqual({ ok: true, threadId: "t-new" });
+		expect(threadCreate).toHaveBeenCalledWith("hi", ["m1"]);
+		const user = getChatState().threads["t-new"]?.messages.find(
+			(m) => m.role === "user",
+		);
+		expect(user?.segments).toEqual([
+			{ kind: "text", text: "hi" },
+			{ kind: "attachment", mediaId: "m1", mime: "image/png" },
+		]);
+
+		await runtime.dispose();
+	});
+
+	it("sendNewThread: a failed upload short-circuits before thread/create (no thread minted)", async () => {
+		const mediaUpload = vi.fn(() =>
+			Effect.fail(new WsRequestError({ reason: "too_large", code: -32602 })),
+		);
+		const threadCreate = vi.fn(() =>
+			Effect.succeed({ thread_id: "t-new", run_id: "r-1" }),
+		);
+		const stub = stubWsClient({ mediaUpload, threadCreate });
+		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
+
+		const result = await sendNewThread(runtime, "hi", [filePng()]);
+
+		expect(result).toEqual({ ok: false, error: expect.anything() });
+		expect(threadCreate).not.toHaveBeenCalled();
 		expect(Object.keys(getChatState().threads)).toHaveLength(0);
 
 		await runtime.dispose();

@@ -524,6 +524,7 @@ mod tests {
             assistant_message_id,
             workflow,
             "prompt",
+            &[],
             "t",
             1,
         )
