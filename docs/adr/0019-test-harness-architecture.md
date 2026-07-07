@@ -14,7 +14,7 @@ The harness was implemented after the Web Client was wired to real Core (the `wi
 
 The harness package lives at `tests/e2e/` (registered in `pnpm-workspace.yaml`; root `pnpm test:e2e` delegates to it). Fixtures expose `{core, workspace, chat}` where `chat` is the `ChatPage` page object; the `workspace` fixture exposes `path` only (WS-level setup helpers are deferred — the current specs drive through the UI).
 
-`apps/web/test/test-utils/renderWithCore.tsx` and `rows.ts` provide a deep test-data-builder library and a single-entry render harness for Web Client view tests (the foreseen follow-up to "no shared builders until duplication justifies it" at :62); page objects extend to LibraryPage, GtdPage, and SettingsPage under `tests/e2e/src/page-objects/`.
+`apps/web/test/test-utils/renderWithCore.tsx` and `rows.ts` provide a deep test-data-builder library and a single-entry render harness for Web Client view tests (the foreseen follow-up to the "Test-data-builder library" bullet under "What this does not decide"); page objects extend to LibraryPage, GtdPage, and SettingsPage under `tests/e2e/src/page-objects/`.
 
 ## As-built amendment: `faux` realizes the deferred mock-LLM seam (ADR-0023 feature)
 

@@ -10,7 +10,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { useEntityMutation } from "@/lib/hooks/useEntityMutation";
 import { currentCue, resetEntityCueStore } from "@/store/entityCue";
 
-// Stub WsClient whose `entityMutate` runs the provided handler; unused methods die.
+// Stub WsClient whose `entityMutate` runs the provided handler; other
+// un-stubbed request verbs die, while the harness serves empty
+// entity/backlink/run-event reads.
 function makeWrapper(
 	entityMutate: (
 		params: EntityMutateParams,

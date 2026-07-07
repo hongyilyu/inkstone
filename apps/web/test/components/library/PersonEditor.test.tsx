@@ -12,7 +12,8 @@ import { PersonEditor } from "@/components/library/PersonEditor";
 import type { Person } from "@/lib/libraryItems";
 
 // Render under the shared Core harness: `entityMutate` records params and
-// succeeds; unused methods die.
+// succeeds; other un-stubbed request verbs die, while the harness serves empty
+// entity/backlink/run-event reads.
 function renderEditor(
 	props: Parameters<typeof PersonEditor>[0],
 	entityMutate: (

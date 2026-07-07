@@ -305,9 +305,6 @@ describe("EntityCollection", () => {
 
 	// --- Facets (slice-2: Status) ---
 
-	const mkTodo = (id: string, title: string, data: Partial<TodoData>) =>
-		todoRow(id, title, data);
-
 	// `person_refs` lives at the ROW level on the wire (not inside `data`), so a
 	// fixture linking a Todo to People must set it there — `parseTodo` reads
 	// `row.person_refs`, not `data.person_refs`.
@@ -322,9 +319,9 @@ describe("EntityCollection", () => {
 
 	// Three todos spanning active/completed/dropped so the Status facet can partition.
 	const mixedStatusTodos: EntityListResult["entities"] = [
-		mkTodo("st-active", "Active todo", { status: "active" }),
-		mkTodo("st-done", "Completed todo", { status: "completed" }),
-		mkTodo("st-dropped", "Dropped todo", { status: "dropped" }),
+		todoRow("st-active", "Active todo", { status: "active" }),
+		todoRow("st-done", "Completed todo", { status: "completed" }),
+		todoRow("st-dropped", "Dropped todo", { status: "dropped" }),
 	];
 
 	// Facet chips share label text with row titles ("Active todo" vs the "Active"
@@ -347,8 +344,8 @@ describe("EntityCollection", () => {
 	it("does not show a Status facet group when all rows share one status", async () => {
 		renderCollection("todo", {
 			todos: [
-				mkTodo("a1", "Only active one", { status: "active" }),
-				mkTodo("a2", "Only active two", { status: "active" }),
+				todoRow("a1", "Only active one", { status: "active" }),
+				todoRow("a2", "Only active two", { status: "active" }),
 			],
 		});
 		await screen.findByText("Only active one");
@@ -376,9 +373,9 @@ describe("EntityCollection", () => {
 		const user = userEvent.setup();
 		renderCollection("todo", {
 			todos: [
-				mkTodo("q1", "Alpha active", { status: "active" }),
-				mkTodo("q2", "Beta active", { status: "active" }),
-				mkTodo("q3", "Alpha completed", { status: "completed" }),
+				todoRow("q1", "Alpha active", { status: "active" }),
+				todoRow("q2", "Beta active", { status: "active" }),
+				todoRow("q3", "Alpha completed", { status: "completed" }),
 			],
 		});
 		await screen.findByText("Alpha active");
@@ -402,8 +399,8 @@ describe("EntityCollection", () => {
 		const user = userEvent.setup();
 		renderCollection("todo", {
 			todos: [
-				mkTodo("e1", "Findable active", { status: "active" }),
-				mkTodo("e2", "Other completed", { status: "completed" }),
+				todoRow("e1", "Findable active", { status: "active" }),
+				todoRow("e2", "Other completed", { status: "completed" }),
 			],
 		});
 		await screen.findByText("Findable active");
@@ -459,15 +456,15 @@ describe("EntityCollection", () => {
 		const user = userEvent.setup();
 		renderCollection("todo", {
 			todos: [
-				mkTodo("d-over", "Overdue todo", {
+				todoRow("d-over", "Overdue todo", {
 					status: "active",
 					due_at: dayOffset(-3),
 				}),
-				mkTodo("d-soon", "Soon todo", {
+				todoRow("d-soon", "Soon todo", {
 					status: "active",
 					due_at: dayOffset(2),
 				}),
-				mkTodo("d-none", "Undated todo", { status: "active" }),
+				todoRow("d-none", "Undated todo", { status: "active" }),
 			],
 		});
 		await screen.findByText("Overdue todo");

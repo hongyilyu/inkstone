@@ -7,9 +7,11 @@ export class LibraryPage {
 		private readonly baseUrl: string,
 	) {}
 
-	/** Navigate to a Library topic (e.g. `todos`, `people`, `media`), optionally selecting an entity via `?id=`. */
-	async gotoTopic(topic: string, id?: string): Promise<void> {
-		const path = id ? `/library/${topic}?id=${id}` : `/library/${topic}`;
+	/** Navigate to an Entity-Type collection route by its collection slug (e.g. `todos`, `people`, `media`), optionally selecting an entity via `?id=`. */
+	async gotoCollection(collection: string, id?: string): Promise<void> {
+		const path = id
+			? `/library/${collection}?id=${id}`
+			: `/library/${collection}`;
 		await this.page.goto(new URL(path, this.baseUrl).href);
 	}
 

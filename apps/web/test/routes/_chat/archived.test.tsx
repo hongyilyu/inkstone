@@ -15,9 +15,10 @@ afterEach(cleanup);
 
 /**
  * WsClient overrides that drive ONLY `threadListArchived` (the one read the view
- * exercises); every other method dies if touched, proving the view reads nothing
- * else. The empty-list and load-failure cases below each supply a different
- * `listArchived` to pin the view's `threads.length === 0` and `isError` branches.
+ * exercises); other un-stubbed request verbs die, while the harness serves empty
+ * entity/backlink/run-event reads. The empty-list and load-failure cases below
+ * each supply a different `listArchived` to pin the view's
+ * `threads.length === 0` and `isError` branches.
  */
 function makeArchivedOverrides(
 	listArchived: () => Effect.Effect<ThreadListResult, WsError>,
@@ -61,7 +62,7 @@ describe("Archived view (ADR-0052)", () => {
 
 		const ArchivedView = Route.options.component;
 		if (!ArchivedView) throw new Error("archived route has no component");
-		renderWithCore(<ArchivedView />, { overrides, path: "/" });
+		await renderWithCore(<ArchivedView />, { overrides, path: "/" });
 
 		// Both archived titles render.
 		expect(await screen.findByText("Old standup")).toBeInTheDocument();
@@ -86,7 +87,7 @@ describe("Archived view (ADR-0052)", () => {
 
 		const ArchivedView = Route.options.component;
 		if (!ArchivedView) throw new Error("archived route has no component");
-		renderWithCore(<ArchivedView />, { overrides, path: "/" });
+		await renderWithCore(<ArchivedView />, { overrides, path: "/" });
 
 		// The DECOMPOSE-promised empty copy renders once the read settles empty…
 		expect(await screen.findByText(/no archived threads/i)).toBeInTheDocument();
@@ -107,7 +108,7 @@ describe("Archived view (ADR-0052)", () => {
 
 		const ArchivedView = Route.options.component;
 		if (!ArchivedView) throw new Error("archived route has no component");
-		renderWithCore(<ArchivedView />, { overrides, path: "/" });
+		await renderWithCore(<ArchivedView />, { overrides, path: "/" });
 
 		expect(
 			await screen.findByText(/couldn't load your archived conversations/i),

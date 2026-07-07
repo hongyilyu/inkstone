@@ -1,4 +1,3 @@
-import type { WsClientService } from "@inkstone/ui-sdk";
 import {
 	createMemoryHistory,
 	createRouter,
@@ -6,18 +5,15 @@ import {
 } from "@tanstack/react-router";
 import { renderWithCore } from "@test/test-utils/renderWithCore";
 import { cleanup, waitFor } from "@testing-library/react";
-import { Effect } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 import { routeTree } from "@/routeTree.gen";
 
 // Multiple routers across tests; vitest config has no `globals`, so clean up manually.
 afterEach(cleanup);
 
-/** A WsClient that serves empty entity lists (the redirects don't depend on data);
- * every other method dies — they're not exercised on a redirect. */
-const emptyOverrides: Partial<WsClientService> = {
-	listEntities: () => Effect.succeed({ entities: [] }),
-};
+// No overrides: the harness serves empty entity lists by default (the redirects
+// don't depend on data), and un-stubbed request verbs die — they're not
+// exercised on a redirect.
 
 /** The flat-era workflow routes redirect to GTD with the matching filter pill
  * (ADR-0054 Slice 6) — they no longer present a competing UI. */
@@ -35,9 +31,7 @@ describe("library workflow-route redirects (ADR-0054)", () => {
 				routeTree,
 				history: createMemoryHistory({ initialEntries: [from] }),
 			});
-			await renderWithCore(<RouterProvider router={router} />, {
-				overrides: emptyOverrides,
-			});
+			await renderWithCore(<RouterProvider router={router} />);
 
 			await waitFor(() => {
 				expect(router.state.location.pathname).toBe("/library/gtd");
@@ -57,9 +51,7 @@ describe("library workflow-route redirects (ADR-0054)", () => {
 				initialEntries: ["/library/waiting?id=person_priya"],
 			}),
 		});
-		await renderWithCore(<RouterProvider router={router} />, {
-			overrides: emptyOverrides,
-		});
+		await renderWithCore(<RouterProvider router={router} />);
 
 		await waitFor(() => {
 			expect(router.state.location.pathname).toBe("/library/gtd");

@@ -7,7 +7,8 @@ import { Effect } from "effect";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RunFeed } from "@/components/RunFeed";
 
-/** Mount RunFeed over a stubbed `getRunHistory`; other verbs die. */
+/** Mount RunFeed over a stubbed `getRunHistory`; other un-stubbed request verbs
+ * die, while the harness serves empty entity/backlink/run-event reads. */
 function renderFeed(
 	getRunHistory: () => Effect.Effect<RunHistoryResult, WsError>,
 	onOpenThread: (id: string) => void = () => {},

@@ -13,7 +13,8 @@ import type { LibraryItem, Person, Project, Todo } from "@/lib/libraryItems";
 
 // Render under the shared Core harness: `entityMutate` records params and
 // succeeds; `recurrencePreview` runs the supplied handler (defaults to dying);
-// other methods die.
+// other un-stubbed request verbs die, while the harness serves empty
+// entity/backlink/run-event reads.
 function renderEditor(
 	props: Parameters<typeof TodoEditor>[0],
 	entityMutate: (

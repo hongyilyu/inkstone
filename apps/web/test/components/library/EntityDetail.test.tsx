@@ -52,7 +52,8 @@ afterEach(() => {
 });
 
 // Stub verbs for the Core harness: `entityMutate` and `getBacklinks` run the
-// supplied handlers; unused methods die. `getBacklinks` defaults to a DYING read
+// supplied handlers; other un-stubbed request verbs die, while the harness
+// serves empty entity/run-event reads. `getBacklinks` defaults to a DYING read
 // so a test that doesn't seed backlinks lands on the `isError` fallback — i.e.
 // the inspector derives Waiting/Tasks/Todos from `allEntities` exactly as it did
 // pre-Core (ADR-0050 §7). Tests that prove the Core path override it with real rows.

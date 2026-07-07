@@ -32,7 +32,7 @@ test("LibraryPage exposes its behavior-level methods", () => {
 	const library = new LibraryPage({} as never, "http://127.0.0.1:0");
 
 	for (const method of [
-		"gotoTopic",
+		"gotoCollection",
 		"newEntity",
 		"rail",
 		"field",

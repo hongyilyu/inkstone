@@ -24,6 +24,11 @@ import { makeWsLayer, RuntimeProvider, type WsRuntime } from "@/runtime";
 // boilerplate every test file used to re-derive. Seed data rides in as plain
 // wire rows (see ./rows.ts); anything a test drives beyond reads goes through
 // `overrides`, which always wins over the seeds.
+//
+// The harness deliberately never disposes the runtimes it creates — this
+// mirrors production's RuntimeProvider, and the stub layers (Layer.succeed)
+// carry no finalizers; wsConfig-mode tests that need teardown can dispose the
+// returned runtime themselves.
 
 /** The suite's QueryClient: reads never go stale on their own (matching
  * production's `staleTime: Infinity` in main.tsx) and never retry, so a failing
@@ -57,8 +62,8 @@ export interface RenderWithCoreOptions extends CoreRuntimeOptions {
 	queryClient?: QueryClient;
 	/** When given, back the runtime with the REAL `WsClientLive` layer over this
 	 * URL instead of a stub — the `RuntimeProvider config=` replacement. The
-	 * layer is lazy, so nothing dials the (dead) URL until a verb runs; seeds
-	 * and `overrides` are ignored in this mode. */
+	 * layer is lazy, so nothing dials the (dead) URL until a verb runs;
+	 * combining this with seeds or `overrides` throws. */
 	wsConfig?: { readonly url: string };
 }
 
@@ -144,6 +149,17 @@ export async function renderWithCore(
 		router?: TestRouter;
 	}
 > {
+	if (
+		opts.wsConfig !== undefined &&
+		(opts.entities !== undefined ||
+			opts.backlinks !== undefined ||
+			opts.runEvents !== undefined ||
+			opts.overrides !== undefined)
+	) {
+		throw new Error(
+			"renderWithCore: wsConfig mode uses the real WsClientLive — entities/backlinks/runEvents/overrides are not applied; pass one or the other",
+		);
+	}
 	const runtime =
 		opts.wsConfig !== undefined
 			? ManagedRuntime.make(makeWsLayer(opts.wsConfig))

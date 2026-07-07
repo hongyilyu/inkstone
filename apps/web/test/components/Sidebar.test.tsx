@@ -111,7 +111,7 @@ describe("Sidebar", () => {
 		const overrides = makeStubOverrides();
 		const onOpenThread = vi.fn();
 
-		renderWithCore(<Sidebar onOpenThread={onOpenThread} />, {
+		await renderWithCore(<Sidebar onOpenThread={onOpenThread} />, {
 			overrides,
 			path: "/",
 		});
@@ -129,7 +129,7 @@ describe("Sidebar", () => {
 		const overrides = makeStubOverrides();
 
 		// Mounted at /thread/t-2 → the "API rename plan" row is the current one.
-		renderWithCore(<Sidebar />, { overrides, path: "/thread/t-2" });
+		await renderWithCore(<Sidebar />, { overrides, path: "/thread/t-2" });
 
 		const current = await screen.findByRole("button", {
 			name: "API rename plan",
@@ -144,7 +144,7 @@ describe("Sidebar", () => {
 		const overrides = makeStubOverrides();
 		const onNewChat = vi.fn();
 
-		renderWithCore(<Sidebar onNewChat={onNewChat} />, {
+		await renderWithCore(<Sidebar onNewChat={onNewChat} />, {
 			overrides,
 			path: "/thread/t-1",
 		});
@@ -165,7 +165,7 @@ describe("Sidebar", () => {
 		// Sidebar + ChatColumn share one runtime + router — the real app wiring. The
 		// Sidebar's New Chat / open-thread navigations are unused here; the send path
 		// drives ChatColumn, which invalidates ["threads"] so the sidebar re-reads.
-		renderWithCore(
+		await renderWithCore(
 			<>
 				<Sidebar />
 				<ChatColumn />
@@ -187,7 +187,7 @@ describe("Sidebar", () => {
 	it("carries the documented focus-visible ring on its hand-rolled buttons", async () => {
 		const overrides = makeStubOverrides();
 
-		renderWithCore(<Sidebar />, { overrides, path: "/" });
+		await renderWithCore(<Sidebar />, { overrides, path: "/" });
 
 		// DESIGN.md: the 1px ring-ring on focus-visible is "Never removed" — the
 		// hand-rolled New Chat / thread-open / copy-id buttons must all carry it.
@@ -215,7 +215,7 @@ describe("Sidebar", () => {
 			configurable: true,
 		});
 
-		renderWithCore(<Sidebar />, { overrides, path: "/" });
+		await renderWithCore(<Sidebar />, { overrides, path: "/" });
 
 		// Copy-id control writes the thread id (not its title) to the clipboard.
 		const copyBtn = await screen.findByRole("button", {
@@ -235,7 +235,7 @@ describe("Sidebar", () => {
 			configurable: true,
 		});
 
-		renderWithCore(<Sidebar />, { overrides, path: "/" });
+		await renderWithCore(<Sidebar />, { overrides, path: "/" });
 
 		const copyBtn = await screen.findByRole("button", {
 			name: /copy thread id for standup digest/i,
@@ -256,7 +256,7 @@ describe("Sidebar", () => {
 			configurable: true,
 		});
 
-		renderWithCore(<Sidebar />, { overrides, path: "/" });
+		await renderWithCore(<Sidebar />, { overrides, path: "/" });
 
 		const copyBtn = await screen.findByRole("button", {
 			name: /copy thread id for standup digest/i,
@@ -273,7 +273,7 @@ describe("Sidebar", () => {
 		const user = userEvent.setup();
 		const { overrides, threadRename } = makeRecordingOverrides();
 
-		renderWithCore(<Sidebar />, { overrides, path: "/" });
+		await renderWithCore(<Sidebar />, { overrides, path: "/" });
 
 		// Double-click the title → an input seeded with the current title appears.
 		const title = await screen.findByRole("button", { name: "Standup digest" });
@@ -311,7 +311,7 @@ describe("Sidebar", () => {
 		const user = userEvent.setup();
 		const { overrides, threadRename } = makeRecordingOverrides();
 
-		renderWithCore(<Sidebar />, { overrides, path: "/" });
+		await renderWithCore(<Sidebar />, { overrides, path: "/" });
 
 		// Double-click → clear the field to empty → Enter. The commit guard
 		// (`trimmed && …`) treats a blank title as a no-op: no threadRename, and
@@ -336,7 +336,7 @@ describe("Sidebar", () => {
 		const user = userEvent.setup();
 		const { overrides, threadRename } = makeRecordingOverrides();
 
-		renderWithCore(<Sidebar />, { overrides, path: "/" });
+		await renderWithCore(<Sidebar />, { overrides, path: "/" });
 
 		// Whitespace trims to empty → same no-op branch as a blank field.
 		await user.dblClick(
@@ -359,7 +359,7 @@ describe("Sidebar", () => {
 		const user = userEvent.setup();
 		const { overrides, threadRename } = makeRecordingOverrides();
 
-		renderWithCore(<Sidebar />, { overrides, path: "/" });
+		await renderWithCore(<Sidebar />, { overrides, path: "/" });
 
 		// Double-click → Enter without editing. `trimmed !== item.title` is false,
 		// so the commit guard skips threadRename even though the input is non-empty.
@@ -383,7 +383,7 @@ describe("Sidebar", () => {
 		const user = userEvent.setup();
 		const { overrides, threadRename } = makeRecordingOverrides();
 
-		renderWithCore(<Sidebar />, { overrides, path: "/" });
+		await renderWithCore(<Sidebar />, { overrides, path: "/" });
 
 		// Double-click → type a new title → blur (focus moves away via Tab). The
 		// input's onBlur is wired to commit, so a changed title persists even
@@ -409,7 +409,7 @@ describe("Sidebar", () => {
 		const user = userEvent.setup();
 		const overrides = makeFailingRenameOverrides();
 
-		renderWithCore(<Sidebar />, { overrides, path: "/" });
+		await renderWithCore(<Sidebar />, { overrides, path: "/" });
 
 		await user.dblClick(
 			await screen.findByRole("button", { name: "Standup digest" }),
@@ -432,7 +432,7 @@ describe("Sidebar", () => {
 		const user = userEvent.setup();
 		const { overrides } = makeRecordingOverrides();
 
-		renderWithCore(<Sidebar />, { overrides, path: "/" });
+		await renderWithCore(<Sidebar />, { overrides, path: "/" });
 
 		await screen.findByRole("button", { name: "Standup digest" });
 		// A dedicated Rename button opens the editor without a double-click. Drive it
@@ -455,7 +455,7 @@ describe("Sidebar", () => {
 		const onNewChat = vi.fn();
 
 		// Focused on t-1: archiving it must reselect via onNewChat (→ "/").
-		renderWithCore(<Sidebar onNewChat={onNewChat} />, {
+		await renderWithCore(<Sidebar onNewChat={onNewChat} />, {
 			overrides,
 			path: "/thread/t-1",
 		});
@@ -475,7 +475,7 @@ describe("Sidebar", () => {
 		const overrides = makeStubOverrides();
 		const onOpenArchived = vi.fn();
 
-		renderWithCore(<Sidebar onOpenArchived={onOpenArchived} />, {
+		await renderWithCore(<Sidebar onOpenArchived={onOpenArchived} />, {
 			overrides,
 			path: "/",
 		});
@@ -492,7 +492,7 @@ describe("Sidebar", () => {
 		const onNewChat = vi.fn();
 
 		// Focused on t-1; archive t-2 → no reselect.
-		renderWithCore(<Sidebar onNewChat={onNewChat} />, {
+		await renderWithCore(<Sidebar onNewChat={onNewChat} />, {
 			overrides,
 			path: "/thread/t-1",
 		});

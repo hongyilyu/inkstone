@@ -24,7 +24,7 @@ test("create a Todo via the rail editor → entity/mutate writes it and the row 
 	const dbPath = dbPathFor(workspace.path);
 	const library = new LibraryPage(page, core.url);
 
-	await library.gotoTopic("todos");
+	await library.gotoCollection("todos");
 	await library.newEntity("todo");
 
 	const rail = library.rail(/new todo/i);
@@ -64,7 +64,7 @@ test("edit a seeded Todo via the rail editor → update_todo persists across rel
 		},
 	]);
 
-	await library.gotoTopic("todos", TODO);
+	await library.gotoCollection("todos", TODO);
 	const detail = library.rail(/Draft the memo details/i);
 	await expect(detail).toBeVisible({ timeout: 15_000 });
 
@@ -110,7 +110,7 @@ test("delete a seeded Person via the inline confirm → delete_person removes it
 		{ id: PERSON, type: "person", data: { name: "Dana Holt" } },
 	]);
 
-	await library.gotoTopic("people", PERSON);
+	await library.gotoCollection("people", PERSON);
 	const detail = library.rail(/Dana Holt details/i);
 	await expect(detail).toBeVisible({ timeout: 15_000 });
 
@@ -154,7 +154,7 @@ test("delete a Project unsets project_id on its owning Todo (Core cascade)", asy
 		},
 	]);
 
-	await library.gotoTopic("projects", PROJECT_MIGRATION);
+	await library.gotoCollection("projects", PROJECT_MIGRATION);
 	const detail = library.rail(/Retire the legacy API details/i);
 	await expect(detail).toBeVisible({ timeout: 15_000 });
 
@@ -196,7 +196,7 @@ test("edit a seeded Person via the rail editor → update_person full-replace pe
 		},
 	]);
 
-	await library.gotoTopic("people", PERSON);
+	await library.gotoCollection("people", PERSON);
 	const detail = library.rail(/Sam Rivera details/i);
 	await expect(detail).toBeVisible({ timeout: 15_000 });
 
@@ -247,7 +247,7 @@ test("edit a seeded Project's status via the rail editor → update_project pers
 		},
 	]);
 
-	await library.gotoTopic("projects", PROJECT);
+	await library.gotoCollection("projects", PROJECT);
 	const detail = library.rail(/Spring launch details/i);
 	await expect(detail).toBeVisible({ timeout: 15_000 });
 
@@ -287,7 +287,7 @@ test("delete a seeded Todo via the inline confirm → delete_todo removes it", a
 		},
 	]);
 
-	await library.gotoTopic("todos", TODO);
+	await library.gotoCollection("todos", TODO);
 	const detail = library.rail(/Cancel the old subscription details/i);
 	await expect(detail).toBeVisible({ timeout: 15_000 });
 
@@ -317,7 +317,7 @@ test("cancel the inline delete confirm → no write, the Todo survives", async (
 		},
 	]);
 
-	await library.gotoTopic("todos", TODO);
+	await library.gotoCollection("todos", TODO);
 	const detail = library.rail(/Keep this task details/i);
 	await expect(detail).toBeVisible({ timeout: 15_000 });
 
@@ -357,7 +357,7 @@ test("edit then delete a seeded Journal Entry via the rail editor (update + dele
 		},
 	]);
 
-	await library.gotoTopic("journal", JE);
+	await library.gotoCollection("journal", JE);
 	const detail = library.rail(/Morning standup ran long. details/i);
 	await expect(detail).toBeVisible({ timeout: 15_000 });
 
@@ -380,7 +380,7 @@ test("edit then delete a seeded Journal Entry via the rail editor (update + dele
 	).toBe("Morning standup ran long; agreed to timebox it.");
 
 	// Delete: reopen the (now-updated) entry and remove it.
-	await library.gotoTopic("journal", JE);
+	await library.gotoCollection("journal", JE);
 	const detail2 = library.rail(/details/i);
 	await expect(detail2).toBeVisible({ timeout: 15_000 });
 	await library.deleteEntity(detail2, "journal entry");
@@ -404,7 +404,7 @@ test("create a Media item via the rail editor → entity/mutate writes it and th
 	// The Media topic is the static `/library/media` route; selection rides `?id`
 	// on it (the KIND_META.media slug "media" collides with this route, so the rail
 	// stays in-place rather than navigating to /library/$kind — ADR-0059).
-	await library.gotoTopic("media");
+	await library.gotoCollection("media");
 	await library.newEntity("media");
 
 	const rail = library.rail(/new media/i);
@@ -446,7 +446,7 @@ test("edit a seeded Media item via the rail editor → update_media persists acr
 		},
 	]);
 
-	await library.gotoTopic("media", MEDIA);
+	await library.gotoCollection("media", MEDIA);
 	const detail = library.rail(/Dune details/i);
 	await expect(detail).toBeVisible({ timeout: 15_000 });
 
@@ -507,7 +507,7 @@ test("delete a seeded Media item via the inline confirm → delete_media removes
 		},
 	]);
 
-	await library.gotoTopic("media", MEDIA);
+	await library.gotoCollection("media", MEDIA);
 	const detail = library.rail(/Stale link details/i);
 	await expect(detail).toBeVisible({ timeout: 15_000 });
 
@@ -532,7 +532,7 @@ test("create a Todo shows the 'Created' success cue", async ({
 }) => {
 	const library = new LibraryPage(page, core.url);
 
-	await library.gotoTopic("todos");
+	await library.gotoCollection("todos");
 	await library.newEntity("todo");
 
 	const rail = library.rail(/new todo/i);
@@ -562,7 +562,7 @@ test("delete a seeded Todo shows the 'Deleted' success cue", async ({
 		},
 	]);
 
-	await library.gotoTopic("todos", TODO);
+	await library.gotoCollection("todos", TODO);
 	const detail = library.rail(/Toss the expired snacks details/i);
 	await expect(detail).toBeVisible({ timeout: 15_000 });
 

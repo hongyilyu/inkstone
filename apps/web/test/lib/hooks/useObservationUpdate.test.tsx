@@ -10,7 +10,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { useObservationUpdate } from "@/lib/hooks/useObservationUpdate";
 import { currentCue, resetEntityCueStore } from "@/store/entityCue";
 
-// Stub WsClient whose `observationUpdate` runs the provided handler; unused methods die.
+// Stub WsClient whose `observationUpdate` runs the provided handler; other
+// un-stubbed request verbs die, while the harness serves empty
+// entity/backlink/run-event reads.
 function makeWrapper(
 	observationUpdate: (
 		params: ObservationUpdateParams,

@@ -127,4 +127,13 @@ describe("renderWithCore harness", () => {
 		expect(cause).not.toContain("not stubbed");
 		expect(cause).toContain("SocketError");
 	});
+
+	it("wsConfig combined with stub options throws", async () => {
+		await expect(
+			renderWithCore(<div />, {
+				wsConfig: { url: "ws://stub/ws" },
+				overrides: {},
+			}),
+		).rejects.toThrow(/wsConfig/);
+	});
 });

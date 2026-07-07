@@ -80,12 +80,12 @@ const overrides: Partial<WsClientService> = {
 			: Effect.succeed({ hits: [] }),
 };
 
-function renderApp() {
+async function renderApp() {
 	const router = createRouter({
 		routeTree,
 		history: createMemoryHistory({ initialEntries: ["/library"] }),
 	});
-	renderWithCore(<RouterProvider router={router} />, { overrides });
+	await renderWithCore(<RouterProvider router={router} />, { overrides });
 	return router;
 }
 
@@ -99,7 +99,7 @@ afterEach(cleanup);
 
 describe("CommandPalette (⌘K)", () => {
 	it("is closed until the shortcut, then opens and filters", async () => {
-		renderApp();
+		await renderApp();
 		expect(screen.queryByPlaceholderText(PLACEHOLDER)).not.toBeInTheDocument();
 
 		await pressCmdK();
@@ -116,7 +116,7 @@ describe("CommandPalette (⌘K)", () => {
 	});
 
 	it("activates the selected result with the keyboard and navigates", async () => {
-		const router = renderApp();
+		const router = await renderApp();
 		openPalette();
 		const input = await screen.findByPlaceholderText(PLACEHOLDER);
 
@@ -134,7 +134,7 @@ describe("CommandPalette (⌘K)", () => {
 	// it; route.tsx mounts the detail rail) — a regression guard for the one slug that
 	// shadows $kind (ADR-0059 web-surface routing).
 	it("navigates to a Media item on the static topic route, preserving the id", async () => {
-		const router = renderApp();
+		const router = await renderApp();
 		openPalette();
 		const input = await screen.findByPlaceholderText(PLACEHOLDER);
 
@@ -147,7 +147,7 @@ describe("CommandPalette (⌘K)", () => {
 	});
 
 	it("surfaces matching messages and navigates to their thread", async () => {
-		const router = renderApp();
+		const router = await renderApp();
 		openPalette();
 		const input = await screen.findByPlaceholderText(PLACEHOLDER);
 
@@ -179,7 +179,7 @@ describe("CommandPalette (⌘K)", () => {
 	});
 
 	it("shows no Messages group for an empty query", async () => {
-		renderApp();
+		await renderApp();
 		openPalette();
 		await screen.findByPlaceholderText(PLACEHOLDER);
 
@@ -188,7 +188,7 @@ describe("CommandPalette (⌘K)", () => {
 	});
 
 	it("teaches a no-match instead of going blank", async () => {
-		renderApp();
+		await renderApp();
 		openPalette();
 		const input = await screen.findByPlaceholderText(PLACEHOLDER);
 
@@ -202,7 +202,7 @@ describe("CommandPalette (⌘K)", () => {
 		// shrinks out from under the cursor; the active index must re-clamp so Enter
 		// still activates a real row (the bug: a stale index past the end → Enter
 		// silently no-ops on `flat[active] === undefined`).
-		const router = renderApp();
+		const router = await renderApp();
 		openPalette();
 		const input = await screen.findByPlaceholderText(PLACEHOLDER);
 
@@ -243,7 +243,7 @@ describe("CommandPalette (⌘K)", () => {
 	});
 
 	it("closes on Escape", async () => {
-		renderApp();
+		await renderApp();
 		openPalette();
 		const input = await screen.findByPlaceholderText(PLACEHOLDER);
 
