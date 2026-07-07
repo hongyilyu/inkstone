@@ -1197,6 +1197,42 @@ impl TargetKey {
     }
 }
 
+/// The shape of a kind's run-independent target-reference check — which
+/// referenced Entities `mutation_target::validate_mutation_target_refs` must
+/// resolve against tier 2 BEFORE apply (ADR-0030/0031/0033).
+///
+/// Design decision (a): the check rides the `Copy` contract as this DECLARATIVE
+/// facet, interpreted by one kind-generic driver in `crate::mutation_target`
+/// (whose async checkers stay private there) — NOT as a boxed-future fn pointer
+/// on the descriptor. Only ~6 shapes exist across all 21 kinds, and the checks
+/// need async + a DB pool: plain fn pointers cannot be async, and boxing a
+/// future would cost the descriptor its `Copy`. A kind with no run-independent
+/// reference declares [`TargetRefs::NoCheck`] explicitly, so a newly-added kind
+/// is a COMPILE ERROR in `describe()` until it states its target policy — it can
+/// never silently fall through to "no check".
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum TargetRefs {
+    /// Resolve the optional `source_journal_entry_id` anchor only (the
+    /// Person/Project creates).
+    SourceAnchor,
+    /// The Todo create: the source anchor FIRST, then its `todo.project_id` /
+    /// `person_refs` references — sequential, in that order.
+    SourceAnchorAndTodoCreateRefs,
+    /// `update_todo`'s envelope-aware walk: the `todo_id` primary target, the
+    /// set/add person refs, and a supplied `todo.project_id`.
+    TodoUpdateRefs,
+    /// An update/delete whose only reference is the primary target Entity id,
+    /// type-checked against the kind's own Entity Type.
+    GenericTarget,
+    /// The reference weave: its source Journal Entry (primary anchor) and its
+    /// referenceable target Entity.
+    ReferenceWeave,
+    /// NO run-independent target reference: direct creates with no auxiliary
+    /// refs, and `apply_intent_graph` (which owns its graph-level resolution in
+    /// the graph apply path).
+    NoCheck,
+}
+
 /// The path-independent classification + policy of a `mutation_kind` — the facets
 /// both write paths (agent `decide`, user `mutate`) share. Resolved once via
 /// [`MutationKind::describe`]; `Copy` so it threads cheaply.
@@ -1229,6 +1265,10 @@ pub(crate) struct Descriptor {
     /// decision (b) above; `entity_id` is the freshly minted id on creates
     /// (and the graph anchor), `None` on updates/deletes.
     pub(crate) render_accept: Option<fn(&Value, Option<&str>) -> String>,
+    /// The shape of this kind's run-independent target-reference check —
+    /// interpreted by `crate::mutation_target`'s kind-generic driver (design
+    /// decision (a) — see [`TargetRefs`]).
+    pub(crate) target_refs: TargetRefs,
 }
 
 /// Every Entity-like Workspace mutation kind (ADR-0016, ADR-0025, ADR-0036,
@@ -1323,6 +1363,7 @@ impl MutationKind {
         use EntityType as E;
         use MutationKind as M;
         use TargetKey as K;
+        use TargetRefs as T;
         use WriteOp as W;
         match self {
             // ── Journal Entry ──
@@ -1332,6 +1373,7 @@ impl MutationKind {
                 None,
                 v::validate_journal_entry,
                 Some(v::render_accept_create_journal_entry),
+                T::NoCheck,
             ),
             M::UpdateJournalEntry => regular(
                 W::Update,
@@ -1339,6 +1381,7 @@ impl MutationKind {
                 Some(K::EntityId),
                 v::validate_update_journal_entry,
                 Some(v::render_accept_update_journal_entry),
+                T::GenericTarget,
             ),
             M::DeleteJournalEntry => regular(
                 W::Delete,
@@ -1346,6 +1389,7 @@ impl MutationKind {
                 Some(K::EntityId),
                 v::validate_delete_journal_entry,
                 Some(v::render_accept_delete_journal_entry),
+                T::GenericTarget,
             ),
             // ── Person ──
             M::CreatePerson => regular(
@@ -1354,6 +1398,7 @@ impl MutationKind {
                 None,
                 v::validate_create_person,
                 Some(v::render_accept_create_person),
+                T::SourceAnchor,
             ),
             M::UpdatePerson => regular(
                 W::Update,
@@ -1361,6 +1406,7 @@ impl MutationKind {
                 Some(K::EntityId),
                 v::validate_update_person,
                 Some(v::render_accept_update_person),
+                T::GenericTarget,
             ),
             M::DeletePerson => regular(
                 W::Delete,
@@ -1368,6 +1414,7 @@ impl MutationKind {
                 Some(K::EntityId),
                 v::validate_delete_person,
                 Some(v::render_accept_delete_person),
+                T::GenericTarget,
             ),
             // ── Project ──
             M::CreateProject => regular(
@@ -1376,6 +1423,7 @@ impl MutationKind {
                 None,
                 v::validate_create_project,
                 Some(v::render_accept_create_project),
+                T::SourceAnchor,
             ),
             M::UpdateProject => regular(
                 W::Update,
@@ -1383,6 +1431,7 @@ impl MutationKind {
                 Some(K::EntityId),
                 v::validate_update_project,
                 Some(v::render_accept_update_project),
+                T::GenericTarget,
             ),
             M::DeleteProject => regular(
                 W::Delete,
@@ -1390,6 +1439,7 @@ impl MutationKind {
                 Some(K::EntityId),
                 v::validate_delete_project,
                 Some(v::render_accept_delete_project),
+                T::GenericTarget,
             ),
             // ── Todo ──
             M::CreateTodo => regular(
@@ -1398,6 +1448,7 @@ impl MutationKind {
                 None,
                 v::validate_todo,
                 Some(v::render_accept_create_todo),
+                T::SourceAnchorAndTodoCreateRefs,
             ),
             M::DeleteTodo => regular(
                 W::Delete,
@@ -1405,15 +1456,24 @@ impl MutationKind {
                 Some(K::EntityId),
                 v::validate_delete_todo,
                 Some(v::render_accept_delete_todo),
+                T::GenericTarget,
             ),
             // ── Media (user-only: no proposal accept text) ──
-            M::CreateMedia => regular(W::Create, E::Media, None, v::validate_media, None),
+            M::CreateMedia => regular(
+                W::Create,
+                E::Media,
+                None,
+                v::validate_media,
+                None,
+                T::NoCheck,
+            ),
             M::UpdateMedia => regular(
                 W::Update,
                 E::Media,
                 Some(K::EntityId),
                 v::validate_update_media,
                 None,
+                T::GenericTarget,
             ),
             M::DeleteMedia => regular(
                 W::Delete,
@@ -1421,15 +1481,24 @@ impl MutationKind {
                 Some(K::EntityId),
                 v::validate_delete_media,
                 None,
+                T::GenericTarget,
             ),
             // ── Habit (user-only: no proposal accept text) ──
-            M::CreateHabit => regular(W::Create, E::Habit, None, v::validate_habit, None),
+            M::CreateHabit => regular(
+                W::Create,
+                E::Habit,
+                None,
+                v::validate_habit,
+                None,
+                T::NoCheck,
+            ),
             M::UpdateHabit => regular(
                 W::Update,
                 E::Habit,
                 Some(K::EntityId),
                 v::validate_update_habit,
                 None,
+                T::GenericTarget,
             ),
             M::DeleteHabit => regular(
                 W::Delete,
@@ -1437,6 +1506,7 @@ impl MutationKind {
                 Some(K::EntityId),
                 v::validate_delete_habit,
                 None,
+                T::GenericTarget,
             ),
             // ── Irregular kinds (comment-held invariants) ──
             // The reference weave writes a new revision of the SOURCE Journal
@@ -1448,6 +1518,7 @@ impl MutationKind {
                 target_key: Some(K::SourceEntityId),
                 validate: v::validate_reference_existing_entity_from_journal_entry,
                 render_accept: Some(v::render_accept_reference_existing_entity_from_journal_entry),
+                target_refs: T::ReferenceWeave,
             },
             // A read-modify-write of the Project's review fields (ADR-0034): an
             // Update targeting `entity_id`. User-only: no proposal accept text.
@@ -1457,6 +1528,7 @@ impl MutationKind {
                 target_key: Some(K::EntityId),
                 validate: v::validate_mark_project_reviewed,
                 render_accept: None,
+                target_refs: T::GenericTarget,
             },
             // update_todo's target key is `todo_id` (its envelope wraps a
             // Partial<TodoData> under `todo`), NOT `entity_id`.
@@ -1466,6 +1538,7 @@ impl MutationKind {
                 target_key: Some(K::TodoId),
                 validate: v::validate_update_todo,
                 render_accept: Some(v::render_accept_update_todo),
+                target_refs: T::TodoUpdateRefs,
             },
             // A graph spans many entities, so it has NO single target id — like a
             // create, `target_key` is None. `entity_type` is the JE anchor; the
@@ -1473,26 +1546,30 @@ impl MutationKind {
             // slice-2 resolver (which loops `apply_entity_mutation` per node with
             // each node's own type). `write_op: Create` keeps the descriptor total
             // and matches the create-and-link-only nature of the kind (ADR-0042).
+            // NoCheck: the graph owns its graph-level resolution in the graph
+            // apply path, so it carries no run-independent target reference.
             M::ApplyIntentGraph => Descriptor {
                 write_op: W::Create,
                 entity_type: E::JournalEntry,
                 target_key: None,
                 validate: v::validate_apply_intent_graph,
                 render_accept: Some(v::render_accept_apply_intent_graph),
+                target_refs: T::NoCheck,
             },
         }
     }
 }
 
 /// Helper for the mechanical rows in `describe`: a pure `(WriteOp, EntityType,
-/// TargetKey)` triple plus the kind's validate and render facets. Named
-/// explicitly (not a closure) so it reads alongside the irregular arms.
+/// TargetKey)` triple plus the kind's validate, render, and target-ref facets.
+/// Named explicitly (not a closure) so it reads alongside the irregular arms.
 fn regular(
     write_op: WriteOp,
     entity_type: EntityType,
     target_key: Option<TargetKey>,
     validate: fn(&Value) -> Result<(), String>,
     render_accept: Option<fn(&Value, Option<&str>) -> String>,
+    target_refs: TargetRefs,
 ) -> Descriptor {
     Descriptor {
         write_op,
@@ -1500,6 +1577,7 @@ fn regular(
         target_key,
         validate,
         render_accept,
+        target_refs,
     }
 }
 
@@ -1917,6 +1995,60 @@ mod tests {
                 Some(TargetKey::EntityId),
                 "{} targets entity_id",
                 entity_id_kind.as_wire()
+            );
+        }
+    }
+
+    #[test]
+    fn target_refs_facet_matches_legacy_dispatch_per_kind() {
+        use MutationKind as M;
+        use TargetRefs as T;
+        // Closed-set mapping: the contract's target-ref facet reproduces the
+        // legacy `validate_mutation_target_refs` dispatch's exact 6-shape
+        // partition of all 21 kinds (in wire order). Person/Project creates
+        // resolve only the optional source Journal Entry anchor; a Todo create
+        // additionally resolves its project/person refs; update_todo has its own
+        // envelope-aware ref walk; every update/delete whose only reference is
+        // the primary target rides the generic check; the reference weave
+        // resolves both endpoints; and the kinds with NO run-independent target
+        // reference declare that explicitly (never a silent fall-through).
+        let expected: [(MutationKind, TargetRefs); 21] = [
+            (M::CreateJournalEntry, T::NoCheck),
+            (M::UpdateJournalEntry, T::GenericTarget),
+            (M::DeleteJournalEntry, T::GenericTarget),
+            (
+                M::ReferenceExistingEntityFromJournalEntry,
+                T::ReferenceWeave,
+            ),
+            (M::CreatePerson, T::SourceAnchor),
+            (M::UpdatePerson, T::GenericTarget),
+            (M::DeletePerson, T::GenericTarget),
+            (M::CreateProject, T::SourceAnchor),
+            (M::UpdateProject, T::GenericTarget),
+            (M::DeleteProject, T::GenericTarget),
+            (M::MarkProjectReviewed, T::GenericTarget),
+            (M::CreateTodo, T::SourceAnchorAndTodoCreateRefs),
+            (M::UpdateTodo, T::TodoUpdateRefs),
+            (M::DeleteTodo, T::GenericTarget),
+            (M::CreateMedia, T::NoCheck),
+            (M::UpdateMedia, T::GenericTarget),
+            (M::DeleteMedia, T::GenericTarget),
+            (M::CreateHabit, T::NoCheck),
+            (M::UpdateHabit, T::GenericTarget),
+            (M::DeleteHabit, T::GenericTarget),
+            (M::ApplyIntentGraph, T::NoCheck),
+        ];
+        assert_eq!(
+            expected.len(),
+            WIRE.len(),
+            "every MutationKind declares its target-ref shape"
+        );
+        for (kind, shape) in expected {
+            assert_eq!(
+                kind.describe().target_refs,
+                shape,
+                "{} declares the legacy dispatch's target-ref shape",
+                kind.as_wire()
             );
         }
     }
