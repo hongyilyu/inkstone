@@ -1,17 +1,20 @@
 import type { ProviderStatusResult, ThreadGetResult } from "@inkstone/protocol";
 import {
 	type RunEventValue,
-	stubWsClient,
 	UnknownThreadError,
-	WsClient,
+	type WsClient,
+	type WsClientService,
 	type WsError,
 	WsRequestError,
 } from "@inkstone/ui-sdk";
-import { QueryClient } from "@tanstack/react-query";
-import { renderChatRoute } from "@test/test-utils/renderChatRoute";
+import type { QueryClient } from "@tanstack/react-query";
+import {
+	makeQueryClient,
+	renderWithCore,
+} from "@test/test-utils/renderWithCore";
 import { act, cleanup, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Deferred, Effect, Layer, ManagedRuntime, Stream } from "effect";
+import { Deferred, Effect, Stream } from "effect";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatColumn } from "@/components/ChatColumn.js";
 import {
@@ -27,8 +30,8 @@ import {
 	setPendingProposal,
 } from "@/store/chat";
 
-// Stub WsClient injected via RuntimeProvider (no real socket); its finite subscribeRun event list drives the store.
-function makeStubRuntime(opts: {
+// Stub WsClient overrides injected via the harness (no real socket); the finite subscribeRun event list drives the store.
+function makeStubOverrides(opts: {
 	readonly runId: string;
 	readonly events: readonly RunEventValue[];
 	readonly threadId?: string;
@@ -45,9 +48,9 @@ function makeStubRuntime(opts: {
 	// Override the whole provider/status read (e.g. `Effect.never` to hold it
 	// pending) — wins over `providerConnected` when set.
 	readonly providerStatus?: WsClient["Type"]["providerStatus"];
-}) {
+}): Partial<WsClientService> {
 	const unused = Effect.die("not exercised in this test");
-	const stub = stubWsClient({
+	return {
 		threadCreate: () =>
 			opts.sendFailure
 				? Effect.fail(opts.sendFailure)
@@ -81,8 +84,7 @@ function makeStubRuntime(opts: {
 						},
 					],
 				})),
-	});
-	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
+	};
 }
 
 /**
@@ -90,22 +92,22 @@ function makeStubRuntime(opts: {
  * `focusedMessageId` appends the `?focusedMessageId=` deep-link search param.
  */
 function renderFocused(
-	runtime: ReturnType<typeof makeStubRuntime>,
+	overrides: Partial<WsClientService>,
 	threadId: string,
 	opts: { queryClient?: QueryClient; focusedMessageId?: string } = {},
 ) {
 	const query = opts.focusedMessageId
 		? `?focusedMessageId=${opts.focusedMessageId}`
 		: "";
-	return renderChatRoute(<ChatColumn />, {
-		runtime,
+	return renderWithCore(<ChatColumn />, {
+		overrides,
 		path: `/thread/${threadId}${query}`,
 		queryClient: opts.queryClient,
 	});
 }
 
-// All renders are async (the helper awaits the router's initial load). Tests that
-// were synchronous before now `await renderFocused(...)` / `await renderChatRoute(...)`.
+// All renders are async (the harness awaits the router's initial load). Tests that
+// were synchronous before now `await renderFocused(...)` / `await renderWithCore(...)`.
 
 // jsdom ships no scrollIntoView; the search-jump tests stub it on the prototype.
 // Capture the (undefined) original so afterEach can restore it and the stub can't
@@ -125,12 +127,12 @@ afterEach(() => {
 describe("ChatColumn", () => {
 	it("sends into the focused thread and streams an echo reply", async () => {
 		const user = userEvent.setup();
-		const runtime = makeStubRuntime({
+		const overrides = makeStubOverrides({
 			runId: "run-1",
 			events: [{ kind: "text_delta", delta: "echo: hi" }, { kind: "done" }],
 		});
 
-		await renderFocused(runtime, "threadA");
+		await renderFocused(overrides, "threadA");
 
 		await user.type(screen.getByRole("textbox", { name: /message/i }), "hi");
 		await user.click(screen.getByRole("button", { name: /send/i }));
@@ -142,13 +144,11 @@ describe("ChatColumn", () => {
 		expect(
 			assistantBubble.closest('[data-role="assistant"]'),
 		).toBeInTheDocument();
-
-		await runtime.dispose();
 	});
 
 	it("invalidates both the thread list and the recent-Runs feed on send", async () => {
 		const user = userEvent.setup();
-		const runtime = makeStubRuntime({
+		const overrides = makeStubOverrides({
 			runId: "run-inv",
 			events: [{ kind: "text_delta", delta: "echo: hi" }, { kind: "done" }],
 		});
@@ -156,9 +156,7 @@ describe("ChatColumn", () => {
 		// A real QueryClient whose invalidateQueries we can observe: a send births/
 		// advances a Run, so the right-rail feed (["run-history"]) must refresh
 		// alongside the sidebar (["threads"]).
-		const client = new QueryClient({
-			defaultOptions: { queries: { retry: false } },
-		});
+		const client = makeQueryClient();
 		const invalidated: unknown[] = [];
 		const spy = vi
 			.spyOn(client, "invalidateQueries")
@@ -167,7 +165,7 @@ describe("ChatColumn", () => {
 				return Promise.resolve();
 			});
 
-		await renderFocused(runtime, "threadA", { queryClient: client });
+		await renderFocused(overrides, "threadA", { queryClient: client });
 
 		await user.type(screen.getByRole("textbox", { name: /message/i }), "hi");
 		await user.click(screen.getByRole("button", { name: /send/i }));
@@ -178,32 +176,29 @@ describe("ChatColumn", () => {
 		});
 
 		spy.mockRestore();
-		await runtime.dispose();
 	});
 
 	it("blocks blank sends via the composer trim-guard", async () => {
 		const user = userEvent.setup();
-		const runtime = makeStubRuntime({
+		const overrides = makeStubOverrides({
 			runId: "run-x",
 			events: [{ kind: "done" }],
 		});
 
-		await renderFocused(runtime, "threadA");
+		await renderFocused(overrides, "threadA");
 
 		await user.type(screen.getByRole("textbox", { name: /message/i }), "   ");
 		await user.click(screen.getByRole("button", { name: /send/i }));
 
 		expect(getChatState().threads.threadA?.messages ?? []).toHaveLength(0);
-
-		await runtime.dispose();
 	});
 
 	it("welcomes the user on the / route (no thread focused) with no messages", async () => {
 		// Default-connected (a provider is wired) → the ordinary "Start a chat"
 		// welcome, NOT the first-run connect screen (slice 2 gate is satisfied).
-		const runtime = makeStubRuntime({ runId: "run-welcome", events: [] });
+		const overrides = makeStubOverrides({ runId: "run-welcome", events: [] });
 
-		await renderChatRoute(<ChatColumn />, { runtime, path: "/" });
+		await renderWithCore(<ChatColumn />, { overrides, path: "/" });
 
 		// No flash: the connect welcome is gated on a KNOWN-disconnected status, so
 		// the in-flight read shows the ordinary "Start a chat" welcome immediately
@@ -216,20 +211,18 @@ describe("ChatColumn", () => {
 		expect(
 			screen.queryByRole("heading", { name: /welcome to inkstone/i }),
 		).toBeNull();
-
-		await runtime.dispose();
 	});
 
 	it("shows the first-run connect welcome on / when NO provider is connected (deep-links to /settings/models)", async () => {
 		// No provider wired yet → the branded connect screen replaces "Start a chat"
 		// and its CTA deep-links to the Models settings page (slice 2).
-		const runtime = makeStubRuntime({
+		const overrides = makeStubOverrides({
 			runId: "run-disconnected",
 			events: [],
 			providerConnected: false,
 		});
 
-		await renderChatRoute(<ChatColumn />, { runtime, path: "/" });
+		await renderWithCore(<ChatColumn />, { overrides, path: "/" });
 
 		// The branded connect heading shows…
 		expect(
@@ -245,8 +238,6 @@ describe("ChatColumn", () => {
 		const ctas = screen.getAllByRole("link", { name: /connect a provider/i });
 		expect(ctas).toHaveLength(1);
 		expect(ctas[0].getAttribute("href")).toContain("/settings/models");
-
-		await runtime.dispose();
 	});
 
 	it("shows an in-thread connect hint and disables Send when no provider is connected", async () => {
@@ -254,7 +245,7 @@ describe("ChatColumn", () => {
 		// not the hydrating skeleton) but NO provider wired: the composer's Send is
 		// soft-disabled and a slim in-thread "Connect a provider" hint sits above it,
 		// deep-linking to the Models settings page (slice 3).
-		const runtime = makeStubRuntime({
+		const overrides = makeStubOverrides({
 			runId: "run-gated",
 			events: [],
 			providerConnected: false,
@@ -267,7 +258,7 @@ describe("ChatColumn", () => {
 			run_id: "r-gated",
 		});
 
-		await renderFocused(runtime, "threadA");
+		await renderFocused(overrides, "threadA");
 
 		// The thread renders (not the skeleton)…
 		await screen.findByText("an earlier reply");
@@ -280,14 +271,12 @@ describe("ChatColumn", () => {
 
 		// Send is gated while disconnected.
 		expect(screen.getByRole("button", { name: /send/i })).toBeDisabled();
-
-		await runtime.dispose();
 	});
 
 	it("does NOT show the in-thread connect hint and keeps Send enabled when a provider is connected", async () => {
 		// Same focused-thread setup but default-CONNECTED: no in-thread hint, and
 		// Send works as usual (slice 3 gate is satisfied).
-		const runtime = makeStubRuntime({ runId: "run-connected", events: [] });
+		const overrides = makeStubOverrides({ runId: "run-connected", events: [] });
 		seedAssistantMessage("threadA", {
 			id: "a-connected",
 			role: "assistant",
@@ -296,7 +285,7 @@ describe("ChatColumn", () => {
 			run_id: "r-connected",
 		});
 
-		await renderFocused(runtime, "threadA");
+		await renderFocused(overrides, "threadA");
 
 		await screen.findByText("an earlier reply");
 		// No connect hint, and Send is enabled.
@@ -304,8 +293,6 @@ describe("ChatColumn", () => {
 			screen.queryByRole("link", { name: /connect a provider/i }),
 		).toBeNull();
 		expect(screen.getByRole("button", { name: /send/i })).toBeEnabled();
-
-		await runtime.dispose();
 	});
 
 	it("does NOT flash the connect welcome while provider status is still loading", async () => {
@@ -313,13 +300,13 @@ describe("ChatColumn", () => {
 		// resolves we show the neutral "Start a chat" welcome, never the connect
 		// screen. With the read held pending forever, the connect heading must never
 		// appear (it would, on every remount, if the gate read the bare anyConnected).
-		const runtime = makeStubRuntime({
+		const overrides = makeStubOverrides({
 			runId: "run-pending",
 			events: [],
 			providerStatus: () => Effect.never,
 		});
 
-		await renderChatRoute(<ChatColumn />, { runtime, path: "/" });
+		await renderWithCore(<ChatColumn />, { overrides, path: "/" });
 
 		expect(
 			screen.getByRole("heading", { name: /start a chat/i }),
@@ -327,8 +314,6 @@ describe("ChatColumn", () => {
 		expect(
 			screen.queryByRole("heading", { name: /welcome to inkstone/i }),
 		).toBeNull();
-
-		await runtime.dispose();
 	});
 
 	it("serves the ordinary welcome synchronously from a pre-populated connected cache (no flash on a warm second visit)", async () => {
@@ -341,22 +326,18 @@ describe("ChatColumn", () => {
 		// (setQueryData, not a no-op invalidate of the then-inactive query) lives in
 		// routes/settings/models.page.test.tsx and is the test that breaks if the fix
 		// is reverted.
-		const client = new QueryClient({
-			defaultOptions: {
-				queries: { retry: false, staleTime: Number.POSITIVE_INFINITY },
-			},
-		});
+		const client = makeQueryClient();
 		client.setQueryData<ProviderStatusResult>(["provider-status"], {
 			providers: [{ id: "openai-codex", connected: true, auth_kind: "oauth" }],
 		});
-		const runtime = makeStubRuntime({
+		const overrides = makeStubOverrides({
 			runId: "run-secondvisit",
 			events: [],
 			providerConnected: true,
 		});
 
-		await renderChatRoute(<ChatColumn />, {
-			runtime,
+		await renderWithCore(<ChatColumn />, {
+			overrides,
 			path: "/",
 			queryClient: client,
 		});
@@ -369,21 +350,17 @@ describe("ChatColumn", () => {
 		expect(
 			screen.queryByRole("heading", { name: /welcome to inkstone/i }),
 		).toBeNull();
-
-		await runtime.dispose();
 	});
 
 	it("shows a loading skeleton while a focused thread hydrates", async () => {
-		const runtime = makeStubRuntime({ runId: "run-hydrate", events: [] });
+		const overrides = makeStubOverrides({ runId: "run-hydrate", events: [] });
 
-		await renderFocused(runtime, "threadA");
+		await renderFocused(overrides, "threadA");
 
 		expect(
 			screen.getByRole("status", { name: /loading conversation/i }),
 		).toBeInTheDocument();
 		expect(screen.queryByRole("heading", { name: /start a chat/i })).toBeNull();
-
-		await runtime.dispose();
 	});
 
 	it("shows a recoverable error (not an eternal skeleton) when hydration fails, and recovers on retry", async () => {
@@ -403,7 +380,7 @@ describe("ChatColumn", () => {
 			],
 		};
 		let calls = 0;
-		const stub = stubWsClient({
+		const overrides: Partial<WsClientService> = {
 			threadGet: () => {
 				calls += 1;
 				return calls === 1
@@ -418,10 +395,9 @@ describe("ChatColumn", () => {
 						{ id: "openai-codex", connected: true, auth_kind: "oauth" },
 					],
 				}),
-		});
-		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
+		};
 
-		await renderFocused(runtime, "threadA");
+		await renderFocused(overrides, "threadA");
 
 		// The failed fetch resolves to a recoverable error, never the spinning skeleton.
 		const alert = await screen.findByRole("alert");
@@ -435,13 +411,11 @@ describe("ChatColumn", () => {
 		// Retry succeeds → history renders, error gone.
 		expect(await screen.findByText("recovered history")).toBeInTheDocument();
 		expect(screen.queryByText(/couldn't load this conversation/i)).toBeNull();
-
-		await runtime.dispose();
 	});
 
 	it("shows an honest not-found state (with a Back-to-New-Chat exit, no retry) for a missing thread", async () => {
 		const user = userEvent.setup();
-		const stub = stubWsClient({
+		const overrides: Partial<WsClientService> = {
 			threadGet: () =>
 				Effect.fail(new UnknownThreadError({ message: "no such thread" })),
 			// Default these full-stub behaviour tests to a CONNECTED provider so the
@@ -452,11 +426,10 @@ describe("ChatColumn", () => {
 						{ id: "openai-codex", connected: true, auth_kind: "oauth" },
 					],
 				}),
-		});
-		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
+		};
 
-		const { router } = await renderChatRoute(<ChatColumn />, {
-			runtime,
+		const { router } = await renderWithCore(<ChatColumn />, {
+			overrides,
 			path: "/thread/does-not-exist",
 		});
 
@@ -474,20 +447,18 @@ describe("ChatColumn", () => {
 		await waitFor(() => {
 			expect(router.state.location.pathname).toBe("/");
 		});
-
-		await runtime.dispose();
 	});
 
 	it("mints a new thread on the first send from / and navigates to its route", async () => {
 		const user = userEvent.setup();
-		const runtime = makeStubRuntime({
+		const overrides = makeStubOverrides({
 			runId: "run-2",
 			threadId: "thread-new",
 			events: [{ kind: "text_delta", delta: "echo: hello" }, { kind: "done" }],
 		});
 
-		const { router } = await renderChatRoute(<ChatColumn />, {
-			runtime,
+		const { router } = await renderWithCore(<ChatColumn />, {
+			overrides,
 			path: "/",
 		});
 
@@ -506,8 +477,6 @@ describe("ChatColumn", () => {
 		await waitFor(() => {
 			expect(router.state.location.pathname).toBe("/thread/thread-new");
 		});
-
-		await runtime.dispose();
 	});
 
 	it("renders a user message's attachment segments as inline /media images below the text", async () => {
@@ -558,7 +527,7 @@ describe("ChatColumn", () => {
 	});
 
 	it("shows a typing indicator for a streaming assistant message with no text", async () => {
-		const runtime = makeStubRuntime({ runId: "run-3", events: [] });
+		const overrides = makeStubOverrides({ runId: "run-3", events: [] });
 		seedAssistantMessage("threadA", {
 			id: "a1",
 			role: "assistant",
@@ -567,13 +536,13 @@ describe("ChatColumn", () => {
 			run_id: "r1",
 		});
 
-		await renderFocused(runtime, "threadA");
+		await renderFocused(overrides, "threadA");
 
 		expect(screen.getByTestId("typing-indicator")).toBeInTheDocument();
 	});
 
 	it("hides the typing indicator once streamed text arrives", async () => {
-		const runtime = makeStubRuntime({ runId: "run-4", events: [] });
+		const overrides = makeStubOverrides({ runId: "run-4", events: [] });
 		seedAssistantMessage("threadA", {
 			id: "a2",
 			role: "assistant",
@@ -582,7 +551,7 @@ describe("ChatColumn", () => {
 			run_id: "r2",
 		});
 
-		await renderFocused(runtime, "threadA");
+		await renderFocused(overrides, "threadA");
 
 		expect(screen.queryByTestId("typing-indicator")).toBeNull();
 	});
@@ -591,7 +560,7 @@ describe("ChatColumn", () => {
 		// A proposal-first (or tool→proposal) turn parks with no leading text but
 		// KEEPS status "streaming" (only a terminal event flips it). The run is idle,
 		// waiting on the user's decision — the "Assistant is typing" dots must not show.
-		const runtime = makeStubRuntime({ runId: "run-parked", events: [] });
+		const overrides = makeStubOverrides({ runId: "run-parked", events: [] });
 		seedAssistantMessage("threadA", {
 			id: "a-parked",
 			role: "assistant",
@@ -618,7 +587,7 @@ describe("ChatColumn", () => {
 			status: "pending",
 		});
 
-		await renderFocused(runtime, "threadA");
+		await renderFocused(overrides, "threadA");
 
 		expect(screen.queryByTestId("typing-indicator")).toBeNull();
 	});
@@ -631,7 +600,7 @@ describe("ChatColumn", () => {
 			configurable: true,
 		});
 
-		const runtime = makeStubRuntime({ runId: "run-6", events: [] });
+		const overrides = makeStubOverrides({ runId: "run-6", events: [] });
 		seedAssistantMessage("threadA", {
 			id: "a4",
 			role: "assistant",
@@ -640,7 +609,7 @@ describe("ChatColumn", () => {
 			run_id: "r4",
 		});
 
-		await renderFocused(runtime, "threadA");
+		await renderFocused(overrides, "threadA");
 
 		const copyButton = screen.getByRole("button", { name: /copy/i });
 		await user.click(copyButton);
@@ -652,7 +621,7 @@ describe("ChatColumn", () => {
 	});
 
 	it("renders a decided proposal's Applied indicator ABOVE the copy button", async () => {
-		const runtime = makeStubRuntime({ runId: "run-applied", events: [] });
+		const overrides = makeStubOverrides({ runId: "run-applied", events: [] });
 		seedAssistantMessage("threadA", {
 			id: "a-applied",
 			role: "assistant",
@@ -670,7 +639,7 @@ describe("ChatColumn", () => {
 			status: "accepted",
 		});
 
-		await renderFocused(runtime, "threadA");
+		await renderFocused(overrides, "threadA");
 
 		const appliedCard = screen.getByText("Applied.");
 		const copyButton = screen.getByRole("button", { name: /copy/i });
@@ -683,7 +652,7 @@ describe("ChatColumn", () => {
 	});
 
 	it("renders segments in timeline order: tool row, THEN proposal, THEN text (ADR-0045)", async () => {
-		const runtime = makeStubRuntime({ runId: "run-order", events: [] });
+		const overrides = makeStubOverrides({ runId: "run-order", events: [] });
 		// A turn whose timeline is tool_call → proposal → text. The hardcoded bubble
 		// always put text before the proposal; segment-ordered render must honor this.
 		seedAssistantMessage("threadA", {
@@ -709,7 +678,7 @@ describe("ChatColumn", () => {
 			status: "accepted",
 		});
 
-		await renderFocused(runtime, "threadA");
+		await renderFocused(overrides, "threadA");
 
 		const toolRow = screen.getByTestId("tool-call");
 		const proposal = document.querySelector('[data-proposal="r-order"]');
@@ -727,7 +696,7 @@ describe("ChatColumn", () => {
 	});
 
 	it("shows no copy button on a streaming assistant message", async () => {
-		const runtime = makeStubRuntime({ runId: "run-7", events: [] });
+		const overrides = makeStubOverrides({ runId: "run-7", events: [] });
 		seedAssistantMessage("threadA", {
 			id: "a5",
 			role: "assistant",
@@ -736,13 +705,13 @@ describe("ChatColumn", () => {
 			run_id: "r5",
 		});
 
-		await renderFocused(runtime, "threadA");
+		await renderFocused(overrides, "threadA");
 
 		expect(screen.queryByRole("button", { name: /copy/i })).toBeNull();
 	});
 
 	it("shows no copy button on an empty completed assistant message", async () => {
-		const runtime = makeStubRuntime({ runId: "run-8", events: [] });
+		const overrides = makeStubOverrides({ runId: "run-8", events: [] });
 		seedAssistantMessage("threadA", {
 			id: "a6",
 			role: "assistant",
@@ -751,13 +720,13 @@ describe("ChatColumn", () => {
 			run_id: "r6",
 		});
 
-		await renderFocused(runtime, "threadA");
+		await renderFocused(overrides, "threadA");
 
 		expect(screen.queryByRole("button", { name: /copy/i })).toBeNull();
 	});
 
 	it("shows no typing indicator on a completed (empty) assistant message", async () => {
-		const runtime = makeStubRuntime({ runId: "run-5", events: [] });
+		const overrides = makeStubOverrides({ runId: "run-5", events: [] });
 		seedAssistantMessage("threadA", {
 			id: "a3",
 			role: "assistant",
@@ -766,13 +735,13 @@ describe("ChatColumn", () => {
 			run_id: "r3",
 		});
 
-		await renderFocused(runtime, "threadA");
+		await renderFocused(overrides, "threadA");
 
 		expect(screen.queryByTestId("typing-indicator")).toBeNull();
 	});
 
 	it("renders a running tool call with its label and suppresses the typing dots", async () => {
-		const runtime = makeStubRuntime({ runId: "run-tc1", events: [] });
+		const overrides = makeStubOverrides({ runId: "run-tc1", events: [] });
 		seedAssistantMessage("threadA", {
 			id: "a7",
 			role: "assistant",
@@ -786,7 +755,7 @@ describe("ChatColumn", () => {
 			],
 		});
 
-		await renderFocused(runtime, "threadA");
+		await renderFocused(overrides, "threadA");
 
 		const row = screen.getByTestId("tool-call");
 		expect(row).toHaveAttribute("data-status", "running");
@@ -797,7 +766,7 @@ describe("ChatColumn", () => {
 	});
 
 	it("renders a completed tool call in its settled past-tense state", async () => {
-		const runtime = makeStubRuntime({ runId: "run-tc2", events: [] });
+		const overrides = makeStubOverrides({ runId: "run-tc2", events: [] });
 		seedAssistantMessage("threadA", {
 			id: "a8",
 			role: "assistant",
@@ -812,7 +781,7 @@ describe("ChatColumn", () => {
 			],
 		});
 
-		await renderFocused(runtime, "threadA");
+		await renderFocused(overrides, "threadA");
 
 		const row = screen.getByTestId("tool-call");
 		expect(row).toHaveAttribute("data-status", "completed");
@@ -820,7 +789,7 @@ describe("ChatColumn", () => {
 	});
 
 	it("surfaces an errored tool call with a failed indication", async () => {
-		const runtime = makeStubRuntime({ runId: "run-tc3", events: [] });
+		const overrides = makeStubOverrides({ runId: "run-tc3", events: [] });
 		seedAssistantMessage("threadA", {
 			id: "a9",
 			role: "assistant",
@@ -834,7 +803,7 @@ describe("ChatColumn", () => {
 			],
 		});
 
-		await renderFocused(runtime, "threadA");
+		await renderFocused(overrides, "threadA");
 
 		const row = screen.getByTestId("tool-call");
 		expect(row).toHaveAttribute("data-status", "error");
@@ -842,7 +811,7 @@ describe("ChatColumn", () => {
 	});
 
 	it("falls back to a humanized label for an unregistered tool", async () => {
-		const runtime = makeStubRuntime({ runId: "run-tc4", events: [] });
+		const overrides = makeStubOverrides({ runId: "run-tc4", events: [] });
 		seedAssistantMessage("threadA", {
 			id: "a10",
 			role: "assistant",
@@ -856,13 +825,13 @@ describe("ChatColumn", () => {
 			],
 		});
 
-		await renderFocused(runtime, "threadA");
+		await renderFocused(overrides, "threadA");
 
 		expect(screen.getByTestId("tool-call")).toHaveTextContent("Search web");
 	});
 
 	it("renders a search_entities row with its display arg (ADR-0043)", async () => {
-		const runtime = makeStubRuntime({ runId: "run-tc5", events: [] });
+		const overrides = makeStubOverrides({ runId: "run-tc5", events: [] });
 		seedAssistantMessage("threadA", {
 			id: "a11",
 			role: "assistant",
@@ -882,7 +851,7 @@ describe("ChatColumn", () => {
 			],
 		});
 
-		await renderFocused(runtime, "threadA");
+		await renderFocused(overrides, "threadA");
 
 		const row = screen.getByTestId("tool-call");
 		expect(row).toHaveTextContent("Searched entities");
@@ -896,14 +865,14 @@ describe("ChatColumn", () => {
 		);
 		// A partial (non-terminal) stream: the assistant turn stays active (no
 		// done/error/cancelled), so activeRunId stays set and Stop is shown.
-		const runtime = makeStubRuntime({
+		const overrides = makeStubOverrides({
 			runId: "run-stop",
 			threadId: "thread-stop",
 			events: [{ kind: "text_delta", delta: "echo: h" }],
 			cancelRun,
 		});
 
-		await renderFocused(runtime, "threadA");
+		await renderFocused(overrides, "threadA");
 
 		await user.type(screen.getByRole("textbox", { name: /message/i }), "hi");
 		await user.click(screen.getByRole("button", { name: /send/i }));
@@ -924,14 +893,12 @@ describe("ChatColumn", () => {
 			expect(screen.queryByRole("button", { name: /stop/i })).toBeNull();
 		});
 		expect(screen.getByRole("button", { name: /send/i })).toBeInTheDocument();
-
-		await runtime.dispose();
 	});
 
 	it("scrolls to and highlights the message matching the search-jump anchor", async () => {
 		const scrollIntoView = vi.fn();
 		Element.prototype.scrollIntoView = scrollIntoView;
-		const runtime = makeStubRuntime({ runId: "run-jump", events: [] });
+		const overrides = makeStubOverrides({ runId: "run-jump", events: [] });
 		appendUserMessage("threadA", {
 			id: "u-top",
 			role: "user",
@@ -950,7 +917,7 @@ describe("ChatColumn", () => {
 		});
 
 		// A ⌘K hit deep-linked to the message via ?focusedMessageId= (ADR-0061).
-		const { router } = await renderFocused(runtime, "threadA", {
+		const { router } = await renderFocused(overrides, "threadA", {
 			focusedMessageId: "a-deep",
 		});
 
@@ -975,8 +942,6 @@ describe("ChatColumn", () => {
 			expect(router.state.location.search).toEqual({});
 		});
 		expect(router.state.location.pathname).toBe("/thread/threadA");
-
-		await runtime.dispose();
 	});
 
 	it("jumps to the anchor exactly once even as later messages arrive (streaming) before the strip commits", async () => {
@@ -986,7 +951,7 @@ describe("ChatColumn", () => {
 		// per-anchor one-shot guard makes it fire exactly once (deep-review finding).
 		const scrollIntoView = vi.fn();
 		Element.prototype.scrollIntoView = scrollIntoView;
-		const runtime = makeStubRuntime({ runId: "run-once", events: [] });
+		const overrides = makeStubOverrides({ runId: "run-once", events: [] });
 		appendUserMessage("threadA", {
 			id: "u-top",
 			role: "user",
@@ -1002,7 +967,7 @@ describe("ChatColumn", () => {
 			run_id: "r-anchor",
 		});
 
-		await renderFocused(runtime, "threadA", { focusedMessageId: "a-anchor" });
+		await renderFocused(overrides, "threadA", { focusedMessageId: "a-anchor" });
 
 		await screen.findByText("the anchored reply");
 		await waitFor(() => {
@@ -1026,14 +991,12 @@ describe("ChatColumn", () => {
 
 		// Still exactly one scroll — the one-shot guard held.
 		expect(scrollIntoView).toHaveBeenCalledTimes(1);
-
-		await runtime.dispose();
 	});
 
 	it("does not highlight any message when no search-jump anchor is set", async () => {
 		const scrollIntoView = vi.fn();
 		Element.prototype.scrollIntoView = scrollIntoView;
-		const runtime = makeStubRuntime({ runId: "run-noanchor", events: [] });
+		const overrides = makeStubOverrides({ runId: "run-noanchor", events: [] });
 		seedAssistantMessage("threadA", {
 			id: "a-plain",
 			role: "assistant",
@@ -1042,20 +1005,18 @@ describe("ChatColumn", () => {
 			run_id: "r-plain",
 		});
 
-		const { container } = await renderFocused(runtime, "threadA");
+		const { container } = await renderFocused(overrides, "threadA");
 
 		await screen.findByText("an ordinary reply");
 		expect(scrollIntoView).not.toHaveBeenCalled();
 		expect(container.querySelector("[data-highlighted]")).toBeNull();
-
-		await runtime.dispose();
 	});
 
 	it("clears the search-jump highlight after its dwell so the ring is transient", async () => {
 		Element.prototype.scrollIntoView = vi.fn();
 		vi.useFakeTimers();
 		try {
-			const runtime = makeStubRuntime({ runId: "run-fade", events: [] });
+			const overrides = makeStubOverrides({ runId: "run-fade", events: [] });
 			seedAssistantMessage("threadA", {
 				id: "a-fade",
 				role: "assistant",
@@ -1064,7 +1025,7 @@ describe("ChatColumn", () => {
 				run_id: "r-fade",
 			});
 
-			const { container } = await renderFocused(runtime, "threadA", {
+			const { container } = await renderFocused(overrides, "threadA", {
 				focusedMessageId: "a-fade",
 			});
 
@@ -1080,8 +1041,6 @@ describe("ChatColumn", () => {
 				vi.advanceTimersByTime(1);
 			});
 			expect(container.querySelector("[data-highlighted]")).toBeNull();
-
-			await runtime.dispose();
 		} finally {
 			vi.useRealTimers();
 		}
@@ -1099,7 +1058,7 @@ describe("ChatColumn", () => {
 			.spyOn(HTMLElement.prototype, "scrollTop", "set")
 			.mockImplementation(setScrollTop);
 		try {
-			const runtime = makeStubRuntime({ runId: "run-cold", events: [] });
+			const overrides = makeStubOverrides({ runId: "run-cold", events: [] });
 			// A multi-message thread already present (simulates post-hydration).
 			appendUserMessage("threadA", {
 				id: "u-early",
@@ -1116,15 +1075,13 @@ describe("ChatColumn", () => {
 				run_id: "r-late",
 			});
 
-			await renderFocused(runtime, "threadA");
+			await renderFocused(overrides, "threadA");
 
 			await screen.findByText("last reply");
 			// Pinned to the bottom: scrollTop set to the (stubbed) scrollHeight.
 			await waitFor(() => {
 				expect(setScrollTop).toHaveBeenCalledWith(4000);
 			});
-
-			await runtime.dispose();
 		} finally {
 			scrollTopSpy.mockRestore();
 			delete (HTMLElement.prototype as { scrollHeight?: number }).scrollHeight;
@@ -1143,7 +1100,10 @@ describe("ChatColumn", () => {
 			.spyOn(HTMLElement.prototype, "scrollTop", "set")
 			.mockImplementation(setScrollTop);
 		try {
-			const runtime = makeStubRuntime({ runId: "run-anchor-wins", events: [] });
+			const overrides = makeStubOverrides({
+				runId: "run-anchor-wins",
+				events: [],
+			});
 			appendUserMessage("threadA", {
 				id: "u-early",
 				role: "user",
@@ -1159,7 +1119,9 @@ describe("ChatColumn", () => {
 				run_id: "r-target",
 			});
 
-			await renderFocused(runtime, "threadA", { focusedMessageId: "a-target" });
+			await renderFocused(overrides, "threadA", {
+				focusedMessageId: "a-target",
+			});
 
 			await screen.findByText("the anchored reply");
 			// The anchor jump ran (scrollIntoView), and the bottom-scroll did NOT
@@ -1171,8 +1133,6 @@ describe("ChatColumn", () => {
 				});
 			});
 			expect(setScrollTop).not.toHaveBeenCalledWith(4000);
-
-			await runtime.dispose();
 		} finally {
 			scrollTopSpy.mockRestore();
 			delete (HTMLElement.prototype as { scrollHeight?: number }).scrollHeight;
@@ -1213,7 +1173,7 @@ describe("ChatColumn", () => {
 				},
 			],
 		};
-		const stub = stubWsClient({
+		const overrides: Partial<WsClientService> = {
 			threadGet: () => Deferred.await(gate),
 			// Default these full-stub behaviour tests to a CONNECTED provider so the
 			// ordinary chat surface renders (slice 2's connect gate is off here).
@@ -1223,11 +1183,10 @@ describe("ChatColumn", () => {
 						{ id: "openai-codex", connected: true, auth_kind: "oauth" },
 					],
 				}),
-		});
-		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
+		};
 		try {
 			// Empty store + pending thread/get → the skeleton, no messages yet.
-			await renderFocused(runtime, "threadCold");
+			await renderFocused(overrides, "threadCold");
 			expect(
 				screen.getByRole("status", { name: /loading conversation/i }),
 			).toBeInTheDocument();
@@ -1243,8 +1202,6 @@ describe("ChatColumn", () => {
 			await waitFor(() => {
 				expect(setScrollTop).toHaveBeenCalledWith(4000);
 			});
-
-			await runtime.dispose();
 		} finally {
 			scrollTopSpy.mockRestore();
 			delete (HTMLElement.prototype as { scrollHeight?: number }).scrollHeight;
@@ -1267,7 +1224,7 @@ describe("ChatColumn", () => {
 			.spyOn(HTMLElement.prototype, "scrollTop", "set")
 			.mockImplementation(setScrollTop);
 		try {
-			const runtime = makeStubRuntime({
+			const overrides = makeStubOverrides({
 				runId: "run-ghost-anchor",
 				events: [],
 			});
@@ -1287,7 +1244,7 @@ describe("ChatColumn", () => {
 				run_id: "r-real",
 			});
 
-			const { router } = await renderFocused(runtime, "threadA", {
+			const { router } = await renderFocused(overrides, "threadA", {
 				focusedMessageId: "ghost-id",
 			});
 
@@ -1301,8 +1258,6 @@ describe("ChatColumn", () => {
 			await waitFor(() => {
 				expect(setScrollTop).toHaveBeenCalledWith(4000);
 			});
-
-			await runtime.dispose();
 		} finally {
 			scrollTopSpy.mockRestore();
 			delete (HTMLElement.prototype as { scrollHeight?: number }).scrollHeight;
@@ -1310,7 +1265,7 @@ describe("ChatColumn", () => {
 	});
 
 	it("renders a streaming reasoning segment as a collapsed 'Thinking…' disclosure with the trace hidden", async () => {
-		const runtime = makeStubRuntime({ runId: "run-r1", events: [] });
+		const overrides = makeStubOverrides({ runId: "run-r1", events: [] });
 		seedAssistantMessage("threadA", {
 			id: "a-reason",
 			role: "assistant",
@@ -1319,20 +1274,18 @@ describe("ChatColumn", () => {
 			segments: [{ kind: "reasoning", text: "hmm let me think" }],
 		});
 
-		await renderFocused(runtime, "threadA");
+		await renderFocused(overrides, "threadA");
 
 		// Collapsed by default while streaming (no auto-expand): the live label shows…
 		const toggle = screen.getByRole("button", { name: /thinking/i });
 		expect(toggle).toHaveAttribute("aria-expanded", "false");
 		// …and the trace body is NOT visible.
 		expect(screen.queryByText("hmm let me think")).toBeNull();
-
-		await runtime.dispose();
 	});
 
 	it("expands the reasoning disclosure on click to reveal the trace", async () => {
 		const user = userEvent.setup();
-		const runtime = makeStubRuntime({ runId: "run-r2", events: [] });
+		const overrides = makeStubOverrides({ runId: "run-r2", events: [] });
 		seedAssistantMessage("threadA", {
 			id: "a-reason2",
 			role: "assistant",
@@ -1341,7 +1294,7 @@ describe("ChatColumn", () => {
 			segments: [{ kind: "reasoning", text: "hmm" }],
 		});
 
-		await renderFocused(runtime, "threadA");
+		await renderFocused(overrides, "threadA");
 
 		const toggle = screen.getByRole("button", { name: /thinking/i });
 		expect(screen.queryByText("hmm")).toBeNull();
@@ -1350,12 +1303,10 @@ describe("ChatColumn", () => {
 
 		expect(toggle).toHaveAttribute("aria-expanded", "true");
 		expect(screen.getByText("hmm")).toBeInTheDocument();
-
-		await runtime.dispose();
 	});
 
 	it("labels a sealed reasoning segment 'Thought for Ns' when durationMs >= 1000", async () => {
-		const runtime = makeStubRuntime({ runId: "run-r3", events: [] });
+		const overrides = makeStubOverrides({ runId: "run-r3", events: [] });
 		seedAssistantMessage("threadA", {
 			id: "a-reason3",
 			role: "assistant",
@@ -1367,17 +1318,15 @@ describe("ChatColumn", () => {
 			],
 		});
 
-		await renderFocused(runtime, "threadA");
+		await renderFocused(overrides, "threadA");
 
 		expect(
 			screen.getByRole("button", { name: /thought for 4s/i }),
 		).toBeInTheDocument();
-
-		await runtime.dispose();
 	});
 
 	it("labels a sealed reasoning segment bare 'Thought' when durationMs is undefined or sub-second", async () => {
-		const runtime = makeStubRuntime({ runId: "run-r4", events: [] });
+		const overrides = makeStubOverrides({ runId: "run-r4", events: [] });
 		seedAssistantMessage("threadA", {
 			id: "a-reason4",
 			role: "assistant",
@@ -1390,18 +1339,16 @@ describe("ChatColumn", () => {
 			],
 		});
 
-		await renderFocused(runtime, "threadA");
+		await renderFocused(overrides, "threadA");
 
 		// Both an undefined duration and a sub-second one read bare "Thought" (no "for Ns").
 		const toggles = screen.getAllByRole("button", { name: /^thought$/i });
 		expect(toggles).toHaveLength(2);
 		expect(screen.queryByRole("button", { name: /thought for/i })).toBeNull();
-
-		await runtime.dispose();
 	});
 
 	it("suppresses the typing indicator while ONLY a reasoning segment is streaming", async () => {
-		const runtime = makeStubRuntime({ runId: "run-r5", events: [] });
+		const overrides = makeStubOverrides({ runId: "run-r5", events: [] });
 		seedAssistantMessage("threadA", {
 			id: "a-reason5",
 			role: "assistant",
@@ -1412,18 +1359,16 @@ describe("ChatColumn", () => {
 			segments: [{ kind: "reasoning", text: "thinking out loud" }],
 		});
 
-		await renderFocused(runtime, "threadA");
+		await renderFocused(overrides, "threadA");
 
 		expect(screen.queryByTestId("typing-indicator")).toBeNull();
 		expect(
 			screen.getByRole("button", { name: /thinking/i }),
 		).toBeInTheDocument();
-
-		await runtime.dispose();
 	});
 
 	it("shows 'Thought for Ns' (not 'Thinking…') for a SEALED reasoning block while the reply still streams", async () => {
-		const runtime = makeStubRuntime({ runId: "run-r6", events: [] });
+		const overrides = makeStubOverrides({ runId: "run-r6", events: [] });
 		seedAssistantMessage("threadA", {
 			id: "a-reason6",
 			role: "assistant",
@@ -1438,14 +1383,12 @@ describe("ChatColumn", () => {
 			],
 		});
 
-		await renderFocused(runtime, "threadA");
+		await renderFocused(overrides, "threadA");
 
 		expect(
 			screen.getByRole("button", { name: /thought for 2s/i }),
 		).toBeInTheDocument();
 		expect(screen.queryByRole("button", { name: /thinking/i })).toBeNull();
-
-		await runtime.dispose();
 	});
 
 	it("offers Try again on an errored reply and re-drives the SAME run in place (no duplicated turn, #230)", async () => {
@@ -1454,7 +1397,7 @@ describe("ChatColumn", () => {
 		const retrySpy = vi.fn((_runId: string) =>
 			Effect.succeed({ outcome: "accepted" as const }),
 		);
-		const runtime = makeStubRuntime({
+		const overrides = makeStubOverrides({
 			runId: "r-fail",
 			events: [{ kind: "text_delta", delta: "recovered" }, { kind: "done" }],
 			retryRun: retrySpy,
@@ -1474,7 +1417,7 @@ describe("ChatColumn", () => {
 			run_id: "r-fail",
 		});
 
-		await renderFocused(runtime, "threadA");
+		await renderFocused(overrides, "threadA");
 
 		expect(screen.getByTestId("assistant-error")).toHaveTextContent(
 			/nothing was saved without your approval/i,
@@ -1490,8 +1433,6 @@ describe("ChatColumn", () => {
 		const msgs = getChatState().threads.threadA?.messages ?? [];
 		expect(msgs.filter((m) => m.role === "user")).toHaveLength(1);
 		expect(msgs.filter((m) => m.role === "assistant")).toHaveLength(1);
-
-		await runtime.dispose();
 	});
 
 	it("re-SENDS (not run/retry) when a failed-send bubble has no run id yet (#230 regression guard)", async () => {
@@ -1503,7 +1444,7 @@ describe("ChatColumn", () => {
 		const retrySpy = vi.fn((_runId: string) =>
 			Effect.succeed({ outcome: "accepted" as const }),
 		);
-		const runtime = makeStubRuntime({
+		const overrides = makeStubOverrides({
 			runId: "r-resent",
 			events: [{ kind: "text_delta", delta: "resent reply" }, { kind: "done" }],
 			retryRun: retrySpy,
@@ -1523,15 +1464,13 @@ describe("ChatColumn", () => {
 			run_id: "", // never reached Core — no run id
 		});
 
-		await renderFocused(runtime, "threadA");
+		await renderFocused(overrides, "threadA");
 		await user.click(screen.getByRole("button", { name: /try again/i }));
 
 		// The resend path streams a fresh Run's reply; run/retry is NEVER called for
 		// the empty id (the dead-button regression).
 		expect(await screen.findByText("resent reply")).toBeInTheDocument();
 		expect(retrySpy).not.toHaveBeenCalled();
-
-		await runtime.dispose();
 	});
 
 	it("shows the connection-specific copy when a focused-thread send fails because the link is down (ADR-0051)", async () => {
@@ -1539,13 +1478,13 @@ describe("ChatColumn", () => {
 		// The SDK postMessage rejects in the E channel with a connection-caused
 		// WsError; the real bridge `send` squash must surface its `reason` so the
 		// banner reads the link-down copy, not the generic "try again".
-		const runtime = makeStubRuntime({
+		const overrides = makeStubOverrides({
 			runId: "run-down",
 			events: [],
 			sendFailure: new WsRequestError({ reason: "connection_lost" }),
 		});
 
-		await renderFocused(runtime, "threadA");
+		await renderFocused(overrides, "threadA");
 
 		await user.type(screen.getByRole("textbox", { name: /message/i }), "hi");
 		await user.click(screen.getByRole("button", { name: /send/i }));
@@ -1556,40 +1495,36 @@ describe("ChatColumn", () => {
 		expect(banner).toHaveAttribute("role", "alert");
 		// The raw reason token never leaks into user copy (BookmarkEditor precedent).
 		expect(banner).not.toHaveTextContent("connection_lost");
-
-		await runtime.dispose();
 	});
 
 	it("keeps the generic copy when a focused-thread send fails for a non-connection reason", async () => {
 		const user = userEvent.setup();
-		const runtime = makeStubRuntime({
+		const overrides = makeStubOverrides({
 			runId: "run-other",
 			events: [],
 			sendFailure: new WsRequestError({ reason: "decode_failed" }),
 		});
 
-		await renderFocused(runtime, "threadA");
+		await renderFocused(overrides, "threadA");
 
 		await user.type(screen.getByRole("textbox", { name: /message/i }), "hi");
 		await user.click(screen.getByRole("button", { name: /send/i }));
 
 		const banner = await screen.findByText(GENERIC_SEND_FAILURE);
 		expect(banner).toHaveAttribute("role", "alert");
-
-		await runtime.dispose();
 	});
 
 	it("shows the connection-specific copy when the FIRST send (mint-on-send) fails because the link is down", async () => {
 		const user = userEvent.setup();
 		// From `/` (no focused thread) the first send mints via `threadCreate`; a
 		// connection-caused failure there must read the same link-down copy.
-		const runtime = makeStubRuntime({
+		const overrides = makeStubOverrides({
 			runId: "run-mint-down",
 			events: [],
 			sendFailure: new WsRequestError({ reason: "send_failed" }),
 		});
 
-		await renderChatRoute(<ChatColumn />, { runtime, path: "/" });
+		await renderWithCore(<ChatColumn />, { overrides, path: "/" });
 
 		await user.type(screen.getByRole("textbox", { name: /message/i }), "hello");
 		await user.click(screen.getByRole("button", { name: /send/i }));
@@ -1599,7 +1534,5 @@ describe("ChatColumn", () => {
 		// focused-thread cases above.
 		const banner = await screen.findByText(CONNECTION_SEND_FAILURE);
 		expect(banner).toHaveAttribute("role", "alert");
-
-		await runtime.dispose();
 	});
 });

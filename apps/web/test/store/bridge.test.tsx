@@ -3,13 +3,15 @@ import * as sdk from "@inkstone/ui-sdk";
 import {
 	type RunEventValue,
 	type RunId,
-	stubWsClient,
-	WsClient,
 	type WsError,
 	WsRequestError,
 } from "@inkstone/ui-sdk";
-import { QueryClient } from "@tanstack/react-query";
-import { Effect, Layer, ManagedRuntime, Queue, Stream } from "effect";
+import type { QueryClient } from "@tanstack/react-query";
+import {
+	makeCoreRuntime,
+	makeQueryClient,
+} from "@test/test-utils/renderWithCore";
+import { Effect, Queue, Stream } from "effect";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { WsRuntime } from "@/runtime.js";
 import {
@@ -37,10 +39,11 @@ import {
 
 // Stub WsClient whose threadCreate fails; only that runs on the sendNewThread path.
 function makeFailingThreadCreateRuntime() {
-	const stub = stubWsClient({
-		threadCreate: () => Effect.fail(new WsRequestError({ reason: "boom" })),
+	return makeCoreRuntime({
+		overrides: {
+			threadCreate: () => Effect.fail(new WsRequestError({ reason: "boom" })),
+		},
 	});
-	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 }
 
 beforeEach(() => {
@@ -201,10 +204,11 @@ describe("send path with image attachments (upload-then-post, ADR-0058)", () => 
 describe("onRunSettled (terminal seam → recent-Runs refresh)", () => {
 	/** A stub whose subscribeRun replays a fixed event sequence then closes. */
 	function makeRuntime(events: RunEventValue[]) {
-		const stub = stubWsClient({
-			subscribeRun: () => Stream.fromIterable<RunEventValue>(events),
+		return makeCoreRuntime({
+			overrides: {
+				subscribeRun: () => Stream.fromIterable<RunEventValue>(events),
+			},
 		});
-		return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 	}
 
 	function seed(runId: RunId) {
@@ -240,17 +244,18 @@ describe("onRunSettled (terminal seam → recent-Runs refresh)", () => {
 		const settled = vi.fn();
 		setOnRunSettled(settled);
 		// A stream that fails mid-flight rather than emitting a terminal event.
-		const stub = stubWsClient({
-			subscribeRun: (): Stream.Stream<RunEventValue, WsError> =>
-				Stream.fromIterable<RunEventValue>([
-					{ kind: "text_delta", delta: "partial" },
-				]).pipe(
-					Stream.concat(
-						Stream.fail(new WsRequestError({ reason: "socket closed" })),
+		const runtime = makeCoreRuntime({
+			overrides: {
+				subscribeRun: (): Stream.Stream<RunEventValue, WsError> =>
+					Stream.fromIterable<RunEventValue>([
+						{ kind: "text_delta", delta: "partial" },
+					]).pipe(
+						Stream.concat(
+							Stream.fail(new WsRequestError({ reason: "socket closed" })),
+						),
 					),
-				),
+			},
 		});
-		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 		const runId = "run-drop" as RunId;
 		seed(runId);
 		startRunStream(runtime, "t1", runId);
@@ -265,11 +270,12 @@ describe("onRunSettled (terminal seam → recent-Runs refresh)", () => {
 		const settled = vi.fn();
 		setOnRunSettled(settled);
 		// A stream that never terminates — the fiber ends only via interruption.
-		const stub = stubWsClient({
-			subscribeRun: (): Stream.Stream<RunEventValue, WsError> =>
-				Stream.fromQueue(Effect.runSync(Queue.unbounded<RunEventValue>())),
+		const runtime = makeCoreRuntime({
+			overrides: {
+				subscribeRun: (): Stream.Stream<RunEventValue, WsError> =>
+					Stream.fromQueue(Effect.runSync(Queue.unbounded<RunEventValue>())),
+			},
 		});
-		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 		const runId = "run-interrupt" as RunId;
 		seed(runId);
 		startRunStream(runtime, "t1", runId);
@@ -293,12 +299,13 @@ describe("decideProposal resume fiber tracking (M2)", () => {
 			(_runId: RunId): Stream.Stream<RunEventValue, WsError> =>
 				Stream.fromQueue(Effect.runSync(Queue.unbounded<RunEventValue>())),
 		);
-		const stub = stubWsClient({
-			subscribeRun,
-			proposalDecide: () =>
-				Effect.succeed({ status: "accepted" as const, entity_id: "e1" }),
+		const runtime = makeCoreRuntime({
+			overrides: {
+				subscribeRun,
+				proposalDecide: () =>
+					Effect.succeed({ status: "accepted" as const, entity_id: "e1" }),
+			},
 		});
-		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
 		// Seed a parked run + its original (parked) subscribe fiber + a proposal.
 		const runId = "run-resume" as RunId;
@@ -354,9 +361,8 @@ describe("cancelRun (ADR-0014)", () => {
 			(_runId: RunId): Stream.Stream<RunEventValue, WsError> =>
 				Stream.fromQueue(Effect.runSync(Queue.unbounded<RunEventValue>())),
 		);
-		const stub = stubWsClient({ subscribeRun, cancelRun });
 		return {
-			runtime: ManagedRuntime.make(Layer.succeed(WsClient, stub)),
+			runtime: makeCoreRuntime({ overrides: { subscribeRun, cancelRun } }),
 			cancelRun,
 		};
 	}
@@ -490,12 +496,13 @@ describe("cancelRun (ADR-0014)", () => {
 			(_runId: RunId): Stream.Stream<RunEventValue, WsError> =>
 				Stream.fromQueue(Effect.runSync(Queue.unbounded<RunEventValue>())),
 		);
-		const stub = stubWsClient({
-			subscribeRun,
-			cancelRun: () => Effect.fail(new WsRequestError({ reason: "boom" })),
-			retryRun: () => Effect.fail(new WsRequestError({ reason: "boom" })),
+		const runtime = makeCoreRuntime({
+			overrides: {
+				subscribeRun,
+				cancelRun: () => Effect.fail(new WsRequestError({ reason: "boom" })),
+				retryRun: () => Effect.fail(new WsRequestError({ reason: "boom" })),
+			},
 		});
-		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 		const runId = "run-fail" as RunId;
 		seedActiveRun(runId, runtime);
 
@@ -525,16 +532,17 @@ describe("cancelRun (ADR-0014)", () => {
 			(_runId: RunId): Stream.Stream<RunEventValue, WsError> =>
 				Stream.fromQueue(Effect.runSync(Queue.unbounded<RunEventValue>())),
 		);
-		const stub = stubWsClient({
-			subscribeRun,
-			cancelRun: () => Effect.succeed({ outcome: "accepted" as const }),
-			retryRun: () => Effect.succeed({ outcome: "accepted" as const }),
-			proposalDecide: () =>
-				Effect.promise(() => decideGate).pipe(
-					Effect.as({ status: "accepted" as const, entity_id: "e1" }),
-				),
+		const runtime = makeCoreRuntime({
+			overrides: {
+				subscribeRun,
+				cancelRun: () => Effect.succeed({ outcome: "accepted" as const }),
+				retryRun: () => Effect.succeed({ outcome: "accepted" as const }),
+				proposalDecide: () =>
+					Effect.promise(() => decideGate).pipe(
+						Effect.as({ status: "accepted" as const, entity_id: "e1" }),
+					),
+			},
 		});
-		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 		const runId = "run-race" as RunId;
 		seedActiveRun(runId, runtime);
 		setPendingProposal({
@@ -601,7 +609,7 @@ describe("cancelRun (ADR-0014)", () => {
 describe("thread/titled handler (ADR-0047 — patch the threads cache in place)", () => {
 	/** Seed the `["threads"]` cache with two ordered rows; t1 first (newer). */
 	function seedThreads(): QueryClient {
-		const qc = new QueryClient();
+		const qc = makeQueryClient();
 		qc.setQueryData<ThreadListResult>(["threads"], {
 			threads: [
 				{ id: "t1", title: "old A", last_activity_at: 2 },
@@ -646,7 +654,7 @@ describe("thread/titled handler (ADR-0047 — patch the threads cache in place)"
 	it('is a no-op when the `["threads"]` cache is empty (no row synthesized)', () => {
 		// No `["threads"]` data seeded: the `old && …` guard returns undefined, so
 		// React Query bails out and never materializes a cache entry.
-		const qc = new QueryClient();
+		const qc = makeQueryClient();
 
 		expect(() =>
 			applyThreadTitled(qc, { thread_id: "t1", title: "x" }),
@@ -718,7 +726,7 @@ describe("thread/titled handler (ADR-0047 — patch the threads cache in place)"
 	});
 
 	it("registers via the SDK seam and its disposer clears without throwing", () => {
-		const qc = new QueryClient();
+		const qc = makeQueryClient();
 		const dispose = registerThreadTitledHandler(qc);
 		expect(() => dispose()).not.toThrow();
 	});

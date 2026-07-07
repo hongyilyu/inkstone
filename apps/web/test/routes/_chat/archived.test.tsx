@@ -1,46 +1,44 @@
 import type { ThreadListResult } from "@inkstone/protocol";
 import {
-	stubWsClient,
-	WsClient,
+	type WsClientService,
 	type WsError,
 	WsRequestError,
 } from "@inkstone/ui-sdk";
-import { renderChatRoute } from "@test/test-utils/renderChatRoute";
+import { renderWithCore } from "@test/test-utils/renderWithCore";
 import { cleanup, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Effect, Layer, ManagedRuntime } from "effect";
+import { Effect } from "effect";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Route } from "@/routes/_chat/archived.js";
 
 afterEach(cleanup);
 
 /**
- * A WsClient stub that drives ONLY `threadListArchived` (the one read the view
+ * WsClient overrides that drive ONLY `threadListArchived` (the one read the view
  * exercises); every other method dies if touched, proving the view reads nothing
  * else. The empty-list and load-failure cases below each supply a different
  * `listArchived` to pin the view's `threads.length === 0` and `isError` branches.
  */
-function makeArchivedRuntime(
+function makeArchivedOverrides(
 	listArchived: () => Effect.Effect<ThreadListResult, WsError>,
-) {
-	const stub = stubWsClient({
+): Partial<WsClientService> {
+	return {
 		threadList: () => Effect.succeed({ threads: [] }),
 		threadListArchived: listArchived,
-	});
-	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
+	};
 }
 
 // Stub WsClient whose `threadListArchived` returns 2 archived Threads and SHRINKS
 // to 1 after `threadUnarchive` records its call — the mutate-then-reread pattern
-// (cf. makeGrowingStubRuntime), inverted to shrink. So a restore drops the row on
+// (cf. makeGrowingStubOverrides), inverted to shrink. So a restore drops the row on
 // refetch, proving the archived list re-reads on success.
-function makeShrinkingArchivedRuntime() {
+function makeShrinkingArchivedOverrides() {
 	const threadUnarchive = vi.fn((_id: string) => {});
 	let archived: { id: string; title: string; last_activity_at: number }[] = [
 		{ id: "a-1", title: "Old standup", last_activity_at: 2 },
 		{ id: "a-2", title: "Stale plan", last_activity_at: 1 },
 	];
-	const stub = stubWsClient({
+	const overrides: Partial<WsClientService> = {
 		threadList: () => Effect.succeed({ threads: [] }),
 		threadUnarchive: (threadId: string) =>
 			Effect.sync(() => {
@@ -49,9 +47,9 @@ function makeShrinkingArchivedRuntime() {
 				return { thread_id: threadId };
 			}),
 		threadListArchived: () => Effect.sync(() => ({ threads: [...archived] })),
-	});
+	};
 	return {
-		runtime: ManagedRuntime.make(Layer.succeed(WsClient, stub)),
+		overrides,
 		threadUnarchive,
 	};
 }
@@ -59,11 +57,11 @@ function makeShrinkingArchivedRuntime() {
 describe("Archived view (ADR-0052)", () => {
 	it("lists archived threads and restores one", async () => {
 		const user = userEvent.setup();
-		const { runtime, threadUnarchive } = makeShrinkingArchivedRuntime();
+		const { overrides, threadUnarchive } = makeShrinkingArchivedOverrides();
 
 		const ArchivedView = Route.options.component;
 		if (!ArchivedView) throw new Error("archived route has no component");
-		renderChatRoute(<ArchivedView />, { runtime });
+		renderWithCore(<ArchivedView />, { overrides, path: "/" });
 
 		// Both archived titles render.
 		expect(await screen.findByText("Old standup")).toBeInTheDocument();
@@ -79,16 +77,16 @@ describe("Archived view (ADR-0052)", () => {
 		);
 		// The other archived row stays.
 		expect(screen.getByText("Stale plan")).toBeInTheDocument();
-
-		await runtime.dispose();
 	});
 
 	it("renders the empty state when there are no archived threads", async () => {
-		const runtime = makeArchivedRuntime(() => Effect.succeed({ threads: [] }));
+		const overrides = makeArchivedOverrides(() =>
+			Effect.succeed({ threads: [] }),
+		);
 
 		const ArchivedView = Route.options.component;
 		if (!ArchivedView) throw new Error("archived route has no component");
-		renderChatRoute(<ArchivedView />, { runtime });
+		renderWithCore(<ArchivedView />, { overrides, path: "/" });
 
 		// The DECOMPOSE-promised empty copy renders once the read settles empty…
 		expect(await screen.findByText(/no archived threads/i)).toBeInTheDocument();
@@ -97,28 +95,24 @@ describe("Archived view (ADR-0052)", () => {
 		expect(
 			screen.queryByRole("button", { name: /restore thread/i }),
 		).not.toBeInTheDocument();
-
-		await runtime.dispose();
 	});
 
 	it("renders an honest load-failure when the archived read errors", async () => {
 		// `makeQueryClient` sets `retry: false`, so a failing read settles straight
 		// into `isError` (no cached rows) → the load-failure branch, NOT the empty
 		// state.
-		const runtime = makeArchivedRuntime(() =>
+		const overrides = makeArchivedOverrides(() =>
 			Effect.fail(new WsRequestError({ reason: "connection_lost" })),
 		);
 
 		const ArchivedView = Route.options.component;
 		if (!ArchivedView) throw new Error("archived route has no component");
-		renderChatRoute(<ArchivedView />, { runtime });
+		renderWithCore(<ArchivedView />, { overrides, path: "/" });
 
 		expect(
 			await screen.findByText(/couldn't load your archived conversations/i),
 		).toBeInTheDocument();
 		// A failed read must not masquerade as a genuinely empty archive.
 		expect(screen.queryByText(/no archived threads/i)).not.toBeInTheDocument();
-
-		await runtime.dispose();
 	});
 });

@@ -5,7 +5,7 @@ import {
 	WsClient,
 	type WsClientService,
 } from "@inkstone/ui-sdk";
-import { type QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
 	createMemoryHistory,
 	createRootRoute,
@@ -17,8 +17,7 @@ import {
 import { type RenderResult, render } from "@testing-library/react";
 import { Effect, Layer, ManagedRuntime, Stream } from "effect";
 import type { ReactElement, ReactNode } from "react";
-import { RuntimeProvider, type WsRuntime } from "@/runtime";
-import { makeQueryClient } from "./renderWithQuery";
+import { makeWsLayer, RuntimeProvider, type WsRuntime } from "@/runtime";
 
 // The single-entry render harness for Web Client view tests: internalizes the
 // stubWsClient → Layer → ManagedRuntime → QueryClient → provider-nesting
@@ -26,7 +25,16 @@ import { makeQueryClient } from "./renderWithQuery";
 // wire rows (see ./rows.ts); anything a test drives beyond reads goes through
 // `overrides`, which always wins over the seeds.
 
-export { makeQueryClient } from "./renderWithQuery";
+/** The suite's QueryClient: reads never go stale on their own (matching
+ * production's `staleTime: Infinity` in main.tsx) and never retry, so a failing
+ * read settles into `isError` immediately instead of hanging on retry backoff. */
+export function makeQueryClient(): QueryClient {
+	return new QueryClient({
+		defaultOptions: {
+			queries: { staleTime: Number.POSITIVE_INFINITY, retry: false },
+		},
+	});
+}
 
 /** Seed + override surface shared by {@link makeCoreRuntime} and friends. */
 export interface CoreRuntimeOptions {
@@ -44,9 +52,17 @@ export interface RenderWithCoreOptions extends CoreRuntimeOptions {
 	/** When given, mount a memory router at this location with the two chat
 	 * routes (`/` and `/thread/$threadId`) both rendering `ui`. */
 	path?: string;
+	/** Injection seam: a test-owned QueryClient (e.g. pre-seeded via
+	 * `setQueryData`) used instead of a fresh `makeQueryClient()`. */
+	queryClient?: QueryClient;
+	/** When given, back the runtime with the REAL `WsClientLive` layer over this
+	 * URL instead of a stub — the `RuntimeProvider config=` replacement. The
+	 * layer is lazy, so nothing dials the (dead) URL until a verb runs; seeds
+	 * and `overrides` are ignored in this mode. */
+	wsConfig?: { readonly url: string };
 }
 
-/** The ad-hoc memory router shape tests assert against (same as renderChatRoute). */
+/** The ad-hoc memory router shape tests assert against. */
 export interface TestRouter {
 	state: { location: { pathname: string; search: unknown } };
 }
@@ -94,10 +110,30 @@ export function makeCoreWrapper(opts: CoreRuntimeOptions = {}): {
  * (`QueryClientProvider > RuntimeProvider`) against a stubbed Core.
  *
  * With `path`, `ui` is mounted in an ad-hoc memory router with the two real
- * chat routes — `/` and `/thread/$threadId` — both rendering it (the
- * renderChatRoute pattern), and the live `router` is returned so a test can
- * assert the URL after a navigation.
+ * chat routes — `/` and `/thread/$threadId` — both rendering it, and the live
+ * `router` is returned (non-optional, per the overload) so a test can assert
+ * the URL after a navigation.
  */
+export async function renderWithCore(
+	ui: ReactElement,
+	opts: RenderWithCoreOptions & { path: string },
+): Promise<
+	RenderResult & {
+		runtime: WsRuntime;
+		queryClient: QueryClient;
+		router: TestRouter;
+	}
+>;
+export async function renderWithCore(
+	ui: ReactElement,
+	opts?: RenderWithCoreOptions,
+): Promise<
+	RenderResult & {
+		runtime: WsRuntime;
+		queryClient: QueryClient;
+		router?: TestRouter;
+	}
+>;
 export async function renderWithCore(
 	ui: ReactElement,
 	opts: RenderWithCoreOptions = {},
@@ -108,8 +144,11 @@ export async function renderWithCore(
 		router?: TestRouter;
 	}
 > {
-	const runtime = makeCoreRuntime(opts);
-	const queryClient = makeQueryClient();
+	const runtime =
+		opts.wsConfig !== undefined
+			? ManagedRuntime.make(makeWsLayer(opts.wsConfig))
+			: makeCoreRuntime(opts);
+	const queryClient = opts.queryClient ?? makeQueryClient();
 
 	if (opts.path === undefined) {
 		const result = render(

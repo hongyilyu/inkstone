@@ -2,40 +2,21 @@ import type {
 	ObservationUpdateParams,
 	ObservationUpdateResult,
 } from "@inkstone/protocol";
-import {
-	stubWsClient,
-	WsClient,
-	type WsError,
-	WsRequestError,
-} from "@inkstone/ui-sdk";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { type WsError, WsRequestError } from "@inkstone/ui-sdk";
+import { makeCoreWrapper } from "@test/test-utils/renderWithCore";
 import { renderHook, waitFor } from "@testing-library/react";
-import { Effect, Layer, ManagedRuntime } from "effect";
-import type { ReactNode } from "react";
+import { Effect } from "effect";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useObservationUpdate } from "@/lib/hooks/useObservationUpdate";
-import { RuntimeProvider } from "@/runtime";
 import { currentCue, resetEntityCueStore } from "@/store/entityCue";
 
 // Stub WsClient whose `observationUpdate` runs the provided handler; unused methods die.
-function makeRuntime(
+function makeWrapper(
 	observationUpdate: (
 		params: ObservationUpdateParams,
 	) => Effect.Effect<ObservationUpdateResult, WsError>,
 ) {
-	const stub = stubWsClient({ observationUpdate });
-	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
-}
-
-function makeWrapper(
-	runtime: ReturnType<typeof makeRuntime>,
-	client: QueryClient,
-) {
-	return ({ children }: { children: ReactNode }) => (
-		<QueryClientProvider client={client}>
-			<RuntimeProvider runtime={runtime}>{children}</RuntimeProvider>
-		</QueryClientProvider>
-	);
+	return makeCoreWrapper({ overrides: { observationUpdate } });
 }
 
 const params: ObservationUpdateParams = {
@@ -51,17 +32,14 @@ describe("useObservationUpdate", () => {
 
 	it("calls observationUpdate with the exact params and invalidates observations on success", async () => {
 		const seen: ObservationUpdateParams[] = [];
-		const runtime = makeRuntime((p) => {
+		const { wrapper, queryClient } = makeWrapper((p) => {
 			seen.push(p);
 			return Effect.succeed({ observation_id: p.observation_id });
-		});
-		const queryClient = new QueryClient({
-			defaultOptions: { queries: { retry: false } },
 		});
 		const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
 
 		const { result } = renderHook(() => useObservationUpdate(), {
-			wrapper: makeWrapper(runtime, queryClient),
+			wrapper,
 		});
 
 		result.current.mutate(params);
@@ -72,15 +50,12 @@ describe("useObservationUpdate", () => {
 	});
 
 	it("fires the 'Saved' cue on a successful correction", async () => {
-		const runtime = makeRuntime((p) =>
+		const { wrapper } = makeWrapper((p) =>
 			Effect.succeed({ observation_id: p.observation_id }),
 		);
-		const queryClient = new QueryClient({
-			defaultOptions: { queries: { retry: false } },
-		});
 
 		const { result } = renderHook(() => useObservationUpdate(), {
-			wrapper: makeWrapper(runtime, queryClient),
+			wrapper,
 		});
 
 		result.current.mutate(params);
@@ -90,19 +65,13 @@ describe("useObservationUpdate", () => {
 	});
 
 	it("fires NO cue when the correction fails", async () => {
-		const runtime = makeRuntime(() =>
+		const { wrapper } = makeWrapper(() =>
 			Effect.fail(new WsRequestError({ reason: "boom" })),
 		);
-		const queryClient = new QueryClient({
-			defaultOptions: {
-				queries: { retry: false },
-				mutations: { retry: false },
-			},
-		});
 		resetEntityCueStore();
 
 		const { result } = renderHook(() => useObservationUpdate(), {
-			wrapper: makeWrapper(runtime, queryClient),
+			wrapper,
 		});
 
 		result.current.mutate(params);
@@ -114,18 +83,12 @@ describe("useObservationUpdate", () => {
 	// The mutation must reject with the ORIGINAL WsError, not Effect's FiberFailure
 	// wrapper (mirrors the sibling useEntityMutation test's rationale).
 	it("rejects with the original WsRequestError, not a FiberFailure wrapper", async () => {
-		const runtime = makeRuntime(() =>
+		const { wrapper } = makeWrapper(() =>
 			Effect.fail(new WsRequestError({ reason: "boom" })),
 		);
-		const queryClient = new QueryClient({
-			defaultOptions: {
-				queries: { retry: false },
-				mutations: { retry: false },
-			},
-		});
 
 		const { result } = renderHook(() => useObservationUpdate(), {
-			wrapper: makeWrapper(runtime, queryClient),
+			wrapper,
 		});
 
 		result.current.mutate(params);

@@ -1,31 +1,20 @@
 import type { RecurrencePreviewResult } from "@inkstone/protocol";
-import { stubWsClient, WsClient, WsRequestError } from "@inkstone/ui-sdk";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { type WsClient, WsRequestError } from "@inkstone/ui-sdk";
+import { makeCoreWrapper } from "@test/test-utils/renderWithCore";
 import { renderHook, waitFor } from "@testing-library/react";
-import { Effect, Layer, ManagedRuntime } from "effect";
-import type { ReactNode } from "react";
+import { Effect } from "effect";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TodoDraft } from "@/lib/entityCodec";
 import { todoDraftFromVm } from "@/lib/entityCodec";
 import { useRecurrenceNextDates } from "@/lib/hooks/useRecurrenceNextDates.js";
-import { RuntimeProvider } from "@/runtime";
 
 afterEach(() => {
 	vi.restoreAllMocks();
 });
 
 // A WsClient stub whose `recurrencePreview` runs the supplied handler; the rest die.
-function makeRuntime(recurrencePreview: WsClient["Type"]["recurrencePreview"]) {
-	const stub = stubWsClient({ recurrencePreview });
-	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
-}
-
-function wrapper(runtime: ReturnType<typeof makeRuntime>, client: QueryClient) {
-	return ({ children }: { children: ReactNode }) => (
-		<QueryClientProvider client={client}>
-			<RuntimeProvider runtime={runtime}>{children}</RuntimeProvider>
-		</QueryClientProvider>
-	);
+function makeWrapper(recurrencePreview: WsClient["Type"]["recurrencePreview"]) {
+	return makeCoreWrapper({ overrides: { recurrencePreview } });
 }
 
 // A complete, bounded recurring draft → the hook's query is enabled.
@@ -40,20 +29,17 @@ const boundedDraft = (): TodoDraft => ({
 
 describe("useRecurrenceNextDates", () => {
 	it("returns the previewed dates for a complete bounded series", async () => {
-		const runtime = makeRuntime(() =>
+		const { wrapper } = makeWrapper(() =>
 			Effect.succeed({
 				ended: false,
 				defer_at: "2026-07-08T00:00:00",
 			} satisfies RecurrencePreviewResult),
 		);
-		const client = new QueryClient({
-			defaultOptions: { queries: { retry: false } },
-		});
 
 		const { result } = renderHook(
 			() => useRecurrenceNextDates(boundedDraft()),
 			{
-				wrapper: wrapper(runtime, client),
+				wrapper,
 			},
 		);
 
@@ -68,18 +54,15 @@ describe("useRecurrenceNextDates", () => {
 
 	it("returns null without firing a read when the draft is not previewable", async () => {
 		let calls = 0;
-		const runtime = makeRuntime(() => {
+		const { wrapper } = makeWrapper(() => {
 			calls += 1;
 			return Effect.succeed({ ended: false } satisfies RecurrencePreviewResult);
-		});
-		const client = new QueryClient({
-			defaultOptions: { queries: { retry: false } },
 		});
 
 		// End = never → buildRecurrencePreviewParams returns null → query disabled.
 		const { result } = renderHook(
 			() => useRecurrenceNextDates({ ...boundedDraft(), recurEnd: "never" }),
-			{ wrapper: wrapper(runtime, client) },
+			{ wrapper },
 		);
 
 		await Promise.resolve();
@@ -93,7 +76,7 @@ describe("useRecurrenceNextDates", () => {
 	// failure path (the only shape where `data` is retained alongside an error).
 	it("hides stale dates when a refetch fails after a successful read", async () => {
 		let call = 0;
-		const runtime = makeRuntime(() => {
+		const { wrapper, queryClient } = makeWrapper(() => {
 			call += 1;
 			return call === 1
 				? Effect.succeed({
@@ -102,14 +85,11 @@ describe("useRecurrenceNextDates", () => {
 					} satisfies RecurrencePreviewResult)
 				: Effect.fail(new WsRequestError({ reason: "preview blip" }));
 		});
-		const client = new QueryClient({
-			defaultOptions: { queries: { retry: false } },
-		});
 
 		const { result } = renderHook(
 			() => useRecurrenceNextDates(boundedDraft()),
 			{
-				wrapper: wrapper(runtime, client),
+				wrapper,
 			},
 		);
 
@@ -120,7 +100,7 @@ describe("useRecurrenceNextDates", () => {
 
 		// Same key refetch fails → react-query retains the cached data, but the
 		// hook must return null rather than surface the now-stale preview.
-		await client.invalidateQueries({ queryKey: ["recurrence-next"] });
+		await queryClient.invalidateQueries({ queryKey: ["recurrence-next"] });
 		await waitFor(() => expect(call).toBeGreaterThanOrEqual(2));
 		await waitFor(() => expect(result.current).toBeNull());
 	});

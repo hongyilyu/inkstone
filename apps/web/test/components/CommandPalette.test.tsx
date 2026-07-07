@@ -1,22 +1,21 @@
-import { stubWsClient, WsClient } from "@inkstone/ui-sdk";
+import type { WsClientService } from "@inkstone/ui-sdk";
 import {
 	createMemoryHistory,
 	createRouter,
 	RouterProvider,
 } from "@tanstack/react-router";
-import { renderWithQuery } from "@test/test-utils/renderWithQuery";
+import { renderWithCore } from "@test/test-utils/renderWithCore";
 import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Effect, Layer } from "effect";
+import { Effect } from "effect";
 import { act } from "react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { routeTree } from "@/routeTree.gen";
-import { RuntimeProvider } from "@/runtime";
 import { openCommand, resetCommandStore } from "@/store/command";
 
 // Stub: empty threadList so the open-triggered query resolves; Alice (person)
 // and a matching daycare todo seeded as stable live entity/list results.
-const stub = stubWsClient({
+const overrides: Partial<WsClientService> = {
 	threadList: () => Effect.succeed({ threads: [] }),
 	listEntities: (type) => {
 		if (type === "person") {
@@ -79,18 +78,14 @@ const stub = stubWsClient({
 					],
 				})
 			: Effect.succeed({ hits: [] }),
-});
+};
 
 function renderApp() {
 	const router = createRouter({
 		routeTree,
 		history: createMemoryHistory({ initialEntries: ["/library"] }),
 	});
-	renderWithQuery(
-		<RuntimeProvider layer={Layer.succeed(WsClient, stub)}>
-			<RouterProvider router={router} />
-		</RuntimeProvider>,
-	);
+	renderWithCore(<RouterProvider router={router} />, { overrides });
 	return router;
 }
 

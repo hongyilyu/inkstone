@@ -1,11 +1,10 @@
-import { stubWsClient, WsClient } from "@inkstone/ui-sdk";
-import { renderWithQuery } from "@test/test-utils/renderWithQuery";
+import type { WsClientService } from "@inkstone/ui-sdk";
+import { renderWithCore } from "@test/test-utils/renderWithCore";
 import { cleanup, fireEvent, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Effect, Layer, ManagedRuntime } from "effect";
+import { Effect } from "effect";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ComposeFooter } from "@/components/ComposeFooter.js";
-import { RuntimeProvider } from "@/runtime";
 
 afterEach(cleanup);
 
@@ -33,9 +32,9 @@ function fileInput(container: HTMLElement): HTMLInputElement {
 	return input;
 }
 
-/** A stub runtime whose catalog + settings feed the composer's ModelPicker. */
-function makeRuntime() {
-	const stub = stubWsClient({
+/** Stub verbs whose catalog + settings feed the composer's ModelPicker. */
+function makeOverrides(): Partial<WsClientService> {
+	return {
 		modelCatalog: () =>
 			Effect.succeed({
 				providers: [
@@ -67,20 +66,15 @@ function makeRuntime() {
 				effort: "off",
 				enabled_models: [],
 			}),
-	});
-	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
+	};
 }
 
 describe("ComposeFooter", () => {
 	it("calls onSend with the typed text and renders the model + effort strip", async () => {
 		const user = userEvent.setup();
 		const onSend = vi.fn();
-		const runtime = makeRuntime();
-		renderWithQuery(
-			<RuntimeProvider runtime={runtime}>
-				<ComposeFooter onSend={onSend} />
-			</RuntimeProvider>,
-		);
+		const overrides = makeOverrides();
+		await renderWithCore(<ComposeFooter onSend={onSend} />, { overrides });
 
 		await user.type(screen.getByRole("textbox"), "hello");
 		await user.click(screen.getByRole("button", { name: /send/i }));
@@ -108,18 +102,12 @@ describe("ComposeFooter", () => {
 			screen.getByRole("button", { name: /search \(coming soon\)/i }),
 		).toBeDisabled();
 		expect(screen.getByRole("button", { name: /^attach$/i })).toBeEnabled();
-
-		await runtime.dispose();
 	});
 
 	it("folds the unavailable reason into the accessible name of the placeholder chips", async () => {
 		const onSend = vi.fn();
-		const runtime = makeRuntime();
-		renderWithQuery(
-			<RuntimeProvider runtime={runtime}>
-				<ComposeFooter onSend={onSend} />
-			</RuntimeProvider>,
-		);
+		const overrides = makeOverrides();
+		await renderWithCore(<ComposeFooter onSend={onSend} />, { overrides });
 
 		// A disabled native button is out of the tab order, so the `title` tooltip
 		// is unreachable by keyboard/touch/AT — the reason must live in the
@@ -127,19 +115,15 @@ describe("ComposeFooter", () => {
 		expect(
 			screen.getByRole("button", { name: /search \(coming soon\)/i }),
 		).toBeInTheDocument();
-
-		await runtime.dispose();
 	});
 
 	it("does not send when disabled, but keeps the textarea editable", async () => {
 		const user = userEvent.setup();
 		const onSend = vi.fn();
-		const runtime = makeRuntime();
-		renderWithQuery(
-			<RuntimeProvider runtime={runtime}>
-				<ComposeFooter onSend={onSend} disabled />
-			</RuntimeProvider>,
-		);
+		const overrides = makeOverrides();
+		await renderWithCore(<ComposeFooter onSend={onSend} disabled />, {
+			overrides,
+		});
 
 		// The textarea STAYS editable so the user can draft a message before
 		// connecting a provider — only the Send affordance is gated.
@@ -154,19 +138,16 @@ describe("ComposeFooter", () => {
 		await user.click(send);
 		await user.type(textbox, "{Enter}");
 		expect(onSend).not.toHaveBeenCalled();
-
-		await runtime.dispose();
 	});
 
 	it("swaps Send for a Stop control while a Run is active and routes clicks to onStop", async () => {
 		const user = userEvent.setup();
 		const onSend = vi.fn();
 		const onStop = vi.fn();
-		const runtime = makeRuntime();
-		renderWithQuery(
-			<RuntimeProvider runtime={runtime}>
-				<ComposeFooter onSend={onSend} isRunning onStop={onStop} />
-			</RuntimeProvider>,
+		const overrides = makeOverrides();
+		await renderWithCore(
+			<ComposeFooter onSend={onSend} isRunning onStop={onStop} />,
+			{ overrides },
 		);
 
 		// Send is gone; Stop is the primary control.
@@ -177,18 +158,15 @@ describe("ComposeFooter", () => {
 		// Enter must not start a second turn over the live Run.
 		await user.type(screen.getByRole("textbox"), "queued{Enter}");
 		expect(onSend).not.toHaveBeenCalled();
-
-		await runtime.dispose();
 	});
 
 	it("shows a pending thumbnail when a file is picked via the Attach chip's input", async () => {
 		const user = userEvent.setup();
 		const onSend = vi.fn();
-		const runtime = makeRuntime();
-		const { container } = renderWithQuery(
-			<RuntimeProvider runtime={runtime}>
-				<ComposeFooter onSend={onSend} />
-			</RuntimeProvider>,
+		const overrides = makeOverrides();
+		const { container } = await renderWithCore(
+			<ComposeFooter onSend={onSend} />,
+			{ overrides },
 		);
 
 		// The picker input is hidden chrome behind the chip — image/* + multiple so
@@ -203,18 +181,12 @@ describe("ComposeFooter", () => {
 		const thumb = await screen.findByRole("img", { name: /photo\.png/i });
 		expect(thumb).toHaveAttribute("src", expect.stringMatching(/^blob:/));
 		expect(createObjectURL).toHaveBeenCalledTimes(1);
-
-		await runtime.dispose();
 	});
 
 	it("adds a pending thumbnail for a pasted image but ignores non-image pastes", async () => {
 		const onSend = vi.fn();
-		const runtime = makeRuntime();
-		renderWithQuery(
-			<RuntimeProvider runtime={runtime}>
-				<ComposeFooter onSend={onSend} />
-			</RuntimeProvider>,
-		);
+		const overrides = makeOverrides();
+		await renderWithCore(<ComposeFooter onSend={onSend} />, { overrides });
 		const textbox = screen.getByRole("textbox");
 
 		// Pasting an image from the clipboard attaches it (screenshot workflow).
@@ -233,18 +205,12 @@ describe("ComposeFooter", () => {
 			},
 		});
 		expect(screen.getAllByRole("img")).toHaveLength(1);
-
-		await runtime.dispose();
 	});
 
 	it("adds a pending thumbnail for an image dropped onto the composer", async () => {
 		const onSend = vi.fn();
-		const runtime = makeRuntime();
-		renderWithQuery(
-			<RuntimeProvider runtime={runtime}>
-				<ComposeFooter onSend={onSend} />
-			</RuntimeProvider>,
-		);
+		const overrides = makeOverrides();
+		await renderWithCore(<ComposeFooter onSend={onSend} />, { overrides });
 
 		fireEvent.drop(screen.getByRole("textbox"), {
 			dataTransfer: { files: [makeImageFile("dropped.png")] },
@@ -253,18 +219,15 @@ describe("ComposeFooter", () => {
 		expect(
 			await screen.findByRole("img", { name: /dropped\.png/i }),
 		).toBeInTheDocument();
-
-		await runtime.dispose();
 	});
 
 	it("submits (text, files), clears the pending strip, and revokes the object URLs", async () => {
 		const user = userEvent.setup();
 		const onSend = vi.fn();
-		const runtime = makeRuntime();
-		const { container } = renderWithQuery(
-			<RuntimeProvider runtime={runtime}>
-				<ComposeFooter onSend={onSend} />
-			</RuntimeProvider>,
+		const overrides = makeOverrides();
+		const { container } = await renderWithCore(
+			<ComposeFooter onSend={onSend} />,
+			{ overrides },
 		);
 
 		const file = makeImageFile();
@@ -280,18 +243,15 @@ describe("ComposeFooter", () => {
 		// (the sent bubble re-renders from /media/{id}, not the blob).
 		expect(screen.queryByRole("img")).toBeNull();
 		expect(revokeObjectURL).toHaveBeenCalledTimes(1);
-
-		await runtime.dispose();
 	});
 
 	it("removes a single pending attachment via its per-item remove button", async () => {
 		const user = userEvent.setup();
 		const onSend = vi.fn();
-		const runtime = makeRuntime();
-		const { container } = renderWithQuery(
-			<RuntimeProvider runtime={runtime}>
-				<ComposeFooter onSend={onSend} />
-			</RuntimeProvider>,
+		const overrides = makeOverrides();
+		const { container } = await renderWithCore(
+			<ComposeFooter onSend={onSend} />,
+			{ overrides },
 		);
 
 		const keep = makeImageFile("keep.png");
@@ -310,18 +270,15 @@ describe("ComposeFooter", () => {
 		await user.type(screen.getByRole("textbox"), "just the keeper");
 		await user.click(screen.getByRole("button", { name: /send/i }));
 		expect(onSend).toHaveBeenCalledWith("just the keeper", [keep]);
-
-		await runtime.dispose();
 	});
 
 	it("revokes pending object URLs when unmounted with attachments still pending", async () => {
 		const user = userEvent.setup();
 		const onSend = vi.fn();
-		const runtime = makeRuntime();
-		const { container, unmount } = renderWithQuery(
-			<RuntimeProvider runtime={runtime}>
-				<ComposeFooter onSend={onSend} />
-			</RuntimeProvider>,
+		const overrides = makeOverrides();
+		const { container, unmount } = await renderWithCore(
+			<ComposeFooter onSend={onSend} />,
+			{ overrides },
 		);
 
 		await user.upload(fileInput(container), makeImageFile());
@@ -333,18 +290,15 @@ describe("ComposeFooter", () => {
 		unmount();
 		expect(revokeObjectURL).toHaveBeenCalledTimes(1);
 		expect(revokeObjectURL).toHaveBeenCalledWith(mintedUrl);
-
-		await runtime.dispose();
 	});
 
 	it("still requires text: submit with pending files but no text no-ops", async () => {
 		const user = userEvent.setup();
 		const onSend = vi.fn();
-		const runtime = makeRuntime();
-		const { container } = renderWithQuery(
-			<RuntimeProvider runtime={runtime}>
-				<ComposeFooter onSend={onSend} />
-			</RuntimeProvider>,
+		const overrides = makeOverrides();
+		const { container } = await renderWithCore(
+			<ComposeFooter onSend={onSend} />,
+			{ overrides },
 		);
 
 		await user.upload(fileInput(container), makeImageFile());
@@ -358,7 +312,5 @@ describe("ComposeFooter", () => {
 		expect(
 			screen.getByRole("img", { name: /photo\.png/i }),
 		).toBeInTheDocument();
-
-		await runtime.dispose();
 	});
 });

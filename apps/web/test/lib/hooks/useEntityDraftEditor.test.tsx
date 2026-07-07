@@ -2,50 +2,23 @@ import type {
 	EntityMutateParams,
 	EntityMutateResult,
 } from "@inkstone/protocol";
-import {
-	stubWsClient,
-	WsClient,
-	type WsError,
-	WsRequestError,
-} from "@inkstone/ui-sdk";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { type WsError, WsRequestError } from "@inkstone/ui-sdk";
+import { makeCoreWrapper } from "@test/test-utils/renderWithCore";
 import { act, renderHook, waitFor } from "@testing-library/react";
-import { Effect, Layer, ManagedRuntime } from "effect";
-import type { ReactNode } from "react";
+import { Effect } from "effect";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useEntityDraftEditor } from "@/lib/hooks/useEntityDraftEditor";
-import { RuntimeProvider } from "@/runtime";
 import { resetEntityCueStore } from "@/store/entityCue";
 
 type Draft = { name: string };
 type Entity = { id: string; name: string };
-
-function makeRuntime(
-	entityMutate: (
-		params: EntityMutateParams,
-	) => Effect.Effect<EntityMutateResult, WsError>,
-) {
-	const stub = stubWsClient({ entityMutate });
-	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
-}
 
 function makeWrapper(
 	entityMutate: (
 		params: EntityMutateParams,
 	) => Effect.Effect<EntityMutateResult, WsError>,
 ) {
-	const runtime = makeRuntime(entityMutate);
-	const client = new QueryClient({
-		defaultOptions: {
-			queries: { retry: false },
-			mutations: { retry: false },
-		},
-	});
-	return ({ children }: { children: ReactNode }) => (
-		<QueryClientProvider client={client}>
-			<RuntimeProvider runtime={runtime}>{children}</RuntimeProvider>
-		</QueryClientProvider>
-	);
+	return makeCoreWrapper({ overrides: { entityMutate } }).wrapper;
 }
 
 describe("useEntityDraftEditor", () => {

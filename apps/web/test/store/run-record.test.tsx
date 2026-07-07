@@ -1,10 +1,6 @@
-import {
-	type RunEventValue,
-	type RunId,
-	stubWsClient,
-	WsClient,
-} from "@inkstone/ui-sdk";
-import { Effect, Layer, ManagedRuntime, Queue, Stream } from "effect";
+import type { RunEventValue, RunId } from "@inkstone/ui-sdk";
+import { makeCoreRuntime } from "@test/test-utils/renderWithCore";
+import { Effect, Queue, Stream } from "effect";
 import { beforeEach, describe, expect, it } from "vitest";
 import { awaitRun, resetBridge, send } from "@/store/bridge.js";
 import {
@@ -29,11 +25,12 @@ import {
 
 /** Stub WsClient backed by an in-memory queue (mirrors chat.test.tsx). */
 function makeStubRuntime(queue: Queue.Queue<RunEventValue>, runId: RunId) {
-	const stub = stubWsClient({
-		postMessage: () => Effect.succeed(runId),
-		subscribeRun: () => Stream.fromQueue(queue),
+	return makeCoreRuntime({
+		overrides: {
+			postMessage: () => Effect.succeed(runId),
+			subscribeRun: () => Stream.fromQueue(queue),
+		},
 	});
-	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 }
 
 /** Seed a streaming assistant turn bound to `runId` (without forking a stream). */

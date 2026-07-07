@@ -3,12 +3,11 @@ import {
 	createRouter,
 	RouterProvider,
 } from "@tanstack/react-router";
-import { renderWithQuery } from "@test/test-utils/renderWithQuery";
+import { renderWithCore } from "@test/test-utils/renderWithCore";
 import { cleanup, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it } from "vitest";
 import { routeTree } from "@/routeTree.gen";
-import { RuntimeProvider } from "@/runtime";
 
 // This file renders multiple routers across tests; the repo's vitest config
 // does not set `globals: true`, so testing-library's auto-cleanup isn't wired.
@@ -22,18 +21,16 @@ function makeRouter(initialPath: string) {
 	});
 }
 
-function renderAt(initialPath: string) {
+async function renderAt(initialPath: string) {
 	const router = makeRouter(initialPath);
-	renderWithQuery(
-		<RuntimeProvider config={{ url: "ws://stub/ws" }}>
-			<RouterProvider router={router} />
-		</RuntimeProvider>,
-	);
+	await renderWithCore(<RouterProvider router={router} />, {
+		wsConfig: { url: "ws://stub/ws" },
+	});
 }
 
 describe("settings/models route (ADR-0024)", () => {
 	it("renders the Models settings page with the settings shell", async () => {
-		renderAt("/settings/models");
+		await renderAt("/settings/models");
 
 		expect(
 			await screen.findByRole("heading", { name: /^models$/i }),
@@ -46,7 +43,7 @@ describe("settings/models route (ADR-0024)", () => {
 
 	it("navigates from the chat settings gear to /settings/models", async () => {
 		const user = userEvent.setup();
-		renderAt("/");
+		await renderAt("/");
 
 		// The chat surface is mounted at "/".
 		await screen.findByRole("main");

@@ -2,11 +2,10 @@ import type { RunRetryResult } from "@inkstone/protocol";
 import {
 	type RunEventValue,
 	type RunId,
-	stubWsClient,
-	WsClient,
 	WsRequestError,
 } from "@inkstone/ui-sdk";
-import { Effect, Layer, ManagedRuntime, Queue, Stream } from "effect";
+import { makeCoreRuntime } from "@test/test-utils/renderWithCore";
+import { Effect, Queue, Stream } from "effect";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	awaitRun,
@@ -40,12 +39,13 @@ function makeStubRuntime(
 	const retrySpy = vi.fn((_runId: RunId) =>
 		Effect.succeed({ outcome: retryOutcome }),
 	);
-	const stub = stubWsClient({
-		subscribeRun: () => Stream.fromQueue(queue),
-		retryRun: retrySpy,
-	});
 	return {
-		runtime: ManagedRuntime.make(Layer.succeed(WsClient, stub)),
+		runtime: makeCoreRuntime({
+			overrides: {
+				subscribeRun: () => Stream.fromQueue(queue),
+				retryRun: retrySpy,
+			},
+		}),
 		retrySpy,
 	};
 }
@@ -259,11 +259,12 @@ describe("retryRun bridge — re-drives the SAME Run, no seeded turn", () => {
 		const runId = "run-down" as RunId;
 		seedErroredTurn(runId);
 
-		const stub = stubWsClient({
-			retryRun: () =>
-				Effect.fail(new WsRequestError({ reason: "connection_lost" })),
+		const runtime = makeCoreRuntime({
+			overrides: {
+				retryRun: () =>
+					Effect.fail(new WsRequestError({ reason: "connection_lost" })),
+			},
 		});
-		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
 		const result = await retryRun(runtime, "t1", runId);
 
@@ -294,11 +295,12 @@ describe("retryRun bridge — re-drives the SAME Run, no seeded turn", () => {
  */
 function makePerCallStubRuntime(queues: Queue.Queue<RunEventValue>[]) {
 	let call = 0;
-	const stub = stubWsClient({
-		subscribeRun: () => Stream.fromQueue(queues[call++]),
-		retryRun: () => Effect.succeed({ outcome: "accepted" as const }),
+	return makeCoreRuntime({
+		overrides: {
+			subscribeRun: () => Stream.fromQueue(queues[call++]),
+			retryRun: () => Effect.succeed({ outcome: "accepted" as const }),
+		},
 	});
-	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 }
 
 describe("retryRun bridge — a re-retry interrupts the prior stream fiber (M2)", () => {
