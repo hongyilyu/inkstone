@@ -5,23 +5,15 @@ import type {
 	JournalEntryRescanResult,
 } from "@inkstone/protocol";
 import {
-	stubWsClient,
-	WsClient,
+	type WsClientService,
 	type WsError,
 	WsRequestError,
 } from "@inkstone/ui-sdk";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import {
-	cleanup,
-	type RenderResult,
-	render,
-	screen,
-	waitFor,
-	within,
-} from "@testing-library/react";
+import { renderWithCore } from "@test/test-utils/renderWithCore";
+import { journalEntryRow, todoRow } from "@test/test-utils/rows";
+import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Effect, Layer, ManagedRuntime } from "effect";
-import type { ReactNode } from "react";
+import { Effect } from "effect";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { EntityDetail } from "@/components/library/EntityDetail";
 import {
@@ -33,7 +25,6 @@ import {
 	type Project,
 	type Todo,
 } from "@/lib/libraryItems";
-import { RuntimeProvider } from "@/runtime";
 
 const { navigate } = vi.hoisted(() => ({ navigate: vi.fn() }));
 
@@ -60,12 +51,12 @@ afterEach(() => {
 	navigate.mockReset();
 });
 
-// Stub WsClient whose `entityMutate` and `getBacklinks` run the supplied handlers;
-// unused methods die. `getBacklinks` defaults to a DYING read so a test that
-// doesn't seed backlinks lands on the `isError` fallback — i.e. the inspector
-// derives Waiting/Tasks/Todos from `allEntities` exactly as it did pre-Core
-// (ADR-0050 §7). Tests that prove the Core path override it with real rows.
-function makeRuntime(
+// Stub verbs for the Core harness: `entityMutate` and `getBacklinks` run the
+// supplied handlers; unused methods die. `getBacklinks` defaults to a DYING read
+// so a test that doesn't seed backlinks lands on the `isError` fallback — i.e.
+// the inspector derives Waiting/Tasks/Todos from `allEntities` exactly as it did
+// pre-Core (ADR-0050 §7). Tests that prove the Core path override it with real rows.
+function makeOverrides(
 	entityMutate: (
 		params: EntityMutateParams,
 	) => Effect.Effect<EntityMutateResult, WsError> = () =>
@@ -78,13 +69,8 @@ function makeRuntime(
 		jeId: string,
 	) => Effect.Effect<JournalEntryRescanResult, WsError> = () =>
 		Effect.die("rescan not exercised in this test"),
-) {
-	const stub = stubWsClient({
-		getBacklinks,
-		entityMutate,
-		rescanJournalEntry,
-	});
-	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
+): Partial<WsClientService> {
+	return { getBacklinks, entityMutate, rescanJournalEntry };
 }
 
 // Build an `EntityBacklinksResult` for the Core-sourced inspector. Rows are wire
@@ -111,16 +97,12 @@ function jeBacklinkRow(
 	text: string,
 	id = `je_bl_${nextBacklinkSeq()}`,
 ): EntityBacklinksResult["mentioned_in"][number] {
-	return {
+	return journalEntryRow(
 		id,
-		type: "journal_entry",
-		data: {
-			occurred_at: "2026-06-10T10:30:00",
-			body: [{ type: "text", text }],
-		},
-		created_at: 1000,
-		updated_at: 1000,
-	};
+		[{ type: "text", text }],
+		{ occurred_at: "2026-06-10T10:30:00" },
+		{ created_at: 1000, updated_at: 1000 },
+	);
 }
 
 /** A wire Todo `EntityRow` linked to a person via a `person_refs` role. */
@@ -131,33 +113,24 @@ function todoBacklinkRow(
 	status: Todo["status"] = "active",
 	id = `t_bl_${nextBacklinkSeq()}`,
 ): EntityBacklinksResult["linked_todos"][number] {
-	return {
+	return todoRow(
 		id,
-		type: "todo",
-		data: { title, status },
-		created_at: 2000,
-		updated_at: 2000,
-		person_refs: [{ person_id: personId, role }],
-	};
+		title,
+		{ status },
+		{
+			created_at: 2000,
+			updated_at: 2000,
+			person_refs: [{ person_id: personId, role }],
+		},
+	);
 }
 
 /** Render EntityDetail inside the runtime + QueryClient its edit/delete writes need. */
 function renderDetail(
 	ui: React.ReactElement,
-	runtime: ReturnType<typeof makeRuntime> = makeRuntime(),
-): RenderResult {
-	const client = new QueryClient({
-		defaultOptions: {
-			queries: { retry: false },
-			mutations: { retry: false },
-		},
-	});
-	const Wrapper = ({ children }: { children: ReactNode }) => (
-		<QueryClientProvider client={client}>
-			<RuntimeProvider runtime={runtime}>{children}</RuntimeProvider>
-		</QueryClientProvider>
-	);
-	return render(ui, { wrapper: Wrapper });
+	overrides: Partial<WsClientService> = makeOverrides(),
+) {
+	return renderWithCore(ui, { overrides });
 }
 
 const ada: Person = {
@@ -402,7 +375,7 @@ describe("EntityDetail Todo edit", () => {
 		const todo = todoItem("t_edit", { title: "Old title" });
 		renderDetail(
 			<EntityDetail entity={todo} allEntities={[todo]} />,
-			makeRuntime((params) => {
+			makeOverrides((params) => {
 				seen.push(params);
 				return Effect.succeed({ entity_id: todo.id });
 			}),
@@ -438,7 +411,7 @@ describe("EntityDetail Todo delete", () => {
 		const todo = todoItem("t_del", { title: "Stale task" });
 		renderDetail(
 			<EntityDetail entity={todo} allEntities={[todo]} />,
-			makeRuntime((params) => {
+			makeOverrides((params) => {
 				seen.push(params);
 				return Effect.succeed({});
 			}),
@@ -470,7 +443,7 @@ describe("EntityDetail Todo delete", () => {
 		const todo = todoItem("t_keep", { title: "Keep me" });
 		renderDetail(
 			<EntityDetail entity={todo} allEntities={[todo]} />,
-			makeRuntime((params) => {
+			makeOverrides((params) => {
 				seen.push(params);
 				return Effect.succeed({});
 			}),
@@ -500,7 +473,7 @@ describe("EntityDetail Person projection", () => {
 
 		renderDetail(
 			<EntityDetail entity={alice} allEntities={all} />,
-			makeRuntime(undefined, () =>
+			makeOverrides(undefined, () =>
 				Effect.succeed(
 					backlinks({
 						linked_todos: [
@@ -522,7 +495,7 @@ describe("EntityDetail Person projection", () => {
 		const alice = person("p_alice", "Alice");
 		renderDetail(
 			<EntityDetail entity={alice} allEntities={[alice]} />,
-			makeRuntime(undefined, () =>
+			makeOverrides(undefined, () =>
 				Effect.succeed(
 					backlinks({
 						linked_todos: [
@@ -551,7 +524,7 @@ describe("EntityDetail Person projection", () => {
 		const alice = person("p_alice", "Alice");
 		renderDetail(
 			<EntityDetail entity={alice} allEntities={[alice]} />,
-			makeRuntime(undefined, () =>
+			makeOverrides(undefined, () =>
 				Effect.succeed(
 					backlinks({
 						mentioned_in: [jeBacklinkRow("Met Alice about daycare.")],
@@ -583,7 +556,7 @@ describe("EntityDetail Project projection", () => {
 
 		renderDetail(
 			<EntityDetail entity={proj} allEntities={all} />,
-			makeRuntime(undefined, () =>
+			makeOverrides(undefined, () =>
 				Effect.succeed(
 					backlinks({
 						linked_todos: [
@@ -622,7 +595,7 @@ describe("EntityDetail Core-sourced backlinks", () => {
 		for (const { entity, text } of subjects) {
 			renderDetail(
 				<EntityDetail entity={entity} allEntities={[entity]} />,
-				makeRuntime(undefined, () =>
+				makeOverrides(undefined, () =>
 					Effect.succeed(backlinks({ mentioned_in: [jeBacklinkRow(text)] })),
 				),
 			);
@@ -636,7 +609,7 @@ describe("EntityDetail Core-sourced backlinks", () => {
 		const proj = project("pr_bug", "Lead Ads testing");
 		renderDetail(
 			<EntityDetail entity={proj} allEntities={[proj]} />,
-			makeRuntime(undefined, () =>
+			makeOverrides(undefined, () =>
 				Effect.succeed(
 					backlinks({
 						mentioned_in: [jeBacklinkRow("Kicked off Lead Ads.")],
@@ -653,7 +626,7 @@ describe("EntityDetail Core-sourced backlinks", () => {
 		const alice = person("p_count", "Alice");
 		renderDetail(
 			<EntityDetail entity={alice} allEntities={[alice]} />,
-			makeRuntime(undefined, () =>
+			makeOverrides(undefined, () =>
 				Effect.succeed(
 					backlinks({
 						mentioned_in: [
@@ -673,7 +646,7 @@ describe("EntityDetail Core-sourced backlinks", () => {
 		const alice = person("p_core", "Alice");
 		renderDetail(
 			<EntityDetail entity={alice} allEntities={[alice]} />,
-			makeRuntime(undefined, () =>
+			makeOverrides(undefined, () =>
 				Effect.succeed(
 					backlinks({
 						linked_todos: [
@@ -703,7 +676,7 @@ describe("EntityDetail Core-sourced backlinks", () => {
 		});
 		renderDetail(
 			<EntityDetail entity={alice} allEntities={[alice, waitingTodo]} />,
-			makeRuntime(undefined, () =>
+			makeOverrides(undefined, () =>
 				Effect.fail(new WsRequestError({ reason: "core unreachable" })),
 			),
 		);
@@ -730,7 +703,7 @@ describe("EntityDetail Core-sourced backlinks", () => {
 		});
 		renderDetail(
 			<EntityDetail entity={proj} allEntities={[alice, proj, projectTodo]} />,
-			makeRuntime(undefined, () =>
+			makeOverrides(undefined, () =>
 				Effect.fail(new WsRequestError({ reason: "core unreachable" })),
 			),
 		);
@@ -751,7 +724,7 @@ describe("EntityDetail Person delete", () => {
 		const alice = person("p_del", "Alice");
 		renderDetail(
 			<EntityDetail entity={alice} allEntities={[alice]} />,
-			makeRuntime((params) => {
+			makeOverrides((params) => {
 				seen.push(params);
 				return Effect.succeed({});
 			}),
@@ -777,7 +750,7 @@ describe("EntityDetail Person delete", () => {
 		const alice = person("p_keep", "Alice");
 		renderDetail(
 			<EntityDetail entity={alice} allEntities={[alice]} />,
-			makeRuntime((params) => {
+			makeOverrides((params) => {
 				seen.push(params);
 				return Effect.succeed({});
 			}),
@@ -798,7 +771,7 @@ describe("EntityDetail Project delete", () => {
 		const proj = project("pr_del", "Daycare move");
 		renderDetail(
 			<EntityDetail entity={proj} allEntities={[proj]} />,
-			makeRuntime((params) => {
+			makeOverrides((params) => {
 				seen.push(params);
 				return Effect.succeed({});
 			}),
@@ -827,7 +800,7 @@ describe("EntityDetail Project delete", () => {
 		const proj = project("pr_keep", "Daycare move");
 		renderDetail(
 			<EntityDetail entity={proj} allEntities={[proj]} />,
-			makeRuntime((params) => {
+			makeOverrides((params) => {
 				seen.push(params);
 				return Effect.succeed({});
 			}),
@@ -850,7 +823,7 @@ describe("EntityDetail Journal Entry delete", () => {
 		const entry = journal([{ type: "text", text: "Stale note." }]);
 		renderDetail(
 			<EntityDetail entity={entry} allEntities={[entry]} />,
-			makeRuntime((params) => {
+			makeOverrides((params) => {
 				seen.push(params);
 				return Effect.succeed({});
 			}),
@@ -906,7 +879,7 @@ describe("EntityDetail Journal Entry rescan", () => {
 		const entry = journal([{ type: "text", text: "Met Alice about daycare." }]);
 		renderDetail(
 			<EntityDetail entity={entry} allEntities={[entry]} />,
-			makeRuntime(undefined, undefined, (jeId) => {
+			makeOverrides(undefined, undefined, (jeId) => {
 				seen.push(jeId);
 				return Effect.succeed({
 					run_id: "run_rescan_1",

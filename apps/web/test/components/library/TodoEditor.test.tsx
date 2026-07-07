@@ -2,51 +2,30 @@ import type {
 	EntityMutateParams,
 	EntityMutateResult,
 } from "@inkstone/protocol";
-import { stubWsClient, WsClient, type WsError } from "@inkstone/ui-sdk";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import type { WsClient, WsError } from "@inkstone/ui-sdk";
+import { renderWithCore } from "@test/test-utils/renderWithCore";
+import { cleanup, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Effect, Layer, ManagedRuntime } from "effect";
-import type { ReactNode } from "react";
+import { Effect } from "effect";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TodoEditor } from "@/components/library/TodoEditor";
 import type { LibraryItem, Person, Project, Todo } from "@/lib/libraryItems";
-import { RuntimeProvider } from "@/runtime";
 
-// Stub WsClient whose `entityMutate` records params and succeeds; `recurrencePreview`
-// runs the supplied handler (defaults to dying); other methods die.
-function makeRuntime(
-	entityMutate: (
-		params: EntityMutateParams,
-	) => Effect.Effect<EntityMutateResult, WsError>,
-	recurrencePreview: WsClient["Type"]["recurrencePreview"] = () =>
-		Effect.die("not exercised in this test"),
-) {
-	const stub = stubWsClient({ entityMutate, recurrencePreview });
-	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
-}
-
+// Render under the shared Core harness: `entityMutate` records params and
+// succeeds; `recurrencePreview` runs the supplied handler (defaults to dying);
+// other methods die.
 function renderEditor(
 	props: Parameters<typeof TodoEditor>[0],
 	entityMutate: (
 		params: EntityMutateParams,
 	) => Effect.Effect<EntityMutateResult, WsError> = () =>
 		Effect.succeed({ entity_id: "01900000-0000-7000-8000-000000000099" }),
-	recurrencePreview?: WsClient["Type"]["recurrencePreview"],
+	recurrencePreview: WsClient["Type"]["recurrencePreview"] = () =>
+		Effect.die("not exercised in this test"),
 ) {
-	const runtime = makeRuntime(entityMutate, recurrencePreview);
-	const client = new QueryClient({
-		defaultOptions: {
-			queries: { retry: false },
-			mutations: { retry: false },
-		},
+	return renderWithCore(<TodoEditor {...props} />, {
+		overrides: { entityMutate, recurrencePreview },
 	});
-	const Wrapper = ({ children }: { children: ReactNode }) => (
-		<QueryClientProvider client={client}>
-			<RuntimeProvider runtime={runtime}>{children}</RuntimeProvider>
-		</QueryClientProvider>
-	);
-	return render(<TodoEditor {...props} />, { wrapper: Wrapper });
 }
 
 const alice: Person = {

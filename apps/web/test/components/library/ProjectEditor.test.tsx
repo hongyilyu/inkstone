@@ -2,27 +2,17 @@ import type {
 	EntityMutateParams,
 	EntityMutateResult,
 } from "@inkstone/protocol";
-import { stubWsClient, WsClient, type WsError } from "@inkstone/ui-sdk";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import type { WsError } from "@inkstone/ui-sdk";
+import { renderWithCore } from "@test/test-utils/renderWithCore";
+import { cleanup, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Effect, Layer, ManagedRuntime } from "effect";
-import type { ReactNode } from "react";
+import { Effect } from "effect";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ProjectEditor } from "@/components/library/ProjectEditor";
 import type { Project } from "@/lib/libraryItems";
-import { RuntimeProvider } from "@/runtime";
 
-// Stub WsClient whose `entityMutate` records params and succeeds; unused methods die.
-function makeRuntime(
-	entityMutate: (
-		params: EntityMutateParams,
-	) => Effect.Effect<EntityMutateResult, WsError>,
-) {
-	const stub = stubWsClient({ entityMutate });
-	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
-}
-
+// Render under the shared Core harness: `entityMutate` records params and
+// succeeds; unused methods die.
 function renderEditor(
 	props: Parameters<typeof ProjectEditor>[0],
 	entityMutate: (
@@ -30,19 +20,9 @@ function renderEditor(
 	) => Effect.Effect<EntityMutateResult, WsError> = () =>
 		Effect.succeed({ entity_id: "01900000-0000-7000-8000-000000000099" }),
 ) {
-	const runtime = makeRuntime(entityMutate);
-	const client = new QueryClient({
-		defaultOptions: {
-			queries: { retry: false },
-			mutations: { retry: false },
-		},
+	return renderWithCore(<ProjectEditor {...props} />, {
+		overrides: { entityMutate },
 	});
-	const Wrapper = ({ children }: { children: ReactNode }) => (
-		<QueryClientProvider client={client}>
-			<RuntimeProvider runtime={runtime}>{children}</RuntimeProvider>
-		</QueryClientProvider>
-	);
-	return render(<ProjectEditor {...props} />, { wrapper: Wrapper });
 }
 
 const existing: Project = {

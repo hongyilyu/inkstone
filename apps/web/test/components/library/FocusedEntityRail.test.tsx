@@ -1,10 +1,9 @@
 import type { EntityListResult } from "@inkstone/protocol";
-import { stubWsClient, WsClient } from "@inkstone/ui-sdk";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen } from "@testing-library/react";
+import { renderWithCore } from "@test/test-utils/renderWithCore";
+import { journalEntryRow, personRow } from "@test/test-utils/rows";
+import { cleanup, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Effect, Layer, ManagedRuntime } from "effect";
-import type { ReactNode } from "react";
+import type { ReactElement } from "react";
 import { useState } from "react";
 import { afterEach, describe, expect, it } from "vitest";
 import { FocusedEntityRail } from "@/components/library/FocusedEntityRail";
@@ -13,7 +12,6 @@ import {
 	TimelineView,
 } from "@/components/library/TimelineView";
 import { assembleLibraryItems } from "@/lib/hooks/useLibraryItems";
-import { RuntimeProvider } from "@/runtime";
 
 type Rows = EntityListResult["entities"];
 
@@ -25,41 +23,30 @@ const jeRef = (
 	targetId: string,
 	targetType: "person" | "project",
 	targetTitle: string,
-): Rows[number] => ({
-	id,
-	type: "journal_entry",
-	data: {
-		occurred_at: occurredAt,
-		body: [
+): Rows[number] =>
+	journalEntryRow(
+		id,
+		[
 			{ type: "text", text },
 			{ type: "entity_ref", ref_id: `${id}_r1` },
 		],
-	},
-	refs: [
+		{ occurred_at: occurredAt },
 		{
-			id: `${id}_r1`,
-			source_entity_id: id,
-			target_entity_id: targetId,
-			target_entity_type: targetType,
-			target_title: targetTitle,
+			refs: [
+				{
+					id: `${id}_r1`,
+					source_entity_id: id,
+					target_entity_id: targetId,
+					target_entity_type: targetType,
+					target_title: targetTitle,
+				},
+			],
 		},
-	],
-	created_at: 1_700_000_000_000,
-	updated_at: 1_700_000_000_000,
-});
-
-/** A person row so the rail can resolve the focused entity's name + kind. */
-const person = (id: string, name: string): Rows[number] => ({
-	id,
-	type: "person",
-	data: { name },
-	created_at: 1_700_000_000_000,
-	updated_at: 1_700_000_000_000,
-});
+	);
 
 /** Maya referenced by two JEs across two days; a third JE touches only a project. */
 const SEED: Rows = [
-	person("maya", "Maya"),
+	personRow("maya", "Maya"),
 	jeRef(
 		"je_a",
 		"2026-06-10T09:00:00",
@@ -97,44 +84,26 @@ function seedItems() {
 	});
 }
 
-function makeRuntime(rows: Rows) {
-	const stub = stubWsClient({
-		listEntities: (type) =>
-			Effect.succeed({ entities: rows.filter((r) => r.type === type) }),
-	});
-	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
-}
-
-function withProviders(rows: Rows) {
-	const runtime = makeRuntime(rows);
-	const client = new QueryClient({
-		defaultOptions: {
-			queries: { staleTime: Number.POSITIVE_INFINITY, retry: false },
+/** Render a node under the shared Core harness seeded with `rows` (neither the
+ * rail nor the feed touches the router — chips are focus buttons, not `<Link>`s,
+ * as of slice 5b). */
+function mount(node: ReactElement, rows: Rows) {
+	return renderWithCore(node, {
+		entities: {
+			journal_entry: rows.filter((r) => r.type === "journal_entry"),
+			person: rows.filter((r) => r.type === "person"),
 		},
 	});
-	const Wrapper = ({ children }: { children: ReactNode }) => (
-		<QueryClientProvider client={client}>
-			<RuntimeProvider runtime={runtime}>{children}</RuntimeProvider>
-		</QueryClientProvider>
-	);
-	return Wrapper;
-}
-
-/** Render a node under the Runtime + Query providers (neither the rail nor the feed
- * touches the router — chips are focus buttons, not `<Link>`s, as of slice 5b). */
-function mount(node: ReactNode, Wrapper: ReturnType<typeof withProviders>) {
-	return render(node, { wrapper: Wrapper });
 }
 
 afterEach(cleanup);
 
 describe("FocusedEntityRail", () => {
-	it("shows the entity name + the lens note + only its referencing JEs", () => {
+	it("shows the entity name + the lens note + only its referencing JEs", async () => {
 		const items = seedItems();
-		const Wrapper = withProviders(SEED);
-		mount(
+		await mount(
 			<FocusedEntityRail entityId="maya" items={items} onClose={() => {}} />,
-			Wrapper,
+			SEED,
 		);
 
 		// The rail is labelled as the focused entity.
@@ -151,8 +120,7 @@ describe("FocusedEntityRail", () => {
 	it("the close affordance fires onClose", async () => {
 		const items = seedItems();
 		let closed = false;
-		const Wrapper = withProviders(SEED);
-		mount(
+		await mount(
 			<FocusedEntityRail
 				entityId="maya"
 				items={items}
@@ -160,7 +128,7 @@ describe("FocusedEntityRail", () => {
 					closed = true;
 				}}
 			/>,
-			Wrapper,
+			SEED,
 		);
 		await userEvent.click(screen.getByRole("button", { name: /close/i }));
 		expect(closed).toBe(true);
@@ -183,8 +151,7 @@ function StatefulTimeline() {
 
 describe("TimelineView focus rail", () => {
 	it("clicking a person chip opens the rail; closing it clears the focus", async () => {
-		const Wrapper = withProviders(SEED);
-		mount(<StatefulTimeline />, Wrapper);
+		await mount(<StatefulTimeline />, SEED);
 
 		// Both Maya entries surface in the feed first.
 		await screen.findByText("Synced with Maya");

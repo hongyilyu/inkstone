@@ -1,29 +1,13 @@
 import type { EntityListResult } from "@inkstone/protocol";
-import { stubWsClient, WsClient } from "@inkstone/ui-sdk";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen } from "@testing-library/react";
+import { renderWithCore } from "@test/test-utils/renderWithCore";
+import { projectRow, todoRow } from "@test/test-utils/rows";
+import { cleanup, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Effect, Layer, ManagedRuntime } from "effect";
-import type { ReactNode } from "react";
 import { useState } from "react";
 import { afterEach, describe, expect, it } from "vitest";
 import { type GtdFilter, GtdView } from "@/components/library/GtdView";
-import { RuntimeProvider } from "@/runtime";
 
 type Rows = EntityListResult["entities"];
-
-/** Stub WsClient serving the given entity rows by type; unused methods die. */
-function makeRuntime(todos: Rows, projects: Rows = [], people: Rows = []) {
-	const stub = stubWsClient({
-		listEntities: (type) => {
-			if (type === "todo") return Effect.succeed({ entities: todos });
-			if (type === "project") return Effect.succeed({ entities: projects });
-			if (type === "person") return Effect.succeed({ entities: people });
-			return Effect.succeed({ entities: [] });
-		},
-	});
-	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
-}
 
 /** A tiny stateful wrapper that drives the controlled GtdView: clicking a pill
  * flips `filt` locally, so the test exercises the rail without a router. */
@@ -49,45 +33,10 @@ function renderGtd(
 	people: Rows = [],
 	initial: GtdFilter = "today",
 ) {
-	const runtime = makeRuntime(todos, projects, people);
-	const client = new QueryClient({
-		defaultOptions: {
-			queries: { staleTime: Number.POSITIVE_INFINITY, retry: false },
-		},
+	return renderWithCore(<StatefulGtd initial={initial} />, {
+		entities: { todo: todos, project: projects, person: people },
 	});
-	const Wrapper = ({ children }: { children: ReactNode }) => (
-		<QueryClientProvider client={client}>
-			<RuntimeProvider runtime={runtime}>{children}</RuntimeProvider>
-		</QueryClientProvider>
-	);
-	return render(<StatefulGtd initial={initial} />, { wrapper: Wrapper });
 }
-
-const todo = (
-	id: string,
-	title: string,
-	data: Record<string, unknown> = {},
-	personRefs: { person_id: string; role: "waiting_on" | "related" }[] = [],
-): Rows[number] => ({
-	id,
-	type: "todo",
-	data: { title, status: "active", ...data },
-	person_refs: personRefs,
-	created_at: 1_700_000_000_000,
-	updated_at: 1_700_000_000_000,
-});
-
-const project = (
-	id: string,
-	name: string,
-	data: Record<string, unknown> = {},
-): Rows[number] => ({
-	id,
-	type: "project",
-	data: { name, status: "active", ...data },
-	created_at: 1_700_000_000_000,
-	updated_at: 1_700_000_000_000,
-});
 
 // Deep past = unambiguously due regardless of the real "now".
 const PAST = "2000-01-01T00:00:00";
@@ -116,8 +65,8 @@ describe("GtdView", () => {
 
 	it("defaults to the Today body (due-soon todos)", async () => {
 		renderGtd([
-			todo("t_due", "Pay rent", { due_at: PAST }),
-			todo("t_inbox", "Unsorted errand"),
+			todoRow("t_due", "Pay rent", { due_at: PAST }),
+			todoRow("t_inbox", "Unsorted errand"),
 		]);
 		// Today surfaces due-soon todos; the unsorted inbox-only todo is not due.
 		expect(await screen.findByText("Pay rent")).toBeInTheDocument();
@@ -126,10 +75,15 @@ describe("GtdView", () => {
 
 	it("swaps to the Waiting body when the Waiting pill is clicked", async () => {
 		renderGtd([
-			todo("t_inbox", "Unsorted errand"),
-			todo("t_wait", "Waiting on Priya", {}, [
-				{ person_id: "priya", role: "waiting_on" },
-			]),
+			todoRow("t_inbox", "Unsorted errand"),
+			todoRow(
+				"t_wait",
+				"Waiting on Priya",
+				{},
+				{
+					person_refs: [{ person_id: "priya", role: "waiting_on" }],
+				},
+			),
 		]);
 		await screen.findByRole("button", { name: /waiting/i });
 		await userEvent.click(screen.getByRole("button", { name: /waiting/i }));
@@ -140,10 +94,10 @@ describe("GtdView", () => {
 
 	it("shows the Inbox todo under the Inbox pill, hides organized ones", async () => {
 		renderGtd([
-			todo("t_inbox", "Unsorted errand"),
+			todoRow("t_inbox", "Unsorted errand"),
 			// Organized (has a project) → not inbox-eligible, and it carries a future
 			// defer date so it also proves the deferred-todo seed lands on Scheduled.
-			todo("t_deferred", "Future deferred", {
+			todoRow("t_deferred", "Future deferred", {
 				defer_at: FUTURE,
 				project_id: "p1",
 			}),
@@ -158,8 +112,8 @@ describe("GtdView", () => {
 
 	it("shows the future-deferred todo under the Scheduled pill", async () => {
 		renderGtd([
-			todo("t_inbox", "Unsorted errand"),
-			todo("t_deferred", "Future deferred", {
+			todoRow("t_inbox", "Unsorted errand"),
+			todoRow("t_deferred", "Future deferred", {
 				defer_at: FUTURE,
 				project_id: "p1",
 			}),
@@ -174,8 +128,8 @@ describe("GtdView", () => {
 
 	it("shows the reviewable project when the Review pill is clicked", async () => {
 		renderGtd(
-			[todo("t_inbox", "Unsorted errand")],
-			[project("p_review", "Quarterly planning", { next_review_at: PAST })],
+			[todoRow("t_inbox", "Unsorted errand")],
+			[projectRow("p_review", "Quarterly planning", { next_review_at: PAST })],
 		);
 		await userEvent.click(
 			await screen.findByRole("button", { name: /review/i }),
@@ -190,8 +144,8 @@ describe("GtdView", () => {
 		// Projects body lists every project (matching the badge count, which counts
 		// all projects regardless of status/review state).
 		renderGtd(
-			[todo("t_inbox", "Unsorted errand")],
-			[project("p_active", "Marketing launch")],
+			[todoRow("t_inbox", "Unsorted errand")],
+			[projectRow("p_active", "Marketing launch")],
 		);
 		await userEvent.click(
 			await screen.findByRole("button", { name: /^projects$/i }),
@@ -209,13 +163,13 @@ describe("GtdView", () => {
 		// rows (never todo titles), so neither title would appear.
 		renderGtd(
 			[
-				todo("t_inbox", "Unsorted errand"),
-				todo("t_org", "Cut over traffic", {
+				todoRow("t_inbox", "Unsorted errand"),
+				todoRow("t_org", "Cut over traffic", {
 					project_id: "p1",
 					due_at: PAST,
 				}),
 			],
-			[project("p1", "Migration", { next_review_at: FUTURE })],
+			[projectRow("p1", "Migration", { next_review_at: FUTURE })],
 		);
 		await userEvent.click(
 			await screen.findByRole("button", { name: /^all$/i }),
