@@ -5,11 +5,10 @@
 //!
 //! The closed Entity-Type taxonomy ([`MutationKind`]/[`crate::mutation::ProposableMutation`]
 //! and the descriptor) lives in [`crate::mutation`]; this module is the per-kind
-//! *schema* layer — the validator bodies plus the accept-text rendering.
-//! Validation is resolved per kind via the write contract ([`MutationKind::describe`]'s
-//! `validate` facet, whose fn pointers name the bodies below); `render_accept`
-//! dispatches on the typed kind. Either way a new kind is a compile error, not a
-//! runtime panic.
+//! *schema* layer — the validator bodies plus the accept-text rendering. Both
+//! are resolved per kind via the write contract ([`MutationKind::describe`]'s
+//! `validate` and `render_accept` facets, whose fn pointers name the bodies
+//! below), so a new kind is a compile error, not a runtime panic.
 
 use serde_json::Value;
 use uuid::Uuid;
@@ -29,153 +28,193 @@ pub(crate) fn validate(kind: MutationKind, payload: &Value) -> Result<(), String
     (kind.describe().validate)(payload)
 }
 
-/// Render the human-readable Decision text the model reads on resume as the
-/// awaited tool's result (ADR-0025). Only Entity-backed accept paths call this;
-/// non-Entity proposals such as `record_observations` render in their owning
-/// modules.
+/// Test-only adapter over the contract's `render_accept` facet for callers
+/// holding a `(kind, payload)` pair — kept solely for the parity fixture
+/// emitter (`protocol/parity.rs`, itself `#[cfg(test)]`), which builds the
+/// Decision-prose samples through the real renderers. Production accept paths
+/// read the facet off [`MutationKind::describe`] directly; the `expect`
+/// preserves the legacy router's panic-on-misuse for user-only kinds.
+#[cfg(test)]
 pub(crate) fn render_accept(
     kind: MutationKind,
     payload: &Value,
     entity_id: Option<&str>,
 ) -> String {
-    use MutationKind as M;
-    match kind {
-        M::CreateJournalEntry => {
-            let entity_id = entity_id.expect("create accept rendering requires entity_id");
-            let occurred_at = payload
-                .get("occurred_at")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown");
-            let body = journal_body_text(payload);
-            format!(
-                "Accepted. Created Journal Entry (entity_id={entity_id}, occurred_at={occurred_at}, body={body})."
-            )
-        }
-        M::UpdateJournalEntry => {
-            let occurred_at = payload
-                .get("occurred_at")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown");
-            let body = journal_body_text(payload);
-            format!("Accepted. Updated Journal Entry (occurred_at={occurred_at}, body={body}).")
-        }
-        M::DeleteJournalEntry | M::DeletePerson | M::DeleteProject | M::DeleteTodo => {
-            let noun = kind.describe().entity_type.spec().noun;
-            let entity_id = payload
-                .get("entity_id")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown");
-            format!("Accepted. Deleted {noun} (entity_id={entity_id}).")
-        }
-        M::ReferenceExistingEntityFromJournalEntry => {
-            let source_entity_id = payload
-                .get("source_entity_id")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown");
-            let target_entity_id = payload
-                .get("target_entity_id")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown");
-            let body = journal_body_text(payload);
-            format!(
-                "Accepted. Referenced Entity (source_entity_id={source_entity_id}, target_entity_id={target_entity_id}, body={body})."
-            )
-        }
-        M::CreatePerson => {
-            let entity_id = entity_id.expect("create accept rendering requires entity_id");
-            let name = payload
-                .get("name")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown");
-            format!("Accepted. Created Person (entity_id={entity_id}, name={name}).")
-        }
-        M::UpdatePerson => {
-            let name = payload
-                .get("name")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown");
-            format!("Accepted. Updated Person (name={name}).")
-        }
-        M::CreateProject => {
-            let entity_id = entity_id.expect("create accept rendering requires entity_id");
-            let name = payload
-                .get("name")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown");
-            let status = payload
-                .get("status")
-                .and_then(Value::as_str)
-                .unwrap_or("active");
-            format!(
-                "Accepted. Created Project (entity_id={entity_id}, name={name}, status={status})."
-            )
-        }
-        M::UpdateProject => {
-            let name = payload
-                .get("name")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown");
-            let status = payload
-                .get("status")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown");
-            format!("Accepted. Updated Project (name={name}, status={status}).")
-        }
-        M::CreateTodo => {
-            let entity_id = entity_id.expect("create accept rendering requires entity_id");
-            let todo = payload.get("todo");
-            let title = todo
-                .and_then(|t| t.get("title"))
-                .and_then(Value::as_str)
-                .unwrap_or("unknown");
-            let status = todo
-                .and_then(|t| t.get("status"))
-                .and_then(Value::as_str)
-                .unwrap_or("active");
-            format!(
-                "Accepted. Created Todo (entity_id={entity_id}, title={title}, status={status})."
-            )
-        }
-        M::UpdateTodo => {
-            let todo_id = payload
-                .get("todo_id")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown");
-            format!("Accepted. Updated Todo (todo_id={todo_id}).")
-        }
-        // The graph applies many entities in one tx (ADR-0042); the model reads
-        // this on resume and re-reads the created entities via `entity/changed`.
-        // `entity_id` is the anchor (the Journal Entry node, or the first created
-        // entity for a JE-less direct-capture graph). render_accept sees only the
-        // PROPOSED payload, not the per-node decision vector, so the count is the
-        // proposed node count and is phrased "up to N" — the user may have rejected
-        // some; the model re-reads what actually landed via `entity/changed`.
-        M::ApplyIntentGraph => {
-            let anchor = entity_id.unwrap_or("unknown");
-            let proposed_count = payload
-                .get("entities")
-                .and_then(Value::as_array)
-                .map_or(0, Vec::len);
-            let has_journal_entry = payload
-                .get("journal_entry")
-                .is_some_and(|je| !je.is_null());
-            let je_note = if has_journal_entry {
-                " with a Journal Entry"
-            } else {
-                ""
-            };
-            format!(
-                "Accepted. Applied intent graph{je_note} (anchor entity_id={anchor}, up to {proposed_count} entities; some may have been declined)."
-            )
-        }
-        M::CreateMedia
-        | M::UpdateMedia
-        | M::DeleteMedia
-        | M::CreateHabit
-        | M::UpdateHabit
-        | M::DeleteHabit
-        | M::MarkProjectReviewed => unreachable!("user-only mutation has no proposal accept text"),
-    }
+    (kind.describe().render_accept).expect("user-only mutation has no proposal accept text")(
+        payload, entity_id,
+    )
+}
+
+// ── Accept-text renderers (ADR-0025) ──────────────────────────────────────
+// The human-readable Decision text the model reads on resume as the awaited
+// tool's result — byte-for-byte sacred. One fn per renderable kind, named by
+// the contract's `render_accept` facet ([`MutationKind::describe`]); the 7
+// user-only kinds (media, habits, `mark_project_reviewed`) carry no renderer
+// because they never reach the proposal accept path. Non-Entity proposals
+// such as `record_observations` render in their owning modules.
+
+pub(crate) fn render_accept_create_journal_entry(
+    payload: &Value,
+    entity_id: Option<&str>,
+) -> String {
+    let entity_id = entity_id.expect("create accept rendering requires entity_id");
+    let occurred_at = payload
+        .get("occurred_at")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let body = journal_body_text(payload);
+    format!(
+        "Accepted. Created Journal Entry (entity_id={entity_id}, occurred_at={occurred_at}, body={body})."
+    )
+}
+
+pub(crate) fn render_accept_update_journal_entry(
+    payload: &Value,
+    _entity_id: Option<&str>,
+) -> String {
+    let occurred_at = payload
+        .get("occurred_at")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let body = journal_body_text(payload);
+    format!("Accepted. Updated Journal Entry (occurred_at={occurred_at}, body={body}).")
+}
+
+/// Shared body for the four renderable deletes. The kind threads through so
+/// the text keeps its per-kind Entity noun; the contract's per-kind facet fns
+/// below are thin wrappers pinning the kind (mirroring the id-only validators).
+fn render_accept_delete(kind: MutationKind, payload: &Value) -> String {
+    let noun = kind.describe().entity_type.spec().noun;
+    let entity_id = payload
+        .get("entity_id")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    format!("Accepted. Deleted {noun} (entity_id={entity_id}).")
+}
+
+pub(crate) fn render_accept_delete_journal_entry(
+    payload: &Value,
+    _entity_id: Option<&str>,
+) -> String {
+    render_accept_delete(MutationKind::DeleteJournalEntry, payload)
+}
+
+pub(crate) fn render_accept_delete_person(payload: &Value, _entity_id: Option<&str>) -> String {
+    render_accept_delete(MutationKind::DeletePerson, payload)
+}
+
+pub(crate) fn render_accept_delete_project(payload: &Value, _entity_id: Option<&str>) -> String {
+    render_accept_delete(MutationKind::DeleteProject, payload)
+}
+
+pub(crate) fn render_accept_delete_todo(payload: &Value, _entity_id: Option<&str>) -> String {
+    render_accept_delete(MutationKind::DeleteTodo, payload)
+}
+
+pub(crate) fn render_accept_reference_existing_entity_from_journal_entry(
+    payload: &Value,
+    _entity_id: Option<&str>,
+) -> String {
+    let source_entity_id = payload
+        .get("source_entity_id")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let target_entity_id = payload
+        .get("target_entity_id")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let body = journal_body_text(payload);
+    format!(
+        "Accepted. Referenced Entity (source_entity_id={source_entity_id}, target_entity_id={target_entity_id}, body={body})."
+    )
+}
+
+pub(crate) fn render_accept_create_person(payload: &Value, entity_id: Option<&str>) -> String {
+    let entity_id = entity_id.expect("create accept rendering requires entity_id");
+    let name = payload
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    format!("Accepted. Created Person (entity_id={entity_id}, name={name}).")
+}
+
+pub(crate) fn render_accept_update_person(payload: &Value, _entity_id: Option<&str>) -> String {
+    let name = payload
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    format!("Accepted. Updated Person (name={name}).")
+}
+
+pub(crate) fn render_accept_create_project(payload: &Value, entity_id: Option<&str>) -> String {
+    let entity_id = entity_id.expect("create accept rendering requires entity_id");
+    let name = payload
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let status = payload
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("active");
+    format!("Accepted. Created Project (entity_id={entity_id}, name={name}, status={status}).")
+}
+
+pub(crate) fn render_accept_update_project(payload: &Value, _entity_id: Option<&str>) -> String {
+    let name = payload
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let status = payload
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    format!("Accepted. Updated Project (name={name}, status={status}).")
+}
+
+pub(crate) fn render_accept_create_todo(payload: &Value, entity_id: Option<&str>) -> String {
+    let entity_id = entity_id.expect("create accept rendering requires entity_id");
+    let todo = payload.get("todo");
+    let title = todo
+        .and_then(|t| t.get("title"))
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let status = todo
+        .and_then(|t| t.get("status"))
+        .and_then(Value::as_str)
+        .unwrap_or("active");
+    format!("Accepted. Created Todo (entity_id={entity_id}, title={title}, status={status}).")
+}
+
+pub(crate) fn render_accept_update_todo(payload: &Value, _entity_id: Option<&str>) -> String {
+    let todo_id = payload
+        .get("todo_id")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    format!("Accepted. Updated Todo (todo_id={todo_id}).")
+}
+
+// The graph applies many entities in one tx (ADR-0042); the model reads
+// this on resume and re-reads the created entities via `entity/changed`.
+// `entity_id` is the anchor (the Journal Entry node, or the first created
+// entity for a JE-less direct-capture graph). render_accept sees only the
+// PROPOSED payload, not the per-node decision vector, so the count is the
+// proposed node count and is phrased "up to N" — the user may have rejected
+// some; the model re-reads what actually landed via `entity/changed`.
+pub(crate) fn render_accept_apply_intent_graph(payload: &Value, entity_id: Option<&str>) -> String {
+    let anchor = entity_id.unwrap_or("unknown");
+    let proposed_count = payload
+        .get("entities")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+    let has_journal_entry = payload.get("journal_entry").is_some_and(|je| !je.is_null());
+    let je_note = if has_journal_entry {
+        " with a Journal Entry"
+    } else {
+        ""
+    };
+    format!(
+        "Accepted. Applied intent graph{je_note} (anchor entity_id={anchor}, up to {proposed_count} entities; some may have been declined)."
+    )
 }
 
 fn journal_body_text(payload: &Value) -> String {

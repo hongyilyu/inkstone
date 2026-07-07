@@ -3,13 +3,13 @@
 //! [`apply`] owns the whole transaction: idempotency precedence, the guarded
 //! apply/reject (lost race → [`DecideError::LostRace`]), and one trailing resume
 //! gate. The `resume` seam is a closure so this module takes no `worker`
-//! dependency (ADR-0026). Mutation dispatch stays behind [`crate::entities`].
+//! dependency (ADR-0026). Mutation dispatch stays behind the write contract
+//! ([`MutationKind::describe`]'s facets).
 
 use sqlx::SqlitePool;
 use uuid::Uuid;
 
 use crate::db::{self, RunStatus};
-use crate::entities;
 use crate::mutation::{self, MutationKind, ProposableMutation};
 use crate::protocol::NodeDecision;
 
@@ -289,7 +289,7 @@ async fn prior_outcome(
 }
 
 /// The fresh guarded transaction: render the Decision as the awaited tool's
-/// result, validate accept/edit (not reject) via [`crate::entities`], then one
+/// result, validate accept/edit (not reject) via the contract's facets, then one
 /// atomic [`db::apply_proposal`] / [`db::decide_proposal::reject`]. `NotPending` →
 /// `LostRace`; `InvalidMutation` → `Invalid`; `Sql` → `Internal`. Also where an
 /// `edit` without an `edited_payload` is rejected as `Invalid` (late, so the
@@ -443,9 +443,13 @@ async fn apply_or_reject(
         edited_payload,
         kind.describe().write_op.source_relation(),
         |entity_id| {
+            let render = kind
+                .describe()
+                .render_accept
+                .expect("user-only mutation has no proposal accept text");
             serde_json::json!({
                 "decision": "accept",
-                "content": entities::render_accept(kind, applied_payload, Some(entity_id)),
+                "content": render(applied_payload, Some(entity_id)),
             })
             .to_string()
         },
@@ -549,9 +553,13 @@ async fn apply_intent_graph(
         &proposal.payload,
         decisions,
         |entity_id| {
+            let render = kind
+                .describe()
+                .render_accept
+                .expect("user-only mutation has no proposal accept text");
             serde_json::json!({
                 "decision": "accept",
-                "content": entities::render_accept(kind, &proposal.payload, Some(entity_id)),
+                "content": render(&proposal.payload, Some(entity_id)),
             })
             .to_string()
         },
