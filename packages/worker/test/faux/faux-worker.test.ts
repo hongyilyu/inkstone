@@ -448,8 +448,8 @@ describe("faux-worker propose mode — scenario playback (INKSTONE_FAUX_PROPOSE_
 	});
 
 	it("plays a create Turn from the scenario: one proposal built from the Turn, no read", async () => {
-		// Values deliberately DISTINCT from the NLU fallback's hard-coded
-		// "Bought milk…"/10:30 output so this test fails if the fallback answers.
+		// Values distinct from the deleted prompt-NLU's hard-coded defaults so a
+		// reintroduced silent fallback can't pass this test.
 		withProposeScenario({
 			turns: [
 				{

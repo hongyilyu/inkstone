@@ -192,12 +192,17 @@ function readProposeScenario(): ProposeScenario {
 		);
 	}
 	const parsed = JSON.parse(readFileSync(file, "utf8")) as {
-		turns: Array<{ action?: unknown; body?: string; occurred_at?: string }>;
+		turns?: Array<{ action?: unknown; body?: string; occurred_at?: string }>;
 	};
+	if (!Array.isArray(parsed.turns)) {
+		throw new Error(
+			`INKSTONE_FAUX_PROPOSE_PARAMS: file must contain a "turns" array`,
+		);
+	}
 	// Validate the WHOLE scenario at load, not the played Turn at use: a typo'd
 	// action or a partial create must fail fast — the update/delete ternary below
 	// would otherwise route an unknown action to the most destructive branch.
-	parsed.turns.forEach((turn, index) => {
+	for (const [index, turn] of parsed.turns.entries()) {
 		if (
 			turn.action !== "create" &&
 			turn.action !== "update" &&
@@ -219,7 +224,7 @@ function readProposeScenario(): ProposeScenario {
 				);
 			}
 		}
-	});
+	}
 	return parsed as ProposeScenario;
 }
 
