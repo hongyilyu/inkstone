@@ -3,6 +3,7 @@
 //! operations and transaction boundaries.
 
 mod apply;
+pub(crate) mod decide_proposal;
 mod entities_read;
 mod intent_graph;
 mod journal_weave;
