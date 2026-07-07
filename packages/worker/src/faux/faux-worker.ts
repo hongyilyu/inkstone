@@ -191,9 +191,18 @@ function readProposeScenario(): ProposeScenario {
 			"INKSTONE_FAUX_PROPOSE=1 requires INKSTONE_FAUX_PROPOSE_PARAMS to point at a scenario JSON file",
 		);
 	}
-	const parsed = JSON.parse(readFileSync(file, "utf8")) as {
+	// Read+parse failures (missing file, malformed JSON) must name the seam and
+	// the path — a bare ENOENT/SyntaxError through catchAllDefect names neither.
+	let parsed: {
 		turns?: Array<{ action?: unknown; body?: string; occurred_at?: string }>;
 	};
+	try {
+		parsed = JSON.parse(readFileSync(file, "utf8"));
+	} catch (cause) {
+		throw new Error(`INKSTONE_FAUX_PROPOSE_PARAMS ${file}: ${String(cause)}`, {
+			cause,
+		});
+	}
 	if (!Array.isArray(parsed.turns)) {
 		throw new Error(
 			`INKSTONE_FAUX_PROPOSE_PARAMS: file must contain a "turns" array`,
@@ -213,12 +222,14 @@ function readProposeScenario(): ProposeScenario {
 			);
 		}
 		if (turn.action === "create") {
-			if (turn.body === undefined) {
+			// Empty strings are as wrong as missing fields: an empty-body create
+			// parks Core-side as an invalid draft, far from the authoring mistake.
+			if (turn.body === undefined || turn.body === "") {
 				throw new Error(
 					`INKSTONE_FAUX_PROPOSE_PARAMS turn ${index}: create requires "body"`,
 				);
 			}
-			if (turn.occurred_at === undefined) {
+			if (turn.occurred_at === undefined || turn.occurred_at === "") {
 				throw new Error(
 					`INKSTONE_FAUX_PROPOSE_PARAMS turn ${index}: create requires "occurred_at"`,
 				);

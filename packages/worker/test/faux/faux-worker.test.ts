@@ -94,6 +94,18 @@ function withProposeScenario(scenario: {
 	afterEach(() => rmSync(dir, { recursive: true, force: true }));
 }
 
+// Raw variant for malformed-scenario tests: writes `content` verbatim (invalid
+// JSON, wrong top-level keys) that withProposeScenario's type would reject.
+function withRawProposeParams(content: string): string {
+	const dir = mkdtempSync(path.join(tmpdir(), "faux-propose-"));
+	const file = path.join(dir, "scenario.json");
+	writeFileSync(file, content);
+	process.env.INKSTONE_FAUX_PROPOSE = "1";
+	process.env.INKSTONE_FAUX_PROPOSE_PARAMS = file;
+	afterEach(() => rmSync(dir, { recursive: true, force: true }));
+	return file;
+}
+
 // A manifest with the direct-capture tool allowlist (search_entities is present
 // for the enrichment slices; slice 2 only proposes a single create_*).
 function captureManifest(
@@ -680,12 +692,9 @@ describe("faux-worker propose mode — scenario playback (INKSTONE_FAUX_PROPOSE_
 	});
 
 	it("throws at load on an unknown action, naming the value and its turn index", () => {
-		// Written by hand (not withProposeScenario) so the file can carry a typo'd
-		// action the helper's type would reject — the silent-misroute case.
-		const dir = mkdtempSync(path.join(tmpdir(), "faux-propose-"));
-		const file = path.join(dir, "scenario.json");
-		writeFileSync(
-			file,
+		// Raw write: a typo'd action withProposeScenario's type would reject —
+		// the silent-misroute case.
+		withRawProposeParams(
 			JSON.stringify({
 				turns: [
 					{
@@ -697,9 +706,6 @@ describe("faux-worker propose mode — scenario playback (INKSTONE_FAUX_PROPOSE_
 				],
 			}),
 		);
-		process.env.INKSTONE_FAUX_PROPOSE = "1";
-		process.env.INKSTONE_FAUX_PROPOSE_PARAMS = file;
-		afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
 		// The bad turn is at index 1, but load-time validation covers the whole
 		// scenario — it throws even though position 0 would play the valid create.
@@ -726,6 +732,41 @@ describe("faux-worker propose mode — scenario playback (INKSTONE_FAUX_PROPOSE_
 		expect(() =>
 			fauxDepsFor(journalIntakeManifest("complete gibberish zzz")),
 		).toThrow('turn 0: create requires "occurred_at"');
+	});
+
+	it("throws at load when a create Turn's body is an empty string", () => {
+		withProposeScenario({
+			turns: [
+				{ action: "create", body: "", occurred_at: "2026-06-11T07:15:00" },
+			],
+		});
+
+		expect(() =>
+			fauxDepsFor(journalIntakeManifest("complete gibberish zzz")),
+		).toThrow('turn 0: create requires "body"');
+	});
+
+	it("throws at load when the file has no turns array", () => {
+		withRawProposeParams(JSON.stringify({ turn: [] }));
+
+		expect(() =>
+			fauxDepsFor(journalIntakeManifest("complete gibberish zzz")),
+		).toThrow(/must contain a "turns" array/);
+	});
+
+	it("names the seam and path when the scenario file is malformed or missing", () => {
+		const file = withRawProposeParams("{not json");
+
+		// Malformed JSON: the raw SyntaxError is wrapped with the env var + path.
+		expect(() =>
+			fauxDepsFor(journalIntakeManifest("complete gibberish zzz")),
+		).toThrow(new RegExp(`INKSTONE_FAUX_PROPOSE_PARAMS ${file}`));
+
+		// Missing file: same wrapping (ENOENT would otherwise name neither).
+		rmSync(file);
+		expect(() =>
+			fauxDepsFor(journalIntakeManifest("complete gibberish zzz")),
+		).toThrow(new RegExp(`INKSTONE_FAUX_PROPOSE_PARAMS ${file}`));
 	});
 
 	it("update Turn with occurred_at only: keeps the live body, replaces the time", async () => {
