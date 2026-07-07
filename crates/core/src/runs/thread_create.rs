@@ -22,7 +22,7 @@ use super::media::resolve_attachments;
 use crate::db;
 use crate::hub::Hubs;
 use crate::protocol::{ThreadCreateParams, ThreadCreateResult};
-use crate::start_run::{self, PersistStep, StartRunError, StartRunParams};
+use crate::start_run::{self, PersistStep, StartRunParams};
 use crate::worker;
 
 use super::title;
@@ -86,12 +86,7 @@ pub(super) async fn handle(
             start_run::default_spawn,
         )
         .await
-        .map_err(|e| match e {
-            StartRunError::ProviderNotConnected(provider) => {
-                HandlerError::ProviderNotConnected { provider }
-            }
-            StartRunError::Internal(e) => HandlerError::Internal(e),
-        })?;
+        .map_err(HandlerError::from)?;
 
         // Fire the one-shot title Worker (ADR-0046) — fire-and-forget, so the
         // create RESPONSE never waits on it. `started.provider` is the

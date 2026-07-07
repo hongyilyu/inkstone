@@ -13,15 +13,14 @@
 //! 3. **History BEFORE spawn** — prior-Run history (ADR-0018) is assembled
 //!    before the spawn, with the byte-identical non-fatal eprintln fallback.
 //!
-//! The persist step is a closed [`PersistStep`] enum (exactly three variants
-//! eventually — `FreshRun` and `CreateThread` now; `RetryCas` lands in slice
-//! 3), not user-extensible: each variant keeps its current transactional
-//! shape behind the shared sequence. The Worker spawn is INJECTED as `spawn_fn`
-//! (production: [`default_spawn`]) so the sequence is assertable against a
-//! `:memory:` pool without a real Worker binary — mirroring how
-//! [`crate::cancel`] injects `get_hub` (ADR-0026: no new subsystem dependency).
-//! `deferred_spawn` returns the spawn as an unfired closure for retry's
-//! response-BEFORE-spawn wire ordering (slice 3).
+//! The persist step is a closed [`PersistStep`] enum (exactly three variants —
+//! `FreshRun`, `CreateThread`, `RetryCas`), not user-extensible: each variant
+//! keeps its current transactional shape behind the shared sequence. The Worker
+//! spawn is INJECTED as `spawn_fn` (production: [`default_spawn`]) so the
+//! sequence is assertable against a `:memory:` pool without a real Worker
+//! binary — mirroring how [`crate::cancel`] injects `get_hub` (ADR-0026: no new
+//! subsystem dependency). `deferred_spawn` returns the spawn as an unfired
+//! closure for retry's response-BEFORE-spawn wire ordering.
 
 use sqlx::SqlitePool;
 use uuid::Uuid;
@@ -32,11 +31,10 @@ use crate::hub::{self, Hubs, RunHub};
 use crate::protocol::ManifestAttachment;
 use crate::workflow::Workflow;
 
-/// What the persist step does — a closed set (exactly three variants
-/// eventually: `FreshRun` and `CreateThread` now; `RetryCas` lands in slice
-/// 3), not user-extensible. The resolved [`Workflow`] is NOT an input:
-/// [`start_run`] resolves it via `dispatch_and_resolve` and passes it into the
-/// variant's persist execution.
+/// What the persist step does — a closed set (exactly three variants:
+/// `FreshRun`, `CreateThread`, `RetryCas`), not user-extensible. The resolved
+/// [`Workflow`] is NOT an input: [`start_run`] resolves it via
+/// `dispatch_and_resolve` and passes it into the variant's persist execution.
 pub enum PersistStep {
     /// Fresh run insert into an existing Thread (`post_message`,
     /// `journal_entry`) — `db::persist_initial_run`'s one deferred-FK
@@ -70,6 +68,20 @@ pub enum PersistStep {
         title: String,
         now: i64,
     },
+    /// In-place retry of an ERRORED Run (`run/retry`, ADR-0028 amendment) — no
+    /// fresh inserts: `db::prepare_retry`'s one transaction (the guarded
+    /// `errored → running` CAS + clear-failed-output + re-snapshot). Reuses the
+    /// EXISTING ids; a lost CAS surfaces as
+    /// [`StartRunError::PersistRaceLost`] with nothing cleared, no hub created,
+    /// nothing spawned.
+    RetryCas {
+        run_id: Uuid,
+        /// The reused assistant Message id (the bubble identity stays stable)
+        /// — read by the shell BEFORE the verb runs; carried here for the
+        /// spawn manifest.
+        assistant_message_id: Uuid,
+        now: i64,
+    },
 }
 
 impl PersistStep {
@@ -79,6 +91,7 @@ impl PersistStep {
         match self {
             PersistStep::FreshRun { run_id, .. } => *run_id,
             PersistStep::CreateThread { run_id, .. } => *run_id,
+            PersistStep::RetryCas { run_id, .. } => *run_id,
         }
     }
 
@@ -93,18 +106,25 @@ impl PersistStep {
                 assistant_message_id,
                 ..
             } => *assistant_message_id,
+            PersistStep::RetryCas {
+                assistant_message_id,
+                ..
+            } => *assistant_message_id,
         }
     }
 
     /// Execute the variant's persist transaction. Each variant keeps its
     /// current transactional shape — this match is dispatch, not a new shape.
+    /// Returns the verb's own error type because `RetryCas` has a non-fault
+    /// failure of its own: a LOST CAS ([`StartRunError::PersistRaceLost`]),
+    /// which is a race outcome, not an sqlx error.
     async fn execute(
         &self,
         pool: &SqlitePool,
         thread_id: Uuid,
         workflow: &Workflow,
         prompt: &str,
-    ) -> sqlx::Result<()> {
+    ) -> Result<(), StartRunError> {
         match self {
             PersistStep::FreshRun {
                 run_id,
@@ -112,20 +132,19 @@ impl PersistStep {
                 assistant_message_id,
                 attachments,
                 now,
-            } => {
-                db::persist_initial_run(
-                    pool,
-                    *run_id,
-                    thread_id,
-                    *user_message_id,
-                    *assistant_message_id,
-                    workflow,
-                    prompt,
-                    attachments,
-                    *now,
-                )
-                .await
-            }
+            } => db::persist_initial_run(
+                pool,
+                *run_id,
+                thread_id,
+                *user_message_id,
+                *assistant_message_id,
+                workflow,
+                prompt,
+                attachments,
+                *now,
+            )
+            .await
+            .map_err(|e| StartRunError::Internal(e.into())),
             PersistStep::CreateThread {
                 run_id,
                 user_message_id,
@@ -133,20 +152,33 @@ impl PersistStep {
                 attachments,
                 title,
                 now,
-            } => {
-                db::persist_thread_with_first_run(
-                    pool,
-                    thread_id,
-                    *run_id,
-                    *user_message_id,
-                    *assistant_message_id,
-                    workflow,
-                    prompt,
-                    attachments,
-                    title,
-                    *now,
-                )
-                .await
+            } => db::persist_thread_with_first_run(
+                pool,
+                thread_id,
+                *run_id,
+                *user_message_id,
+                *assistant_message_id,
+                workflow,
+                prompt,
+                attachments,
+                title,
+                *now,
+            )
+            .await
+            .map_err(|e| StartRunError::Internal(e.into())),
+            PersistStep::RetryCas { run_id, now, .. } => {
+                // The guarded errored→running flip + clear-failed-output +
+                // re-snapshot, in one tx. A lost flip (the Run raced out of
+                // `errored` since the shell's advisory read) is PersistRaceLost
+                // with nothing cleared — the CAS stays authoritative even
+                // though the shell's status read already reported errored.
+                let moved = db::prepare_retry(pool, *run_id, workflow, *now)
+                    .await
+                    .map_err(|e| StartRunError::Internal(e.into()))?;
+                if !moved.won() {
+                    return Err(StartRunError::PersistRaceLost);
+                }
+                Ok(())
             }
         }
     }
@@ -164,17 +196,17 @@ pub struct StartRunParams {
     /// `thread/create` sets true (slice 2): a brand-new Thread has no prior
     /// exchange, so skip the history read entirely.
     pub skip_history: bool,
-    /// `run/retry` sets true (slice 3): the handler frames its Response BEFORE
-    /// the spawn, so the spawn comes back as an unfired closure.
+    /// `run/retry` sets true: the handler frames its Response BEFORE the
+    /// spawn, so the spawn comes back as an unfired closure.
     pub deferred_spawn: bool,
 }
 
 /// A successfully started Run.
 pub struct StartedRun {
     pub run_id: Uuid,
-    /// The assistant Message id the Worker streams into. Unused by
-    /// `post_message`'s shell; `thread/create` and `retry` read it in later
-    /// slices.
+    /// The assistant Message id the Worker streams into. Unread by the shells
+    /// today (retry reads its own copy back from the DB before calling the
+    /// verb); kept on the result because it is part of "what was started".
     #[allow(dead_code)]
     pub assistant_message_id: Uuid,
     /// The resolved Workflow's provider id — GUARANTEED connected (the verb's
@@ -182,9 +214,8 @@ pub struct StartedRun {
     /// `thread/create`'s shell hands it to the titler (ADR-0046).
     pub provider: String,
     /// `Some` only when [`StartRunParams::deferred_spawn`] was set: the spawn,
-    /// unfired, for the caller to invoke AFTER framing its Response. Unread by
-    /// the fresh paths (always `None` there); `retry` fires it in slice 3.
-    #[allow(dead_code)]
+    /// unfired, for the caller to invoke AFTER framing its Response. The fresh
+    /// paths get `None`; `run/retry` fires it right after `send_response`.
     pub deferred_spawn: Option<Box<dyn FnOnce() + Send>>,
 }
 
@@ -196,6 +227,11 @@ pub enum StartRunError {
     /// The resolved model's provider has no stored credential (ADR-0062).
     /// Carries the provider id.
     ProviderNotConnected(String),
+    /// `RetryCas` only: the guarded `errored → running` CAS lost (the Run raced
+    /// out of `errored` since the shell's advisory read). Nothing was cleared,
+    /// no hub was created, nothing spawned — the caller reports its own
+    /// vocabulary (retry: `not_errored`).
+    PersistRaceLost,
     /// A DB or credential-store fault.
     Internal(anyhow::Error),
 }
@@ -232,15 +268,13 @@ pub fn default_spawn(m: SpawnManifest) {
     );
 }
 
-/// The ADR-0062 provider-credential gate, in the verb's own error vocabulary.
-/// CHOICE: this deliberately calls `credentials::is_connected` directly — the
-/// same check `runs::handler::ensure_provider_connected` performs — rather
-/// than the handler helper, because the deep verb must not depend on the
-/// handler layer's wire-error type (ADR-0029), and `HandlerError` is
-/// `pub(super)` to `runs` (widening the helper would force widening the enum
-/// too). Same mapping, byte-identical behavior: missing → ProviderNotConnected
-/// carrying the provider id; a present-but-unparseable store → Internal (fail
-/// loud on a corrupt store, never a misleading "not connected").
+/// The ADR-0062 provider-credential gate, in the verb's own error vocabulary —
+/// the ONLY gate in the codebase now that every Run-creation site (post_message,
+/// thread_create, journal_entry, retry) routes through this verb (the handler
+/// layer's duplicate helper was deleted with retry's port). Mapping: missing →
+/// ProviderNotConnected carrying the provider id; a present-but-unparseable
+/// store → Internal (fail loud on a corrupt store, never a misleading "not
+/// connected").
 fn ensure_provider_connected(provider: &str) -> Result<(), StartRunError> {
     match crate::credentials::is_connected(provider) {
         Ok(true) => Ok(()),
@@ -282,11 +316,12 @@ where
     ensure_provider_connected(&workflow.provider)?;
 
     // 3. Persist: the variant's own transactional shape, against the resolved
-    //    Workflow.
+    //    Workflow. A RetryCas that loses its guarded flip returns
+    //    PersistRaceLost here — before the hub exists and before any spawn, so
+    //    the hub-only-after-a-committed-persist invariant holds by position.
     persist_step
         .execute(pool, thread_id, &workflow, &prompt)
-        .await
-        .map_err(|e| StartRunError::Internal(e.into()))?;
+        .await?;
 
     // 4. Hub BEFORE spawn (ADR-0022): a subscribe arriving right after the
     //    response can't find a missing hub.
@@ -497,7 +532,7 @@ mod tests {
             Err(StartRunError::ProviderNotConnected(provider)) => {
                 assert_eq!(provider, "openai-codex", "carries the provider id");
             }
-            Err(StartRunError::Internal(e)) => panic!("expected ProviderNotConnected, got Internal({e})"),
+            Err(other) => panic!("expected ProviderNotConnected, got {other:?}"),
             Ok(_) => panic!("expected ProviderNotConnected, got Ok"),
         }
         assert_eq!(runs_count(&pool).await, 0, "gate BEFORE persist: zero rows written");
@@ -592,7 +627,67 @@ mod tests {
         assert_eq!(*spawned.lock().unwrap(), vec![run_id], "spawn ran once with the run id");
     }
 
-    // 5. skip_history: true → the manifest carries an EMPTY history even when
+    // 5. PersistStep::RetryCas on a RUNNING (not errored) Run: the guarded
+    //    errored→running CAS loses → Err(PersistRaceLost), NO hub, NO spawn
+    //    (panic-in-closure pins "never called"), and the Run is untouched —
+    //    the hub-only-after-a-committed-persist invariant.
+    #[tokio::test]
+    async fn retry_cas_lost_race_returns_persist_race_lost_no_hub_no_spawn() {
+        let _cred = credentials_dir(true);
+        let pool = memory_pool().await;
+        let hubs = hub::new_hubs();
+        crate::workflow::init().expect("load default workflow");
+        // A Thread + first Run seeded `running` — NOT errored, so the CAS loses.
+        let thread_id = Uuid::now_v7();
+        let run_id = Uuid::now_v7();
+        let assistant_message_id = Uuid::now_v7();
+        db::persist_thread_with_first_run(
+            &pool,
+            thread_id,
+            run_id,
+            Uuid::now_v7(),
+            assistant_message_id,
+            default_workflow(),
+            "the original prompt",
+            &[],
+            "t",
+            1,
+        )
+        .await
+        .expect("seed running run");
+
+        let params = StartRunParams {
+            thread_id,
+            prompt: "the original prompt".to_string(),
+            manifest_attachments: Vec::new(),
+            persist_step: PersistStep::RetryCas {
+                run_id,
+                assistant_message_id,
+                now: 2,
+            },
+            skip_history: false,
+            deferred_spawn: true,
+        };
+
+        let result = start_run(&pool, &hubs, params, |_m: SpawnManifest| {
+            panic!("a lost CAS must never spawn");
+        })
+        .await;
+
+        match result {
+            Err(StartRunError::PersistRaceLost) => {}
+            Err(other) => panic!("expected PersistRaceLost, got {other:?}"),
+            Ok(_) => panic!("expected PersistRaceLost, got Ok"),
+        }
+        assert!(hub::get(&hubs, run_id).is_none(), "no hub after a lost CAS");
+        assert_eq!(
+            db::run_status(&pool, run_id).await.expect("status").map(db::RunStatus::as_str),
+            Some("running"),
+            "the running Run is untouched — nothing cleared, nothing flipped"
+        );
+    }
+
+    // 6. skip_history: true → the manifest carries an EMPTY history even when
     //    the thread has a prior run with completed messages. The control run on
     //    the same thread (skip_history: false) proves the seed produced real
     //    history — without it an empty history would be vacuous.

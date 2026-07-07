@@ -19,7 +19,7 @@ use super::handler::{self, HandlerError};
 use crate::db;
 use crate::hub::Hubs;
 use crate::protocol::{JournalEntryRescanParams, JournalEntryRescanResult};
-use crate::start_run::{self, PersistStep, StartRunError, StartRunParams};
+use crate::start_run::{self, PersistStep, StartRunParams};
 
 /// The fixed re-scan instruction. Names the JE and asks the agent to surface
 /// only entities mentioned but not yet captured. The re-scan recognition prompt
@@ -83,12 +83,7 @@ pub(super) async fn handle(
             start_run::default_spawn,
         )
         .await
-        .map_err(|e| match e {
-            StartRunError::ProviderNotConnected(provider) => {
-                HandlerError::ProviderNotConnected { provider }
-            }
-            StartRunError::Internal(e) => HandlerError::Internal(e),
-        })?;
+        .map_err(HandlerError::from)?;
 
         Ok(JournalEntryRescanResult {
             run_id: started.run_id.to_string(),
