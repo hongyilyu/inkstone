@@ -16,14 +16,16 @@ use uuid::Uuid;
 use crate::localtime::parse_local_datetime;
 use crate::mutation::{todo_data_spec, Mode, MutationKind};
 
-/// Validate a proposed mutation payload against its schema (ADR-0016) — a
-/// match-free adapter over the kind's write contract for callers holding a
-/// `(kind, payload)` pair. The per-kind dispatch lives in the ONE exhaustive
-/// [`MutationKind::describe`] match; the validator bodies stay below, grouped
-/// per Entity Type. `Err(reason)` is surfaced as the `invalid_params` message
-/// on `proposal/decide` / `entity/mutate`. Total over the closed kind set — an
-/// unknown wire string is rejected at the edge by [`MutationKind::from_wire`],
-/// so this never sees one.
+/// Validate a proposed mutation payload against its schema (ADR-0016) — the
+/// BLESSED ergonomic `(kind, payload)` entry point over the contract's
+/// `validate` facet, not a legacy leftover: callers holding a kind (the tool
+/// edge, the intent-graph applier) call this one-liner rather than spelling
+/// `(kind.describe().validate)(payload)` themselves. The per-kind dispatch
+/// lives in the ONE exhaustive [`MutationKind::describe`] match; the validator
+/// bodies stay below, grouped per Entity Type. `Err(reason)` is surfaced as
+/// the `invalid_params` message on `proposal/decide` / `entity/mutate`. Total
+/// over the closed kind set — an unknown wire string is rejected at the edge
+/// by [`MutationKind::from_wire`], so this never sees one.
 pub(crate) fn validate(kind: MutationKind, payload: &Value) -> Result<(), String> {
     (kind.describe().validate)(payload)
 }
@@ -173,7 +175,7 @@ pub(crate) fn render_accept_update_project(payload: &Value, _entity_id: Option<&
 
 pub(crate) fn render_accept_create_todo(payload: &Value, entity_id: Option<&str>) -> String {
     let entity_id = entity_id.expect("create accept rendering requires entity_id");
-    let todo = payload.get("todo");
+    let todo = todo_envelope(payload);
     let title = todo
         .and_then(|t| t.get("title"))
         .and_then(Value::as_str)
@@ -833,6 +835,25 @@ fn validate_recurrence_end(value: &Value) -> Result<(), String> {
     Ok(())
 }
 
+/// The `todo` value of a `{todo, person_refs?}` envelope (ADR-0031) — the ONE
+/// owner of the where-does-`todo`-live shape question. Lives here, next to the
+/// Todo validators, because entities.rs already owns the payload-shape accessors
+/// the other modules read ([`source_journal_entry_id`],
+/// [`reference_target_entity_id`]) and 3 of the envelope's consumers are the
+/// validators/renderer below; `mutation.rs`'s `todo_envelope_extract` is a
+/// normalization HOOK best expressed over this accessor, not the other way
+/// around. Returns the RAW value — a present non-object is `Some(raw)`, NOT
+/// filtered to `None` — because the sites disagree on non-object/absent
+/// handling and each keeps its own semantics: the validators must see the raw
+/// value to emit the exact "todo must be a JSON object" text, the create
+/// normalization filters non-objects locally, the update overlay `as_object`s
+/// it away, and the renderer/ref-checkers read fields defensively (a `get` on
+/// a non-object is `None`). Absence semantics likewise stay per-site
+/// (`validate_todo` requires it; the overlay treats absence as a no-op).
+pub(crate) fn todo_envelope(payload: &Value) -> Option<&Value> {
+    payload.get("todo")
+}
+
 /// Validate a `create_todo` payload: an ENVELOPE `{todo: TodoData, person_refs?}`
 /// (ADR-0031). `todo` is required and validated as `TodoData`; `person_refs`, when
 /// present, must be an array of refs, each an object with a required non-empty
@@ -845,10 +866,7 @@ pub(crate) fn validate_todo(payload: &Value) -> Result<(), String> {
     // then the TodoData hook validates the `todo` value (its cross-field
     // invariants exceed a flat walk).
     MutationKind::CreateTodo.payload_spec().check(payload)?;
-    let obj = payload.as_object().expect("check accepted an object");
-    let todo = obj
-        .get("todo")
-        .ok_or_else(|| "todo is required".to_string())?;
+    let todo = todo_envelope(payload).ok_or_else(|| "todo is required".to_string())?;
     validate_todo_data(todo)
 }
 
@@ -911,8 +929,7 @@ pub(crate) fn validate_update_todo(payload: &Value) -> Result<(), String> {
     // the single source; the partial `todo` value's recurrence rule (a non-null
     // value validated in isolation) is the one cross-field bit the spec defers.
     MutationKind::UpdateTodo.payload_spec().check(payload)?;
-    let obj = payload.as_object().expect("check accepted an object");
-    if let Some(todo) = obj.get("todo") {
+    if let Some(todo) = todo_envelope(payload) {
         validate_partial_todo_data(todo)?;
     }
     Ok(())
@@ -1892,6 +1909,44 @@ mod tests {
                 "reason names the unsupported field {field}: {reason}"
             );
         }
+    }
+
+    #[test]
+    fn todo_envelope_exposes_the_raw_shape() {
+        // Present object → Some(&object): the common envelope.
+        let payload = json!({ "todo": { "title": "x" }, "person_refs": [] });
+        assert_eq!(todo_envelope(&payload), Some(&json!({ "title": "x" })));
+        // Absent → None: each site keeps its own absence semantics
+        // (validate_todo errors "todo is required"; the update overlay no-ops).
+        assert_eq!(todo_envelope(&json!({ "person_refs": [] })), None);
+        // Present NON-object → Some(raw), NOT filtered to None: the validators
+        // must see the raw value to emit the exact "todo must be a JSON object"
+        // text; the one filtering site (mutation.rs's todo_envelope_extract)
+        // filters locally.
+        assert_eq!(
+            todo_envelope(&json!({ "todo": "not-an-object" })),
+            Some(&json!("not-an-object"))
+        );
+    }
+
+    #[test]
+    fn non_object_todo_envelope_keeps_exact_validator_error_text() {
+        // Pins the error path [`todo_envelope`]'s doc cites for its RAW
+        // (non-filtering) semantics: the validators must SEE a non-object
+        // `todo` to emit this exact text. A future `.filter(is_object)` inside
+        // the accessor would silently change these outcomes — this test breaks
+        // first.
+        assert_eq!(
+            validate_todo(&json!({ "todo": "x" })),
+            Err("todo must be a JSON object".to_string())
+        );
+        assert_eq!(
+            validate_update_todo(&json!({
+                "todo_id": "00000000-0000-4000-8000-000000000000",
+                "todo": "x"
+            })),
+            Err("todo must be a JSON object".to_string())
+        );
     }
 
     #[test]

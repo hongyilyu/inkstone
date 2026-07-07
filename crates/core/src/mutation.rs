@@ -186,7 +186,9 @@ fn todo_create_defaults(
 /// `payload.todo` (the TodoData); `person_refs` persist separately in
 /// `todo_person_refs`, never in `entities.data`.
 fn todo_envelope_extract(payload: &Value) -> Option<Value> {
-    payload.get("todo").filter(|todo| todo.is_object()).cloned()
+    crate::entities::todo_envelope(payload)
+        .filter(|todo| todo.is_object())
+        .cloned()
 }
 
 /// Closed policy row for an Entity Type. This is the trait-like dispatch point
@@ -2266,10 +2268,14 @@ mod tests {
                 "occurred_at is required",
             ),
             (
+                // The invalid case is a payload PROJECT would accept (`status`
+                // is a Project field, not a Person one), so a CreatePerson→
+                // CreateProject validator mis-wire fails here instead of
+                // passing both ways.
                 MutationKind::CreatePerson,
                 json!({ "name": "Alice" }),
-                json!({}),
-                "name is required",
+                json!({ "name": "Alice", "status": "active" }),
+                "unsupported person field \"status\"",
             ),
             (
                 // The invalid case fails the status↔timestamp invariant HOOK

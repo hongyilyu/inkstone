@@ -230,7 +230,7 @@ async fn apply_update_todo(
         .unwrap_or("active")
         .to_string();
 
-    if let Some(partial) = payload.get("todo").and_then(|t| t.as_object()) {
+    if let Some(partial) = crate::entities::todo_envelope(payload).and_then(|t| t.as_object()) {
         for (key, value) in partial {
             // Three-way overlay (ADR-0033): a `null` value clears the field
             // (remove the key); any other value sets it. Absent keys never reach
@@ -921,7 +921,7 @@ pub(crate) async fn apply_entity_mutation(
                     .as_deref()
                     .expect("non-delete mutations always carry entity data");
                 if kind == MutationKind::CreateTodo
-                    && let Some(todo) = effective_payload.get("todo")
+                    && let Some(todo) = crate::entities::todo_envelope(effective_payload)
                 {
                     // Re-check the new Todo's project link in THIS tx: a concurrent
                     // delete_project could otherwise persist a dangling project_id
