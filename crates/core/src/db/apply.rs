@@ -630,8 +630,7 @@ pub(crate) async fn apply_entity_mutation(
     // `entity_data_payload` path, which would be wrong for a new in-tx-computed
     // kind. (The reference weave is a WriteOp::Update, so `write_op` alone could
     // not express this.) ApplyIntentGraph's facet value is never read: the graph
-    // is rejected at the guard above, keeping its legacy unreachable-after-guard
-    // semantics.
+    // is rejected at the guard above (ADR-0042).
     let mut data_str = match desc.write_class {
         WriteClass::NoData | WriteClass::InTx => None,
         WriteClass::Normalized => Some(
@@ -815,7 +814,13 @@ pub(crate) async fn apply_entity_mutation(
         // Every remaining kind routes generically by the contract's `write_op`
         // (an exhaustive inner match — a new WriteOp variant must declare its
         // write body here; a new KIND is forced through `describe()`'s contract
-        // block instead of this dispatch).
+        // block instead of this dispatch). TRAP for a future `InTx` kind: an
+        // InTx kind reaching these generic Update/Create arms must have
+        // computed its `data_str` BEFORE this match — the reference weave does,
+        // in its pre-match blocks above. A new InTx kind without that hits the
+        // "carry entity data" expect below; give it a named arm instead. (No
+        // blanket InTx guard here: the weave legitimately rides the generic
+        // update arm.)
         _ => match desc.write_op {
             // Generic delete (journal_entry, person, todo, media, habit): remove
             // the entity of this `entity_type`. Its revisions/sources and a
@@ -855,9 +860,9 @@ pub(crate) async fn apply_entity_mutation(
                 }
                 // A deleted REFERENCEABLE Entity may be woven into Journal Entry
                 // bodies as entity_refs — textualize those to their label snapshots.
-                // Within this arm that is exactly Person and Todo (Project takes the
-                // named cascade arm above; journal/media/habit types are not
-                // referenceable), matching the legacy DeletePerson|DeleteTodo gate.
+                // Within this arm referenceable = exactly Person and Todo (Project
+                // takes the named cascade arm above; journal/media/habit types are
+                // not referenceable).
                 if desc.entity_type.is_referenceable() {
                     textualize_journal_refs_targeting_deleted_entity(
                         tx,

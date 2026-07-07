@@ -14,18 +14,16 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use crate::localtime::parse_local_datetime;
-use crate::mutation::{todo_data_spec, Mode, MutationKind};
+use crate::mutation::{todo_data_spec, EntityType, Mode, MutationKind};
 
 /// Validate a proposed mutation payload against its schema (ADR-0016) — the
-/// BLESSED ergonomic `(kind, payload)` entry point over the contract's
-/// `validate` facet, not a legacy leftover: callers holding a kind (the tool
-/// edge, the intent-graph applier) call this one-liner rather than spelling
-/// `(kind.describe().validate)(payload)` themselves. The per-kind dispatch
-/// lives in the ONE exhaustive [`MutationKind::describe`] match; the validator
-/// bodies stay below, grouped per Entity Type. `Err(reason)` is surfaced as
-/// the `invalid_params` message on `proposal/decide` / `entity/mutate`. Total
-/// over the closed kind set — an unknown wire string is rejected at the edge
-/// by [`MutationKind::from_wire`], so this never sees one.
+/// ergonomic `(kind, payload)` entry over the contract's `validate` facet, for
+/// callers that hold a kind; per-kind dispatch lives in the ONE exhaustive
+/// [`MutationKind::describe`] match, and the validator bodies stay below,
+/// grouped per Entity Type. `Err(reason)` is surfaced as the `invalid_params`
+/// message on `proposal/decide` / `entity/mutate`. Total over the closed kind
+/// set — an unknown wire string is rejected at the edge by
+/// [`MutationKind::from_wire`], so this never sees one.
 pub(crate) fn validate(kind: MutationKind, payload: &Value) -> Result<(), String> {
     (kind.describe().validate)(payload)
 }
@@ -34,8 +32,8 @@ pub(crate) fn validate(kind: MutationKind, payload: &Value) -> Result<(), String
 /// holding a `(kind, payload)` pair — kept solely for the parity fixture
 /// emitter (`protocol/parity.rs`, itself `#[cfg(test)]`), which builds the
 /// Decision-prose samples through the real renderers. Production accept paths
-/// read the facet off [`MutationKind::describe`] directly; the `expect`
-/// preserves the legacy router's panic-on-misuse for user-only kinds.
+/// read the facet off [`MutationKind::describe`] directly; panics for
+/// user-only kinds (no proposal accept text).
 #[cfg(test)]
 pub(crate) fn render_accept(
     kind: MutationKind,
@@ -82,11 +80,12 @@ pub(crate) fn render_accept_update_journal_entry(
     format!("Accepted. Updated Journal Entry (occurred_at={occurred_at}, body={body}).")
 }
 
-/// Shared body for the four renderable deletes. The kind threads through so
-/// the text keeps its per-kind Entity noun; the contract's per-kind facet fns
-/// below are thin wrappers pinning the kind (mirroring the id-only validators).
-fn render_accept_delete(kind: MutationKind, payload: &Value) -> String {
-    let noun = kind.describe().entity_type.spec().noun;
+/// Shared body for the four renderable deletes. The Entity Type threads
+/// through so the text keeps its per-kind noun; the contract's per-kind facet
+/// fns below are thin wrappers pinning the type (mirroring the id-only
+/// validators).
+fn render_accept_delete(entity_type: EntityType, payload: &Value) -> String {
+    let noun = entity_type.spec().noun;
     let entity_id = payload
         .get("entity_id")
         .and_then(Value::as_str)
@@ -98,19 +97,19 @@ pub(crate) fn render_accept_delete_journal_entry(
     payload: &Value,
     _entity_id: Option<&str>,
 ) -> String {
-    render_accept_delete(MutationKind::DeleteJournalEntry, payload)
+    render_accept_delete(EntityType::JournalEntry, payload)
 }
 
 pub(crate) fn render_accept_delete_person(payload: &Value, _entity_id: Option<&str>) -> String {
-    render_accept_delete(MutationKind::DeletePerson, payload)
+    render_accept_delete(EntityType::Person, payload)
 }
 
 pub(crate) fn render_accept_delete_project(payload: &Value, _entity_id: Option<&str>) -> String {
-    render_accept_delete(MutationKind::DeleteProject, payload)
+    render_accept_delete(EntityType::Project, payload)
 }
 
 pub(crate) fn render_accept_delete_todo(payload: &Value, _entity_id: Option<&str>) -> String {
-    render_accept_delete(MutationKind::DeleteTodo, payload)
+    render_accept_delete(EntityType::Todo, payload)
 }
 
 pub(crate) fn render_accept_reference_existing_entity_from_journal_entry(
@@ -836,20 +835,15 @@ fn validate_recurrence_end(value: &Value) -> Result<(), String> {
 }
 
 /// The `todo` value of a `{todo, person_refs?}` envelope (ADR-0031) — the ONE
-/// owner of the where-does-`todo`-live shape question. Lives here, next to the
-/// Todo validators, because entities.rs already owns the payload-shape accessors
-/// the other modules read ([`source_journal_entry_id`],
-/// [`reference_target_entity_id`]) and 3 of the envelope's consumers are the
-/// validators/renderer below; `mutation.rs`'s `todo_envelope_extract` is a
-/// normalization HOOK best expressed over this accessor, not the other way
-/// around. Returns the RAW value — a present non-object is `Some(raw)`, NOT
-/// filtered to `None` — because the sites disagree on non-object/absent
-/// handling and each keeps its own semantics: the validators must see the raw
-/// value to emit the exact "todo must be a JSON object" text, the create
-/// normalization filters non-objects locally, the update overlay `as_object`s
-/// it away, and the renderer/ref-checkers read fields defensively (a `get` on
-/// a non-object is `None`). Absence semantics likewise stay per-site
-/// (`validate_todo` requires it; the overlay treats absence as a no-op).
+/// owner of the where-does-`todo`-live shape question. Returns the RAW value —
+/// a present non-object is `Some(raw)`, NOT filtered to `None` — because the
+/// sites disagree on non-object/absent handling and each keeps its own
+/// semantics: the validators must see the raw value to emit the exact "todo
+/// must be a JSON object" text, the create normalization filters non-objects
+/// locally, the update overlay `as_object`s it away, and the
+/// renderer/ref-checkers read fields defensively (a `get` on a non-object is
+/// `None`). Absence semantics likewise stay per-site (`validate_todo` requires
+/// it; the overlay treats absence as a no-op).
 pub(crate) fn todo_envelope(payload: &Value) -> Option<&Value> {
     payload.get("todo")
 }

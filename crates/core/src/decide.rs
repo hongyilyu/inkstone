@@ -442,17 +442,7 @@ async fn apply_or_reject(
         &proposal.payload,
         edited_payload,
         kind.describe().write_op.source_relation(),
-        |entity_id| {
-            let render = kind
-                .describe()
-                .render_accept
-                .expect("user-only mutation has no proposal accept text");
-            serde_json::json!({
-                "decision": "accept",
-                "content": render(applied_payload, Some(entity_id)),
-            })
-            .to_string()
-        },
+        |entity_id| accept_content(kind, applied_payload, entity_id),
     )
     .await
     {
@@ -462,6 +452,23 @@ async fn apply_or_reject(
         }),
         Err(e) => Err(e.into()),
     }
+}
+
+/// The accepted tool call's result payload: the kind's accept text (the
+/// Decision prose the resumed model reads, ADR-0025) wrapped in the
+/// `{decision, content}` envelope. Shared by the single-entity and
+/// intent-graph accept paths; panics for a user-only kind (no proposal accept
+/// text), which can never legitimately reach an accept.
+fn accept_content(kind: MutationKind, payload: &serde_json::Value, entity_id: &str) -> String {
+    let render = kind
+        .describe()
+        .render_accept
+        .expect("user-only mutation has no proposal accept text");
+    serde_json::json!({
+        "decision": "accept",
+        "content": render(payload, Some(entity_id)),
+    })
+    .to_string()
 }
 
 async fn apply_record_observations(
@@ -552,17 +559,7 @@ async fn apply_intent_graph(
         },
         &proposal.payload,
         decisions,
-        |entity_id| {
-            let render = kind
-                .describe()
-                .render_accept
-                .expect("user-only mutation has no proposal accept text");
-            serde_json::json!({
-                "decision": "accept",
-                "content": render(&proposal.payload, Some(entity_id)),
-            })
-            .to_string()
-        },
+        |entity_id| accept_content(kind, &proposal.payload, entity_id),
     )
     .await
     {
