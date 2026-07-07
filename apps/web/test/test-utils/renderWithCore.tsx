@@ -1,9 +1,15 @@
-import type { EntityBacklinksResult, EntityRow } from "@inkstone/protocol";
+import type {
+	EntityBacklinksResult,
+	EntityMutateParams,
+	EntityMutateResult,
+	EntityRow,
+} from "@inkstone/protocol";
 import {
 	type RunEventValue,
 	stubWsClient,
 	WsClient,
 	type WsClientService,
+	type WsError,
 } from "@inkstone/ui-sdk";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
@@ -202,4 +208,20 @@ export async function renderWithCore(
 		</QueryClientProvider>,
 	);
 	return { ...result, runtime, queryClient, router };
+}
+
+/**
+ * Render an entity editor under the shared Core harness: `entityMutate`
+ * (defaulting to a canned success) is the only stubbed request verb — others
+ * die loudly — while the harness serves empty entity/backlink/run-event reads.
+ */
+export function renderEntityEditor<P extends Record<string, unknown>>(
+	Editor: (props: P) => ReactElement,
+	props: P,
+	entityMutate: (
+		params: EntityMutateParams,
+	) => Effect.Effect<EntityMutateResult, WsError> = () =>
+		Effect.succeed({ entity_id: "01900000-0000-7000-8000-000000000099" }),
+) {
+	return renderWithCore(<Editor {...props} />, { overrides: { entityMutate } });
 }

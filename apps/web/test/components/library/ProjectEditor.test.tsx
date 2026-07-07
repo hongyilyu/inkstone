@@ -1,9 +1,5 @@
-import type {
-	EntityMutateParams,
-	EntityMutateResult,
-} from "@inkstone/protocol";
-import type { WsError } from "@inkstone/ui-sdk";
-import { renderWithCore } from "@test/test-utils/renderWithCore";
+import type { EntityMutateParams } from "@inkstone/protocol";
+import { renderEntityEditor } from "@test/test-utils/renderWithCore";
 import { cleanup, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Effect } from "effect";
@@ -11,20 +7,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ProjectEditor } from "@/components/library/ProjectEditor";
 import type { Project } from "@/lib/libraryItems";
 
-// Render under the shared Core harness: `entityMutate` records params and
-// succeeds; other un-stubbed request verbs die, while the harness serves empty
-// entity/backlink/run-event reads.
-function renderEditor(
+const renderEditor = (
 	props: Parameters<typeof ProjectEditor>[0],
-	entityMutate: (
-		params: EntityMutateParams,
-	) => Effect.Effect<EntityMutateResult, WsError> = () =>
-		Effect.succeed({ entity_id: "01900000-0000-7000-8000-000000000099" }),
-) {
-	return renderWithCore(<ProjectEditor {...props} />, {
-		overrides: { entityMutate },
-	});
-}
+	entityMutate?: Parameters<typeof renderEntityEditor>[2],
+) => renderEntityEditor(ProjectEditor, props, entityMutate);
 
 const existing: Project = {
 	id: "01900000-0000-7000-8000-0000000000b1",
