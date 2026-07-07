@@ -425,7 +425,7 @@ async fn apply_or_reject(
         ))
     })?;
 
-    entities::validate(kind, applied_payload).map_err(DecideError::Invalid)?;
+    (kind.describe().validate)(applied_payload).map_err(DecideError::Invalid)?;
     validate_mutation_target(pool, proposal.run_id, kind, applied_payload).await?;
 
     match db::apply_proposal(
@@ -531,7 +531,7 @@ async fn apply_intent_graph(
     // checked before the tx opens. The cross-node graph invariants (handle
     // references, duplicate handles, journal_ref-without-journal_entry) are the
     // resolver's pre-checks.
-    entities::validate(kind, &proposal.payload).map_err(DecideError::Invalid)?;
+    (kind.describe().validate)(&proposal.payload).map_err(DecideError::Invalid)?;
     // Run-independent target-ref check — a no-op for the graph (it has no single
     // target; link endpoints are validated inside the resolver against the
     // surviving node set, see the cascade below).

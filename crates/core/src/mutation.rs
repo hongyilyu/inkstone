@@ -1211,6 +1211,15 @@ pub(crate) struct Descriptor {
     /// Which payload key holds the target id, or `None` for a create (which
     /// mints a fresh id and targets nothing).
     pub(crate) target_key: Option<TargetKey>,
+    /// Pre-write payload validation for this kind (ADR-0016): the schema walk
+    /// plus any cross-field invariant hook. `Err(reason)` surfaces as the
+    /// `invalid_params` message on `proposal/decide` / `entity/mutate`.
+    /// Design decision (b): the per-kind validator BODIES stay in
+    /// `crate::entities`, grouped per Entity Type; the contract references them
+    /// here by fn pointer — fn pointers are `Copy`, so the descriptor stays
+    /// `Copy` and the contract table stays scannable while bodies keep their
+    /// locality.
+    pub(crate) validate: fn(&Value) -> Result<(), String>,
 }
 
 /// Every Entity-like Workspace mutation kind (ADR-0016, ADR-0025, ADR-0036,
@@ -1295,34 +1304,98 @@ impl MutationKind {
             .expect("every MutationKind is in the WIRE table")
     }
 
-    /// The single home of the path-independent taxonomy: one row per kind. A new
-    /// Entity Type adds one arm here and the compiler flags every consumer.
+    /// The single home of the path-independent taxonomy: one contract block per
+    /// kind. A new Entity Type adds its per-kind blocks here and the compiler
+    /// flags every consumer. Behavior facets (`validate`) are fn pointers into
+    /// `crate::entities`, where the per-kind bodies live grouped per Entity Type
+    /// (design decision (b) — see [`Descriptor::validate`]).
     pub(crate) fn describe(self) -> Descriptor {
+        use crate::entities as v;
         use EntityType as E;
         use MutationKind as M;
         use TargetKey as K;
         use WriteOp as W;
         match self {
-            // ── Regular creates ──
-            M::CreateJournalEntry
-            | M::CreatePerson
-            | M::CreateProject
-            | M::CreateTodo
-            | M::CreateMedia
-            | M::CreateHabit => regular(W::Create, self.regular_entity_type(), None),
-            // ── Regular updates (target = entity_id) ──
-            M::UpdateJournalEntry
-            | M::UpdatePerson
-            | M::UpdateProject
-            | M::UpdateMedia
-            | M::UpdateHabit => regular(W::Update, self.regular_entity_type(), Some(K::EntityId)),
-            // ── Regular deletes (target = entity_id) ──
-            M::DeleteJournalEntry
-            | M::DeletePerson
-            | M::DeleteProject
-            | M::DeleteTodo
-            | M::DeleteMedia
-            | M::DeleteHabit => regular(W::Delete, self.regular_entity_type(), Some(K::EntityId)),
+            // ── Journal Entry ──
+            M::CreateJournalEntry => {
+                regular(W::Create, E::JournalEntry, None, v::validate_journal_entry)
+            }
+            M::UpdateJournalEntry => regular(
+                W::Update,
+                E::JournalEntry,
+                Some(K::EntityId),
+                v::validate_update_journal_entry,
+            ),
+            M::DeleteJournalEntry => regular(
+                W::Delete,
+                E::JournalEntry,
+                Some(K::EntityId),
+                v::validate_delete_journal_entry,
+            ),
+            // ── Person ──
+            M::CreatePerson => regular(W::Create, E::Person, None, v::validate_create_person),
+            M::UpdatePerson => regular(
+                W::Update,
+                E::Person,
+                Some(K::EntityId),
+                v::validate_update_person,
+            ),
+            M::DeletePerson => regular(
+                W::Delete,
+                E::Person,
+                Some(K::EntityId),
+                v::validate_delete_person,
+            ),
+            // ── Project ──
+            M::CreateProject => regular(W::Create, E::Project, None, v::validate_create_project),
+            M::UpdateProject => regular(
+                W::Update,
+                E::Project,
+                Some(K::EntityId),
+                v::validate_update_project,
+            ),
+            M::DeleteProject => regular(
+                W::Delete,
+                E::Project,
+                Some(K::EntityId),
+                v::validate_delete_project,
+            ),
+            // ── Todo ──
+            M::CreateTodo => regular(W::Create, E::Todo, None, v::validate_todo),
+            M::DeleteTodo => regular(
+                W::Delete,
+                E::Todo,
+                Some(K::EntityId),
+                v::validate_delete_todo,
+            ),
+            // ── Media ──
+            M::CreateMedia => regular(W::Create, E::Media, None, v::validate_media),
+            M::UpdateMedia => regular(
+                W::Update,
+                E::Media,
+                Some(K::EntityId),
+                v::validate_update_media,
+            ),
+            M::DeleteMedia => regular(
+                W::Delete,
+                E::Media,
+                Some(K::EntityId),
+                v::validate_delete_media,
+            ),
+            // ── Habit ──
+            M::CreateHabit => regular(W::Create, E::Habit, None, v::validate_habit),
+            M::UpdateHabit => regular(
+                W::Update,
+                E::Habit,
+                Some(K::EntityId),
+                v::validate_update_habit,
+            ),
+            M::DeleteHabit => regular(
+                W::Delete,
+                E::Habit,
+                Some(K::EntityId),
+                v::validate_delete_habit,
+            ),
             // ── Irregular kinds (comment-held invariants) ──
             // The reference weave writes a new revision of the SOURCE Journal
             // Entry (its body gains the entity_ref), so it is an Update whose
@@ -1331,6 +1404,7 @@ impl MutationKind {
                 write_op: W::Update,
                 entity_type: E::JournalEntry,
                 target_key: Some(K::SourceEntityId),
+                validate: v::validate_reference_existing_entity_from_journal_entry,
             },
             // A read-modify-write of the Project's review fields (ADR-0034): an
             // Update targeting `entity_id`.
@@ -1338,6 +1412,7 @@ impl MutationKind {
                 write_op: W::Update,
                 entity_type: E::Project,
                 target_key: Some(K::EntityId),
+                validate: v::validate_mark_project_reviewed,
             },
             // update_todo's target key is `todo_id` (its envelope wraps a
             // Partial<TodoData> under `todo`), NOT `entity_id`.
@@ -1345,6 +1420,7 @@ impl MutationKind {
                 write_op: W::Update,
                 entity_type: E::Todo,
                 target_key: Some(K::TodoId),
+                validate: v::validate_update_todo,
             },
             // A graph spans many entities, so it has NO single target id — like a
             // create, `target_key` is None. `entity_type` is the JE anchor; the
@@ -1356,42 +1432,26 @@ impl MutationKind {
                 write_op: W::Create,
                 entity_type: E::JournalEntry,
                 target_key: None,
+                validate: v::validate_apply_intent_graph,
             },
-        }
-    }
-
-    /// The Entity Type of a regular CRUD kind. Panics for the non-CRUD irregulars
-    /// (reference weave, mark_project_reviewed, intent graph) which have explicit
-    /// arms in `describe`.
-    fn regular_entity_type(self) -> EntityType {
-        use MutationKind as M;
-        match self {
-            M::CreateJournalEntry | M::UpdateJournalEntry | M::DeleteJournalEntry => {
-                EntityType::JournalEntry
-            }
-            M::CreatePerson | M::UpdatePerson | M::DeletePerson => EntityType::Person,
-            M::CreateProject | M::UpdateProject | M::DeleteProject => EntityType::Project,
-            M::CreateTodo | M::DeleteTodo => EntityType::Todo,
-            M::CreateMedia | M::UpdateMedia | M::DeleteMedia => EntityType::Media,
-            M::CreateHabit | M::UpdateHabit | M::DeleteHabit => EntityType::Habit,
-            M::ReferenceExistingEntityFromJournalEntry
-            | M::MarkProjectReviewed
-            | M::UpdateTodo
-            | M::ApplyIntentGraph => {
-                panic!("regular_entity_type called on irregular kind {:?}", self)
-            }
         }
     }
 }
 
 /// Helper for the mechanical rows in `describe`: a pure `(WriteOp, EntityType,
-/// TargetKey)` triple. Named explicitly (not a closure) so it reads alongside the
-/// irregular arms.
-fn regular(write_op: WriteOp, entity_type: EntityType, target_key: Option<TargetKey>) -> Descriptor {
+/// TargetKey)` triple plus the kind's validate facet. Named explicitly (not a
+/// closure) so it reads alongside the irregular arms.
+fn regular(
+    write_op: WriteOp,
+    entity_type: EntityType,
+    target_key: Option<TargetKey>,
+    validate: fn(&Value) -> Result<(), String>,
+) -> Descriptor {
     Descriptor {
         write_op,
         entity_type,
         target_key,
+        validate,
     }
 }
 
@@ -1880,6 +1940,114 @@ mod tests {
             EntityType::JournalEntry.spec().schema_version,
             JOURNAL_ENTRY_SCHEMA_VERSION
         );
+    }
+
+    #[test]
+    fn descriptor_validate_facet_matches_legacy_router_per_entity_type() {
+        use serde_json::json;
+        // One kind per Entity Type: the contract's `validate` facet accepts a
+        // valid payload and reproduces the legacy `entities::validate` router's
+        // exact error text on an invalid one. The invalid payloads are chosen to
+        // exercise each kind's full validator body (spec walk AND, where one
+        // exists, the cross-field invariant hook) — no SQLite involved.
+        let cases: [(MutationKind, Value, Value, &str); 6] = [
+            (
+                MutationKind::CreateJournalEntry,
+                json!({
+                    "occurred_at": "2026-06-10T10:30:00",
+                    "body": [{ "type": "text", "text": "Talked to Alice." }]
+                }),
+                json!({ "body": [{ "type": "text", "text": "Talked to Alice." }] }),
+                "occurred_at is required",
+            ),
+            (
+                MutationKind::CreatePerson,
+                json!({ "name": "Alice" }),
+                json!({}),
+                "name is required",
+            ),
+            (
+                // The invalid case fails the status↔timestamp invariant HOOK
+                // (not the spec walk), proving CreateProject's two-step body.
+                MutationKind::CreateProject,
+                json!({ "name": "Ship v1" }),
+                json!({ "name": "Ship v1", "status": "completed" }),
+                "completed project requires completed_at",
+            ),
+            (
+                // The invalid case fails inside the `todo` envelope's TodoData
+                // hook, proving the envelope unwrap survives on the facet.
+                MutationKind::CreateTodo,
+                json!({ "todo": { "title": "Email Alice" } }),
+                json!({ "todo": { "title": "" } }),
+                "title must not be empty",
+            ),
+            (
+                // The invalid case fails the state↔finish-data invariant HOOK.
+                MutationKind::CreateMedia,
+                json!({ "title": "Dune", "medium": "book", "state": "backlog" }),
+                json!({ "title": "Dune", "medium": "book", "state": "backlog", "rating": 5 }),
+                "rating is only valid when state is done or abandoned",
+            ),
+            (
+                MutationKind::CreateHabit,
+                json!({ "name": "Meditate", "cadence": { "interval": 1, "unit": "day" } }),
+                json!({ "name": "Meditate" }),
+                "cadence is required",
+            ),
+        ];
+        for (kind, valid, invalid, expected_err) in cases {
+            let validate = kind.describe().validate;
+            assert_eq!(
+                validate(&valid),
+                Ok(()),
+                "{} accepts a valid payload",
+                kind.as_wire()
+            );
+            assert_eq!(
+                validate(&invalid),
+                Err(expected_err.to_string()),
+                "{} rejects with the router's exact error text",
+                kind.as_wire()
+            );
+        }
+    }
+
+    #[test]
+    fn descriptor_validate_facet_keeps_id_only_error_nouns_per_kind() {
+        use serde_json::json;
+        // The id-only kinds (deletes + mark_project_reviewed) share one spec
+        // shape but weave their own wire kind into the unsupported-field error —
+        // the per-kind facet fns must keep that text byte-identical to the old
+        // shared `validate_entity_id_only(kind, _)` dispatch.
+        let valid = json!({ "entity_id": "00000000-0000-4000-8000-000000000000" });
+        let invalid = json!({
+            "entity_id": "00000000-0000-4000-8000-000000000000",
+            "extra": 1
+        });
+        for kind in [
+            MutationKind::DeleteJournalEntry,
+            MutationKind::DeletePerson,
+            MutationKind::DeleteProject,
+            MutationKind::DeleteTodo,
+            MutationKind::DeleteMedia,
+            MutationKind::DeleteHabit,
+            MutationKind::MarkProjectReviewed,
+        ] {
+            let validate = kind.describe().validate;
+            assert_eq!(
+                validate(&valid),
+                Ok(()),
+                "{} accepts an id-only payload",
+                kind.as_wire()
+            );
+            assert_eq!(
+                validate(&invalid),
+                Err(format!("unsupported {} field \"extra\"", kind.as_wire())),
+                "{} keeps its wire noun in the error text",
+                kind.as_wire()
+            );
+        }
     }
 
     #[test]

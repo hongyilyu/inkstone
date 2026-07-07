@@ -5,9 +5,11 @@
 //!
 //! The closed Entity-Type taxonomy ([`MutationKind`]/[`crate::mutation::ProposableMutation`]
 //! and the descriptor) lives in [`crate::mutation`]; this module is the per-kind
-//! *schema* layer — the validator bodies plus the accept-text rendering. Both
-//! `validate` and `render_accept` dispatch on the typed kind, so a new kind is a
-//! compile error here, not a runtime panic.
+//! *schema* layer — the validator bodies plus the accept-text rendering.
+//! Validation is resolved per kind via the write contract ([`MutationKind::describe`]'s
+//! `validate` facet, whose fn pointers name the bodies below); `render_accept`
+//! dispatches on the typed kind. Either way a new kind is a compile error, not a
+//! runtime panic.
 
 use serde_json::Value;
 use uuid::Uuid;
@@ -15,53 +17,16 @@ use uuid::Uuid;
 use crate::localtime::parse_local_datetime;
 use crate::mutation::{todo_data_spec, Mode, MutationKind};
 
-/// Validate a proposed mutation payload against its schema (ADR-0016),
-/// dispatched on the typed [`MutationKind`]. `Err(reason)` is surfaced as the
-/// `invalid_params` message on `proposal/decide` / `entity/mutate`. Total over
-/// the closed kind set — an unknown wire string is rejected at the edge by
-/// [`MutationKind::from_wire`], so this never sees one.
+/// Validate a proposed mutation payload against its schema (ADR-0016) — a
+/// match-free adapter over the kind's write contract for callers holding a
+/// `(kind, payload)` pair. The per-kind dispatch lives in the ONE exhaustive
+/// [`MutationKind::describe`] match; the validator bodies stay below, grouped
+/// per Entity Type. `Err(reason)` is surfaced as the `invalid_params` message
+/// on `proposal/decide` / `entity/mutate`. Total over the closed kind set — an
+/// unknown wire string is rejected at the edge by [`MutationKind::from_wire`],
+/// so this never sees one.
 pub(crate) fn validate(kind: MutationKind, payload: &Value) -> Result<(), String> {
-    match kind {
-        MutationKind::CreateJournalEntry => validate_journal_entry(payload),
-        MutationKind::UpdateJournalEntry => validate_update_journal_entry(payload),
-        MutationKind::ReferenceExistingEntityFromJournalEntry => {
-            validate_reference_existing_entity_from_journal_entry(payload)
-        }
-        MutationKind::DeleteJournalEntry
-        | MutationKind::DeletePerson
-        | MutationKind::DeleteProject
-        | MutationKind::DeleteTodo
-        | MutationKind::DeleteMedia
-        | MutationKind::DeleteHabit
-        // A user-path-only review touch (ADR-0034): `{entity_id}` only — Core reads
-        // the Project and recomputes the review fields, so the client sends no data.
-        // Deliberately absent from the agent `propose_workspace_mutation` schema; it
-        // can only arrive via `entity/mutate`.
-        | MutationKind::MarkProjectReviewed => validate_entity_id_only(kind, payload),
-        // Create routes the FULL payload (entity data + the `source_journal_entry_id`
-        // provenance directive) through its single-source spec, so that field's
-        // shape is owned by `mutation.rs` like every other — no separate strip.
-        MutationKind::CreatePerson => MutationKind::CreatePerson.payload_spec().check(payload),
-        MutationKind::UpdatePerson => validate_update_person(payload),
-        MutationKind::CreateProject => {
-            MutationKind::CreateProject.payload_spec().check(payload)?;
-            project_status_timestamp_invariant(payload.as_object().expect("check accepted an object"))
-        }
-        MutationKind::UpdateProject => validate_update_project(payload),
-        MutationKind::CreateTodo => validate_todo(payload),
-        MutationKind::UpdateTodo => validate_update_todo(payload),
-        MutationKind::CreateMedia => validate_media(payload),
-        MutationKind::UpdateMedia => validate_update_media(payload),
-        MutationKind::CreateHabit => validate_habit(payload),
-        MutationKind::UpdateHabit => validate_update_habit(payload),
-        // The intent graph (ADR-0042) validates its STRUCTURE via the single-source
-        // spec (optional journal_entry, >= 1 typed entity nodes, the three link
-        // kinds). The cross-node graph invariants (handle references, duplicate
-        // handles, journal_ref-without-journal_entry) are the resolver's job (slice
-        // 2+); slice 1 short-circuits before apply, so structural acceptance is all
-        // the agent path needs here.
-        MutationKind::ApplyIntentGraph => MutationKind::ApplyIntentGraph.payload_spec().check(payload),
-    }
+    (kind.describe().validate)(payload)
 }
 
 /// Render the human-readable Decision text the model reads on resume as the
@@ -255,7 +220,7 @@ enum BodyNodePolicy {
     TextOrNewEntityRef,
 }
 
-fn validate_journal_entry(payload: &Value) -> Result<(), String> {
+pub(crate) fn validate_journal_entry(payload: &Value) -> Result<(), String> {
     // Flat shell (occurred_at/ended_at presence + datetime parse, the body-union
     // schema) from the single source; the ended_at≥occurred_at + body-content
     // invariants are the hook.
@@ -380,7 +345,7 @@ fn required_body_node_string<'a>(
     }
 }
 
-fn validate_update_journal_entry(payload: &Value) -> Result<(), String> {
+pub(crate) fn validate_update_journal_entry(payload: &Value) -> Result<(), String> {
     // Flat shell (entity_id target + occurred_at/ended_at + body-union schema)
     // from the single source; the cross-field invariants are the hook. The body
     // policy admits an `entity_ref` carrying a `ref_id`.
@@ -390,7 +355,9 @@ fn validate_update_journal_entry(payload: &Value) -> Result<(), String> {
     validate_journal_body_and_times(payload, BodyNodePolicy::TextOrExistingEntityRef)
 }
 
-fn validate_reference_existing_entity_from_journal_entry(payload: &Value) -> Result<(), String> {
+pub(crate) fn validate_reference_existing_entity_from_journal_entry(
+    payload: &Value,
+) -> Result<(), String> {
     // Flat shell (source/target UUIDs, optional label_snapshot, body-union schema)
     // from the single source; the body content + exactly-one-entity_ref invariant
     // are the hook.
@@ -476,8 +443,42 @@ pub(crate) fn body_entity_ref_ids(payload: &Value) -> Vec<&str> {
 /// Validate an `{entity_id}`-only payload (the deletes + `mark_project_reviewed`)
 /// against the kind's id-only spec: a single required UUID `entity_id` and no
 /// other field. A delete carries no entity data, so the spec is the whole schema.
+/// The kind threads through so the error text keeps its per-kind wire noun; the
+/// contract's per-kind facet fns below are thin wrappers pinning the kind.
 fn validate_entity_id_only(kind: MutationKind, payload: &Value) -> Result<(), String> {
     kind.payload_spec().check(payload)
+}
+
+pub(crate) fn validate_delete_journal_entry(payload: &Value) -> Result<(), String> {
+    validate_entity_id_only(MutationKind::DeleteJournalEntry, payload)
+}
+
+pub(crate) fn validate_delete_person(payload: &Value) -> Result<(), String> {
+    validate_entity_id_only(MutationKind::DeletePerson, payload)
+}
+
+pub(crate) fn validate_delete_project(payload: &Value) -> Result<(), String> {
+    validate_entity_id_only(MutationKind::DeleteProject, payload)
+}
+
+pub(crate) fn validate_delete_todo(payload: &Value) -> Result<(), String> {
+    validate_entity_id_only(MutationKind::DeleteTodo, payload)
+}
+
+pub(crate) fn validate_delete_media(payload: &Value) -> Result<(), String> {
+    validate_entity_id_only(MutationKind::DeleteMedia, payload)
+}
+
+pub(crate) fn validate_delete_habit(payload: &Value) -> Result<(), String> {
+    validate_entity_id_only(MutationKind::DeleteHabit, payload)
+}
+
+/// A user-path-only review touch (ADR-0034): `{entity_id}` only — Core reads
+/// the Project and recomputes the review fields, so the client sends no data.
+/// Deliberately absent from the agent `propose_workspace_mutation` schema; it
+/// can only arrive via `entity/mutate`.
+pub(crate) fn validate_mark_project_reviewed(payload: &Value) -> Result<(), String> {
+    validate_entity_id_only(MutationKind::MarkProjectReviewed, payload)
 }
 
 #[cfg(test)]
@@ -491,11 +492,19 @@ fn validate_person(payload: &Value) -> Result<(), String> {
         .check(payload)
 }
 
+/// Validate a `create_person` payload. Create routes the FULL payload (entity
+/// data + the `source_journal_entry_id` provenance directive) through its
+/// single-source spec, so that field's shape is owned by `mutation.rs` like
+/// every other — no separate strip.
+pub(crate) fn validate_create_person(payload: &Value) -> Result<(), String> {
+    MutationKind::CreatePerson.payload_spec().check(payload)
+}
+
 /// Validate an `update_person` payload against the kind's full spec: the
 /// `entity_id` target prepended to the `PersonData` core (the single source).
 /// PersonData has no cross-field invariant, so the spec walk is the whole
 /// validator.
-fn validate_update_person(payload: &Value) -> Result<(), String> {
+pub(crate) fn validate_update_person(payload: &Value) -> Result<(), String> {
     MutationKind::UpdatePerson.payload_spec().check(payload)
 }
 
@@ -506,7 +515,7 @@ fn validate_update_person(payload: &Value) -> Result<(), String> {
 /// `media_state_finish_invariant` hook). Each optional field is CLEARABLE: a
 /// `null` value is the ADR-0033 sentinel-clear directive (accepted; the apply
 /// path drops null keys).
-fn validate_media(payload: &Value) -> Result<(), String> {
+pub(crate) fn validate_media(payload: &Value) -> Result<(), String> {
     MutationKind::CreateMedia.payload_data_spec().check(payload)?;
     media_state_finish_invariant(payload.as_object().expect("check accepted an object"))
 }
@@ -516,7 +525,7 @@ fn validate_media(payload: &Value) -> Result<(), String> {
 /// the finish-data invariant over the whole merged doc. Update is a full-document
 /// replace (like person/project), so the data is a complete MediaData
 /// (ADR-0059); the same cross-field rule applies.
-fn validate_update_media(payload: &Value) -> Result<(), String> {
+pub(crate) fn validate_update_media(payload: &Value) -> Result<(), String> {
     MutationKind::UpdateMedia.payload_spec().check(payload)?;
     media_state_finish_invariant(payload.as_object().expect("check accepted an object"))
 }
@@ -550,19 +559,27 @@ fn media_state_finish_invariant(obj: &serde_json::Map<String, Value>) -> Result<
 /// Validate a `HabitData` object: required `name`, required cadence
 /// `{interval, unit}`, optional clearable `target`/`note`, and optional status.
 /// Check-ins are Observations, so no time-series data belongs here.
-fn validate_habit(payload: &Value) -> Result<(), String> {
+pub(crate) fn validate_habit(payload: &Value) -> Result<(), String> {
     MutationKind::CreateHabit.payload_data_spec().check(payload)
 }
 
 /// Validate an `update_habit` full-document replace payload: `entity_id` plus a
 /// complete HabitData object.
-fn validate_update_habit(payload: &Value) -> Result<(), String> {
+pub(crate) fn validate_update_habit(payload: &Value) -> Result<(), String> {
     MutationKind::UpdateHabit.payload_spec().check(payload)
 }
 
 #[cfg(test)]
 fn validate_project(payload: &Value) -> Result<(), String> {
     validate_project_data(payload)
+}
+
+/// Validate a `create_project` payload: the FULL payload (data core + the
+/// `source_journal_entry_id` provenance directive) through the single-source
+/// spec, then the status↔timestamp invariant hook the flat walk cannot express.
+pub(crate) fn validate_create_project(payload: &Value) -> Result<(), String> {
+    MutationKind::CreateProject.payload_spec().check(payload)?;
+    project_status_timestamp_invariant(payload.as_object().expect("check accepted an object"))
 }
 
 /// Validate a complete Project `data` object against the Project schema (ADR-0031).
@@ -656,7 +673,7 @@ fn status_timestamp_invariant(
 /// then the status↔timestamp invariant — same hook order as create dispatch and
 /// [`validate_project_data`]. The spec tolerates an absent status, which is fine
 /// for an update (status optional on update).
-fn validate_update_project(payload: &Value) -> Result<(), String> {
+pub(crate) fn validate_update_project(payload: &Value) -> Result<(), String> {
     MutationKind::UpdateProject.payload_spec().check(payload)?;
     project_status_timestamp_invariant(payload.as_object().expect("check accepted an object"))
 }
@@ -783,7 +800,7 @@ fn validate_recurrence_end(value: &Value) -> Result<(), String> {
 /// `person_id` and an optional `role` ∈ {waiting_on, related} (a missing role
 /// defaults to `related` at apply-time). Any other top-level key is rejected.
 /// `person_id` existence (an Accepted Person) is checked at decide-time, not here.
-fn validate_todo(payload: &Value) -> Result<(), String> {
+pub(crate) fn validate_todo(payload: &Value) -> Result<(), String> {
     // Envelope shape (`{todo, person_refs?, source_journal_entry_id?}`) from the
     // single source — including the person_refs element shape, now spec-driven —
     // then the TodoData hook validates the `todo` value (its cross-field
@@ -850,7 +867,7 @@ fn todo_recurrence_invariant(obj: &serde_json::Map<String, Value>) -> Result<(),
 /// re-validates the MERGED whole via [`validate_todo_data`]. Optional
 /// `set_person_refs`/`add_person_refs` (each a ref array) and `remove_person_ids`
 /// (an array of non-empty strings). Any other top-level key is rejected.
-fn validate_update_todo(payload: &Value) -> Result<(), String> {
+pub(crate) fn validate_update_todo(payload: &Value) -> Result<(), String> {
     // Envelope shape (`todo_id`, set/add `person_refs`, `remove_person_ids`) from
     // the single source; the partial `todo` value's recurrence rule (a non-null
     // value validated in isolation) is the one cross-field bit the spec defers.
@@ -887,6 +904,17 @@ fn validate_partial_todo_data(payload: &Value) -> Result<(), String> {
     }
 }
 
+/// Validate an `apply_intent_graph` payload. The intent graph (ADR-0042)
+/// validates its STRUCTURE via the single-source spec (optional journal_entry,
+/// >= 1 typed entity nodes, the three link kinds). The cross-node graph
+/// invariants (handle references, duplicate handles,
+/// journal_ref-without-journal_entry) are the resolver's job (slice 2+); slice 1
+/// short-circuits before apply, so structural acceptance is all the agent path
+/// needs here.
+pub(crate) fn validate_apply_intent_graph(payload: &Value) -> Result<(), String> {
+    MutationKind::ApplyIntentGraph.payload_spec().check(payload)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -901,7 +929,7 @@ mod tests {
     /// surfaces as the same "not supported" reason the old `_` arm returned.
     fn validate(kind: &str, payload: &Value) -> Result<(), String> {
         match MutationKind::from_wire(kind) {
-            Some(k) => super::validate(k, payload),
+            Some(k) => (k.describe().validate)(payload),
             None => Err(format!("mutation_kind {kind:?} not supported")),
         }
     }
