@@ -7,14 +7,21 @@ import {
 	sqlite,
 	sqlValue,
 } from "./seed-proposal.js";
-import { FAUX_WORKER_CMD } from "./spawnCore.js";
+import { FAUX_PROPOSE_JOURNAL_FIXTURE, FAUX_WORKER_CMD } from "./spawnCore.js";
 
 // The seeded proposal is decided through real Core; accepting RESUMES the parked
 // Run, which spawns a Worker. Use the faux interpreter (provider="faux") so resume
 // needs no live credential/token resolution — the apply commits in-tx before the
 // (detached) resume spawns, so the DB assertions hold regardless of the resumed
-// turn's content.
-test.use({ coreOptions: { workerCmd: FAUX_WORKER_CMD, faux: "propose" } });
+// turn's content. Resume-only: the scenario's turns are never consumed, but the
+// propose mode requires a params file uniformly (fail-fast, no silent default).
+test.use({
+	coreOptions: {
+		workerCmd: FAUX_WORKER_CMD,
+		faux: "propose",
+		proposeParamsFile: FAUX_PROPOSE_JOURNAL_FIXTURE,
+	},
+});
 
 /**
  * Intent-graph sequential review card, end-to-end (ADR-0042, slice 8): real Core +

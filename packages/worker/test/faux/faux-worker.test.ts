@@ -20,6 +20,7 @@ const FAUX_ENV_KEYS = [
 	"INKSTONE_FAUX_ERROR",
 	"INKSTONE_FAUX_TOOL_CALL",
 	"INKSTONE_FAUX_PROPOSE",
+	"INKSTONE_FAUX_PROPOSE_PARAMS",
 	"INKSTONE_FAUX_ECHO_HISTORY",
 	"INKSTONE_FAUX_EXTRACT",
 	"INKSTONE_FAUX_EXTRACT_PARAMS",
@@ -73,6 +74,36 @@ function withCaptureScenario(scenario: {
 	process.env.INKSTONE_FAUX_CAPTURE = "1";
 	process.env.INKSTONE_FAUX_CAPTURE_PARAMS = file;
 	afterEach(() => rmSync(dir, { recursive: true, force: true }));
+}
+
+// Propose-mode scenario (INKSTONE_FAUX_PROPOSE + INKSTONE_FAUX_PROPOSE_PARAMS):
+// an ordered list of Turns played back by manifest position — no prompt NLU.
+// Mirrors withExtractScenario's tempfile+env shape.
+function withProposeScenario(scenario: {
+	turns: Array<{
+		action: "create" | "update" | "delete";
+		body?: string;
+		occurred_at?: string;
+	}>;
+}): void {
+	const dir = mkdtempSync(path.join(tmpdir(), "faux-propose-"));
+	const file = path.join(dir, "scenario.json");
+	writeFileSync(file, JSON.stringify(scenario));
+	process.env.INKSTONE_FAUX_PROPOSE = "1";
+	process.env.INKSTONE_FAUX_PROPOSE_PARAMS = file;
+	afterEach(() => rmSync(dir, { recursive: true, force: true }));
+}
+
+// Raw variant for malformed-scenario tests: writes `content` verbatim (invalid
+// JSON, wrong top-level keys) that withProposeScenario's type would reject.
+function withRawProposeParams(content: string): string {
+	const dir = mkdtempSync(path.join(tmpdir(), "faux-propose-"));
+	const file = path.join(dir, "scenario.json");
+	writeFileSync(file, content);
+	process.env.INKSTONE_FAUX_PROPOSE = "1";
+	process.env.INKSTONE_FAUX_PROPOSE_PARAMS = file;
+	afterEach(() => rmSync(dir, { recursive: true, force: true }));
+	return file;
 }
 
 // A manifest with the direct-capture tool allowlist (search_entities is present
@@ -292,116 +323,72 @@ describe("faux-worker dep-builder (test-only entry)", () => {
 		expect(terminal).toEqual({ kind: "error", message: "scripted boom" });
 		expect(events.some((e) => e.kind === "done")).toBe(false);
 	});
+});
 
-	it("proposes a create_journal_entry directly for a normal journal prompt", async () => {
+// Helper: collect the captured propose_workspace_mutation requests, projecting
+// just mutation_kind + payload (rationale is prose, not asserted here).
+function proposalsIn(requests: CapturedToolRequest[]) {
+	return requests
+		.filter((r) => r.name === "propose_workspace_mutation")
+		.map((r) => {
+			const params = r.params as {
+				mutation_kind: string;
+				payload: unknown;
+			};
+			return { mutation_kind: params.mutation_kind, payload: params.payload };
+		});
+}
+
+describe("faux-worker propose mode — scenario playback (INKSTONE_FAUX_PROPOSE_PARAMS)", () => {
+	it("throws on a fresh manifest when INKSTONE_FAUX_PROPOSE_PARAMS is unset — no prose fallback", () => {
 		process.env.INKSTONE_FAUX_PROPOSE = "1";
 
-		const { events, requests } = await runChat(
-			journalIntakeManifest(
-				"I bought milk after daycare pickup and felt relieved.",
+		expect(() =>
+			fauxDepsFor(journalIntakeManifest("I bought milk after daycare pickup.")),
+		).toThrow(/INKSTONE_FAUX_PROPOSE_PARAMS/);
+	});
+
+	it("throws on a resume manifest when INKSTONE_FAUX_PROPOSE_PARAMS is unset — params required uniformly", () => {
+		process.env.INKSTONE_FAUX_PROPOSE = "1";
+
+		expect(() =>
+			fauxDepsFor(
+				fauxManifest({
+					prompt: "",
+					mode: "resume",
+					messages: [
+						{ role: "user", text: "I bought milk after daycare pickup." },
+						assistantCall("tc_create_0", "propose_workspace_mutation"),
+						decisionResult(
+							"tc_create_0",
+							"Accepted. Created Journal Entry (entity_id=entry-1).",
+						),
+					],
+					workflow: {
+						name: "default",
+						version: "1.0.0",
+						provider: "faux",
+						model: "faux-1",
+						system_prompt: "You run the journal entry intake loop.",
+						thinking_level: "off",
+						tools: JOURNAL_INTAKE_TOOLS,
+					},
+				}),
 			),
-			{
-				tc_create: {
-					ok: {
-						content: [
-							{
-								type: "text",
-								text: "Accepted. Created Journal Entry.",
-							},
-						],
-					},
-				},
-			},
-		);
-
-		expect(requests).toEqual([
-			{
-				toolCallId: "tc_create",
-				name: "propose_workspace_mutation",
-				params: {
-					mutation_kind: "create_journal_entry",
-					payload: {
-						occurred_at: "2026-06-10T10:30:00",
-						body: [
-							{
-								type: "text",
-								text: "Bought milk after daycare pickup.",
-							},
-						],
-					},
-					rationale: "the user shared a journal-worthy moment",
-				},
-			},
-		]);
-		expect(events.at(-1)).toEqual({ kind: "done" });
-		expect(
-			events
-				.filter(
-					(e): e is { kind: "text_delta"; delta: string } =>
-						e.kind === "text_delta",
-				)
-				.map((e) => e.delta)
-				.join(""),
-		).toContain("Done — added it.");
+		).toThrow(/INKSTONE_FAUX_PROPOSE_PARAMS/);
 	});
 
-	it("treats 'actually' alone as a fresh create_journal_entry prompt", async () => {
-		process.env.INKSTONE_FAUX_PROPOSE = "1";
+	it("plays an update Turn from the scenario even when the prompt is gibberish", async () => {
+		withProposeScenario({
+			turns: [
+				{ action: "update", body: "Bought oat milk after daycare pickup." },
+			],
+		});
 
 		const { events, requests } = await runChat(
-			journalIntakeManifest("Actually, I bought bread after work."),
+			journalIntakeManifest("complete gibberish zzz"),
 			{
-				tc_create: {
-					ok: {
-						content: [
-							{
-								type: "text",
-								text: "Accepted. Created Journal Entry.",
-							},
-						],
-					},
-				},
-			},
-		);
-
-		expect(requests).toEqual([
-			{
-				toolCallId: "tc_create",
-				name: "propose_workspace_mutation",
-				params: {
-					mutation_kind: "create_journal_entry",
-					payload: {
-						occurred_at: "2026-06-10T10:30:00",
-						body: [
-							{
-								type: "text",
-								text: "Bought milk after daycare pickup.",
-							},
-						],
-					},
-					rationale: "the user shared a journal-worthy moment",
-				},
-			},
-		]);
-		expect(events.at(-1)).toEqual({ kind: "done" });
-		expect(
-			events
-				.filter(
-					(e): e is { kind: "text_delta"; delta: string } =>
-						e.kind === "text_delta",
-				)
-				.map((e) => e.delta)
-				.join(""),
-		).toContain("Done — added it.");
-	});
-
-	it("reads current-thread entries before proposing an update_journal_entry", async () => {
-		process.env.INKSTONE_FAUX_PROPOSE = "1";
-
-		const { events, requests } = await runChat(
-			journalIntakeManifest("Actually, for that entry, make it oat milk."),
-			{
-				tc_read_current: {
+				tc_read_current_0: {
 					ok: {
 						content: [
 							{
@@ -424,27 +411,25 @@ describe("faux-worker dep-builder (test-only entry)", () => {
 						],
 					},
 				},
-				tc_update: {
+				tc_update_0: {
 					ok: {
 						content: [
-							{
-								type: "text",
-								text: "Accepted. Updated Journal Entry.",
-							},
+							{ type: "text", text: "Accepted. Updated Journal Entry." },
 						],
 					},
 				},
 			},
 		);
 
+		// The scenario Turn — not the prompt — routes the action: read then update.
 		expect(requests).toEqual([
 			{
-				toolCallId: "tc_read_current",
+				toolCallId: "tc_read_current_0",
 				name: "read_current_thread_journal_entries",
 				params: {},
 			},
 			{
-				toolCallId: "tc_update",
+				toolCallId: "tc_update_0",
 				name: "propose_workspace_mutation",
 				params: {
 					mutation_kind: "update_journal_entry",
@@ -474,153 +459,70 @@ describe("faux-worker dep-builder (test-only entry)", () => {
 		).toContain("Done — updated it.");
 	});
 
-	it("updates the current-thread body text instead of replaying stale milk text", async () => {
-		process.env.INKSTONE_FAUX_PROPOSE = "1";
-
-		const { requests } = await runChat(
-			journalIntakeManifest("Actually, for that entry, make it bread."),
-			{
-				tc_read_current: {
-					ok: {
-						content: [
-							{
-								type: "text",
-								text: JSON.stringify({
-									entries: [
-										{
-											entity_id: "entry-1",
-											occurred_at: "2026-06-10T10:30:00",
-											body: [
-												{
-													type: "text",
-													text: "Bought milk after daycare pickup.",
-												},
-											],
-										},
-									],
-								}),
-							},
-						],
-					},
+	it("plays a create Turn from the scenario: one proposal built from the Turn, no read", async () => {
+		// Values distinct from the deleted prompt-NLU's hard-coded defaults so a
+		// reintroduced silent fallback can't pass this test.
+		withProposeScenario({
+			turns: [
+				{
+					action: "create",
+					body: "Walked the dog before sunrise.",
+					occurred_at: "2026-06-11T07:15:00",
 				},
-				tc_update: {
-					ok: {
-						content: [
-							{
-								type: "text",
-								text: "Accepted. Updated Journal Entry.",
-							},
-						],
-					},
-				},
-			},
-		);
-
-		expect(requests).toEqual([
-			{
-				toolCallId: "tc_read_current",
-				name: "read_current_thread_journal_entries",
-				params: {},
-			},
-			{
-				toolCallId: "tc_update",
-				name: "propose_workspace_mutation",
-				params: {
-					mutation_kind: "update_journal_entry",
-					payload: {
-						entity_id: "entry-1",
-						occurred_at: "2026-06-10T10:30:00",
-						body: [
-							{
-								type: "text",
-								text: "Bought bread after daycare pickup.",
-							},
-						],
-					},
-					rationale: "the user corrected a Journal Entry from this Thread",
-				},
-			},
-		]);
-	});
-
-	it("updates the occurred_at time when the prompt corrects only the time", async () => {
-		process.env.INKSTONE_FAUX_PROPOSE = "1";
-
-		const { requests } = await runChat(
-			journalIntakeManifest(
-				"Actually, for that entry, change the time to 11:00.",
-			),
-			{
-				tc_read_current: {
-					ok: {
-						content: [
-							{
-								type: "text",
-								text: JSON.stringify({
-									entries: [
-										{
-											entity_id: "entry-1",
-											occurred_at: "2026-06-10T10:30:00",
-											body: [
-												{
-													type: "text",
-													text: "Bought milk after daycare pickup.",
-												},
-											],
-										},
-									],
-								}),
-							},
-						],
-					},
-				},
-				tc_update: {
-					ok: {
-						content: [
-							{
-								type: "text",
-								text: "Accepted. Updated Journal Entry.",
-							},
-						],
-					},
-				},
-			},
-		);
-
-		expect(requests).toEqual([
-			{
-				toolCallId: "tc_read_current",
-				name: "read_current_thread_journal_entries",
-				params: {},
-			},
-			{
-				toolCallId: "tc_update",
-				name: "propose_workspace_mutation",
-				params: {
-					mutation_kind: "update_journal_entry",
-					payload: {
-						entity_id: "entry-1",
-						occurred_at: "2026-06-10T11:00:00",
-						body: [
-							{
-								type: "text",
-								text: "Bought milk after daycare pickup.",
-							},
-						],
-					},
-					rationale: "the user corrected a Journal Entry from this Thread",
-				},
-			},
-		]);
-	});
-
-	it("reads current-thread entries before proposing a delete_journal_entry", async () => {
-		process.env.INKSTONE_FAUX_PROPOSE = "1";
+			],
+		});
 
 		const { events, requests } = await runChat(
-			journalIntakeManifest("Actually, delete that entry."),
+			journalIntakeManifest("complete gibberish zzz"),
 			{
-				tc_read_current: {
+				tc_create_0: {
+					ok: {
+						content: [
+							{ type: "text", text: "Accepted. Created Journal Entry." },
+						],
+					},
+				},
+			},
+		);
+
+		expect(requests).toEqual([
+			{
+				toolCallId: "tc_create_0",
+				name: "propose_workspace_mutation",
+				params: {
+					mutation_kind: "create_journal_entry",
+					payload: {
+						occurred_at: "2026-06-11T07:15:00",
+						body: [
+							{
+								type: "text",
+								text: "Walked the dog before sunrise.",
+							},
+						],
+					},
+					rationale: "the user shared a journal-worthy moment",
+				},
+			},
+		]);
+		expect(events.at(-1)).toEqual({ kind: "done" });
+		expect(
+			events
+				.filter(
+					(e): e is { kind: "text_delta"; delta: string } =>
+						e.kind === "text_delta",
+				)
+				.map((e) => e.delta)
+				.join(""),
+		).toContain("Done — added it.");
+	});
+
+	it("plays a delete Turn from the scenario: read then delete_journal_entry from the live entry", async () => {
+		withProposeScenario({ turns: [{ action: "delete" }] });
+
+		const { events, requests } = await runChat(
+			journalIntakeManifest("complete gibberish zzz"),
+			{
+				tc_read_current_0: {
 					ok: {
 						content: [
 							{
@@ -643,13 +545,10 @@ describe("faux-worker dep-builder (test-only entry)", () => {
 						],
 					},
 				},
-				tc_delete: {
+				tc_delete_0: {
 					ok: {
 						content: [
-							{
-								type: "text",
-								text: "Accepted. Deleted Journal Entry.",
-							},
+							{ type: "text", text: "Accepted. Deleted Journal Entry." },
 						],
 					},
 				},
@@ -658,18 +557,16 @@ describe("faux-worker dep-builder (test-only entry)", () => {
 
 		expect(requests).toEqual([
 			{
-				toolCallId: "tc_read_current",
+				toolCallId: "tc_read_current_0",
 				name: "read_current_thread_journal_entries",
 				params: {},
 			},
 			{
-				toolCallId: "tc_delete",
+				toolCallId: "tc_delete_0",
 				name: "propose_workspace_mutation",
 				params: {
 					mutation_kind: "delete_journal_entry",
-					payload: {
-						entity_id: "entry-1",
-					},
+					payload: { entity_id: "entry-1" },
 					rationale: "the user wants to remove a mistaken Journal Entry",
 				},
 			},
@@ -685,21 +582,379 @@ describe("faux-worker dep-builder (test-only entry)", () => {
 				.join(""),
 		).toContain("Done — deleted it.");
 	});
-});
 
-// Helper: collect the captured propose_workspace_mutation requests, projecting
-// just mutation_kind + payload (rationale is prose, not asserted here).
-function proposalsIn(requests: CapturedToolRequest[]) {
-	return requests
-		.filter((r) => r.name === "propose_workspace_mutation")
-		.map((r) => {
-			const params = r.params as {
-				mutation_kind: string;
-				payload: unknown;
-			};
-			return { mutation_kind: params.mutation_kind, payload: params.payload };
+	it("plays the Turn at the manifest position: one prior user message selects turns[1]", async () => {
+		withProposeScenario({
+			turns: [
+				{
+					action: "create",
+					body: "Bought milk after daycare pickup.",
+					occurred_at: "2026-06-10T10:30:00",
+				},
+				{ action: "delete" },
+			],
 		});
-}
+
+		const { requests } = await runChat(
+			fauxManifest({
+				prompt: "complete gibberish zzz",
+				messages: [
+					{ role: "user", text: "Bought milk." },
+					{ role: "assistant", text: "Done — added it." },
+				],
+				workflow: {
+					name: "default",
+					version: "1.0.0",
+					provider: "faux",
+					model: "faux-1",
+					system_prompt: "You run the journal entry intake loop.",
+					thinking_level: "off",
+					tools: JOURNAL_INTAKE_TOOLS,
+				},
+			}),
+			{
+				tc_read_current_1: {
+					ok: {
+						content: [
+							{
+								type: "text",
+								text: JSON.stringify({
+									entries: [
+										{
+											entity_id: "entry-1",
+											occurred_at: "2026-06-10T10:30:00",
+											body: [
+												{
+													type: "text",
+													text: "Bought milk after daycare pickup.",
+												},
+											],
+										},
+									],
+								}),
+							},
+						],
+					},
+				},
+				tc_delete_1: {
+					ok: {
+						content: [
+							{ type: "text", text: "Accepted. Deleted Journal Entry." },
+						],
+					},
+				},
+			},
+		);
+
+		// turns[1] (delete) plays — not turns[0] (create).
+		expect(requests.map((r) => r.name)).toEqual([
+			"read_current_thread_journal_entries",
+			"propose_workspace_mutation",
+		]);
+		expect(proposalsIn(requests)).toEqual([
+			{
+				mutation_kind: "delete_journal_entry",
+				payload: { entity_id: "entry-1" },
+			},
+		]);
+		// tool_calls.id is a GLOBAL primary key in Core's DB: position 1 must not
+		// reuse position 0's ids or the second Run corrupts the first Run's rows.
+		expect(requests.map((r) => r.toolCallId)).toEqual([
+			"tc_read_current_1",
+			"tc_delete_1",
+		]);
+	});
+
+	it("throws when the scenario is exhausted — never a silent default", () => {
+		withProposeScenario({
+			turns: [
+				{
+					action: "create",
+					body: "Bought milk after daycare pickup.",
+					occurred_at: "2026-06-10T10:30:00",
+				},
+			],
+		});
+
+		// Position 1 (one prior user message) has no scripted turn. `fauxDepsFor`
+		// scripts the provider at call time, so the exhaustion throws synchronously.
+		expect(() =>
+			fauxDepsFor(
+				fauxManifest({
+					prompt: "complete gibberish zzz",
+					messages: [
+						{ role: "user", text: "Bought milk." },
+						{ role: "assistant", text: "Done — added it." },
+					],
+				}),
+			),
+		).toThrow(/scenario exhausted/);
+	});
+
+	it("throws at load on an unknown action, naming the value and its turn index", () => {
+		// Raw write: a typo'd action withProposeScenario's type would reject —
+		// the silent-misroute case.
+		withRawProposeParams(
+			JSON.stringify({
+				turns: [
+					{
+						action: "create",
+						body: "Walked the dog before sunrise.",
+						occurred_at: "2026-06-11T07:15:00",
+					},
+					{ action: "updte", body: "Bought oat milk after daycare pickup." },
+				],
+			}),
+		);
+
+		// The bad turn is at index 1, but load-time validation covers the whole
+		// scenario — it throws even though position 0 would play the valid create.
+		expect(() =>
+			fauxDepsFor(journalIntakeManifest("complete gibberish zzz")),
+		).toThrow('turn 1: unknown action "updte"');
+	});
+
+	it("throws at load when a create Turn omits body", () => {
+		withProposeScenario({
+			turns: [{ action: "create", occurred_at: "2026-06-11T07:15:00" }],
+		});
+
+		expect(() =>
+			fauxDepsFor(journalIntakeManifest("complete gibberish zzz")),
+		).toThrow('turn 0: create requires "body"');
+	});
+
+	it("throws at load when a create Turn omits occurred_at", () => {
+		withProposeScenario({
+			turns: [{ action: "create", body: "Walked the dog before sunrise." }],
+		});
+
+		expect(() =>
+			fauxDepsFor(journalIntakeManifest("complete gibberish zzz")),
+		).toThrow('turn 0: create requires "occurred_at"');
+	});
+
+	it("throws at load when a create Turn's body is an empty string", () => {
+		withProposeScenario({
+			turns: [
+				{ action: "create", body: "", occurred_at: "2026-06-11T07:15:00" },
+			],
+		});
+
+		expect(() =>
+			fauxDepsFor(journalIntakeManifest("complete gibberish zzz")),
+		).toThrow('turn 0: create requires "body"');
+	});
+
+	it("throws at load when the file has no turns array", () => {
+		withRawProposeParams(JSON.stringify({ turn: [] }));
+
+		expect(() =>
+			fauxDepsFor(journalIntakeManifest("complete gibberish zzz")),
+		).toThrow(/must contain a "turns" array/);
+	});
+
+	it("names the seam and path when the scenario file is malformed or missing", () => {
+		const file = withRawProposeParams("{not json");
+
+		// Malformed JSON: the raw SyntaxError is wrapped with the env var + path.
+		expect(() =>
+			fauxDepsFor(journalIntakeManifest("complete gibberish zzz")),
+		).toThrow(new RegExp(`INKSTONE_FAUX_PROPOSE_PARAMS ${file}`));
+
+		// Missing file: same wrapping (ENOENT would otherwise name neither).
+		rmSync(file);
+		expect(() =>
+			fauxDepsFor(journalIntakeManifest("complete gibberish zzz")),
+		).toThrow(new RegExp(`INKSTONE_FAUX_PROPOSE_PARAMS ${file}`));
+	});
+
+	it("update Turn with occurred_at only: keeps the live body, replaces the time", async () => {
+		withProposeScenario({
+			turns: [{ action: "update", occurred_at: "2026-06-10T11:00:00" }],
+		});
+
+		const { requests } = await runChat(
+			journalIntakeManifest("complete gibberish zzz"),
+			{
+				tc_read_current_0: {
+					ok: {
+						content: [
+							{
+								type: "text",
+								text: JSON.stringify({
+									entries: [
+										{
+											entity_id: "entry-1",
+											occurred_at: "2026-06-10T10:30:00",
+											body: [
+												{
+													type: "text",
+													text: "Bought milk after daycare pickup.",
+												},
+											],
+										},
+									],
+								}),
+							},
+						],
+					},
+				},
+				tc_update_0: {
+					ok: {
+						content: [
+							{ type: "text", text: "Accepted. Updated Journal Entry." },
+						],
+					},
+				},
+			},
+		);
+
+		expect(proposalsIn(requests)).toEqual([
+			{
+				mutation_kind: "update_journal_entry",
+				payload: {
+					entity_id: "entry-1",
+					occurred_at: "2026-06-10T11:00:00",
+					body: [{ type: "text", text: "Bought milk after daycare pickup." }],
+				},
+			},
+		]);
+	});
+
+	it("update Turn with body only: keeps the live occurred_at, replaces the body", async () => {
+		withProposeScenario({
+			turns: [{ action: "update", body: "Bought bread after daycare pickup." }],
+		});
+
+		const { requests } = await runChat(
+			journalIntakeManifest("complete gibberish zzz"),
+			{
+				tc_read_current_0: {
+					ok: {
+						content: [
+							{
+								type: "text",
+								text: JSON.stringify({
+									entries: [
+										{
+											entity_id: "entry-1",
+											occurred_at: "2026-06-10T10:30:00",
+											body: [
+												{
+													type: "text",
+													text: "Bought milk after daycare pickup.",
+												},
+											],
+										},
+									],
+								}),
+							},
+						],
+					},
+				},
+				tc_update_0: {
+					ok: {
+						content: [
+							{ type: "text", text: "Accepted. Updated Journal Entry." },
+						],
+					},
+				},
+			},
+		);
+
+		expect(proposalsIn(requests)).toEqual([
+			{
+				mutation_kind: "update_journal_entry",
+				payload: {
+					entity_id: "entry-1",
+					occurred_at: "2026-06-10T10:30:00",
+					body: [{ type: "text", text: "Bought bread after daycare pickup." }],
+				},
+			},
+		]);
+	});
+
+	it("update Turn on an empty thread: 'couldn't find' text, no proposal", async () => {
+		withProposeScenario({
+			turns: [{ action: "update", body: "Bought bread after daycare pickup." }],
+		});
+
+		const { events, requests } = await runChat(
+			journalIntakeManifest("complete gibberish zzz"),
+			{
+				tc_read_current_0: {
+					ok: {
+						content: [{ type: "text", text: JSON.stringify({ entries: [] }) }],
+					},
+				},
+			},
+		);
+
+		expect(requests.map((r) => r.name)).toEqual([
+			"read_current_thread_journal_entries",
+		]);
+		expect(
+			events
+				.filter(
+					(e): e is { kind: "text_delta"; delta: string } =>
+						e.kind === "text_delta",
+				)
+				.map((e) => e.delta)
+				.join(""),
+		).toContain("I couldn't find that Journal Entry in this thread.");
+		expect(events.at(-1)).toEqual({ kind: "done" });
+	});
+
+	it("resume: confirms from the Decision result without consuming scenario turns", async () => {
+		withProposeScenario({
+			turns: [
+				{
+					action: "create",
+					body: "Bought milk after daycare pickup.",
+					occurred_at: "2026-06-10T10:30:00",
+				},
+			],
+		});
+
+		const { events, requests } = await runChat(
+			fauxManifest({
+				prompt: "",
+				mode: "resume",
+				messages: [
+					{ role: "user", text: "complete gibberish zzz" },
+					assistantCall("tc_update_0", "propose_workspace_mutation"),
+					decisionResult(
+						"tc_update_0",
+						"Accepted. Updated Journal Entry (entity_id=entry-1).",
+					),
+				],
+				workflow: {
+					name: "default",
+					version: "1.0.0",
+					provider: "faux",
+					model: "faux-1",
+					system_prompt: "You run the journal entry intake loop.",
+					thinking_level: "off",
+					tools: JOURNAL_INTAKE_TOOLS,
+				},
+			}),
+		);
+
+		// The resume branch confirms — the scenario's create turn is NOT played.
+		expect(requests).toEqual([]);
+		expect(
+			events
+				.filter(
+					(e): e is { kind: "text_delta"; delta: string } =>
+						e.kind === "text_delta",
+				)
+				.map((e) => e.delta)
+				.join(""),
+		).toContain("Done — updated it.");
+		expect(events.at(-1)).toEqual({ kind: "done" });
+	});
+});
 
 describe("faux-worker extraction mode (INKSTONE_FAUX_EXTRACT)", () => {
 	it("fresh: proposes a create_journal_entry whose body mentions the person", async () => {

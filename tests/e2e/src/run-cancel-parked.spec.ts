@@ -1,5 +1,5 @@
 import { expect, test } from "./fixtures.js";
-import { FAUX_WORKER_CMD } from "./spawnCore.js";
+import { FAUX_PROPOSE_JOURNAL_FIXTURE, FAUX_WORKER_CMD } from "./spawnCore.js";
 
 // Cancel a Run that is PARKED awaiting a Proposal, through the real UI. The faux
 // `propose` interpreter parks the Run on a Journal Entry proposal (the same setup
@@ -12,7 +12,13 @@ import { FAUX_WORKER_CMD } from "./spawnCore.js";
 // and run-cancel-ui.spec.ts (composer Stop mid-stream). The parked branch — which
 // the verb concentrates and which has only Rust-integration coverage — had no
 // browser-level test until now.
-test.use({ coreOptions: { workerCmd: FAUX_WORKER_CMD, faux: "propose" } });
+test.use({
+	coreOptions: {
+		workerCmd: FAUX_WORKER_CMD,
+		faux: "propose",
+		proposeParamsFile: FAUX_PROPOSE_JOURNAL_FIXTURE,
+	},
+});
 
 test("clicking Stop cancels a parked run and clears its pending proposal", async ({
 	chat,

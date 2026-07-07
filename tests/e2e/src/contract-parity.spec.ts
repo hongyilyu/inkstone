@@ -17,7 +17,12 @@ import path from "node:path";
 import { schemas, type WireKind } from "@inkstone/protocol";
 import { Either, Schema } from "effect";
 import { expect, test } from "./fixtures.js";
-import { FAUX_WORKER_CMD, PROPOSE_WORKER_CMD, REPO_ROOT } from "./spawnCore.js";
+import {
+	FAUX_PROPOSE_JOURNAL_FIXTURE,
+	FAUX_WORKER_CMD,
+	PROPOSE_WORKER_CMD,
+	REPO_ROOT,
+} from "./spawnCore.js";
 
 /** Minimal JSON-RPC response frame: `{ id, result }` or `{ id, error }`
  * (mirrors the ui-sdk wire — packages/ui-sdk/src/index.ts:64-65). */
@@ -81,6 +86,7 @@ test.describe("faux proposal parity", () => {
 		coreOptions: {
 			workerCmd: FAUX_WORKER_CMD,
 			faux: "propose",
+			proposeParamsFile: FAUX_PROPOSE_JOURNAL_FIXTURE,
 		},
 	});
 

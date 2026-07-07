@@ -69,43 +69,12 @@ function textTurn(text: string): ReturnType<typeof fauxAssistantMessage> {
 }
 
 const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
-const JOURNAL_ENTRY_TEXT = "Bought milk after daycare pickup.";
-
-type JournalIntakeAction = "create" | "update" | "delete";
 
 interface JournalEntrySnapshot {
 	entity_id: string;
 	occurred_at: string;
 	ended_at?: string;
 	body?: Array<{ type?: string; text?: string }>;
-}
-
-function classifyJournalIntakePrompt(prompt: string): JournalIntakeAction {
-	const lower = prompt.toLowerCase();
-	const referencesCurrentEntry =
-		/\bfor that entry\b/.test(lower) ||
-		/\b(?:that|this|the) journal entry\b/.test(lower) ||
-		/\b(?:that|this|the) entry\b/.test(lower) ||
-		/\bthat one\b/.test(lower);
-	if (
-		referencesCurrentEntry &&
-		(lower.includes("delete") ||
-			lower.includes("remove") ||
-			lower.includes("drop"))
-	) {
-		return "delete";
-	}
-	if (
-		referencesCurrentEntry &&
-		(lower.includes("correct") ||
-			lower.includes("change") ||
-			lower.includes("edit") ||
-			lower.includes("update") ||
-			lower.includes("make it"))
-	) {
-		return "update";
-	}
-	return "create";
 }
 
 function currentThreadEntriesFromToolResult(
@@ -121,59 +90,7 @@ function currentThreadEntriesFromToolResult(
 
 function firstBodyText(entry: JournalEntrySnapshot): string {
 	const firstNode = Array.isArray(entry.body) ? entry.body[0] : undefined;
-	return typeof firstNode?.text === "string" && firstNode.text.length > 0
-		? firstNode.text
-		: JOURNAL_ENTRY_TEXT;
-}
-
-function replacementTextFromPrompt(prompt: string): string | null {
-	const promptMatch = prompt.match(/\bmake it ([^.!?]+?)(?:[.!?]|$)/i);
-	return promptMatch?.[1]?.trim() || null;
-}
-
-function updatedOccurredAt(prompt: string, currentOccurredAt: string): string {
-	const timeMatch = prompt.match(
-		/\b(?:change|set|make)\b.*\btime\b.*\bto\b\s*(\d{1,2}):(\d{2})\b/i,
-	);
-	if (timeMatch === null) {
-		return currentOccurredAt;
-	}
-	const [, hours, minutes] = timeMatch;
-	const hour = Number(hours);
-	const minute = Number(minutes);
-	if (
-		Number.isNaN(hour) ||
-		Number.isNaN(minute) ||
-		hour < 0 ||
-		hour > 23 ||
-		minute < 0 ||
-		minute > 59
-	) {
-		return currentOccurredAt;
-	}
-	const dateMatch = currentOccurredAt.match(/^(\d{4}-\d{2}-\d{2})T/);
-	if (dateMatch === null) {
-		return currentOccurredAt;
-	}
-	return `${dateMatch[1]}T${hours.padStart(2, "0")}:${minutes}:00`;
-}
-
-function updatedBodyText(prompt: string, currentText: string): string {
-	const replacement = replacementTextFromPrompt(prompt);
-	if (replacement === null) {
-		return currentText;
-	}
-	const objectMatch = currentText.match(
-		/^(\w+\s+)(.+?)(\s+(?:after|before|during|at|on|in|from|with|for|while|because|since)\b.*)$/i,
-	);
-	if (objectMatch !== null) {
-		const [, prefix, , suffix] = objectMatch;
-		return `${prefix}${replacement}${suffix}`;
-	}
-	if (/\bmilk\b/i.test(currentText)) {
-		return currentText.replace(/\b(?:[a-z]+\s+)?milk\b/i, replacement);
-	}
-	return currentText;
+	return typeof firstNode?.text === "string" ? firstNode.text : "";
 }
 
 function journalConfirmation(text: string): string {
@@ -192,15 +109,15 @@ function journalConfirmation(text: string): string {
 	return "Done.";
 }
 
-function createJournalEntryProposal() {
+function createJournalEntryProposal(bodyText: string, occurredAt: string) {
 	return {
 		mutation_kind: "create_journal_entry",
 		payload: {
-			occurred_at: "2026-06-10T10:30:00",
+			occurred_at: occurredAt,
 			body: [
 				{
 					type: "text",
-					text: JOURNAL_ENTRY_TEXT,
+					text: bodyText,
 				},
 			],
 		},
@@ -209,8 +126,9 @@ function createJournalEntryProposal() {
 }
 
 function updateJournalEntryProposal(
-	prompt: string,
 	entry: JournalEntrySnapshot,
+	bodyText: string,
+	occurredAt: string,
 ) {
 	const payload: {
 		entity_id: string;
@@ -219,11 +137,11 @@ function updateJournalEntryProposal(
 		body: Array<{ type: "text"; text: string }>;
 	} = {
 		entity_id: entry.entity_id,
-		occurred_at: updatedOccurredAt(prompt, entry.occurred_at),
+		occurred_at: occurredAt,
 		body: [
 			{
 				type: "text",
-				text: updatedBodyText(prompt, firstBodyText(entry)),
+				text: bodyText,
 			},
 		],
 	};
@@ -245,6 +163,151 @@ function deleteJournalEntryProposal(entry: JournalEntrySnapshot) {
 		},
 		rationale: "the user wants to remove a mistaken Journal Entry",
 	};
+}
+
+// ── Propose-mode scenario playback (INKSTONE_FAUX_PROPOSE_PARAMS) ──────────
+// An ordered list of Turns played back by manifest position (the count of user
+// messages), mirroring the EXTRACT/CAPTURE scenario-file seam — the prompt's
+// prose never routes the action. Omitted update fields keep the live entry's
+// values; update/delete resolve the entry via a real
+// read_current_thread_journal_entries round-trip, entry[0].
+
+/** One validated scenario Turn: create carries its full payload (both fields
+ * required); update fields are optional (omitted = keep the live entry's
+ * value); delete resolves everything from the live entry. */
+type ProposeTurn =
+	| { action: "create"; body: string; occurred_at: string }
+	| { action: "update"; body?: string; occurred_at?: string }
+	| { action: "delete" };
+
+interface ProposeScenario {
+	turns: ProposeTurn[];
+}
+
+function readProposeScenario(): ProposeScenario {
+	const file = process.env.INKSTONE_FAUX_PROPOSE_PARAMS;
+	if (file === undefined || file.length === 0) {
+		throw new Error(
+			"INKSTONE_FAUX_PROPOSE=1 requires INKSTONE_FAUX_PROPOSE_PARAMS to point at a scenario JSON file",
+		);
+	}
+	// Read+parse failures (missing file, malformed JSON) must name the seam and
+	// the path — a bare ENOENT/SyntaxError through catchAllDefect names neither.
+	let parsed: {
+		turns?: Array<{ action?: unknown; body?: string; occurred_at?: string }>;
+	};
+	try {
+		parsed = JSON.parse(readFileSync(file, "utf8"));
+	} catch (cause) {
+		throw new Error(`INKSTONE_FAUX_PROPOSE_PARAMS ${file}: ${String(cause)}`, {
+			cause,
+		});
+	}
+	if (!Array.isArray(parsed.turns)) {
+		throw new Error(
+			`INKSTONE_FAUX_PROPOSE_PARAMS: file must contain a "turns" array`,
+		);
+	}
+	// Validate the WHOLE scenario at load, not the played Turn at use: a typo'd
+	// action or a partial create must fail fast — the update/delete ternary below
+	// would otherwise route an unknown action to the most destructive branch.
+	for (const [index, turn] of parsed.turns.entries()) {
+		if (
+			turn.action !== "create" &&
+			turn.action !== "update" &&
+			turn.action !== "delete"
+		) {
+			throw new Error(
+				`INKSTONE_FAUX_PROPOSE_PARAMS turn ${index}: unknown action ${JSON.stringify(turn.action)} (expected create|update|delete)`,
+			);
+		}
+		if (turn.action === "create") {
+			// Empty strings are as wrong as missing fields: an empty-body create
+			// parks Core-side as an invalid draft, far from the authoring mistake.
+			if (turn.body === undefined || turn.body === "") {
+				throw new Error(
+					`INKSTONE_FAUX_PROPOSE_PARAMS turn ${index}: create requires "body"`,
+				);
+			}
+			if (turn.occurred_at === undefined || turn.occurred_at === "") {
+				throw new Error(
+					`INKSTONE_FAUX_PROPOSE_PARAMS turn ${index}: create requires "occurred_at"`,
+				);
+			}
+		}
+	}
+	return parsed as ProposeScenario;
+}
+
+/** Script the faux provider from the scenario Turn at the manifest position
+ * (fresh mode only — resumes confirm via journalConfirmation upstream). */
+function setProposePlaybackResponses(
+	faux: ReturnType<typeof fauxProvider>,
+	manifest: WorkerManifest,
+	scenario: ProposeScenario,
+): void {
+	const position = manifest.messages.filter((m) => m.role === "user").length;
+	const turn = scenario.turns[position];
+	if (turn === undefined) {
+		throw new Error(
+			`INKSTONE_FAUX_PROPOSE_PARAMS scenario exhausted: position ${position} has no turn (${scenario.turns.length} scripted)`,
+		);
+	}
+
+	// tool_calls.id is a GLOBAL primary key in Core's DB, so a multi-Turn scenario
+	// in one thread must not reuse ids across Runs — suffix them by position.
+	if (turn.action === "create") {
+		faux.setResponses([
+			toolCallTurn(
+				"propose_workspace_mutation",
+				createJournalEntryProposal(turn.body, turn.occurred_at),
+				`tc_create_${position}`,
+			),
+			textTurn("Done — added it."),
+		]);
+		return;
+	}
+
+	faux.setResponses([
+		toolCallTurn(
+			"read_current_thread_journal_entries",
+			{},
+			`tc_read_current_${position}`,
+		),
+		(context) => {
+			const toolResult = [...context.messages]
+				.reverse()
+				.find((message) => message.role === "toolResult");
+			const entries = currentThreadEntriesFromToolResult(
+				textOf(toolResult?.content),
+			);
+			const entry = entries[0];
+			if (entry === undefined) {
+				return textTurn("I couldn't find that Journal Entry in this thread.");
+			}
+			const proposal =
+				turn.action === "update"
+					? updateJournalEntryProposal(
+							entry,
+							turn.body ?? firstBodyText(entry),
+							turn.occurred_at ?? entry.occurred_at,
+						)
+					: deleteJournalEntryProposal(entry);
+			return toolCallTurn(
+				"propose_workspace_mutation",
+				proposal,
+				turn.action === "update"
+					? `tc_update_${position}`
+					: `tc_delete_${position}`,
+			);
+		},
+		(context) => {
+			const toolResult = [...context.messages]
+				.reverse()
+				.find((message) => message.role === "toolResult");
+			return textTurn(journalConfirmation(textOf(toolResult?.content)));
+		},
+	]);
 }
 
 // ── Extraction mode (INKSTONE_FAUX_EXTRACT) ────────────────────────────────
@@ -1094,8 +1157,15 @@ export function fauxDepsFor(manifest: WorkerManifest): InterpreterDeps {
 			},
 		]);
 	} else if (process.env.INKSTONE_FAUX_PROPOSE === "1") {
-		// Propose mode (e2e): fresh turn proposes, Core parks; resume continues — see docs/design/worker.md (ADR-0025).
+		// Propose mode (e2e): scenario-driven ordered Turns via
+		// INKSTONE_FAUX_PROPOSE_PARAMS (required, fresh AND resume — same
+		// fail-fast shape as EXTRACT/CAPTURE); the prompt's prose never routes.
+		// Fresh turn proposes, Core parks; resume continues — see
+		// docs/design/worker.md (ADR-0025).
+		const scenario = readProposeScenario();
 		if (manifest.mode === "resume") {
+			// The scenario is loaded/validated above but its turns aren't consumed
+			// on resume — confirm from the awaited Decision tool_result.
 			const toolResult = [...manifest.messages]
 				.reverse()
 				.find((message) => message.role === "tool_result");
@@ -1103,55 +1173,7 @@ export function fauxDepsFor(manifest: WorkerManifest): InterpreterDeps {
 				textTurn(journalConfirmation(textOf(toolResult?.content))),
 			]);
 		} else {
-			const prompt = manifest.prompt;
-			const action = classifyJournalIntakePrompt(prompt);
-			if (action === "create") {
-				faux.setResponses([
-					toolCallTurn(
-						"propose_workspace_mutation",
-						createJournalEntryProposal(),
-						"tc_create",
-					),
-					textTurn("Done — added it."),
-				]);
-			} else {
-				faux.setResponses([
-					toolCallTurn(
-						"read_current_thread_journal_entries",
-						{},
-						"tc_read_current",
-					),
-					(context) => {
-						const toolResult = [...context.messages]
-							.reverse()
-							.find((message) => message.role === "toolResult");
-						const entries = currentThreadEntriesFromToolResult(
-							textOf(toolResult?.content),
-						);
-						const entry = entries[0];
-						if (entry === undefined) {
-							return textTurn(
-								"I couldn't find that Journal Entry in this thread.",
-							);
-						}
-						const proposal =
-							action === "update"
-								? updateJournalEntryProposal(prompt, entry)
-								: deleteJournalEntryProposal(entry);
-						return toolCallTurn(
-							"propose_workspace_mutation",
-							proposal,
-							action === "update" ? "tc_update" : "tc_delete",
-						);
-					},
-					(context) => {
-						const toolResult = [...context.messages]
-							.reverse()
-							.find((message) => message.role === "toolResult");
-						return textTurn(journalConfirmation(textOf(toolResult?.content)));
-					},
-				]);
-			}
+			setProposePlaybackResponses(faux, manifest, scenario);
 		}
 	} else if (process.env.INKSTONE_FAUX_EXTRACT === "1") {
 		// Extraction mode (e2e): after an accepted Journal Entry mentioning a Person,

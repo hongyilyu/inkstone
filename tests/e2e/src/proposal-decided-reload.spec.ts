@@ -1,5 +1,5 @@
 import { expect, test } from "./fixtures.js";
-import { FAUX_WORKER_CMD } from "./spawnCore.js";
+import { FAUX_PROPOSE_JOURNAL_FIXTURE, FAUX_WORKER_CMD } from "./spawnCore.js";
 
 /**
  * Decided-proposal preservation (ADR-0044): a Proposal's settled outcome — the
@@ -17,6 +17,7 @@ test.use({
 	coreOptions: {
 		workerCmd: FAUX_WORKER_CMD,
 		faux: "propose",
+		proposeParamsFile: FAUX_PROPOSE_JOURNAL_FIXTURE,
 	},
 });
 

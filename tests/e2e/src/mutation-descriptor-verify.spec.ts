@@ -7,12 +7,13 @@
 // the agent accept path (create_journal_entry) AND an in-place edit (the
 // supports_edit + preserve_update_target_entity_id path).
 import { expect, test } from "./fixtures.js";
-import { FAUX_WORKER_CMD } from "./spawnCore.js";
+import { FAUX_PROPOSE_JOURNAL_FIXTURE, FAUX_WORKER_CMD } from "./spawnCore.js";
 
 test.use({
 	coreOptions: {
 		workerCmd: FAUX_WORKER_CMD,
 		faux: "propose",
+		proposeParamsFile: FAUX_PROPOSE_JOURNAL_FIXTURE,
 	},
 });
 
