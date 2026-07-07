@@ -670,9 +670,13 @@ describe("proposal stream + decide", () => {
 			Queue.unbounded<ProposalNotification>(),
 		);
 		const runQueue = Effect.runSync(Queue.unbounded<RunEventValue>());
+		let subscribeCount = 0;
 		const runtime = makeStubRuntime({
 			proposalQueue,
 			runQueue,
+			onSubscribe: () => {
+				subscribeCount += 1;
+			},
 			onDecide: () =>
 				Effect.fail(
 					new ProposalNotPendingError({
@@ -717,6 +721,7 @@ describe("proposal stream + decide", () => {
 		});
 		attachRun("thread-1", assistantId, "run-1");
 		startRunStream(runtime, "thread-1", "run-1");
+		await waitFor(() => subscribeCount === 1);
 
 		startProposalStream(runtime);
 		Queue.unsafeOffer(proposalQueue, {
@@ -729,6 +734,8 @@ describe("proposal stream + decide", () => {
 		await decideProposal(runtime, "run-1", "accept");
 
 		expect(getChatState().proposals["run-1"]).toBeUndefined();
+		// The guard bail must not re-subscribe the resume tail either.
+		expect(subscribeCount).toBe(1);
 
 		await runtime.dispose();
 	});

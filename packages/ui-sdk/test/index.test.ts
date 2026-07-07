@@ -12,8 +12,6 @@ import { WebSocketServer, type WebSocket as WsConn } from "ws";
 import {
 	type ConnectionStatus,
 	clearNotificationHandler,
-	ProposalNotPendingError,
-	ProviderLoginFailedError,
 	requestDescriptors,
 	resetNotificationHandlers,
 	setNotificationHandler,
@@ -660,10 +658,8 @@ describe("WsClient", () => {
 			);
 			expect(Either.isLeft(result)).toBe(true);
 			if (Either.isLeft(result)) {
-				expect(result.left).toBeInstanceOf(ProposalNotPendingError);
-				expect((result.left as ProposalNotPendingError).message).toBe(
-					"proposal not pending",
-				);
+				expect(result.left._tag).toBe("ProposalNotPendingError");
+				expect(result.left.message).toBe("proposal not pending");
 			}
 		} finally {
 			await server.close();
@@ -697,8 +693,8 @@ describe("WsClient", () => {
 			);
 			expect(Either.isLeft(result)).toBe(true);
 			if (Either.isLeft(result)) {
-				expect(result.left).toBeInstanceOf(ProviderLoginFailedError);
-				expect((result.left as ProviderLoginFailedError).message).toBe(
+				expect(result.left._tag).toBe("ProviderLoginFailedError");
+				expect(result.left.message).toBe(
 					"provider login failed: account locked",
 				);
 			}

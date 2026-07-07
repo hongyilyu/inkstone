@@ -30,8 +30,16 @@ export function AssistantProposals({ runId }: { runId: string }) {
 					// through the one owner of that policy. Gate on the SETTLED store
 					// status, not the requested decision: a raced reject can settle as
 					// accepted from durable truth (the -32002 settlement path), and a
-					// rejected settlement creates nothing.
-					if (getChatState().proposals[runId]?.status === "accepted") {
+					// rejected settlement creates nothing. A cleared entry (a concurrent
+					// cancelRun raced a decide that may have committed at Core) falls
+					// back to the requested decision — over-invalidating beats a stale
+					// Library.
+					const settled = getChatState().proposals[runId];
+					if (
+						settled === undefined
+							? decision !== "reject"
+							: settled.status === "accepted"
+					) {
 						await invalidateEntityReads(queryClient);
 					}
 					// Every decision advances the parked Run (it resumes and runs to a
