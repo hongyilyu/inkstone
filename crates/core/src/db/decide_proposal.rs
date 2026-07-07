@@ -28,6 +28,25 @@ pub(crate) struct DecisionCtx<'a> {
     pub now_ms: i64,
 }
 
+/// What a family writer's future resolves to: the open tx handed back, the
+/// family's value `T` (e.g. the affected `entity_id`), and the rendered
+/// Decision payload for the tool-call resolve.
+///
+/// The writer takes the tx BY VALUE and returns a boxed `Send` future rather
+/// than being an `AsyncFnOnce` borrowing the tx: a borrowed-tx async closure
+/// puts a higher-ranked lifetime in the signature, and stable rustc cannot
+/// prove `Send` for a generic async closure's future across one
+/// ("implementation of `Send` is not general enough"), which the server
+/// handler chain above `decide` requires of every decide future. The boxed
+/// `dyn Future + Send` is concretely `Send`, so the proof goes through.
+pub(crate) type WriterFuture<'w, T> = std::pin::Pin<
+    Box<
+        dyn Future<Output = Result<(Transaction<'static, Sqlite>, T, String), ApplyError>>
+            + Send
+            + 'w,
+    >,
+>;
+
 /// Accept a Proposal in one atomic transaction: flip the `proposals` row to
 /// `accepted` under the `status='pending'` guard (stamping `edited_payload` +
 /// `decision_idempotency_key`), run the family's `writer` inside the same tx,
@@ -39,11 +58,11 @@ pub(crate) struct DecisionCtx<'a> {
 /// resume transcript can carry the real affected Entity id (ADR-0025). A
 /// writer `Err` drops the tx — the flip and the writer's own writes roll back,
 /// leaving the Proposal `pending` and the tool call unresolved.
-pub(crate) async fn accept<T>(
+pub(crate) async fn accept<'w, T>(
     pool: &SqlitePool,
     ctx: DecisionCtx<'_>,
     edited_payload: Option<&str>,
-    writer: impl AsyncFnOnce(&mut Transaction<'static, Sqlite>) -> Result<(T, String), ApplyError>,
+    writer: impl FnOnce(Transaction<'static, Sqlite>) -> WriterFuture<'w, T>,
 ) -> Result<T, ApplyError> {
     let mut tx = pool.begin().await?;
 
@@ -65,7 +84,7 @@ pub(crate) async fn accept<T>(
 
     // The family's write, inside this tx. An Err drops the tx — the flip and
     // any writer writes roll back together.
-    let (value, decision_result_payload) = writer(&mut tx).await?;
+    let (mut tx, value, decision_result_payload) = writer(tx).await?;
 
     queries::resolve_tool_call(
         &mut *tx,
@@ -268,11 +287,14 @@ mod tests {
                 now_ms: 42,
             },
             None,
-            async |_tx: &mut Transaction<'static, Sqlite>| {
-                Ok((
-                    7_i64,
-                    r#"{"decision":"accept","content":"Accepted."}"#.to_string(),
-                ))
+            |tx| {
+                Box::pin(async move {
+                    Ok((
+                        tx,
+                        7_i64,
+                        r#"{"decision":"accept","content":"Accepted."}"#.to_string(),
+                    ))
+                })
             },
         )
         .await
@@ -308,6 +330,7 @@ mod tests {
             .expect("pre-decide the proposal");
 
         let writer_ran = AtomicBool::new(false);
+        let writer_ran_flag = &writer_ran;
         let result = accept(
             &pool,
             DecisionCtx {
@@ -318,9 +341,11 @@ mod tests {
                 now_ms: 43,
             },
             None,
-            async |_tx: &mut Transaction<'static, Sqlite>| {
-                writer_ran.store(true, Ordering::SeqCst);
-                Ok((0_i64, String::new()))
+            |tx| {
+                Box::pin(async move {
+                    writer_ran_flag.store(true, Ordering::SeqCst);
+                    Ok((tx, 0_i64, String::new()))
+                })
             },
         )
         .await;
@@ -364,18 +389,22 @@ mod tests {
                 now_ms: 44,
             },
             None,
-            async |tx: &mut Transaction<'static, Sqlite>| {
-                // A real in-tx write that MUST roll back with the flip.
-                sqlx::query(
-                    "INSERT INTO entities \
-                     (id, type, schema_version, data, created_by, \
-                      created_via_proposal_id, created_at, updated_at) \
-                     VALUES ('e-rollback', 'todo', 1, '{}', 'user', NULL, 44, 44)",
-                )
-                .execute(&mut **tx)
-                .await
-                .expect("in-tx entity insert");
-                Err::<(i64, String), ApplyError>(ApplyError::TargetMissing)
+            |mut tx| {
+                Box::pin(async move {
+                    // A real in-tx write that MUST roll back with the flip.
+                    sqlx::query(
+                        "INSERT INTO entities \
+                         (id, type, schema_version, data, created_by, \
+                          created_via_proposal_id, created_at, updated_at) \
+                         VALUES ('e-rollback', 'todo', 1, '{}', 'user', NULL, 44, 44)",
+                    )
+                    .execute(&mut *tx)
+                    .await
+                    .expect("in-tx entity insert");
+                    Err::<(Transaction<'static, Sqlite>, i64, String), ApplyError>(
+                        ApplyError::TargetMissing,
+                    )
+                })
             },
         )
         .await;
@@ -425,11 +454,14 @@ mod tests {
                 now_ms: 45,
             },
             Some(r#"{"title":"Edited"}"#),
-            async |_tx: &mut Transaction<'static, Sqlite>| {
-                Ok((
-                    (),
-                    r#"{"decision":"accept","content":"Accepted."}"#.to_string(),
-                ))
+            |tx| {
+                Box::pin(async move {
+                    Ok((
+                        tx,
+                        (),
+                        r#"{"decision":"accept","content":"Accepted."}"#.to_string(),
+                    ))
+                })
             },
         )
         .await

@@ -430,15 +430,18 @@ async fn apply_or_reject(
 
     match db::apply_proposal(
         pool,
-        run_id,
-        proposal_id,
-        &proposal.tool_call_id,
+        db::decide_proposal::DecisionCtx {
+            run_id,
+            proposal_id,
+            tool_call_id: &proposal.tool_call_id,
+            decision_idempotency_key: idempotency_key,
+            now_ms: db::now_ms(),
+        },
         kind,
         mutation::target_entity_id(kind.describe(), applied_payload),
         &proposal.payload,
         edited_payload,
         kind.describe().write_op.source_relation(),
-        idempotency_key,
         |entity_id| {
             serde_json::json!({
                 "decision": "accept",
@@ -446,7 +449,6 @@ async fn apply_or_reject(
             })
             .to_string()
         },
-        db::now_ms(),
     )
     .await
     {
