@@ -95,9 +95,10 @@ describe("send path with image attachments (upload-then-post, ADR-0058)", () => 
 			(_prompt: string, _attachmentIds?: readonly string[]) =>
 				Effect.succeed({ thread_id: "t-new", run_id: "r-1" }),
 		);
-		const stub = stubWsClient({ mediaUpload, postMessage, threadCreate });
 		return {
-			runtime: ManagedRuntime.make(Layer.succeed(WsClient, stub)),
+			runtime: makeCoreRuntime({
+				overrides: { mediaUpload, postMessage, threadCreate },
+			}),
 			mediaUpload,
 			postMessage,
 			threadCreate,
@@ -150,8 +151,9 @@ describe("send path with image attachments (upload-then-post, ADR-0058)", () => 
 			Effect.fail(new WsRequestError({ reason: "too_large", code: -32602 })),
 		);
 		const postMessage = vi.fn(() => Effect.succeed("r-1" as RunId));
-		const stub = stubWsClient({ mediaUpload, postMessage });
-		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
+		const runtime = makeCoreRuntime({
+			overrides: { mediaUpload, postMessage },
+		});
 
 		const result = await send(runtime, "t1", "hi", [filePng()]);
 
@@ -188,8 +190,9 @@ describe("send path with image attachments (upload-then-post, ADR-0058)", () => 
 		const threadCreate = vi.fn(() =>
 			Effect.succeed({ thread_id: "t-new", run_id: "r-1" }),
 		);
-		const stub = stubWsClient({ mediaUpload, threadCreate });
-		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
+		const runtime = makeCoreRuntime({
+			overrides: { mediaUpload, threadCreate },
+		});
 
 		const result = await sendNewThread(runtime, "hi", [filePng()]);
 

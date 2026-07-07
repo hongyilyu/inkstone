@@ -480,7 +480,7 @@ describe("ChatColumn", () => {
 	});
 
 	it("renders a user message's attachment segments as inline /media images below the text", async () => {
-		const runtime = makeStubRuntime({ runId: "run-att", events: [] });
+		const overrides = makeStubOverrides({ runId: "run-att", events: [] });
 		appendUserMessage("threadA", {
 			id: "u-att",
 			role: "user",
@@ -500,7 +500,7 @@ describe("ChatColumn", () => {
 			],
 		});
 
-		const { container } = await renderFocused(runtime, "threadA");
+		const { container } = await renderFocused(overrides, "threadA");
 
 		// The text still renders in the user bubble…
 		const userBubble = screen.getByText("look at this");
@@ -522,8 +522,6 @@ describe("ChatColumn", () => {
 		// …and omitted dimensions stay off the element.
 		expect(imgs[1]).not.toHaveAttribute("width");
 		expect(imgs[1]).not.toHaveAttribute("height");
-
-		await runtime.dispose();
 	});
 
 	it("shows a typing indicator for a streaming assistant message with no text", async () => {

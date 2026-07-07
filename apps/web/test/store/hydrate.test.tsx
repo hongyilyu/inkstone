@@ -349,11 +349,12 @@ describe("refresh-durable hydration", () => {
 				},
 			],
 		};
-		const stub = stubWsClient({
-			threadGet: (id) =>
-				id === "tAtt" ? Effect.succeed(result) : Effect.die("unknown thread"),
+		const runtime = makeCoreRuntime({
+			overrides: {
+				threadGet: (id) =>
+					id === "tAtt" ? Effect.succeed(result) : Effect.die("unknown thread"),
+			},
 		});
-		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
 		await hydrateThread(runtime, "tAtt");
 
