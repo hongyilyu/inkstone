@@ -39,6 +39,16 @@ export function ComposeFooter({
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
 	const fileInputRef = useRef<HTMLInputElement>(null);
 
+	// Unmounting with attachments still pending would leak their blob URLs —
+	// revoke whatever is left via a ref so the cleanup runs once, at unmount.
+	const filesRef = useRef(files);
+	filesRef.current = files;
+	useEffect(() => {
+		return () => {
+			for (const f of filesRef.current) URL.revokeObjectURL(f.url);
+		};
+	}, []);
+
 	const addFiles = (added: File[]) => {
 		const images = added.filter((f) => f.type.startsWith("image/"));
 		if (images.length === 0) return;

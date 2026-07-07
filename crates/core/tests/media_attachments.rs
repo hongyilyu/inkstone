@@ -116,6 +116,15 @@ fn media_upload_round_trips_bytes_over_http() {
         Some("nosniff"),
         "X-Content-Type-Options forbids mime sniffing"
     );
+    // An `image/*` mime renders inline; non-image mimes download (see the
+    // active-content test below).
+    assert_eq!(
+        got.headers()
+            .get("content-disposition")
+            .and_then(|v| v.to_str().ok()),
+        Some("inline"),
+        "an image/* mime is served inline"
+    );
     let body = got.bytes().expect("body bytes");
     assert_eq!(body.as_ref(), bytes.as_slice(), "bytes round-trip exactly");
 
@@ -131,6 +140,47 @@ fn media_upload_round_trips_bytes_over_http() {
         gone.status().as_u16(),
         404,
         "a row pointing at missing bytes is a 404"
+    );
+}
+
+/// A stored non-image mime (text/html here) is served with
+/// `Content-Disposition: attachment`, so navigating to it downloads instead of
+/// executing on the app origin. Header policy only — the mime itself is stored
+/// unvalidated (ADR-0058: Core stores, never sniffs or allowlists).
+#[test]
+fn media_get_non_image_mime_is_served_as_attachment() {
+    let workspace = Workspace::new();
+    let core = workspace.core().spawn();
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime builds");
+
+    let media_id = rt.block_on(async {
+        let mut ws = core.connect().await;
+        let id = upload(
+            &mut ws,
+            1,
+            serde_json::json!({
+                "bytes_base64": BASE64.encode(b"<script>alert(1)</script>"),
+                "mime": "text/html",
+            }),
+        )
+        .await;
+        ws.close(None).await.ok();
+        id
+    });
+
+    let got = reqwest::blocking::get(format!("{}/media/{media_id}", core.http_url()))
+        .expect("GET /media/{id} succeeds");
+    assert_eq!(got.status().as_u16(), 200, "GET /media/{{id}} is 200");
+    assert_eq!(
+        got.headers()
+            .get("content-disposition")
+            .and_then(|v| v.to_str().ok()),
+        Some("attachment"),
+        "a non-image mime downloads instead of rendering on the app origin"
     );
 }
 
@@ -673,6 +723,55 @@ fn unknown_attachment_id_rejects_invalid_params_with_zero_rows() {
             threads.len(),
             1,
             "the rejected create minted no thread — {list}"
+        );
+
+        ws.close(None).await.ok();
+    });
+}
+
+/// More than 8 attachment ids on one send rejects `-32602` (the
+/// MAX_ATTACHMENTS cap bounds per-request DB/disk/manifest work). The cap
+/// check fires before any id is resolved, so one uploaded id repeated 9 times
+/// exercises it.
+#[test]
+fn too_many_attachment_ids_rejects_invalid_params() {
+    let workspace = Workspace::new();
+    let core = workspace.core().worker_fixture("slow-worker.ts").spawn();
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime builds");
+
+    rt.block_on(async {
+        let mut ws = core.connect().await;
+
+        let media_id = upload(
+            &mut ws,
+            1,
+            serde_json::json!({
+                "bytes_base64": BASE64.encode(b"tiny image"),
+                "mime": "image/png",
+            }),
+        )
+        .await;
+
+        let create_frame = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "thread/create",
+            "params": {
+                "prompt": "too many",
+                "attachment_ids": vec![media_id; 9],
+            },
+        })
+        .to_string();
+        send(&mut ws, create_frame).await;
+        let create = read_response_with_id(&mut ws, 2).await;
+        assert_eq!(
+            create["error"]["code"],
+            serde_json::json!(-32602),
+            "9 attachment ids exceed the cap of 8 — {create}"
         );
 
         ws.close(None).await.ok();

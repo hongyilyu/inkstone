@@ -189,16 +189,28 @@ async fn media_handler(State(state): State<AppState>, Path(id): Path<String>) ->
     match tokio::fs::read(&path).await {
         // `nosniff` pins the response to the stored mime: without it a browser
         // may sniff crafted image bytes into text/html and execute them as a
-        // stored XSS. The mime itself stays unvalidated (ADR-0058: Core stores,
-        // never sniffs or allowlists).
-        Ok(bytes) => (
-            [
-                (header::CONTENT_TYPE, row.mime),
-                (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
-            ],
-            bytes,
-        )
-            .into_response(),
+        // stored XSS. `Content-Disposition` closes the other half: a stored
+        // active-content mime (e.g. text/html) navigated directly would
+        // otherwise execute on the app origin, so anything non-`image/*`
+        // downloads (`attachment`) instead of rendering (`inline`). Both are
+        // response-header policy, not validation — the mime itself stays
+        // unvalidated (ADR-0058: Core stores, never sniffs or allowlists).
+        Ok(bytes) => {
+            let disposition = if row.mime.starts_with("image/") {
+                "inline"
+            } else {
+                "attachment"
+            };
+            (
+                [
+                    (header::CONTENT_TYPE, row.mime),
+                    (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
+                    (header::CONTENT_DISPOSITION, disposition.to_string()),
+                ],
+                bytes,
+            )
+                .into_response()
+        }
         Err(e) => {
             tracing::error!(event = "media.read_failed", media_id = %id, error = ?e);
             StatusCode::NOT_FOUND.into_response()

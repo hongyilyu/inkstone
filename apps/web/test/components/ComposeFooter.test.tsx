@@ -314,6 +314,29 @@ describe("ComposeFooter", () => {
 		await runtime.dispose();
 	});
 
+	it("revokes pending object URLs when unmounted with attachments still pending", async () => {
+		const user = userEvent.setup();
+		const onSend = vi.fn();
+		const runtime = makeRuntime();
+		const { container, unmount } = renderWithQuery(
+			<RuntimeProvider runtime={runtime}>
+				<ComposeFooter onSend={onSend} />
+			</RuntimeProvider>,
+		);
+
+		await user.upload(fileInput(container), makeImageFile());
+		const thumb = await screen.findByRole("img", { name: /photo\.png/i });
+		const mintedUrl = thumb.getAttribute("src");
+
+		// Unmounting with the attachment still pending must release its blob URL
+		// (neither send nor remove ran, so nothing else would).
+		unmount();
+		expect(revokeObjectURL).toHaveBeenCalledTimes(1);
+		expect(revokeObjectURL).toHaveBeenCalledWith(mintedUrl);
+
+		await runtime.dispose();
+	});
+
 	it("still requires text: submit with pending files but no text no-ops", async () => {
 		const user = userEvent.setup();
 		const onSend = vi.fn();

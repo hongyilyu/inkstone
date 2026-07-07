@@ -27,6 +27,12 @@ pub(super) async fn resolve_attachments(
     pool: &SqlitePool,
     attachment_ids: &[String],
 ) -> Result<(Vec<AttachmentSeed>, Vec<ManifestAttachment>), HandlerError> {
+    if attachment_ids.len() > MAX_ATTACHMENTS {
+        return Err(HandlerError::InvalidParams(format!(
+            "too many attachments: {} (max {MAX_ATTACHMENTS})",
+            attachment_ids.len()
+        )));
+    }
     let mut seeds = Vec::with_capacity(attachment_ids.len());
     let mut manifest = Vec::with_capacity(attachment_ids.len());
     for id in attachment_ids {
@@ -102,6 +108,12 @@ async fn read_media_bytes(id: &str, storage_path: &str) -> Result<Vec<u8>, Handl
 /// negotiation. No config surface — a deliberate scope cut.
 const MAX_DECODED_BYTES: usize = 10 * 1024 * 1024;
 
+/// Per-request attachment cap: bounds the DB/disk/manifest work a single
+/// `thread/create` or `run/post_message` can demand (8 × 10 MB ≈ 80 MB
+/// worst-case manifest — plenty for a chat turn). No config surface —
+/// deliberate.
+const MAX_ATTACHMENTS: usize = 8;
+
 pub(super) async fn handle_upload(
     pool: &SqlitePool,
     id: serde_json::Value,
@@ -109,11 +121,9 @@ pub(super) async fn handle_upload(
     out_tx: &UnboundedSender<String>,
 ) {
     handler::handle(id, params, out_tx, |params: MediaUploadParams| async move {
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(&params.bytes_base64)
-            .map_err(|e| {
-                HandlerError::InvalidParams(format!("bytes_base64 is not valid base64: {e}"))
-            })?;
+        let bytes = BASE64.decode(&params.bytes_base64).map_err(|e| {
+            HandlerError::InvalidParams(format!("bytes_base64 is not valid base64: {e}"))
+        })?;
         if bytes.len() > MAX_DECODED_BYTES {
             return Err(HandlerError::InvalidParams(format!(
                 "decoded payload is {} bytes; the cap is {MAX_DECODED_BYTES} bytes (10 MB)",
