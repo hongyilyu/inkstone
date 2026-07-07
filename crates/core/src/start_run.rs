@@ -1,6 +1,6 @@
 //! Run start as one deep, directly-testable verb (ADR-0029, extending the
 //! `run/cancel` → [`crate::cancel`] precedent to the four Run-creation sites:
-//! `run/post_message`, `thread/create`, `journal/entry`, `run/retry`).
+//! `run/post_message`, `thread/create`, `journal_entry/rescan`, `run/retry`).
 //!
 //! [`start_run`] is the ONLY place the Run-start sequence lives; its three
 //! ordering invariants are code structure, not per-handler discipline:
@@ -86,7 +86,7 @@ pub enum PersistStep {
 
 impl PersistStep {
     /// The Run id this step will persist (minted by the caller — ids stay
-    /// caller-owned so retry can reuse them in a later slice).
+    /// caller-owned so retry can reuse them via `RetryCas`).
     fn run_id(&self) -> Uuid {
         match self {
             PersistStep::FreshRun { run_id, .. } => *run_id,
@@ -193,8 +193,8 @@ pub struct StartRunParams {
     /// verb runs) — carried through to the spawn manifest untouched.
     pub manifest_attachments: Vec<ManifestAttachment>,
     pub persist_step: PersistStep,
-    /// `thread/create` sets true (slice 2): a brand-new Thread has no prior
-    /// exchange, so skip the history read entirely.
+    /// `thread/create` sets true: a brand-new Thread has no prior exchange,
+    /// so skip the history read entirely.
     pub skip_history: bool,
     /// `run/retry` sets true: the handler frames its Response BEFORE the
     /// spawn, so the spawn comes back as an unfired closure.
@@ -285,7 +285,8 @@ fn ensure_provider_connected(provider: &str) -> Result<(), StartRunError> {
 
 /// Start a Run: dispatch → gate → persist → hub → history → spawn, in that
 /// order, as described in the module docs. Returns the typed [`StartedRun`];
-/// the only failure channels are the provider gate and an internal fault.
+/// the failure channels are the provider gate (`ProviderNotConnected`), a lost
+/// retry CAS (`PersistRaceLost`), and an internal fault (`Internal`).
 pub async fn start_run<F>(
     pool: &SqlitePool,
     hubs: &Hubs,
