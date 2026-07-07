@@ -192,15 +192,15 @@ function journalConfirmation(text: string): string {
 	return "Done.";
 }
 
-function createJournalEntryProposal() {
+function createJournalEntryProposal(bodyText: string, occurredAt: string) {
 	return {
 		mutation_kind: "create_journal_entry",
 		payload: {
-			occurred_at: "2026-06-10T10:30:00",
+			occurred_at: occurredAt,
 			body: [
 				{
 					type: "text",
-					text: JOURNAL_ENTRY_TEXT,
+					text: bodyText,
 				},
 			],
 		},
@@ -209,8 +209,9 @@ function createJournalEntryProposal() {
 }
 
 function updateJournalEntryProposal(
-	prompt: string,
 	entry: JournalEntrySnapshot,
+	bodyText: string,
+	occurredAt: string,
 ) {
 	const payload: {
 		entity_id: string;
@@ -219,11 +220,11 @@ function updateJournalEntryProposal(
 		body: Array<{ type: "text"; text: string }>;
 	} = {
 		entity_id: entry.entity_id,
-		occurred_at: updatedOccurredAt(prompt, entry.occurred_at),
+		occurred_at: occurredAt,
 		body: [
 			{
 				type: "text",
-				text: updatedBodyText(prompt, firstBodyText(entry)),
+				text: bodyText,
 			},
 		],
 	};
@@ -245,6 +246,135 @@ function deleteJournalEntryProposal(entry: JournalEntrySnapshot) {
 		},
 		rationale: "the user wants to remove a mistaken Journal Entry",
 	};
+}
+
+// ── Propose-mode scenario playback (INKSTONE_FAUX_PROPOSE_PARAMS) ──────────
+// An ordered list of Turns played back by manifest position (the count of user
+// messages), mirroring the EXTRACT/CAPTURE scenario-file seam — the prompt's
+// prose never routes the action. Omitted update fields keep the live entry's
+// values; update/delete resolve the entry via a real
+// read_current_thread_journal_entries round-trip, entry[0].
+
+/** One validated scenario Turn: create carries its full payload (both fields
+ * required); update fields are optional (omitted = keep the live entry's
+ * value); delete resolves everything from the live entry. */
+type ProposeTurn =
+	| { action: "create"; body: string; occurred_at: string }
+	| { action: "update"; body?: string; occurred_at?: string }
+	| { action: "delete" };
+
+interface ProposeScenario {
+	turns: ProposeTurn[];
+}
+
+function readProposeScenario(): ProposeScenario {
+	const file = process.env.INKSTONE_FAUX_PROPOSE_PARAMS;
+	if (file === undefined || file.length === 0) {
+		throw new Error(
+			"INKSTONE_FAUX_PROPOSE=1 requires INKSTONE_FAUX_PROPOSE_PARAMS to point at a scenario JSON file",
+		);
+	}
+	const parsed = JSON.parse(readFileSync(file, "utf8")) as {
+		turns: Array<{ action?: unknown; body?: string; occurred_at?: string }>;
+	};
+	// Validate the WHOLE scenario at load, not the played Turn at use: a typo'd
+	// action or a partial create must fail fast — the update/delete ternary below
+	// would otherwise route an unknown action to the most destructive branch.
+	parsed.turns.forEach((turn, index) => {
+		if (
+			turn.action !== "create" &&
+			turn.action !== "update" &&
+			turn.action !== "delete"
+		) {
+			throw new Error(
+				`INKSTONE_FAUX_PROPOSE_PARAMS turn ${index}: unknown action ${JSON.stringify(turn.action)} (expected create|update|delete)`,
+			);
+		}
+		if (turn.action === "create") {
+			if (turn.body === undefined) {
+				throw new Error(
+					`INKSTONE_FAUX_PROPOSE_PARAMS turn ${index}: create requires "body"`,
+				);
+			}
+			if (turn.occurred_at === undefined) {
+				throw new Error(
+					`INKSTONE_FAUX_PROPOSE_PARAMS turn ${index}: create requires "occurred_at"`,
+				);
+			}
+		}
+	});
+	return parsed as ProposeScenario;
+}
+
+/** Script the faux provider from the scenario Turn at the manifest position
+ * (fresh mode only — resumes confirm via journalConfirmation upstream). */
+function setProposePlaybackResponses(
+	faux: ReturnType<typeof fauxProvider>,
+	manifest: WorkerManifest,
+): void {
+	const scenario = readProposeScenario();
+	const position = manifest.messages.filter((m) => m.role === "user").length;
+	const turn = scenario.turns[position];
+	if (turn === undefined) {
+		throw new Error(
+			`INKSTONE_FAUX_PROPOSE_PARAMS scenario exhausted: position ${position} has no turn (${scenario.turns.length} scripted)`,
+		);
+	}
+
+	// tool_calls.id is a GLOBAL primary key in Core's DB, so a multi-Turn scenario
+	// in one thread must not reuse ids across Runs — suffix them by position.
+	if (turn.action === "create") {
+		faux.setResponses([
+			toolCallTurn(
+				"propose_workspace_mutation",
+				createJournalEntryProposal(turn.body, turn.occurred_at),
+				`tc_create_${position}`,
+			),
+			textTurn("Done — added it."),
+		]);
+		return;
+	}
+
+	faux.setResponses([
+		toolCallTurn(
+			"read_current_thread_journal_entries",
+			{},
+			`tc_read_current_${position}`,
+		),
+		(context) => {
+			const toolResult = [...context.messages]
+				.reverse()
+				.find((message) => message.role === "toolResult");
+			const entries = currentThreadEntriesFromToolResult(
+				textOf(toolResult?.content),
+			);
+			const entry = entries[0];
+			if (entry === undefined) {
+				return textTurn("I couldn't find that Journal Entry in this thread.");
+			}
+			const proposal =
+				turn.action === "update"
+					? updateJournalEntryProposal(
+							entry,
+							turn.body ?? firstBodyText(entry),
+							turn.occurred_at ?? entry.occurred_at,
+						)
+					: deleteJournalEntryProposal(entry);
+			return toolCallTurn(
+				"propose_workspace_mutation",
+				proposal,
+				turn.action === "update"
+					? `tc_update_${position}`
+					: `tc_delete_${position}`,
+			);
+		},
+		(context) => {
+			const toolResult = [...context.messages]
+				.reverse()
+				.find((message) => message.role === "toolResult");
+			return textTurn(journalConfirmation(textOf(toolResult?.content)));
+		},
+	]);
 }
 
 // ── Extraction mode (INKSTONE_FAUX_EXTRACT) ────────────────────────────────
@@ -1102,6 +1232,13 @@ export function fauxDepsFor(manifest: WorkerManifest): InterpreterDeps {
 			faux.setResponses([
 				textTurn(journalConfirmation(textOf(toolResult?.content))),
 			]);
+		} else if (
+			process.env.INKSTONE_FAUX_PROPOSE_PARAMS !== undefined &&
+			process.env.INKSTONE_FAUX_PROPOSE_PARAMS.length > 0
+		) {
+			// Scenario playback takes precedence over the prompt-NLU fallback below
+			// (the fallback is deleted in a follow-up slice).
+			setProposePlaybackResponses(faux, manifest);
 		} else {
 			const prompt = manifest.prompt;
 			const action = classifyJournalIntakePrompt(prompt);
@@ -1109,7 +1246,10 @@ export function fauxDepsFor(manifest: WorkerManifest): InterpreterDeps {
 				faux.setResponses([
 					toolCallTurn(
 						"propose_workspace_mutation",
-						createJournalEntryProposal(),
+						createJournalEntryProposal(
+							JOURNAL_ENTRY_TEXT,
+							"2026-06-10T10:30:00",
+						),
 						"tc_create",
 					),
 					textTurn("Done — added it."),
@@ -1136,7 +1276,11 @@ export function fauxDepsFor(manifest: WorkerManifest): InterpreterDeps {
 						}
 						const proposal =
 							action === "update"
-								? updateJournalEntryProposal(prompt, entry)
+								? updateJournalEntryProposal(
+										entry,
+										updatedBodyText(prompt, firstBodyText(entry)),
+										updatedOccurredAt(prompt, entry.occurred_at),
+									)
 								: deleteJournalEntryProposal(entry);
 						return toolCallTurn(
 							"propose_workspace_mutation",
