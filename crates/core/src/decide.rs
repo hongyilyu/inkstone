@@ -537,12 +537,15 @@ async fn apply_intent_graph(
 
     match db::apply_intent_graph_proposal(
         pool,
-        run_id,
-        proposal_id,
-        &proposal.tool_call_id,
+        db::decide_proposal::DecisionCtx {
+            run_id,
+            proposal_id,
+            tool_call_id: &proposal.tool_call_id,
+            decision_idempotency_key: idempotency_key,
+            now_ms: db::now_ms(),
+        },
         &proposal.payload,
         decisions,
-        idempotency_key,
         |entity_id| {
             serde_json::json!({
                 "decision": "accept",
@@ -550,7 +553,6 @@ async fn apply_intent_graph(
             })
             .to_string()
         },
-        db::now_ms(),
     )
     .await
     {

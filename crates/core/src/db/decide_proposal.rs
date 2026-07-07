@@ -32,6 +32,11 @@ pub(crate) struct DecisionCtx<'a> {
 /// family's value `T` (e.g. the affected `entity_id`), and the rendered
 /// Decision payload for the tool-call resolve.
 ///
+/// CONTRACT: the writer must hand back the SAME still-open transaction it
+/// received — never commit it, and never substitute a fresh `pool.begin()` tx
+/// — or the envelope's atomicity (flip + write + resolve in one commit) is
+/// silently broken.
+///
 /// The writer takes the tx BY VALUE and returns a boxed `Send` future rather
 /// than being an `AsyncFnOnce` borrowing the tx: a borrowed-tx async closure
 /// puts a higher-ranked lifetime in the signature, and stable rustc cannot
