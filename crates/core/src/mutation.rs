@@ -1233,6 +1233,30 @@ pub(crate) enum TargetRefs {
     NoCheck,
 }
 
+/// How `db::apply` routes a kind's entity `data` — the data-route facet of the
+/// write contract. Normalization itself stays policy-driven (the
+/// [`NormalizePolicy`] rows: each type's `create_normalize` on its spec row and
+/// the shared [`UPDATE_NORMALIZE`]); this facet only classifies WHICH route the
+/// apply seam takes, so `db::apply` reads the contract instead of matching
+/// kinds. A new kind is a COMPILE ERROR in `describe()` until it declares its
+/// route — it can never silently default onto the pre-write normalize path,
+/// which would be wrong for a new in-tx-computed kind.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum WriteClass {
+    /// The kind touches no entity data (the deletes).
+    NoData,
+    /// The stored data is the effective payload run through the pre-write
+    /// normalize policy — the type's `create_normalize` for a create, the
+    /// shared [`UPDATE_NORMALIZE`] for a full-replace update; `db::apply`
+    /// derives the choice from the contract's `write_op`.
+    Normalized,
+    /// The kind computes its data INSIDE the apply tx against current DB state:
+    /// `update_todo`'s three-way merge (ADR-0033), `mark_project_reviewed`'s
+    /// review recompute (ADR-0034), and the reference weave's body rewrite
+    /// (which needs the freshly-minted entity_ref id).
+    InTx,
+}
+
 /// The path-independent classification + policy of a `mutation_kind` — the facets
 /// both write paths (agent `decide`, user `mutate`) share. Resolved once via
 /// [`MutationKind::describe`]; `Copy` so it threads cheaply.
@@ -1269,6 +1293,10 @@ pub(crate) struct Descriptor {
     /// interpreted by `crate::mutation_target`'s kind-generic driver (design
     /// decision (a) — see [`TargetRefs`]).
     pub(crate) target_refs: TargetRefs,
+    /// How `db::apply` routes this kind's entity data (see [`WriteClass`]).
+    /// The normalize BODIES stay on the [`NormalizePolicy`] rows; this facet
+    /// is only the route classification.
+    pub(crate) write_class: WriteClass,
 }
 
 /// Every Entity-like Workspace mutation kind (ADR-0016, ADR-0025, ADR-0036,
@@ -1364,6 +1392,7 @@ impl MutationKind {
         use MutationKind as M;
         use TargetKey as K;
         use TargetRefs as T;
+        use WriteClass as C;
         use WriteOp as W;
         match self {
             // ── Journal Entry ──
@@ -1374,6 +1403,7 @@ impl MutationKind {
                 v::validate_journal_entry,
                 Some(v::render_accept_create_journal_entry),
                 T::NoCheck,
+                C::Normalized,
             ),
             M::UpdateJournalEntry => regular(
                 W::Update,
@@ -1382,6 +1412,7 @@ impl MutationKind {
                 v::validate_update_journal_entry,
                 Some(v::render_accept_update_journal_entry),
                 T::GenericTarget,
+                C::Normalized,
             ),
             M::DeleteJournalEntry => regular(
                 W::Delete,
@@ -1390,6 +1421,7 @@ impl MutationKind {
                 v::validate_delete_journal_entry,
                 Some(v::render_accept_delete_journal_entry),
                 T::GenericTarget,
+                C::NoData,
             ),
             // ── Person ──
             M::CreatePerson => regular(
@@ -1399,6 +1431,7 @@ impl MutationKind {
                 v::validate_create_person,
                 Some(v::render_accept_create_person),
                 T::SourceAnchor,
+                C::Normalized,
             ),
             M::UpdatePerson => regular(
                 W::Update,
@@ -1407,6 +1440,7 @@ impl MutationKind {
                 v::validate_update_person,
                 Some(v::render_accept_update_person),
                 T::GenericTarget,
+                C::Normalized,
             ),
             M::DeletePerson => regular(
                 W::Delete,
@@ -1415,6 +1449,7 @@ impl MutationKind {
                 v::validate_delete_person,
                 Some(v::render_accept_delete_person),
                 T::GenericTarget,
+                C::NoData,
             ),
             // ── Project ──
             M::CreateProject => regular(
@@ -1424,6 +1459,7 @@ impl MutationKind {
                 v::validate_create_project,
                 Some(v::render_accept_create_project),
                 T::SourceAnchor,
+                C::Normalized,
             ),
             M::UpdateProject => regular(
                 W::Update,
@@ -1432,6 +1468,7 @@ impl MutationKind {
                 v::validate_update_project,
                 Some(v::render_accept_update_project),
                 T::GenericTarget,
+                C::Normalized,
             ),
             M::DeleteProject => regular(
                 W::Delete,
@@ -1440,6 +1477,7 @@ impl MutationKind {
                 v::validate_delete_project,
                 Some(v::render_accept_delete_project),
                 T::GenericTarget,
+                C::NoData,
             ),
             // ── Todo ──
             M::CreateTodo => regular(
@@ -1449,6 +1487,7 @@ impl MutationKind {
                 v::validate_todo,
                 Some(v::render_accept_create_todo),
                 T::SourceAnchorAndTodoCreateRefs,
+                C::Normalized,
             ),
             M::DeleteTodo => regular(
                 W::Delete,
@@ -1457,6 +1496,7 @@ impl MutationKind {
                 v::validate_delete_todo,
                 Some(v::render_accept_delete_todo),
                 T::GenericTarget,
+                C::NoData,
             ),
             // ── Media (user-only: no proposal accept text) ──
             M::CreateMedia => regular(
@@ -1466,6 +1506,7 @@ impl MutationKind {
                 v::validate_media,
                 None,
                 T::NoCheck,
+                C::Normalized,
             ),
             M::UpdateMedia => regular(
                 W::Update,
@@ -1474,6 +1515,7 @@ impl MutationKind {
                 v::validate_update_media,
                 None,
                 T::GenericTarget,
+                C::Normalized,
             ),
             M::DeleteMedia => regular(
                 W::Delete,
@@ -1482,6 +1524,7 @@ impl MutationKind {
                 v::validate_delete_media,
                 None,
                 T::GenericTarget,
+                C::NoData,
             ),
             // ── Habit (user-only: no proposal accept text) ──
             M::CreateHabit => regular(
@@ -1491,6 +1534,7 @@ impl MutationKind {
                 v::validate_habit,
                 None,
                 T::NoCheck,
+                C::Normalized,
             ),
             M::UpdateHabit => regular(
                 W::Update,
@@ -1499,6 +1543,7 @@ impl MutationKind {
                 v::validate_update_habit,
                 None,
                 T::GenericTarget,
+                C::Normalized,
             ),
             M::DeleteHabit => regular(
                 W::Delete,
@@ -1507,11 +1552,14 @@ impl MutationKind {
                 v::validate_delete_habit,
                 None,
                 T::GenericTarget,
+                C::NoData,
             ),
             // ── Irregular kinds (comment-held invariants) ──
             // The reference weave writes a new revision of the SOURCE Journal
             // Entry (its body gains the entity_ref), so it is an Update whose
-            // target key is `source_entity_id`.
+            // target key is `source_entity_id`. InTx: the stored body is
+            // rewritten against current state and needs the freshly-minted
+            // entity_ref id, so it is computed inside the apply tx.
             M::ReferenceExistingEntityFromJournalEntry => Descriptor {
                 write_op: W::Update,
                 entity_type: E::JournalEntry,
@@ -1519,9 +1567,11 @@ impl MutationKind {
                 validate: v::validate_reference_existing_entity_from_journal_entry,
                 render_accept: Some(v::render_accept_reference_existing_entity_from_journal_entry),
                 target_refs: T::ReferenceWeave,
+                write_class: C::InTx,
             },
             // A read-modify-write of the Project's review fields (ADR-0034): an
-            // Update targeting `entity_id`. User-only: no proposal accept text.
+            // Update targeting `entity_id`, recomputed in-tx from current state.
+            // User-only: no proposal accept text.
             M::MarkProjectReviewed => Descriptor {
                 write_op: W::Update,
                 entity_type: E::Project,
@@ -1529,9 +1579,12 @@ impl MutationKind {
                 validate: v::validate_mark_project_reviewed,
                 render_accept: None,
                 target_refs: T::GenericTarget,
+                write_class: C::InTx,
             },
             // update_todo's target key is `todo_id` (its envelope wraps a
-            // Partial<TodoData> under `todo`), NOT `entity_id`.
+            // Partial<TodoData> under `todo`), NOT `entity_id`. InTx: the
+            // three-way merge reads the current Todo inside the apply tx
+            // (ADR-0033).
             M::UpdateTodo => Descriptor {
                 write_op: W::Update,
                 entity_type: E::Todo,
@@ -1539,6 +1592,7 @@ impl MutationKind {
                 validate: v::validate_update_todo,
                 render_accept: Some(v::render_accept_update_todo),
                 target_refs: T::TodoUpdateRefs,
+                write_class: C::InTx,
             },
             // A graph spans many entities, so it has NO single target id — like a
             // create, `target_key` is None. `entity_type` is the JE anchor; the
@@ -1548,6 +1602,9 @@ impl MutationKind {
             // and matches the create-and-link-only nature of the kind (ADR-0042).
             // NoCheck: the graph owns its graph-level resolution in the graph
             // apply path, so it carries no run-independent target reference.
+            // write_class is never read — `apply_entity_mutation` rejects the
+            // graph at its guard before any routing (ADR-0042); NoData is the
+            // truthful placeholder (the guarded path stores no entity data).
             M::ApplyIntentGraph => Descriptor {
                 write_op: W::Create,
                 entity_type: E::JournalEntry,
@@ -1555,14 +1612,16 @@ impl MutationKind {
                 validate: v::validate_apply_intent_graph,
                 render_accept: Some(v::render_accept_apply_intent_graph),
                 target_refs: T::NoCheck,
+                write_class: C::NoData,
             },
         }
     }
 }
 
 /// Helper for the mechanical rows in `describe`: a pure `(WriteOp, EntityType,
-/// TargetKey)` triple plus the kind's validate, render, and target-ref facets.
-/// Named explicitly (not a closure) so it reads alongside the irregular arms.
+/// TargetKey)` triple plus the kind's validate, render, target-ref, and
+/// write-class facets. Named explicitly (not a closure) so it reads alongside
+/// the irregular arms.
 fn regular(
     write_op: WriteOp,
     entity_type: EntityType,
@@ -1570,6 +1629,7 @@ fn regular(
     validate: fn(&Value) -> Result<(), String>,
     render_accept: Option<fn(&Value, Option<&str>) -> String>,
     target_refs: TargetRefs,
+    write_class: WriteClass,
 ) -> Descriptor {
     Descriptor {
         write_op,
@@ -1578,6 +1638,7 @@ fn regular(
         validate,
         render_accept,
         target_refs,
+        write_class,
     }
 }
 
@@ -2048,6 +2109,70 @@ mod tests {
                 kind.describe().target_refs,
                 shape,
                 "{} declares the legacy dispatch's target-ref shape",
+                kind.as_wire()
+            );
+        }
+    }
+
+    #[test]
+    fn write_class_facet_matches_legacy_apply_routing_per_kind() {
+        use MutationKind as M;
+        use WriteClass as C;
+        // Closed-set mapping: the contract's write-class facet reproduces the
+        // legacy `db::apply` data routing's exact 3-way partition of all 21
+        // kinds (in wire order). Deletes carry no entity data; creates and the
+        // full-replace updates route through the pre-write normalize policies
+        // (`create_normalize` / `UPDATE_NORMALIZE`); and exactly the three
+        // read-modify-write kinds (`update_todo`, `mark_project_reviewed`, the
+        // reference weave) compute their data inside the apply tx.
+        // `apply_intent_graph`'s value is never read — `apply_entity_mutation`
+        // rejects the graph at its guard before any routing — but the contract
+        // still declares it so the partition stays total.
+        let expected: [(MutationKind, WriteClass); 21] = [
+            (M::CreateJournalEntry, C::Normalized),
+            (M::UpdateJournalEntry, C::Normalized),
+            (M::DeleteJournalEntry, C::NoData),
+            (M::ReferenceExistingEntityFromJournalEntry, C::InTx),
+            (M::CreatePerson, C::Normalized),
+            (M::UpdatePerson, C::Normalized),
+            (M::DeletePerson, C::NoData),
+            (M::CreateProject, C::Normalized),
+            (M::UpdateProject, C::Normalized),
+            (M::DeleteProject, C::NoData),
+            (M::MarkProjectReviewed, C::InTx),
+            (M::CreateTodo, C::Normalized),
+            (M::UpdateTodo, C::InTx),
+            (M::DeleteTodo, C::NoData),
+            (M::CreateMedia, C::Normalized),
+            (M::UpdateMedia, C::Normalized),
+            (M::DeleteMedia, C::NoData),
+            (M::CreateHabit, C::Normalized),
+            (M::UpdateHabit, C::Normalized),
+            (M::DeleteHabit, C::NoData),
+            (M::ApplyIntentGraph, C::NoData),
+        ];
+        assert_eq!(
+            expected.len(),
+            WIRE.len(),
+            "every MutationKind declares its write class"
+        );
+        for (kind, class) in expected {
+            let desc = kind.describe();
+            assert_eq!(
+                desc.write_class,
+                class,
+                "{} declares the legacy apply routing's write class",
+                kind.as_wire()
+            );
+            // The target-key invariant the apply entity-id minting relies on:
+            // every create (including apply_intent_graph, which mints its own
+            // anchor) targets nothing; every update/delete names its target key
+            // (update_todo via todo_id, the reference weave via source_entity_id,
+            // the rest via entity_id).
+            assert_eq!(
+                desc.target_key.is_none(),
+                desc.write_op == WriteOp::Create,
+                "{} pairs its write_op with the matching target_key presence",
                 kind.as_wire()
             );
         }
