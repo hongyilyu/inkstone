@@ -1,4 +1,5 @@
-import { expect, providerRow, test } from "./fixtures.js";
+import { expect, test } from "./fixtures.js";
+import { SettingsPage } from "./page-objects/SettingsPage.js";
 import { FAUX_WORKER_CMD } from "./spawnCore.js";
 
 /**
@@ -46,8 +47,8 @@ test("Settings → configure OpenRouter flips to Connected, then Test shows Work
 
 	// The OpenRouter row is present and Not connected. There are now TWO provider
 	// rows (the seeded OpenAI/codex + OpenRouter), so scope the status assertion
-	// to OpenRouter's row (shared `providerRow` helper).
-	const openrouterRow = providerRow(page, "OpenRouter");
+	// to OpenRouter's row (shared `SettingsPage.providerRow`).
+	const openrouterRow = new SettingsPage(page).providerRow("OpenRouter");
 	await expect(openrouterRow.getByTestId("provider-status")).toHaveText(
 		"Not connected",
 	);

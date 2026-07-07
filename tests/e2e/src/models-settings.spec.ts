@@ -1,4 +1,5 @@
 import { expect, test } from "./fixtures.js";
+import { SettingsPage } from "./page-objects/SettingsPage.js";
 
 /**
  * Models settings acceptance flow (ADR-0024): Settings → Models is a provider
@@ -16,16 +17,17 @@ test("Models settings: drill into a provider; effort persists and the default mo
 	chat,
 	page,
 }) => {
+	const settings = new SettingsPage(page);
 	await chat.goto();
 
 	// Gear navigates to the /settings/models route.
-	await page.getByRole("button", { name: "Settings" }).click();
-	await expect(page.getByRole("heading", { name: "Models" })).toBeVisible();
+	await settings.open();
+	await expect(settings.modelsHeading()).toBeVisible();
 
 	// LIST view: the OpenAI provider entry + the global effort control. Set the
 	// effort to High (the default is "off") to prove an explicit choice persists.
-	await page.getByRole("radio", { name: "High" }).click();
-	await expect(page.getByRole("radio", { name: "High" })).toHaveAttribute(
+	await settings.effortRadio("High").click();
+	await expect(settings.effortRadio("High")).toHaveAttribute(
 		"aria-checked",
 		"true",
 	);
@@ -34,24 +36,24 @@ test("Models settings: drill into a provider; effort persists and the default mo
 	// chat model (GPT-5.5), already Preferred — Core's `settings/get` falls back
 	// to it. With one model there is nothing else to switch to; effort carries the
 	// explicit-choice round-trip below.
-	await page.getByRole("button", { name: /OpenAI/ }).click();
+	await settings.openProvider(/OpenAI/).click();
 	await expect(
-		page.getByRole("row", { name: /GPT-5\.5/ }).getByText(/^preferred$/i),
+		settings.modelRow(/GPT-5\.5/).getByText(/^preferred$/i),
 	).toBeVisible();
 
 	// Reload: the SPA boots fresh at /settings/models and re-reads settings from
 	// Core. The page reopens on the LIST view; the effort choice must round-trip.
 	await page.reload();
-	await expect(page.getByRole("heading", { name: "Models" })).toBeVisible();
-	await expect(page.getByRole("radio", { name: "High" })).toHaveAttribute(
+	await expect(settings.modelsHeading()).toBeVisible();
+	await expect(settings.effortRadio("High")).toHaveAttribute(
 		"aria-checked",
 		"true",
 	);
 
 	// Drill back into the provider detail and confirm the default model survived.
-	await page.getByRole("button", { name: /OpenAI/ }).click();
+	await settings.openProvider(/OpenAI/).click();
 	await expect(
-		page.getByRole("row", { name: /GPT-5\.5/ }).getByText(/^preferred$/i),
+		settings.modelRow(/GPT-5\.5/).getByText(/^preferred$/i),
 	).toBeVisible();
 });
 
@@ -70,22 +72,21 @@ test("Models settings: the default model is enabled with a locked disable toggle
 	chat,
 	page,
 }) => {
+	const settings = new SettingsPage(page);
 	await chat.goto();
 
-	await page.getByRole("button", { name: "Settings" }).click();
-	await expect(page.getByRole("heading", { name: "Models" })).toBeVisible();
+	await settings.open();
+	await expect(settings.modelsHeading()).toBeVisible();
 
 	// Drill into the OpenAI provider's detail.
-	await page.getByRole("button", { name: /OpenAI/ }).click();
+	await settings.openProvider(/OpenAI/).click();
 
 	// The default (GPT-5.5) is Preferred and its enable toggle is LOCKED — a
 	// checked, disabled checkbox the user can't un-toggle (mirrors Core's
 	// default∈enabled invariant).
-	const defaultRow = page.getByRole("row", { name: /GPT-5\.5/ });
+	const defaultRow = settings.modelRow(/GPT-5\.5/);
 	await expect(defaultRow.getByText(/^preferred$/i)).toBeVisible();
-	const defaultToggle = defaultRow.getByRole("checkbox", {
-		name: /enabled for chat/i,
-	});
+	const defaultToggle = settings.enabledCheckbox(defaultRow);
 	await expect(defaultToggle).toBeChecked();
 	await expect(defaultToggle).toBeDisabled();
 });

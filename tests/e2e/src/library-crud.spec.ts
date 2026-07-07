@@ -1,4 +1,5 @@
 import { expect, test } from "./fixtures.js";
+import { LibraryPage } from "./page-objects/LibraryPage.js";
 import { dbPathFor, seedEntities, sqliteScalar } from "./seed.js";
 
 /**
@@ -21,18 +22,19 @@ test("create a Todo via the rail editor → entity/mutate writes it and the row 
 	workspace,
 }) => {
 	const dbPath = dbPathFor(workspace.path);
+	const library = new LibraryPage(page, core.url);
 
-	await page.goto(`${core.url}/library/todos`);
-	await page.getByRole("button", { name: /new todo/i }).click();
+	await library.gotoTopic("todos");
+	await library.newEntity("todo");
 
-	const rail = page.getByRole("complementary", { name: /new todo/i });
+	const rail = library.rail(/new todo/i);
 	await expect(rail).toBeVisible({ timeout: 15_000 });
-	await rail.getByLabel("Title").fill("Water the office plants");
-	await rail.getByLabel("Note").fill("The fern by the window is wilting");
-	await rail.getByRole("button", { name: /^save$/i }).click();
+	await library.fillField(rail, "Title", "Water the office plants");
+	await library.fillField(rail, "Note", "The fern by the window is wilting");
+	await library.save(rail);
 
 	// The new Todo lands in the live collection.
-	const collection = page.getByRole("region", { name: /todos/i });
+	const collection = library.collection(/todos/i);
 	await expect(collection.getByText("Water the office plants")).toBeVisible({
 		timeout: 15_000,
 	});
@@ -52,6 +54,7 @@ test("edit a seeded Todo via the rail editor → update_todo persists across rel
 	workspace,
 }) => {
 	const dbPath = dbPathFor(workspace.path);
+	const library = new LibraryPage(page, core.url);
 	const TODO = "01900000-0000-7000-8000-0000000000e1";
 	seedEntities(dbPath, [
 		{
@@ -61,20 +64,18 @@ test("edit a seeded Todo via the rail editor → update_todo persists across rel
 		},
 	]);
 
-	await page.goto(`${core.url}/library/todos?id=${TODO}`);
-	const detail = page.getByRole("complementary", {
-		name: /Draft the memo details/i,
-	});
+	await library.gotoTopic("todos", TODO);
+	const detail = library.rail(/Draft the memo details/i);
 	await expect(detail).toBeVisible({ timeout: 15_000 });
 
-	await detail.getByRole("button", { name: /edit todo/i }).click();
-	const title = detail.getByLabel("Title");
+	await library.enterEdit(detail, "todo");
+	const title = library.field(detail, "Title");
 	await expect(title).toHaveValue("Draft the memo");
 	await title.fill("Draft the launch memo");
-	await detail.getByRole("button", { name: /^save$/i }).click();
+	await library.save(detail);
 
 	// Live re-read shows the new title; the old one is gone.
-	const collection = page.getByRole("region", { name: /todos/i });
+	const collection = library.collection(/todos/i);
 	await expect(collection.getByText("Draft the launch memo")).toBeVisible({
 		timeout: 15_000,
 	});
@@ -93,9 +94,7 @@ test("edit a seeded Todo via the rail editor → update_todo persists across rel
 	// Survives a reload (proves the write reached tier 2, not just the cache).
 	await page.reload();
 	await expect(
-		page
-			.getByRole("region", { name: /todos/i })
-			.getByText("Draft the launch memo"),
+		library.collection(/todos/i).getByText("Draft the launch memo"),
 	).toBeVisible({ timeout: 15_000 });
 });
 
@@ -105,23 +104,21 @@ test("delete a seeded Person via the inline confirm → delete_person removes it
 	workspace,
 }) => {
 	const dbPath = dbPathFor(workspace.path);
+	const library = new LibraryPage(page, core.url);
 	const PERSON = "01900000-0000-7000-8000-0000000000f1";
 	seedEntities(dbPath, [
 		{ id: PERSON, type: "person", data: { name: "Dana Holt" } },
 	]);
 
-	await page.goto(`${core.url}/library/people?id=${PERSON}`);
-	const detail = page.getByRole("complementary", {
-		name: /Dana Holt details/i,
-	});
+	await library.gotoTopic("people", PERSON);
+	const detail = library.rail(/Dana Holt details/i);
 	await expect(detail).toBeVisible({ timeout: 15_000 });
 
 	// Inline (non-modal) two-step delete confirm (ADR-0033, "approval is sacred").
-	await detail.getByRole("button", { name: /delete person/i }).click();
-	await detail.getByRole("button", { name: /^delete$/i }).click();
+	await library.deleteEntity(detail, "person");
 
 	// Row is gone from the collection and the rail closed (route dropped ?id).
-	const collection = page.getByRole("region", { name: /people/i });
+	const collection = library.collection(/people/i);
 	await expect(collection.getByText("Dana Holt")).toHaveCount(0, {
 		timeout: 15_000,
 	});
@@ -138,6 +135,7 @@ test("delete a Project unsets project_id on its owning Todo (Core cascade)", asy
 	workspace,
 }) => {
 	const dbPath = dbPathFor(workspace.path);
+	const library = new LibraryPage(page, core.url);
 	const TODO = "01900000-0000-7000-8000-0000000000d2";
 	seedEntities(dbPath, [
 		{
@@ -156,16 +154,13 @@ test("delete a Project unsets project_id on its owning Todo (Core cascade)", asy
 		},
 	]);
 
-	await page.goto(`${core.url}/library/projects?id=${PROJECT_MIGRATION}`);
-	const detail = page.getByRole("complementary", {
-		name: /Retire the legacy API details/i,
-	});
+	await library.gotoTopic("projects", PROJECT_MIGRATION);
+	const detail = library.rail(/Retire the legacy API details/i);
 	await expect(detail).toBeVisible({ timeout: 15_000 });
 
-	await detail.getByRole("button", { name: /delete project/i }).click();
-	await detail.getByRole("button", { name: /^delete$/i }).click();
+	await library.deleteEntity(detail, "project");
 
-	const collection = page.getByRole("region", { name: /projects/i });
+	const collection = library.collection(/projects/i);
 	await expect(collection.getByText("Retire the legacy API")).toHaveCount(0, {
 		timeout: 15_000,
 	});
@@ -191,6 +186,7 @@ test("edit a seeded Person via the rail editor → update_person full-replace pe
 	workspace,
 }) => {
 	const dbPath = dbPathFor(workspace.path);
+	const library = new LibraryPage(page, core.url);
 	const PERSON = "01900000-0000-7000-8000-000000010001";
 	seedEntities(dbPath, [
 		{
@@ -200,15 +196,13 @@ test("edit a seeded Person via the rail editor → update_person full-replace pe
 		},
 	]);
 
-	await page.goto(`${core.url}/library/people?id=${PERSON}`);
-	const detail = page.getByRole("complementary", {
-		name: /Sam Rivera details/i,
-	});
+	await library.gotoTopic("people", PERSON);
+	const detail = library.rail(/Sam Rivera details/i);
 	await expect(detail).toBeVisible({ timeout: 15_000 });
 
-	await detail.getByRole("button", { name: /edit person/i }).click();
-	await detail.getByLabel("Note").fill("Lead designer, design systems");
-	await detail.getByRole("button", { name: /^save$/i }).click();
+	await library.enterEdit(detail, "person");
+	await library.fillField(detail, "Note", "Lead designer, design systems");
+	await library.save(detail);
 
 	// Post-save signal: the editor closes back to the detail VIEW showing the new
 	// note — visible only after `entity/mutate` resolved and the Library re-read.
@@ -243,6 +237,7 @@ test("edit a seeded Project's status via the rail editor → update_project pers
 	workspace,
 }) => {
 	const dbPath = dbPathFor(workspace.path);
+	const library = new LibraryPage(page, core.url);
 	const PROJECT = "01900000-0000-7000-8000-000000010002";
 	seedEntities(dbPath, [
 		{
@@ -252,15 +247,13 @@ test("edit a seeded Project's status via the rail editor → update_project pers
 		},
 	]);
 
-	await page.goto(`${core.url}/library/projects?id=${PROJECT}`);
-	const detail = page.getByRole("complementary", {
-		name: /Spring launch details/i,
-	});
+	await library.gotoTopic("projects", PROJECT);
+	const detail = library.rail(/Spring launch details/i);
 	await expect(detail).toBeVisible({ timeout: 15_000 });
 
-	await detail.getByRole("button", { name: /edit project/i }).click();
-	await detail.getByLabel("Status").selectOption("on_hold");
-	await detail.getByRole("button", { name: /^save$/i }).click();
+	await library.enterEdit(detail, "project");
+	await library.selectField(detail, "Status", "on_hold");
+	await library.save(detail);
 
 	// Post-save signal: the detail VIEW shows the new status — both the header
 	// subtitle and the badge read "On hold", present only after `entity/mutate`
@@ -284,6 +277,7 @@ test("delete a seeded Todo via the inline confirm → delete_todo removes it", a
 	workspace,
 }) => {
 	const dbPath = dbPathFor(workspace.path);
+	const library = new LibraryPage(page, core.url);
 	const TODO = "01900000-0000-7000-8000-000000010003";
 	seedEntities(dbPath, [
 		{
@@ -293,19 +287,14 @@ test("delete a seeded Todo via the inline confirm → delete_todo removes it", a
 		},
 	]);
 
-	await page.goto(`${core.url}/library/todos?id=${TODO}`);
-	const detail = page.getByRole("complementary", {
-		name: /Cancel the old subscription details/i,
-	});
+	await library.gotoTopic("todos", TODO);
+	const detail = library.rail(/Cancel the old subscription details/i);
 	await expect(detail).toBeVisible({ timeout: 15_000 });
 
-	await detail.getByRole("button", { name: /delete todo/i }).click();
-	await detail.getByRole("button", { name: /^delete$/i }).click();
+	await library.deleteEntity(detail, "todo");
 
 	await expect(
-		page
-			.getByRole("region", { name: /todos/i })
-			.getByText("Cancel the old subscription"),
+		library.collection(/todos/i).getByText("Cancel the old subscription"),
 	).toHaveCount(0, { timeout: 15_000 });
 	expect(
 		sqliteScalar(dbPath, `SELECT count(*) FROM entities WHERE id='${TODO}';`),
@@ -318,6 +307,7 @@ test("cancel the inline delete confirm → no write, the Todo survives", async (
 	workspace,
 }) => {
 	const dbPath = dbPathFor(workspace.path);
+	const library = new LibraryPage(page, core.url);
 	const TODO = "01900000-0000-7000-8000-000000010007";
 	seedEntities(dbPath, [
 		{
@@ -327,23 +317,19 @@ test("cancel the inline delete confirm → no write, the Todo survives", async (
 		},
 	]);
 
-	await page.goto(`${core.url}/library/todos?id=${TODO}`);
-	const detail = page.getByRole("complementary", {
-		name: /Keep this task details/i,
-	});
+	await library.gotoTopic("todos", TODO);
+	const detail = library.rail(/Keep this task details/i);
 	await expect(detail).toBeVisible({ timeout: 15_000 });
 
 	// Reveal the inline confirm, then back out — the shell resets `confirmingDelete`
 	// (and `del.reset()`) so no `entity/mutate` is sent (ADR-0033, "approval is sacred").
-	await detail.getByRole("button", { name: /delete todo/i }).click();
-	await expect(detail.getByText(/delete this todo\?/i)).toBeVisible();
-	await detail.getByRole("button", { name: /cancel/i }).click();
+	await library.deleteButton(detail, "todo").click();
+	await expect(library.deleteConfirmPrompt(detail, "todo")).toBeVisible();
+	await library.cancelDelete(detail);
 
 	// Confirm dismissed, the delete affordance is back, the rail stayed open (?id kept).
-	await expect(detail.getByText(/delete this todo\?/i)).toHaveCount(0);
-	await expect(
-		detail.getByRole("button", { name: /delete todo/i }),
-	).toBeVisible();
+	await expect(library.deleteConfirmPrompt(detail, "todo")).toHaveCount(0);
+	await expect(library.deleteButton(detail, "todo")).toBeVisible();
 	await expect(detail).toBeVisible();
 
 	// DB ground truth: the Todo is untouched — cancel never wrote.
@@ -358,6 +344,7 @@ test("edit then delete a seeded Journal Entry via the rail editor (update + dele
 	workspace,
 }) => {
 	const dbPath = dbPathFor(workspace.path);
+	const library = new LibraryPage(page, core.url);
 	const JE = "01900000-0000-7000-8000-000000010004";
 	seedEntities(dbPath, [
 		{
@@ -370,20 +357,18 @@ test("edit then delete a seeded Journal Entry via the rail editor (update + dele
 		},
 	]);
 
-	await page.goto(`${core.url}/library/journal?id=${JE}`);
-	const detail = page.getByRole("complementary", {
-		name: /Morning standup ran long. details/i,
-	});
+	await library.gotoTopic("journal", JE);
+	const detail = library.rail(/Morning standup ran long. details/i);
 	await expect(detail).toBeVisible({ timeout: 15_000 });
 
 	// Edit: full-replace body via the JournalEntryEditor (ADR-0033 slice-8).
-	await detail.getByRole("button", { name: /edit journal entry/i }).click();
-	const body = detail.getByLabel("Body");
+	await library.enterEdit(detail, "journal entry");
+	const body = library.field(detail, "Body");
 	await expect(body).toHaveValue("Morning standup ran long.");
 	await body.fill("Morning standup ran long; agreed to timebox it.");
-	await detail.getByRole("button", { name: /^save$/i }).click();
+	await library.save(detail);
 
-	const region = page.getByRole("region", { name: /journal/i });
+	const region = library.collection(/journal/i);
 	await expect(
 		region.getByText("Morning standup ran long; agreed to timebox it."),
 	).toBeVisible({ timeout: 15_000 });
@@ -395,14 +380,13 @@ test("edit then delete a seeded Journal Entry via the rail editor (update + dele
 	).toBe("Morning standup ran long; agreed to timebox it.");
 
 	// Delete: reopen the (now-updated) entry and remove it.
-	await page.goto(`${core.url}/library/journal?id=${JE}`);
-	const detail2 = page.getByRole("complementary", { name: /details/i });
+	await library.gotoTopic("journal", JE);
+	const detail2 = library.rail(/details/i);
 	await expect(detail2).toBeVisible({ timeout: 15_000 });
-	await detail2.getByRole("button", { name: /delete journal entry/i }).click();
-	await detail2.getByRole("button", { name: /^delete$/i }).click();
+	await library.deleteEntity(detail2, "journal entry");
 
 	await expect(
-		page.getByRole("region", { name: /journal/i }).getByText(/Morning standup/),
+		library.collection(/journal/i).getByText(/Morning standup/),
 	).toHaveCount(0, { timeout: 15_000 });
 	expect(
 		sqliteScalar(dbPath, `SELECT count(*) FROM entities WHERE id='${JE}';`),
@@ -415,22 +399,23 @@ test("create a Media item via the rail editor → entity/mutate writes it and th
 	workspace,
 }) => {
 	const dbPath = dbPathFor(workspace.path);
+	const library = new LibraryPage(page, core.url);
 
 	// The Media topic is the static `/library/media` route; selection rides `?id`
 	// on it (the KIND_META.media slug "media" collides with this route, so the rail
 	// stays in-place rather than navigating to /library/$kind — ADR-0059).
-	await page.goto(`${core.url}/library/media`);
-	await page.getByRole("button", { name: /new media/i }).click();
+	await library.gotoTopic("media");
+	await library.newEntity("media");
 
-	const rail = page.getByRole("complementary", { name: /new media/i });
+	const rail = library.rail(/new media/i);
 	await expect(rail).toBeVisible({ timeout: 15_000 });
-	await rail.getByLabel("Title").fill("The Pragmatic Programmer");
-	await rail.getByLabel("Medium").selectOption("book");
-	await rail.getByLabel("State").selectOption("consuming");
-	await rail.getByRole("button", { name: /^save$/i }).click();
+	await library.fillField(rail, "Title", "The Pragmatic Programmer");
+	await library.selectField(rail, "Medium", "book");
+	await library.selectField(rail, "State", "consuming");
+	await library.save(rail);
 
 	// The new Media lands in the live collection.
-	const collection = page.getByRole("region", { name: /media/i });
+	const collection = library.collection(/media/i);
 	await expect(collection.getByText("The Pragmatic Programmer")).toBeVisible({
 		timeout: 15_000,
 	});
@@ -451,6 +436,7 @@ test("edit a seeded Media item via the rail editor → update_media persists acr
 	workspace,
 }) => {
 	const dbPath = dbPathFor(workspace.path);
+	const library = new LibraryPage(page, core.url);
 	const MEDIA = "01900000-0000-7000-8000-000000010005";
 	seedEntities(dbPath, [
 		{
@@ -460,20 +446,18 @@ test("edit a seeded Media item via the rail editor → update_media persists acr
 		},
 	]);
 
-	await page.goto(`${core.url}/library/media?id=${MEDIA}`);
-	const detail = page.getByRole("complementary", {
-		name: /Dune details/i,
-	});
+	await library.gotoTopic("media", MEDIA);
+	const detail = library.rail(/Dune details/i);
 	await expect(detail).toBeVisible({ timeout: 15_000 });
 
-	await detail.getByRole("button", { name: /edit media/i }).click();
-	const title = detail.getByLabel("Title");
+	await library.enterEdit(detail, "media");
+	const title = library.field(detail, "Title");
 	await expect(title).toHaveValue("Dune");
 	await title.fill("Dune Messiah");
-	await detail.getByRole("button", { name: /^save$/i }).click();
+	await library.save(detail);
 
 	// Live re-read shows the new title; the old one is gone.
-	const collection = page.getByRole("region", { name: /media/i });
+	const collection = library.collection(/media/i);
 	await expect(collection.getByText("Dune Messiah")).toBeVisible({
 		timeout: 15_000,
 	});
@@ -503,7 +487,7 @@ test("edit a seeded Media item via the rail editor → update_media persists acr
 	// Survives a reload (proves the write reached tier 2, not just the cache).
 	await page.reload();
 	await expect(
-		page.getByRole("region", { name: /media/i }).getByText("Dune Messiah"),
+		library.collection(/media/i).getByText("Dune Messiah"),
 	).toBeVisible({ timeout: 15_000 });
 });
 
@@ -513,6 +497,7 @@ test("delete a seeded Media item via the inline confirm → delete_media removes
 	workspace,
 }) => {
 	const dbPath = dbPathFor(workspace.path);
+	const library = new LibraryPage(page, core.url);
 	const MEDIA = "01900000-0000-7000-8000-000000010006";
 	seedEntities(dbPath, [
 		{
@@ -522,18 +507,15 @@ test("delete a seeded Media item via the inline confirm → delete_media removes
 		},
 	]);
 
-	await page.goto(`${core.url}/library/media?id=${MEDIA}`);
-	const detail = page.getByRole("complementary", {
-		name: /Stale link details/i,
-	});
+	await library.gotoTopic("media", MEDIA);
+	const detail = library.rail(/Stale link details/i);
 	await expect(detail).toBeVisible({ timeout: 15_000 });
 
 	// Inline (non-modal) two-step delete confirm (ADR-0033, "approval is sacred").
-	await detail.getByRole("button", { name: /delete media/i }).click();
-	await detail.getByRole("button", { name: /^delete$/i }).click();
+	await library.deleteEntity(detail, "media");
 
 	// Row is gone from the collection and the rail closed (route dropped ?id).
-	const collection = page.getByRole("region", { name: /media/i });
+	const collection = library.collection(/media/i);
 	await expect(collection.getByText("Stale link")).toHaveCount(0, {
 		timeout: 15_000,
 	});
@@ -544,28 +526,24 @@ test("delete a seeded Media item via the inline confirm → delete_media removes
 	).toBe("0");
 });
 
-// The root-mounted EntityCue (slice 1/2) is the one `role="status"` with a
-// `data-cue-key`; scoping on that attribute avoids the app's other live regions
-// (CopyOutcome, the composer's run status). It auto-dismisses at CUE_DISMISS_MS
-// (2500ms), so we assert appearance promptly — Playwright auto-retries until it
-// shows or the 5s timeout — and don't assert disappearance.
-const cue = (page: import("@playwright/test").Page) =>
-	page.locator('[role="status"][data-cue-key]');
-
 test("create a Todo shows the 'Created' success cue", async ({
 	page,
 	core,
 }) => {
-	await page.goto(`${core.url}/library/todos`);
-	await page.getByRole("button", { name: /new todo/i }).click();
+	const library = new LibraryPage(page, core.url);
 
-	const rail = page.getByRole("complementary", { name: /new todo/i });
+	await library.gotoTopic("todos");
+	await library.newEntity("todo");
+
+	const rail = library.rail(/new todo/i);
 	await expect(rail).toBeVisible({ timeout: 15_000 });
-	await rail.getByLabel("Title").fill("Order more coffee filters");
-	await rail.getByRole("button", { name: /^save$/i }).click();
+	await library.fillField(rail, "Title", "Order more coffee filters");
+	await library.save(rail);
 
 	// The success cue announces "Created" once the create round-trips through Core.
-	await expect(cue(page)).toContainText("Created", { timeout: 5_000 });
+	await expect(library.successCue()).toContainText("Created", {
+		timeout: 5_000,
+	});
 });
 
 test("delete a seeded Todo shows the 'Deleted' success cue", async ({
@@ -574,6 +552,7 @@ test("delete a seeded Todo shows the 'Deleted' success cue", async ({
 	workspace,
 }) => {
 	const dbPath = dbPathFor(workspace.path);
+	const library = new LibraryPage(page, core.url);
 	const TODO = "01900000-0000-7000-8000-000000010008";
 	seedEntities(dbPath, [
 		{
@@ -583,18 +562,17 @@ test("delete a seeded Todo shows the 'Deleted' success cue", async ({
 		},
 	]);
 
-	await page.goto(`${core.url}/library/todos?id=${TODO}`);
-	const detail = page.getByRole("complementary", {
-		name: /Toss the expired snacks details/i,
-	});
+	await library.gotoTopic("todos", TODO);
+	const detail = library.rail(/Toss the expired snacks details/i);
 	await expect(detail).toBeVisible({ timeout: 15_000 });
 
-	await detail.getByRole("button", { name: /delete todo/i }).click();
-	await detail.getByRole("button", { name: /^delete$/i }).click();
+	await library.deleteEntity(detail, "todo");
 
 	// The delete navigates away (route drops ?id) and unmounts the editor, but the
 	// cue is root-mounted so it survives (slice 2) — it announces "Deleted".
-	await expect(cue(page)).toContainText("Deleted", { timeout: 5_000 });
+	await expect(library.successCue()).toContainText("Deleted", {
+		timeout: 5_000,
+	});
 
 	// And the navigation the cue is meant to survive actually happened: the detail
 	// rail is dismissed and ?id is cleared. Without this the test would still pass

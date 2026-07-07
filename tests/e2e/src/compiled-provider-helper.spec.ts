@@ -1,4 +1,5 @@
-import { expect, providerRow, test } from "./fixtures.js";
+import { expect, test } from "./fixtures.js";
+import { SettingsPage } from "./page-objects/SettingsPage.js";
 import {
 	PROVIDER_HELPER_FIXTURE_BIN,
 	WORKER_FIXTURE_BIN,
@@ -55,9 +56,11 @@ test("Core auto-detects + spawns a sibling provider-helper binary; ChatGPT flips
 
 	// The provider card shows ChatGPT not connected. There are now TWO provider
 	// rows (OpenAI/codex + OpenRouter, ADR-0062), so scope the status to the
-	// OpenAI row (shared `providerRow` helper) — an unscoped getByTestId would
-	// strict-mode-fail across both rows.
-	const status = providerRow(page, "OpenAI").getByTestId("provider-status");
+	// OpenAI row (shared `SettingsPage.providerRow`) — an unscoped getByTestId
+	// would strict-mode-fail across both rows.
+	const status = new SettingsPage(page)
+		.providerRow("OpenAI")
+		.getByTestId("provider-status");
 	await expect(status).toHaveText("Not connected");
 
 	// Click Connect → Core runs provider/login_start. With no override set, Core
