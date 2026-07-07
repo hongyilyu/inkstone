@@ -741,4 +741,152 @@ mod tests {
             "control: without skip the prior exchange is present"
         );
     }
+
+    // 7. Persist failure (slice-1 correctness advisory — the mutation-killer):
+    //    gate satisfied, but PersistStep::FreshRun targets a thread_id with no
+    //    threads row, so the insert violates the (immediate) runs.thread_id FK
+    //    → Err(Internal). AFTER the failure: zero runs rows, NO hub, NO spawn
+    //    (panic-in-closure). This kills the hub-before-persist mutation — were
+    //    hub::create hoisted above the persist, the hub would leak here.
+    #[tokio::test]
+    async fn persist_failure_leaves_no_hub() {
+        let _cred = credentials_dir(true);
+        let pool = memory_pool().await;
+        let hubs = hub::new_hubs();
+        crate::workflow::init().expect("load default workflow");
+        // Deliberately NOT seeded: no threads row exists for this id, and
+        // foreign_keys are ON in the test pool.
+        let missing_thread_id = Uuid::now_v7();
+        let (params, run_id) = fresh_params(missing_thread_id);
+
+        let result = start_run(&pool, &hubs, params, |_m: SpawnManifest| {
+            panic!("a failed persist must never spawn");
+        })
+        .await;
+
+        match result {
+            Err(StartRunError::Internal(_)) => {}
+            Err(other) => panic!("expected Internal, got {other:?}"),
+            Ok(_) => panic!("expected Internal, got Ok"),
+        }
+        assert_eq!(runs_count(&pool).await, 0, "the failed persist wrote no rows");
+        assert!(
+            hub::get(&hubs, run_id).is_none(),
+            "hub AFTER persist: a failed persist leaves no hub behind"
+        );
+    }
+
+    // 8. A PRESENT-but-unparseable credential file fails LOUD as Internal — NOT
+    //    ProviderNotConnected (ADR-0062: a corrupt store must never read as
+    //    merely disconnected, or the Client would prompt "connect it" over a
+    //    fault reconnecting cannot fix) — with zero rows, no hub, no spawn.
+    #[tokio::test]
+    async fn corrupt_credential_store_fails_internal_before_persist() {
+        let cred = credentials_dir(false);
+        // A GARBAGE credential file for the resolved provider (the default
+        // Workflow resolves to openai-codex): credentials::read parses it,
+        // fails, and the gate surfaces the fault instead of "not connected".
+        std::fs::create_dir_all(cred.dir()).expect("create credentials dir");
+        std::fs::write(cred.dir().join("openai-codex.json"), "{not json!")
+            .expect("write garbage credential");
+        let pool = memory_pool().await;
+        let hubs = hub::new_hubs();
+        let thread_id = seed_thread(&pool).await;
+        let (params, run_id) = fresh_params(thread_id);
+
+        let result = start_run(&pool, &hubs, params, |_m: SpawnManifest| {
+            panic!("a corrupt store must never spawn");
+        })
+        .await;
+
+        match result {
+            Err(StartRunError::Internal(_)) => {}
+            Err(StartRunError::ProviderNotConnected(p)) => {
+                panic!("a corrupt store must fail loud as Internal, not read as disconnected {p}")
+            }
+            Err(other) => panic!("expected Internal, got {other:?}"),
+            Ok(_) => panic!("expected Internal, got Ok"),
+        }
+        assert_eq!(runs_count(&pool).await, 0, "gate BEFORE persist: zero rows written");
+        assert!(hub::get(&hubs, run_id).is_none(), "no hub was created");
+    }
+
+    // 9. A history-read failure AFTER a successful persist is NON-FATAL: the
+    //    verb falls back to an EMPTY history and still starts the Run (the
+    //    eprintln fallback, byte-identical to pre-refactor). The failure seam:
+    //    a prior completed Message's text part is corrupted to invalid-UTF-8
+    //    BLOB bytes — the persist never touches that row, but history_for_run's
+    //    String decode of it fails. The control run (before corruption, same
+    //    thread) proves the seed yields non-empty history, so run 2's empty
+    //    history is the fallback, not a vacuously empty read.
+    #[tokio::test]
+    async fn history_failure_falls_back_to_empty() {
+        let _cred = credentials_dir(true);
+        let pool = memory_pool().await;
+        let hubs = hub::new_hubs();
+        crate::workflow::init().expect("load default workflow");
+        // A prior exchange: its user Message is `completed` with a text part.
+        let thread_id = Uuid::now_v7();
+        let prior_user_message_id = Uuid::now_v7();
+        db::persist_thread_with_first_run(
+            &pool,
+            thread_id,
+            Uuid::now_v7(),
+            prior_user_message_id,
+            Uuid::now_v7(),
+            default_workflow(),
+            "the earlier prompt",
+            &[],
+            "t",
+            1,
+        )
+        .await
+        .expect("seed prior run");
+
+        let histories: Arc<Mutex<Vec<Vec<(String, String)>>>> = Arc::new(Mutex::new(Vec::new()));
+
+        // Control: the intact prior exchange produces non-empty history.
+        let (params, _) = fresh_params(thread_id);
+        start_run(&pool, &hubs, params, {
+            let histories = histories.clone();
+            move |m: SpawnManifest| histories.lock().unwrap().push(m.history)
+        })
+        .await
+        .expect("control run succeeds");
+
+        // Corrupt the prior user Message's text part with an invalid-UTF-8 BLOB
+        // (0xFF never appears in UTF-8; SQLite's TEXT affinity stores a BLOB
+        // as-is), so text_parts_by_message's String decode now fails.
+        sqlx::query("UPDATE message_parts SET text = X'FF' WHERE message_id = ?1")
+            .bind(prior_user_message_id.to_string())
+            .execute(&pool)
+            .await
+            .expect("corrupt prior part");
+
+        let (params, run_id) = fresh_params(thread_id);
+        let started = start_run(&pool, &hubs, params, {
+            let histories = histories.clone();
+            move |m: SpawnManifest| histories.lock().unwrap().push(m.history)
+        })
+        .await
+        .expect("a failed history read must not fail the start");
+
+        assert_eq!(started.run_id, run_id);
+        assert_eq!(
+            db::run_status(&pool, run_id).await.expect("status").map(db::RunStatus::as_str),
+            Some("running"),
+            "the run still persisted and started"
+        );
+        assert!(hub::get(&hubs, run_id).is_some(), "the hub is registered");
+        let histories = histories.lock().unwrap();
+        assert_eq!(histories.len(), 2, "both runs reached their spawn");
+        assert!(
+            !histories[0].is_empty(),
+            "control: the intact prior exchange yields history"
+        );
+        assert!(
+            histories[1].is_empty(),
+            "a failed history read falls back to EMPTY history, not a failed start"
+        );
+    }
 }
