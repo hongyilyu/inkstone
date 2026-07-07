@@ -490,14 +490,16 @@ async fn apply_record_observations(
 
     db::apply_record_observations_proposal(
         pool,
-        run_id,
-        proposal_id,
-        &proposal.tool_call_id,
+        db::decide_proposal::DecisionCtx {
+            run_id,
+            proposal_id,
+            tool_call_id: &proposal.tool_call_id,
+            decision_idempotency_key: idempotency_key,
+            now_ms,
+        },
         inserts,
         edited_payload,
-        idempotency_key,
         &decision_result_payload,
-        now_ms,
     )
     .await?;
 

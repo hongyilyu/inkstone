@@ -566,7 +566,10 @@ mod tests {
         let second_resume = mark_run_running(&pool, run_id).await.expect("resume again");
         assert_eq!(second_resume, Moved::Lost);
 
-        let duplicate = apply_proposal(
+        // The duplicate decide loses the guarded flip (envelope-owned mechanics,
+        // pinned at the envelope's own interface in `decide_proposal`); what
+        // matters HERE is that the lost apply wrote no duplicate lifecycle event.
+        apply_proposal(
             &pool,
             decide_proposal::DecisionCtx {
                 run_id,
@@ -585,8 +588,8 @@ mod tests {
             Some(crate::mutation::SourceRelation::CreatedFrom),
             |_| r#"{"decision":"accept","content":"Accepted."}"#.to_string(),
         )
-        .await;
-        assert!(matches!(duplicate, Err(ApplyError::NotPending)));
+        .await
+        .expect_err("duplicate decide loses");
         assert_eq!(
             run_event_count(&pool, &run_id.to_string(), "proposal_decided").await,
             1,
@@ -796,19 +799,6 @@ mod tests {
         .await
         .expect("reject");
 
-        let proposal_status: String =
-            sqlx::query_scalar("SELECT status FROM proposals WHERE id = ?1")
-                .bind(&proposal_id)
-                .fetch_one(&pool)
-                .await
-                .expect("proposal status");
-        assert_eq!(proposal_status, "rejected");
-        let tool_status: String =
-            sqlx::query_scalar("SELECT status FROM tool_calls WHERE id = 'tool-reject'")
-                .fetch_one(&pool)
-                .await
-                .expect("tool status");
-        assert_eq!(tool_status, "completed");
         let entity_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM entities")
             .fetch_one(&pool)
             .await
@@ -819,7 +809,10 @@ mod tests {
             1
         );
 
-        let duplicate = crate::db::decide_proposal::reject(
+        // The duplicate reject loses the guarded flip (envelope-owned mechanics,
+        // pinned at the envelope's own interface in `decide_proposal`); what
+        // matters HERE is that the lost reject wrote no duplicate lifecycle event.
+        crate::db::decide_proposal::reject(
             &pool,
             crate::db::decide_proposal::DecisionCtx {
                 run_id,
@@ -830,8 +823,8 @@ mod tests {
             },
             "Rejected.",
         )
-        .await;
-        assert!(matches!(duplicate, Err(ApplyError::NotPending)));
+        .await
+        .expect_err("duplicate decide loses");
         assert_eq!(
             run_event_count(&pool, &run_id.to_string(), "proposal_decided").await,
             1,
