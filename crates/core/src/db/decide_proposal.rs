@@ -9,11 +9,6 @@
 //! loser surfaces [`ApplyError::NotPending`] — exactly one concurrent decide
 //! wins. Families plug in as in-tx writers; they never re-implement the guard,
 //! the tool-call resolve, or the commit.
-//!
-//! The verbs here are reached only by this module's tests for now — the five
-//! family call sites route through them in the follow-up slices, so
-//! `dead_code` is allowed module-wide until then (mirroring `media`).
-#![allow(dead_code)]
 
 use sqlx::{Sqlite, SqlitePool, Transaction};
 use uuid::Uuid;

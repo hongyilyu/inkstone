@@ -363,51 +363,6 @@ pub async fn apply_user_mutation(
     Ok(entity_id)
 }
 
-/// Reject a Proposal in one atomic transaction (ADR-0025), touching no entity
-/// store: flip the `proposals` row to `rejected` and resolve the awaited
-/// `tool_calls` row to `completed` with the Decision the model reads on resume —
-/// a normal (non-error) decline so it continues conversationally. Self-guarding
-/// on `status='pending'` like [`apply_proposal`]: 0 rows → rollback +
-/// [`ApplyError::NotPending`].
-pub async fn reject_proposal(
-    pool: &SqlitePool,
-    run_id: Uuid,
-    proposal_id: &str,
-    tool_call_id: &str,
-    decision_idempotency_key: Option<&str>,
-    decision_result_payload: &str,
-    now_ms: i64,
-) -> Result<(), ApplyError> {
-    let mut tx = pool.begin().await?;
-
-    // Flip the Proposal first under the `status='pending'` guard; on 0 rows a
-    // racing decide won, so bail before resolving the tool call.
-    let rejected = ProposalStatus::reject(
-        &mut *tx,
-        run_id,
-        proposal_id,
-        decision_idempotency_key,
-        now_ms,
-    )
-    .await?;
-    if !rejected.won() {
-        // tx drops without commit → rollback; nothing changed.
-        return Err(ApplyError::NotPending);
-    }
-
-    queries::resolve_tool_call(
-        &mut *tx,
-        tool_call_id,
-        "completed",
-        decision_result_payload,
-        now_ms,
-    )
-    .await?;
-
-    tx.commit().await?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
@@ -828,6 +783,10 @@ mod tests {
         assert_eq!(entity_count, 0, "nothing is written on a vanished target");
     }
 
+    /// Pins the lifecycle-owned `proposal_decided` run-log event through the
+    /// decide envelope's reject: exactly one event on the won reject, none on
+    /// the lost one. (The envelope mechanics — flip, resolve, decline JSON —
+    /// are pinned at the envelope's own interface in `decide_proposal`.)
     #[tokio::test]
     async fn reject_records_proposal_decided_and_is_guarded() {
         let pool = memory_pool().await;
@@ -835,14 +794,16 @@ mod tests {
         insert_bare_run(&pool, &run_id.to_string(), "parked").await;
         let proposal_id = seed_pending_proposal(&pool, run_id, "tool-reject").await;
 
-        reject_proposal(
+        crate::db::decide_proposal::reject(
             &pool,
-            run_id,
-            &proposal_id,
-            "tool-reject",
-            Some("idem-reject"),
-            r#"{"decision":"reject","content":"Rejected."}"#,
-            42,
+            crate::db::decide_proposal::DecisionCtx {
+                run_id,
+                proposal_id: &proposal_id,
+                tool_call_id: "tool-reject",
+                decision_idempotency_key: Some("idem-reject"),
+                now_ms: 42,
+            },
+            "Rejected.",
         )
         .await
         .expect("reject");
@@ -870,14 +831,16 @@ mod tests {
             1
         );
 
-        let duplicate = reject_proposal(
+        let duplicate = crate::db::decide_proposal::reject(
             &pool,
-            run_id,
-            &proposal_id,
-            "tool-reject",
-            Some("idem-reject-2"),
-            r#"{"decision":"reject","content":"Rejected."}"#,
-            43,
+            crate::db::decide_proposal::DecisionCtx {
+                run_id,
+                proposal_id: &proposal_id,
+                tool_call_id: "tool-reject",
+                decision_idempotency_key: Some("idem-reject-2"),
+                now_ms: 43,
+            },
+            "Rejected.",
         )
         .await;
         assert!(matches!(duplicate, Err(ApplyError::NotPending)));

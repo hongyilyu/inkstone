@@ -290,7 +290,7 @@ async fn prior_outcome(
 
 /// The fresh guarded transaction: render the Decision as the awaited tool's
 /// result, validate accept/edit (not reject) via [`crate::entities`], then one
-/// atomic [`db::apply_proposal`] / [`db::reject_proposal`]. `NotPending` →
+/// atomic [`db::apply_proposal`] / [`db::decide_proposal::reject`]. `NotPending` →
 /// `LostRace`; `InvalidMutation` → `Invalid`; `Sql` → `Internal`. Also where an
 /// `edit` without an `edited_payload` is rejected as `Invalid` (late, so the
 /// recovery branches upstream never depend on the retry carrying a payload).
@@ -308,33 +308,29 @@ async fn apply_or_reject(
     let run_id = proposal.run_id;
 
     if matches!(decision, Decision::Reject) {
-        // A decline renders as a NORMAL (non-error) tool result so the resumed
-        // model continues conversationally. A reject touches no entity store and
-        // needs no `ProposableMutation` — even a (should-be-impossible) non-
-        // proposable stored kind can still be declined cleanly.
-        let decision_payload = serde_json::json!({
-            "decision": "reject",
-            "content": DECLINED_CONTENT,
-            "is_error": false,
-        })
-        .to_string();
-        return match db::reject_proposal(
+        // A reject touches no entity store and needs no `ProposableMutation` —
+        // even a (should-be-impossible) non-proposable stored kind can still be
+        // declined cleanly. The envelope renders the decline as a NORMAL
+        // (non-error) tool result so the resumed model continues conversationally.
+        return match db::decide_proposal::reject(
             pool,
-            run_id,
-            proposal_id,
-            &proposal.tool_call_id,
-            idempotency_key,
-            &decision_payload,
-            db::now_ms(),
+            db::decide_proposal::DecisionCtx {
+                run_id,
+                proposal_id,
+                tool_call_id: &proposal.tool_call_id,
+                decision_idempotency_key: idempotency_key,
+                now_ms: db::now_ms(),
+            },
+            DECLINED_CONTENT,
         )
         .await
         {
             Ok(()) => Ok(DecideOutcome::Rejected { run_id }),
-            // `reject_proposal` touches no entity store (it only flips the
-            // proposal status + resolves the tool_call), so it can NEVER return
-            // TargetMissing — a reject is never wedged by a deleted target.
+            // `decide_proposal::reject` touches no entity store (it only flips
+            // the proposal status + resolves the tool_call), so it can NEVER
+            // return TargetMissing — a reject is never wedged by a deleted target.
             Err(db::ApplyError::TargetMissing) => {
-                unreachable!("reject_proposal never touches an entity, so cannot miss a target")
+                unreachable!("reject never touches an entity, so cannot miss a target")
             }
             // The remaining arms share the one mapping (impl From above). Named
             // (not a bare `_`) so a future ApplyError variant breaks compilation

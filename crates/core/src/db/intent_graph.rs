@@ -49,6 +49,7 @@ use uuid::Uuid;
 
 use super::ApplyError;
 use super::apply::{self, EntityMutationSpec, EntitySource};
+use super::decide_proposal::{self, DecisionCtx};
 use super::journal_weave::{
     Placement, join_with_separator, splice_entity_ref_into_body, weave_journal_body,
 };
@@ -373,15 +374,19 @@ pub async fn apply_intent_graph_proposal(
     // Resolve it as a decline BEFORE the accept-flip so the Proposal lands
     // `rejected`, not `accepted`-then-empty.
     if accepted_subset_is_empty(&graph, &decisions) {
-        return reject_whole_graph(
+        return decide_proposal::reject(
             pool,
-            run_id,
-            proposal_id,
-            tool_call_id,
-            decision_idempotency_key,
-            now_ms,
+            DecisionCtx {
+                run_id,
+                proposal_id,
+                tool_call_id,
+                decision_idempotency_key,
+                now_ms,
+            },
+            "User declined every node of this proposal.",
         )
-        .await;
+        .await
+        .map(|()| IntentGraphOutcome::RejectedAll);
     }
 
     let mut tx = pool.begin().await?;
@@ -596,46 +601,6 @@ fn accepted_subset_is_empty(graph: &ExtractedGraph, decisions: &NodeDecisions) -
         .iter()
         .all(|node| decisions.is_rejected(&node.handle));
     je_rejected && all_entities_rejected
-}
-
-/// Resolve a reject-all decision vector (ADR-0042): the accepted subset is empty,
-/// so the graph is declined wholesale — the Proposal flips `rejected` and the
-/// awaited tool call resolves as a NON-error decline (so the resumed model
-/// continues conversationally), exactly like a scalar `reject`. Returns
-/// [`IntentGraphOutcome::RejectedAll`]; nothing is minted. The guarded reject-flip
-/// is the SAME concurrency choke `reject_proposal` uses — on 0 rows a racing decide
-/// won (`NotPending`).
-async fn reject_whole_graph(
-    pool: &sqlx::SqlitePool,
-    run_id: Uuid,
-    proposal_id: &str,
-    tool_call_id: &str,
-    decision_idempotency_key: Option<&str>,
-    now_ms: i64,
-) -> Result<IntentGraphOutcome, ApplyError> {
-    let mut tx = pool.begin().await?;
-
-    let rejected =
-        ProposalStatus::reject(&mut tx, run_id, proposal_id, decision_idempotency_key, now_ms)
-            .await?;
-    if !rejected.won() {
-        return Err(ApplyError::NotPending);
-    }
-
-    // A decline renders as a NORMAL (non-error) tool result — mirrors
-    // `reject_proposal`'s decision payload so the resumed model continues
-    // conversationally rather than treating the decline as a tool failure.
-    let decision_payload = serde_json::json!({
-        "decision": "reject",
-        "content": "User declined every node of this proposal.",
-        "is_error": false,
-    })
-    .to_string();
-    queries::resolve_tool_call(&mut *tx, tool_call_id, "completed", &decision_payload, now_ms)
-        .await?;
-
-    tx.commit().await?;
-    Ok(IntentGraphOutcome::RejectedAll)
 }
 
 /// The per-node decision vector keyed by handle (ADR-0042). A node with NO entry
