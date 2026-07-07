@@ -69,43 +69,12 @@ function textTurn(text: string): ReturnType<typeof fauxAssistantMessage> {
 }
 
 const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
-const JOURNAL_ENTRY_TEXT = "Bought milk after daycare pickup.";
-
-type JournalIntakeAction = "create" | "update" | "delete";
 
 interface JournalEntrySnapshot {
 	entity_id: string;
 	occurred_at: string;
 	ended_at?: string;
 	body?: Array<{ type?: string; text?: string }>;
-}
-
-function classifyJournalIntakePrompt(prompt: string): JournalIntakeAction {
-	const lower = prompt.toLowerCase();
-	const referencesCurrentEntry =
-		/\bfor that entry\b/.test(lower) ||
-		/\b(?:that|this|the) journal entry\b/.test(lower) ||
-		/\b(?:that|this|the) entry\b/.test(lower) ||
-		/\bthat one\b/.test(lower);
-	if (
-		referencesCurrentEntry &&
-		(lower.includes("delete") ||
-			lower.includes("remove") ||
-			lower.includes("drop"))
-	) {
-		return "delete";
-	}
-	if (
-		referencesCurrentEntry &&
-		(lower.includes("correct") ||
-			lower.includes("change") ||
-			lower.includes("edit") ||
-			lower.includes("update") ||
-			lower.includes("make it"))
-	) {
-		return "update";
-	}
-	return "create";
 }
 
 function currentThreadEntriesFromToolResult(
@@ -121,59 +90,7 @@ function currentThreadEntriesFromToolResult(
 
 function firstBodyText(entry: JournalEntrySnapshot): string {
 	const firstNode = Array.isArray(entry.body) ? entry.body[0] : undefined;
-	return typeof firstNode?.text === "string" && firstNode.text.length > 0
-		? firstNode.text
-		: JOURNAL_ENTRY_TEXT;
-}
-
-function replacementTextFromPrompt(prompt: string): string | null {
-	const promptMatch = prompt.match(/\bmake it ([^.!?]+?)(?:[.!?]|$)/i);
-	return promptMatch?.[1]?.trim() || null;
-}
-
-function updatedOccurredAt(prompt: string, currentOccurredAt: string): string {
-	const timeMatch = prompt.match(
-		/\b(?:change|set|make)\b.*\btime\b.*\bto\b\s*(\d{1,2}):(\d{2})\b/i,
-	);
-	if (timeMatch === null) {
-		return currentOccurredAt;
-	}
-	const [, hours, minutes] = timeMatch;
-	const hour = Number(hours);
-	const minute = Number(minutes);
-	if (
-		Number.isNaN(hour) ||
-		Number.isNaN(minute) ||
-		hour < 0 ||
-		hour > 23 ||
-		minute < 0 ||
-		minute > 59
-	) {
-		return currentOccurredAt;
-	}
-	const dateMatch = currentOccurredAt.match(/^(\d{4}-\d{2}-\d{2})T/);
-	if (dateMatch === null) {
-		return currentOccurredAt;
-	}
-	return `${dateMatch[1]}T${hours.padStart(2, "0")}:${minutes}:00`;
-}
-
-function updatedBodyText(prompt: string, currentText: string): string {
-	const replacement = replacementTextFromPrompt(prompt);
-	if (replacement === null) {
-		return currentText;
-	}
-	const objectMatch = currentText.match(
-		/^(\w+\s+)(.+?)(\s+(?:after|before|during|at|on|in|from|with|for|while|because|since)\b.*)$/i,
-	);
-	if (objectMatch !== null) {
-		const [, prefix, , suffix] = objectMatch;
-		return `${prefix}${replacement}${suffix}`;
-	}
-	if (/\bmilk\b/i.test(currentText)) {
-		return currentText.replace(/\b(?:[a-z]+\s+)?milk\b/i, replacement);
-	}
-	return currentText;
+	return typeof firstNode?.text === "string" ? firstNode.text : "";
 }
 
 function journalConfirmation(text: string): string {
@@ -311,8 +228,8 @@ function readProposeScenario(): ProposeScenario {
 function setProposePlaybackResponses(
 	faux: ReturnType<typeof fauxProvider>,
 	manifest: WorkerManifest,
+	scenario: ProposeScenario,
 ): void {
-	const scenario = readProposeScenario();
 	const position = manifest.messages.filter((m) => m.role === "user").length;
 	const turn = scenario.turns[position];
 	if (turn === undefined) {
@@ -1224,78 +1141,23 @@ export function fauxDepsFor(manifest: WorkerManifest): InterpreterDeps {
 			},
 		]);
 	} else if (process.env.INKSTONE_FAUX_PROPOSE === "1") {
-		// Propose mode (e2e): fresh turn proposes, Core parks; resume continues — see docs/design/worker.md (ADR-0025).
+		// Propose mode (e2e): scenario-driven ordered Turns via
+		// INKSTONE_FAUX_PROPOSE_PARAMS (required, fresh AND resume — same
+		// fail-fast shape as EXTRACT/CAPTURE); the prompt's prose never routes.
+		// Fresh turn proposes, Core parks; resume continues — see
+		// docs/design/worker.md (ADR-0025).
+		const scenario = readProposeScenario();
 		if (manifest.mode === "resume") {
+			// The scenario is loaded/validated above but its turns aren't consumed
+			// on resume — confirm from the awaited Decision tool_result.
 			const toolResult = [...manifest.messages]
 				.reverse()
 				.find((message) => message.role === "tool_result");
 			faux.setResponses([
 				textTurn(journalConfirmation(textOf(toolResult?.content))),
 			]);
-		} else if (
-			process.env.INKSTONE_FAUX_PROPOSE_PARAMS !== undefined &&
-			process.env.INKSTONE_FAUX_PROPOSE_PARAMS.length > 0
-		) {
-			// Scenario playback takes precedence over the prompt-NLU fallback below
-			// (the fallback is deleted in a follow-up slice).
-			setProposePlaybackResponses(faux, manifest);
 		} else {
-			const prompt = manifest.prompt;
-			const action = classifyJournalIntakePrompt(prompt);
-			if (action === "create") {
-				faux.setResponses([
-					toolCallTurn(
-						"propose_workspace_mutation",
-						createJournalEntryProposal(
-							JOURNAL_ENTRY_TEXT,
-							"2026-06-10T10:30:00",
-						),
-						"tc_create",
-					),
-					textTurn("Done — added it."),
-				]);
-			} else {
-				faux.setResponses([
-					toolCallTurn(
-						"read_current_thread_journal_entries",
-						{},
-						"tc_read_current",
-					),
-					(context) => {
-						const toolResult = [...context.messages]
-							.reverse()
-							.find((message) => message.role === "toolResult");
-						const entries = currentThreadEntriesFromToolResult(
-							textOf(toolResult?.content),
-						);
-						const entry = entries[0];
-						if (entry === undefined) {
-							return textTurn(
-								"I couldn't find that Journal Entry in this thread.",
-							);
-						}
-						const proposal =
-							action === "update"
-								? updateJournalEntryProposal(
-										entry,
-										updatedBodyText(prompt, firstBodyText(entry)),
-										updatedOccurredAt(prompt, entry.occurred_at),
-									)
-								: deleteJournalEntryProposal(entry);
-						return toolCallTurn(
-							"propose_workspace_mutation",
-							proposal,
-							action === "update" ? "tc_update" : "tc_delete",
-						);
-					},
-					(context) => {
-						const toolResult = [...context.messages]
-							.reverse()
-							.find((message) => message.role === "toolResult");
-						return textTurn(journalConfirmation(textOf(toolResult?.content)));
-					},
-				]);
-			}
+			setProposePlaybackResponses(faux, manifest, scenario);
 		}
 	} else if (process.env.INKSTONE_FAUX_EXTRACT === "1") {
 		// Extraction mode (e2e): after an accepted Journal Entry mentioning a Person,
