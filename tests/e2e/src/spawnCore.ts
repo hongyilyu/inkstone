@@ -113,6 +113,14 @@ const FAUX_WORKER_TS = path.join(
 /** TEST-ONLY faux interpreter worker command: drives the real pi-agent-core loop offline via an env-scripted faux provider. */
 export const FAUX_WORKER_CMD = `${TSX_BIN} ${FAUX_WORKER_TS}`;
 
+/** Shared faux-propose scenario (one create Turn): the `proposeParamsFile` for
+ * specs that only need a single Journal Entry proposal. Specs with multi-Turn
+ * flows (proposal-review) write their own per-test scenario instead. */
+export const FAUX_PROPOSE_JOURNAL_FIXTURE = path.join(
+	REPO_ROOT,
+	"tests/e2e/fixtures/faux-propose-journal.json",
+);
+
 export interface SpawnCoreOptions {
 	/** Bind port. Default 0 → OS-assigned ephemeral (avoids cross-test collisions). */
 	readonly port?: number;

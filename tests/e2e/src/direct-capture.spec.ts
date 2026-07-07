@@ -4,7 +4,7 @@ import path from "node:path";
 import type { Page } from "@playwright/test";
 import { expect, test } from "./fixtures.js";
 import { seedAcceptedPerson, sqlite, sqlValue } from "./seed-proposal.js";
-import { FAUX_WORKER_CMD, REPO_ROOT } from "./spawnCore.js";
+import { FAUX_PROPOSE_JOURNAL_FIXTURE, FAUX_WORKER_CMD } from "./spawnCore.js";
 
 /**
  * Direct GTD capture intent matrix, end-to-end (slice 5): real Core + the faux
@@ -165,10 +165,7 @@ test.describe("Direct capture boundary: journal-worthy events still go to a Jour
 		coreOptions: {
 			workerCmd: FAUX_WORKER_CMD,
 			faux: "propose",
-			proposeParamsFile: path.join(
-				REPO_ROOT,
-				"tests/e2e/fixtures/faux-propose-journal.json",
-			),
+			proposeParamsFile: FAUX_PROPOSE_JOURNAL_FIXTURE,
 		},
 	});
 

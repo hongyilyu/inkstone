@@ -1,6 +1,5 @@
-import path from "node:path";
 import { expect, test } from "./fixtures.js";
-import { FAUX_WORKER_CMD, REPO_ROOT } from "./spawnCore.js";
+import { FAUX_PROPOSE_JOURNAL_FIXTURE, FAUX_WORKER_CMD } from "./spawnCore.js";
 
 // Cancel a Run that is PARKED awaiting a Proposal, through the real UI. The faux
 // `propose` interpreter parks the Run on a Journal Entry proposal (the same setup
@@ -17,10 +16,7 @@ test.use({
 	coreOptions: {
 		workerCmd: FAUX_WORKER_CMD,
 		faux: "propose",
-		proposeParamsFile: path.join(
-			REPO_ROOT,
-			"tests/e2e/fixtures/faux-propose-journal.json",
-		),
+		proposeParamsFile: FAUX_PROPOSE_JOURNAL_FIXTURE,
 	},
 });
 

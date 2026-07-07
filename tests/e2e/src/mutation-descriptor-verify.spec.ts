@@ -6,18 +6,14 @@
 // MutationKind/Descriptor path produces byte-identical user-visible behavior on
 // the agent accept path (create_journal_entry) AND an in-place edit (the
 // supports_edit + preserve_update_target_entity_id path).
-import path from "node:path";
 import { expect, test } from "./fixtures.js";
-import { FAUX_WORKER_CMD, REPO_ROOT } from "./spawnCore.js";
+import { FAUX_PROPOSE_JOURNAL_FIXTURE, FAUX_WORKER_CMD } from "./spawnCore.js";
 
 test.use({
 	coreOptions: {
 		workerCmd: FAUX_WORKER_CMD,
 		faux: "propose",
-		proposeParamsFile: path.join(
-			REPO_ROOT,
-			"tests/e2e/fixtures/faux-propose-journal.json",
-		),
+		proposeParamsFile: FAUX_PROPOSE_JOURNAL_FIXTURE,
 	},
 });
 

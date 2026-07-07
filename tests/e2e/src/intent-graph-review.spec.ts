@@ -7,7 +7,7 @@ import {
 	sqlite,
 	sqlValue,
 } from "./seed-proposal.js";
-import { FAUX_WORKER_CMD, REPO_ROOT } from "./spawnCore.js";
+import { FAUX_PROPOSE_JOURNAL_FIXTURE, FAUX_WORKER_CMD } from "./spawnCore.js";
 
 // The seeded proposal is decided through real Core; accepting RESUMES the parked
 // Run, which spawns a Worker. Use the faux interpreter (provider="faux") so resume
@@ -19,10 +19,7 @@ test.use({
 	coreOptions: {
 		workerCmd: FAUX_WORKER_CMD,
 		faux: "propose",
-		proposeParamsFile: path.join(
-			REPO_ROOT,
-			"tests/e2e/fixtures/faux-propose-journal.json",
-		),
+		proposeParamsFile: FAUX_PROPOSE_JOURNAL_FIXTURE,
 	},
 });
 
