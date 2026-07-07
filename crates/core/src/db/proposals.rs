@@ -7,10 +7,11 @@ use sqlx::SqlitePool;
 use uuid::Uuid;
 
 use super::apply;
-use super::{Moved, ProposalStatus, RunStatus};
+use super::decide_proposal;
 use super::queries;
-use super::runs::persist_tool_call_rows;
 use super::run_log;
+use super::runs::persist_tool_call_rows;
+use super::{Moved, RunStatus};
 
 /// Park a Run on a Proposal tool request (ADR-0025): persist the tool call +
 /// timeline step + pending Proposal, then move the Run `running -> parked` with
@@ -209,19 +210,20 @@ impl std::fmt::Display for ApplyError {
     }
 }
 
-/// Apply an accepted Proposal in one atomic transaction (ADR-0016, ADR-0025):
-/// flip the `proposals` row to `accepted` under the `status='pending'` guard,
-/// run the shared [`apply::apply_entity_mutation`] core, and resolve the awaited
-/// `tool_calls` row to `completed` with the Decision the model reads on resume.
-/// Returns the new `entity_id`. `entity_type`/`schema_version` are
-/// caller-resolved, so this layer names no specific Entity Type.
+/// Apply an accepted Proposal via the one decide envelope (ADR-0016, ADR-0025):
+/// [`decide_proposal::accept`] owns the guarded flip, the lost-race
+/// [`ApplyError::NotPending`] rollback, the trailing tool-call resolve, and the
+/// commit (see `decide_proposal`); this function contributes the entity-mutation
+/// family's in-tx writer. Returns the new `entity_id`.
+/// `entity_type`/`schema_version` are caller-resolved, so this layer names no
+/// specific Entity Type.
 ///
-/// This function owns the run-coupled work the shared core deliberately does not:
-/// the guarded accept flip, resolving the Entity Source (the JE anchor from the
-/// payload for a `created_from` create, else the user Message from `run_id`), the
-/// trailing tool-call resolve, and the commit. Everything else — the per-kind
-/// entity data/revision/ref/source writes — lives in `apply_entity_mutation`,
-/// shared with the user path (ADR-0033).
+/// The writer owns the run-coupled work the shared core deliberately does not:
+/// resolving the Entity Source (the JE anchor from the payload for a
+/// `created_from` create, else the user Message from `ctx.run_id`, read inside
+/// the tx). Everything else — the per-kind entity data/revision/ref/source
+/// writes — lives in `apply_entity_mutation`, shared with the user path
+/// (ADR-0033).
 ///
 /// EDIT (ADR-0025): when `edited_payload` is `Some`, the entity `data` is the
 /// edited payload (Core-validated by the caller) and `proposals.edited_payload`
@@ -231,101 +233,77 @@ impl std::fmt::Display for ApplyError {
 /// `decision_result_payload` is rendered after the entity write returns so the
 /// resume transcript can carry the real affected Entity id. This matters for
 /// follow-up agent proposals that must target or source from the accepted Entity.
-///
-/// Self-guarding (review M1): the `proposals` flip is guarded on
-/// `status='pending'`. On 0 rows a racing decide already won, so the tx rolls
-/// back and [`ApplyError::NotPending`] is returned — exactly one concurrent
-/// decide applies.
-#[allow(clippy::too_many_arguments)]
 pub async fn apply_proposal(
     pool: &SqlitePool,
-    run_id: Uuid,
-    proposal_id: &str,
-    tool_call_id: &str,
+    ctx: decide_proposal::DecisionCtx<'_>,
     kind: crate::mutation::MutationKind,
     target_entity_id: Option<&str>,
     payload: &serde_json::Value,
     edited_payload: Option<&serde_json::Value>,
     source_relation_from_user_message: Option<crate::mutation::SourceRelation>,
-    decision_idempotency_key: Option<&str>,
-    decision_result_payload: impl FnOnce(&str) -> String,
-    now_ms: i64,
+    // `Send` because the writer's boxed future captures the closure (see
+    // [`decide_proposal::WriterFuture`]).
+    decision_result_payload: impl FnOnce(&str) -> String + Send,
 ) -> Result<String, ApplyError> {
     use crate::mutation::SourceRelation;
     let edited_str = edited_payload.map(|v| v.to_string());
     let effective_payload = edited_payload.unwrap_or(payload);
 
-    let mut tx = pool.begin().await?;
+    // `accept` consumes `ctx`; the writer needs these (all Copy) fields, so
+    // bind them as locals before building the closure.
+    let run_id = ctx.run_id;
+    let proposal_id = ctx.proposal_id;
+    let now_ms = ctx.now_ms;
 
-    // Flip the Proposal first under the `status='pending'` guard (the single
-    // concurrency choke); on 0 rows a racing decide won, so bail before applying.
-    let accepted = ProposalStatus::accept(
-        &mut *tx,
-        run_id,
-        proposal_id,
-        edited_str.as_deref(),
-        decision_idempotency_key,
-        now_ms,
-    )
-    .await?;
-    if !accepted.won() {
-        // tx drops without commit → rollback; no entity inserted.
-        return Err(ApplyError::NotPending);
-    }
+    let writer = |mut tx: sqlx::Transaction<'static, sqlx::Sqlite>| {
+        Box::pin(async move {
+            // Resolve the run-coupled Entity Source descriptor for the shared core. A
+            // create carrying `source_journal_entry_id` is sourced `created_from` that
+            // Journal Entry (source_entity_id), not the user Message. Absent the field,
+            // the Message-sourcing path is unchanged: read the Run's immutable
+            // `user_message_id` here (inside this tx). JournalEntry provenance is
+            // `created_from` only (ADR-0030/0031): an `updated_from` source always points
+            // at the user Message, so the field is honored solely for creates.
+            let source = match source_relation_from_user_message {
+                Some(relation) => {
+                    let je_id = (relation == SourceRelation::CreatedFrom)
+                        .then(|| crate::entities::source_journal_entry_id(effective_payload))
+                        .flatten();
+                    Some(match je_id {
+                        Some(journal_entry_id) => apply::EntitySource::FromJournalEntry {
+                            journal_entry_id: journal_entry_id.to_string(),
+                            relation: relation.as_str().to_string(),
+                        },
+                        None => apply::EntitySource::FromMessage {
+                            message_id: queries::user_message_id_for_run(&mut *tx, run_id).await?,
+                            relation: relation.as_str().to_string(),
+                        },
+                    })
+                }
+                None => None,
+            };
 
-    // Resolve the run-coupled Entity Source descriptor for the shared core. A
-    // create carrying `source_journal_entry_id` is sourced `created_from` that
-    // Journal Entry (source_entity_id), not the user Message. Absent the field,
-    // the Message-sourcing path is unchanged: read the Run's immutable
-    // `user_message_id` here (inside this tx). JournalEntry provenance is
-    // `created_from` only (ADR-0030/0031): an `updated_from` source always points
-    // at the user Message, so the field is honored solely for creates.
-    let source = match source_relation_from_user_message {
-        Some(relation) => {
-            let je_id = (relation == SourceRelation::CreatedFrom)
-                .then(|| crate::entities::source_journal_entry_id(effective_payload))
-                .flatten();
-            Some(match je_id {
-                Some(journal_entry_id) => apply::EntitySource::FromJournalEntry {
-                    journal_entry_id: journal_entry_id.to_string(),
-                    relation: relation.as_str().to_string(),
+            let entity_id = apply::apply_entity_mutation(
+                &mut tx,
+                apply::EntityMutationSpec {
+                    kind,
+                    target_entity_id,
+                    payload,
+                    edited_payload,
+                    created_by: "proposal",
+                    proposal_id: Some(proposal_id),
+                    source,
+                    now_ms,
                 },
-                None => apply::EntitySource::FromMessage {
-                    message_id: queries::user_message_id_for_run(&mut *tx, run_id).await?,
-                    relation: relation.as_str().to_string(),
-                },
-            })
-        }
-        None => None,
+            )
+            .await?;
+
+            let rendered = decision_result_payload(&entity_id);
+            Ok((tx, entity_id, rendered))
+        }) as decide_proposal::WriterFuture<'_, String>
     };
 
-    let entity_id = apply::apply_entity_mutation(
-        &mut tx,
-        apply::EntityMutationSpec {
-            kind,
-            target_entity_id,
-            payload,
-            edited_payload,
-            created_by: "proposal",
-            proposal_id: Some(proposal_id),
-            source,
-            now_ms,
-        },
-    )
-    .await?;
-
-    let decision_result_payload = decision_result_payload(&entity_id);
-    queries::resolve_tool_call(
-        &mut *tx,
-        tool_call_id,
-        "completed",
-        &decision_result_payload,
-        now_ms,
-    )
-    .await?;
-
-    tx.commit().await?;
-    Ok(entity_id)
+    decide_proposal::accept(pool, ctx, edited_str.as_deref(), writer).await
 }
 
 /// Apply a user-initiated Entity mutation in one atomic transaction (ADR-0033):
@@ -361,51 +339,6 @@ pub async fn apply_user_mutation(
     .await?;
     tx.commit().await?;
     Ok(entity_id)
-}
-
-/// Reject a Proposal in one atomic transaction (ADR-0025), touching no entity
-/// store: flip the `proposals` row to `rejected` and resolve the awaited
-/// `tool_calls` row to `completed` with the Decision the model reads on resume —
-/// a normal (non-error) decline so it continues conversationally. Self-guarding
-/// on `status='pending'` like [`apply_proposal`]: 0 rows → rollback +
-/// [`ApplyError::NotPending`].
-pub async fn reject_proposal(
-    pool: &SqlitePool,
-    run_id: Uuid,
-    proposal_id: &str,
-    tool_call_id: &str,
-    decision_idempotency_key: Option<&str>,
-    decision_result_payload: &str,
-    now_ms: i64,
-) -> Result<(), ApplyError> {
-    let mut tx = pool.begin().await?;
-
-    // Flip the Proposal first under the `status='pending'` guard; on 0 rows a
-    // racing decide won, so bail before resolving the tool call.
-    let rejected = ProposalStatus::reject(
-        &mut *tx,
-        run_id,
-        proposal_id,
-        decision_idempotency_key,
-        now_ms,
-    )
-    .await?;
-    if !rejected.won() {
-        // tx drops without commit → rollback; nothing changed.
-        return Err(ApplyError::NotPending);
-    }
-
-    queries::resolve_tool_call(
-        &mut *tx,
-        tool_call_id,
-        "completed",
-        decision_result_payload,
-        now_ms,
-    )
-    .await?;
-
-    tx.commit().await?;
-    Ok(())
 }
 
 #[cfg(test)]
@@ -576,9 +509,13 @@ mod tests {
 
         let entity_id = apply_proposal(
             &pool,
-            run_id,
-            &proposal_id,
-            "tool-accept",
+            decide_proposal::DecisionCtx {
+                run_id,
+                proposal_id: &proposal_id,
+                tool_call_id: "tool-accept",
+                decision_idempotency_key: Some("idem-accept"),
+                now_ms: 42,
+            },
             crate::mutation::MutationKind::CreateJournalEntry,
             None,
             &serde_json::json!({
@@ -587,9 +524,7 @@ mod tests {
             }),
             None,
             Some(crate::mutation::SourceRelation::CreatedFrom),
-            Some("idem-accept"),
             |_| r#"{"decision":"accept","content":"Accepted."}"#.to_string(),
-            42,
         )
         .await
         .expect("apply");
@@ -631,11 +566,18 @@ mod tests {
         let second_resume = mark_run_running(&pool, run_id).await.expect("resume again");
         assert_eq!(second_resume, Moved::Lost);
 
-        let duplicate = apply_proposal(
+        // The duplicate decide loses the guarded flip (envelope-owned mechanics,
+        // pinned at the envelope's own interface in `decide_proposal`); what
+        // matters HERE is that the lost apply wrote no duplicate lifecycle event.
+        apply_proposal(
             &pool,
-            run_id,
-            &proposal_id,
-            "tool-accept",
+            decide_proposal::DecisionCtx {
+                run_id,
+                proposal_id: &proposal_id,
+                tool_call_id: "tool-accept",
+                decision_idempotency_key: Some("idem-accept-2"),
+                now_ms: 43,
+            },
             crate::mutation::MutationKind::CreateJournalEntry,
             None,
             &serde_json::json!({
@@ -644,12 +586,10 @@ mod tests {
             }),
             None,
             Some(crate::mutation::SourceRelation::CreatedFrom),
-            Some("idem-accept-2"),
             |_| r#"{"decision":"accept","content":"Accepted."}"#.to_string(),
-            43,
         )
-        .await;
-        assert!(matches!(duplicate, Err(ApplyError::NotPending)));
+        .await
+        .expect_err("duplicate decide loses");
         assert_eq!(
             run_event_count(&pool, &run_id.to_string(), "proposal_decided").await,
             1,
@@ -695,9 +635,13 @@ mod tests {
         let bogus_journal_entry_id = Uuid::now_v7().to_string();
         let entity_id = apply_proposal(
             &pool,
-            run_id,
-            &proposal_id,
-            "tool-update-src",
+            decide_proposal::DecisionCtx {
+                run_id,
+                proposal_id: &proposal_id,
+                tool_call_id: "tool-update-src",
+                decision_idempotency_key: Some("idem-update-src"),
+                now_ms: 42,
+            },
             crate::mutation::MutationKind::UpdatePerson,
             Some(&person_id),
             &serde_json::json!({
@@ -707,9 +651,7 @@ mod tests {
             }),
             None,
             Some(crate::mutation::SourceRelation::UpdatedFrom),
-            Some("idem-update-src"),
             |_| r#"{"decision":"accept","content":"Accepted."}"#.to_string(),
-            42,
         )
         .await
         .expect("update applies (must not FK-fail on the stray JE id)");
@@ -753,17 +695,19 @@ mod tests {
         let missing_entity_id = Uuid::now_v7().to_string();
         let result = apply_proposal(
             &pool,
-            run_id,
-            &proposal_id,
-            "tool-vanished",
+            decide_proposal::DecisionCtx {
+                run_id,
+                proposal_id: &proposal_id,
+                tool_call_id: "tool-vanished",
+                decision_idempotency_key: Some("idem-vanished"),
+                now_ms: 42,
+            },
             crate::mutation::MutationKind::DeleteJournalEntry,
             Some(&missing_entity_id),
             &serde_json::json!({ "entity_id": missing_entity_id }),
             None,
             None,
-            Some("idem-vanished"),
             |_| r#"{"decision":"accept","content":"Accepted."}"#.to_string(),
-            42,
         )
         .await;
 
@@ -803,17 +747,19 @@ mod tests {
         let missing_entity_id = Uuid::now_v7().to_string();
         let result = apply_proposal(
             &pool,
-            run_id,
-            &proposal_id,
-            "tool-vanished-upd",
+            decide_proposal::DecisionCtx {
+                run_id,
+                proposal_id: &proposal_id,
+                tool_call_id: "tool-vanished-upd",
+                decision_idempotency_key: Some("idem-vanished-upd"),
+                now_ms: 42,
+            },
             crate::mutation::MutationKind::UpdatePerson,
             Some(&missing_entity_id),
             &serde_json::json!({ "entity_id": missing_entity_id, "name": "Ghost" }),
             None,
             Some(crate::mutation::SourceRelation::UpdatedFrom),
-            Some("idem-vanished-upd"),
             |_| r#"{"decision":"accept","content":"Accepted."}"#.to_string(),
-            42,
         )
         .await;
 
@@ -828,6 +774,10 @@ mod tests {
         assert_eq!(entity_count, 0, "nothing is written on a vanished target");
     }
 
+    /// Pins the lifecycle-owned `proposal_decided` run-log event through the
+    /// decide envelope's reject: exactly one event on the won reject, none on
+    /// the lost one. (The envelope mechanics — flip, resolve, decline JSON —
+    /// are pinned at the envelope's own interface in `decide_proposal`.)
     #[tokio::test]
     async fn reject_records_proposal_decided_and_is_guarded() {
         let pool = memory_pool().await;
@@ -835,31 +785,20 @@ mod tests {
         insert_bare_run(&pool, &run_id.to_string(), "parked").await;
         let proposal_id = seed_pending_proposal(&pool, run_id, "tool-reject").await;
 
-        reject_proposal(
+        crate::db::decide_proposal::reject(
             &pool,
-            run_id,
-            &proposal_id,
-            "tool-reject",
-            Some("idem-reject"),
-            r#"{"decision":"reject","content":"Rejected."}"#,
-            42,
+            crate::db::decide_proposal::DecisionCtx {
+                run_id,
+                proposal_id: &proposal_id,
+                tool_call_id: "tool-reject",
+                decision_idempotency_key: Some("idem-reject"),
+                now_ms: 42,
+            },
+            "Rejected.",
         )
         .await
         .expect("reject");
 
-        let proposal_status: String =
-            sqlx::query_scalar("SELECT status FROM proposals WHERE id = ?1")
-                .bind(&proposal_id)
-                .fetch_one(&pool)
-                .await
-                .expect("proposal status");
-        assert_eq!(proposal_status, "rejected");
-        let tool_status: String =
-            sqlx::query_scalar("SELECT status FROM tool_calls WHERE id = 'tool-reject'")
-                .fetch_one(&pool)
-                .await
-                .expect("tool status");
-        assert_eq!(tool_status, "completed");
         let entity_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM entities")
             .fetch_one(&pool)
             .await
@@ -870,17 +809,22 @@ mod tests {
             1
         );
 
-        let duplicate = reject_proposal(
+        // The duplicate reject loses the guarded flip (envelope-owned mechanics,
+        // pinned at the envelope's own interface in `decide_proposal`); what
+        // matters HERE is that the lost reject wrote no duplicate lifecycle event.
+        crate::db::decide_proposal::reject(
             &pool,
-            run_id,
-            &proposal_id,
-            "tool-reject",
-            Some("idem-reject-2"),
-            r#"{"decision":"reject","content":"Rejected."}"#,
-            43,
+            crate::db::decide_proposal::DecisionCtx {
+                run_id,
+                proposal_id: &proposal_id,
+                tool_call_id: "tool-reject",
+                decision_idempotency_key: Some("idem-reject-2"),
+                now_ms: 43,
+            },
+            "Rejected.",
         )
-        .await;
-        assert!(matches!(duplicate, Err(ApplyError::NotPending)));
+        .await
+        .expect_err("duplicate decide loses");
         assert_eq!(
             run_event_count(&pool, &run_id.to_string(), "proposal_decided").await,
             1,

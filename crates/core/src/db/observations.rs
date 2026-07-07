@@ -6,7 +6,7 @@ use sqlx::{Sqlite, SqlitePool, Transaction};
 use uuid::Uuid;
 
 use super::ApplyError;
-use super::lifecycle::ProposalStatus;
+use super::decide_proposal;
 use super::queries;
 use crate::mutation::EntityType;
 
@@ -300,49 +300,34 @@ async fn invalid_relation_reason(
     Ok(None)
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Apply an accepted `record_observations` Proposal via the one decide envelope
+/// (see [`decide_proposal`]): this function contributes the observation family's
+/// in-tx writer (the batched [`insert_observations_in_tx`]). Unlike the entity
+/// families, the Decision payload arrives PRE-RENDERED from the caller —
+/// Observations mint no Entity id for the resume transcript to carry — so the
+/// writer just hands it through.
 pub(crate) async fn apply_record_observations_proposal(
     pool: &SqlitePool,
-    run_id: Uuid,
-    proposal_id: &str,
-    tool_call_id: &str,
+    ctx: decide_proposal::DecisionCtx<'_>,
     rows: Vec<ObservationInsert>,
     edited_payload: Option<&serde_json::Value>,
-    decision_idempotency_key: Option<&str>,
     decision_result_payload: &str,
-    now_ms: i64,
 ) -> Result<(), ApplyError> {
     let edited_str = edited_payload.map(|v| v.to_string());
-    let mut tx = pool.begin().await?;
+    // `accept` consumes `ctx`; the writer needs `now_ms` (Copy), so bind it as
+    // a local before building the closure.
+    let now_ms = ctx.now_ms;
 
-    let accepted = ProposalStatus::accept(
-        &mut *tx,
-        run_id,
-        proposal_id,
-        edited_str.as_deref(),
-        decision_idempotency_key,
-        now_ms,
-    )
-    .await?;
-    if !accepted.won() {
-        return Err(ApplyError::NotPending);
-    }
+    let writer = |mut tx: Transaction<'static, Sqlite>| {
+        Box::pin(async move {
+            insert_observations_in_tx(&mut tx, rows, now_ms)
+                .await
+                .map_err(observation_insert_to_apply)?;
+            Ok((tx, (), decision_result_payload.to_string()))
+        }) as decide_proposal::WriterFuture<'_, ()>
+    };
 
-    insert_observations_in_tx(&mut tx, rows, now_ms)
-        .await
-        .map_err(observation_insert_to_apply)?;
-
-    queries::resolve_tool_call(
-        &mut *tx,
-        tool_call_id,
-        "completed",
-        decision_result_payload,
-        now_ms,
-    )
-    .await?;
-
-    tx.commit().await?;
-    Ok(())
+    decide_proposal::accept(pool, ctx, edited_str.as_deref(), writer).await
 }
 
 fn observation_insert_to_apply(err: ObservationInsertError) -> ApplyError {

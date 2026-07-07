@@ -49,10 +49,10 @@ use uuid::Uuid;
 
 use super::ApplyError;
 use super::apply::{self, EntityMutationSpec, EntitySource};
+use super::decide_proposal::{self, DecisionCtx};
 use super::journal_weave::{
     Placement, join_with_separator, splice_entity_ref_into_body, weave_journal_body,
 };
-use super::lifecycle::ProposalStatus;
 use super::queries;
 use crate::mutation::{MutationKind, SourceRelation};
 use crate::protocol::{NodeDecision, ResolvedNode, ResolvedNodeCandidate};
@@ -333,26 +333,25 @@ async fn resolve_plan_disposition(
     })
 }
 
-/// Apply an accepted `apply_intent_graph` Proposal in one atomic transaction
-/// (ADR-0042), mirroring [`super::apply_proposal`]'s envelope: begin → guarded
-/// accept-flip → resolve dispositions + apply the graph → resolve the tool call →
-/// commit. Any failure drops the tx (nothing partial lands). Returns the anchor
-/// `entity_id` — the Journal Entry node's id, or the first MINTED entity's id for
-/// a JE-less direct-capture graph (ADR-0042).
+/// Apply an accepted `apply_intent_graph` Proposal via the one decide envelope
+/// (ADR-0016, ADR-0042), mirroring [`super::apply_proposal`]:
+/// [`decide_proposal::accept`] owns the guarded flip, the lost-race
+/// [`ApplyError::NotPending`] rollback, the trailing tool-call resolve, and the
+/// commit; this function contributes the intent-graph family's in-tx writer
+/// (resolve dispositions + apply the graph). Any failure drops the tx (nothing
+/// partial lands). Returns the anchor `entity_id` — the Journal Entry node's id,
+/// or the first MINTED entity's id for a JE-less direct-capture graph (ADR-0042).
 ///
 /// `decision_result_payload` is rendered AFTER the writes return so the resume
 /// transcript can carry the real anchor id (matching `apply_proposal`).
-#[allow(clippy::too_many_arguments)]
 pub async fn apply_intent_graph_proposal(
     pool: &sqlx::SqlitePool,
-    run_id: Uuid,
-    proposal_id: &str,
-    tool_call_id: &str,
+    ctx: DecisionCtx<'_>,
     payload: &serde_json::Value,
     decisions: Option<&[NodeDecision]>,
-    decision_idempotency_key: Option<&str>,
-    decision_result_payload: impl FnOnce(&str) -> String,
-    now_ms: i64,
+    // `Send` because the writer's boxed future captures the closure (see
+    // [`decide_proposal::WriterFuture`]).
+    decision_result_payload: impl FnOnce(&str) -> String + Send,
 ) -> Result<IntentGraphOutcome, ApplyError> {
     // The per-node decision vector keyed by handle (ADR-0042). A missing entry =
     // accept (the common accept-all path; a plain `accept` with no vector accepts
@@ -371,214 +370,210 @@ pub async fn apply_intent_graph_proposal(
     // rejects all nodes is effectively a plain `reject` (the primary reject-all
     // path is the scalar `reject` decision; this is the all-rejected *vector*).
     // Resolve it as a decline BEFORE the accept-flip so the Proposal lands
-    // `rejected`, not `accepted`-then-empty.
+    // `rejected`, not `accepted`-then-empty. (`reject` consumes `ctx`; this arm
+    // returns, so nothing below needs it.)
     if accepted_subset_is_empty(&graph, &decisions) {
-        return reject_whole_graph(
-            pool,
-            run_id,
-            proposal_id,
-            tool_call_id,
-            decision_idempotency_key,
-            now_ms,
-        )
-        .await;
+        return decide_proposal::reject(pool, ctx, "User declined every node of this proposal.")
+            .await
+            .map(|()| IntentGraphOutcome::RejectedAll);
     }
 
-    let mut tx = pool.begin().await?;
+    // `accept` consumes `ctx`; the writer needs these (all Copy) fields, so
+    // bind them as locals before building the closure.
+    let run_id = ctx.run_id;
+    let proposal_id = ctx.proposal_id;
+    let now_ms = ctx.now_ms;
 
-    // The guarded accept-flip — the SAME single concurrency choke
-    // `apply_proposal` uses. On 0 rows a racing decide won, so the tx drops
-    // (rollback) and nothing is written.
-    let accepted = ProposalStatus::accept(
-        &mut tx,
-        run_id,
-        proposal_id,
-        // The graph is not corrected via the whole-payload `edited_payload`
-        // (ADR-0042: per-node `edited_fields`, applied below). Record no edit here.
-        None,
-        decision_idempotency_key,
-        now_ms,
-    )
-    .await?;
-    if !accepted.won() {
-        return Err(ApplyError::NotPending);
-    }
-
-    // Resolve each entity node's disposition against the ACCEPTED set, IN-TX (it
-    // sees this tx's freshly-minted rows; the serialized pool makes it race-free).
-    // An ambiguous node (>= 2 exact matches) fails the WHOLE apply here — no
-    // silent fallback (ADR-0042) — dropping the tx so nothing lands.
-    //
-    // A `reuse` node mints nothing but records its handle → existing id into the
-    // handle→id map, so a todo's link can join on it (the #179 existing-project
-    // case). A `create` node is carried forward to mint, SPLIT into TODO vs
-    // NON-TODO: the non-todos (person/project) mint FIRST so a todo's linked ids
-    // are all known before the todo is minted, then the todos mint LAST with their
-    // links folded into the create payload (ADR-0042 topo-order: JE → people/
-    // projects → todos).
-    let mut handle_to_id: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
-    // The model-recognized label per resolved handle (`name`/`title`), used as the
-    // `entity_ref.label_snapshot` for fallback rendering when the JE body weaves a
-    // `journal_ref` to this entity (ADR-0042). For an exact-match reuse this equals
-    // the stored label; for a create it is the minted entity's label.
-    let mut handle_to_label: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
-    let mut non_todo_creates: Vec<ResolvedCreate> = Vec::new();
-    let mut todo_creates: Vec<ResolvedCreate> = Vec::new();
-    // Reject the @je node (ADR-0042 "Reject the @je node"): the journal-anchored
-    // capture collapses — nothing is woven, there is no anchor — but the non-JE
-    // nodes still apply as a JE-less graph (their journal_ref links are dropped by
-    // the cascade). A rejected JE is simply not minted; `je_create` stays `None`.
-    let je_create = graph
-        .journal_entry
-        .filter(|je| !decisions.is_rejected(&je.handle));
-    for node in &graph.entities {
-        // Record EVERY declared node's label first — including a rejected one's —
-        // so the JE body weave can collapse a rejected ref's placeholder to that
-        // node's NAME as plain text (ADR-0042 "the name stays plain text"), not an
-        // empty text node. The label map is read downstream only for resolved
-        // handles (the `entity_ref.label_snapshot`) plus this collapse fallback, so
-        // carrying rejected labels is harmless to the snapshot path.
-        if let Some(label) = node.label.clone() {
-            handle_to_label.insert(node.handle.clone(), label);
-        }
-        // A node the decision vector REJECTS is not created/reused (ADR-0042). It
-        // is skipped here; its handle never enters `handle_to_id`, so the cascade
-        // in `fold_links_into_todo` (and the JE body weave) drops every link/
-        // placeholder to it (the reject-cascade: a rejected ref collapses to text).
-        if decisions.is_rejected(&node.handle) {
-            continue;
-        }
-        match resolve_node(&mut tx, node, decisions.for_handle(&node.handle)).await? {
-            Disposition::Reuse(existing_id) => {
-                // A reused node mints nothing; its handle resolves to the existing
-                // id so a todo's link can target it (the #179 existing-project case,
-                // and the `entity_id` override / picker path).
-                //
-                // A reused node is linked-TO, never rewritten (ADR-0042
-                // create-and-link-only; a reuse "owns its current structured
-                // state", ADR-0030). Outgoing `todo_project`/`todo_person` links are
-                // folded only into a CREATED todo's payload (the loop below); a
-                // REUSED todo never reaches it, so its surviving outgoing links
-                // would be silently dropped. ADR-0042 forbids a silent drop ("a
-                // link whose endpoint did not resolve is dropped AND reported, never
-                // dangling-written"), and we cannot edit an existing Todo here, so
-                // FAIL LOUD: a reused todo with surviving outgoing relationship
-                // links is Invalid (editing an existing Todo's links is the picker /
-                // direct-edit path, #181 — not the graph apply).
-                if node.type_str == "todo"
-                    && graph.links.iter().any(|link| {
-                        link.from == node.handle
-                            && matches!(link.kind, LinkKind::TodoProject | LinkKind::TodoPerson)
-                            && !decisions.is_rejected(&link.to)
-                    })
-                {
-                    return Err(ApplyError::InvalidMutation(format!(
-                        "intent graph todo {} resolves to an existing Todo but carries outgoing \
-                         relationship links; the graph does not edit an existing Todo's links",
-                        node.handle
-                    )));
+    let writer = |mut tx: sqlx::Transaction<'static, sqlx::Sqlite>| {
+        Box::pin(async move {
+            // Resolve each entity node's disposition against the ACCEPTED set, IN-TX (it
+            // sees this tx's freshly-minted rows; the serialized pool makes it race-free).
+            // An ambiguous node (>= 2 exact matches) fails the WHOLE apply here — no
+            // silent fallback (ADR-0042) — dropping the tx so nothing lands.
+            //
+            // A `reuse` node mints nothing but records its handle → existing id into the
+            // handle→id map, so a todo's link can join on it (the #179 existing-project
+            // case). A `create` node is carried forward to mint, SPLIT into TODO vs
+            // NON-TODO: the non-todos (person/project) mint FIRST so a todo's linked ids
+            // are all known before the todo is minted, then the todos mint LAST with their
+            // links folded into the create payload (ADR-0042 topo-order: JE → people/
+            // projects → todos).
+            let mut handle_to_id: std::collections::HashMap<String, String> =
+                std::collections::HashMap::new();
+            // The model-recognized label per resolved handle (`name`/`title`), used as the
+            // `entity_ref.label_snapshot` for fallback rendering when the JE body weaves a
+            // `journal_ref` to this entity (ADR-0042). For an exact-match reuse this equals
+            // the stored label; for a create it is the minted entity's label.
+            let mut handle_to_label: std::collections::HashMap<String, String> =
+                std::collections::HashMap::new();
+            let mut non_todo_creates: Vec<ResolvedCreate> = Vec::new();
+            let mut todo_creates: Vec<ResolvedCreate> = Vec::new();
+            // Reject the @je node (ADR-0042 "Reject the @je node"): the journal-anchored
+            // capture collapses — nothing is woven, there is no anchor — but the non-JE
+            // nodes still apply as a JE-less graph (their journal_ref links are dropped by
+            // the cascade). A rejected JE is simply not minted; `je_create` stays `None`.
+            let je_create = graph
+                .journal_entry
+                .filter(|je| !decisions.is_rejected(&je.handle));
+            for node in &graph.entities {
+                // Record EVERY declared node's label first — including a rejected one's —
+                // so the JE body weave can collapse a rejected ref's placeholder to that
+                // node's NAME as plain text (ADR-0042 "the name stays plain text"), not an
+                // empty text node. The label map is read downstream only for resolved
+                // handles (the `entity_ref.label_snapshot`) plus this collapse fallback, so
+                // carrying rejected labels is harmless to the snapshot path.
+                if let Some(label) = node.label.clone() {
+                    handle_to_label.insert(node.handle.clone(), label);
                 }
-                handle_to_id.insert(node.handle.clone(), existing_id);
+                // A node the decision vector REJECTS is not created/reused (ADR-0042). It
+                // is skipped here; its handle never enters `handle_to_id`, so the cascade
+                // in `fold_links_into_todo` (and the JE body weave) drops every link/
+                // placeholder to it (the reject-cascade: a rejected ref collapses to text).
+                if decisions.is_rejected(&node.handle) {
+                    continue;
+                }
+                match resolve_node(&mut tx, node, decisions.for_handle(&node.handle)).await? {
+                    Disposition::Reuse(existing_id) => {
+                        // A reused node mints nothing; its handle resolves to the existing
+                        // id so a todo's link can target it (the #179 existing-project case,
+                        // and the `entity_id` override / picker path).
+                        //
+                        // A reused node is linked-TO, never rewritten (ADR-0042
+                        // create-and-link-only; a reuse "owns its current structured
+                        // state", ADR-0030). Outgoing `todo_project`/`todo_person` links are
+                        // folded only into a CREATED todo's payload (the loop below); a
+                        // REUSED todo never reaches it, so its surviving outgoing links
+                        // would be silently dropped. ADR-0042 forbids a silent drop ("a
+                        // link whose endpoint did not resolve is dropped AND reported, never
+                        // dangling-written"), and we cannot edit an existing Todo here, so
+                        // FAIL LOUD: a reused todo with surviving outgoing relationship
+                        // links is Invalid (editing an existing Todo's links is the picker /
+                        // direct-edit path, #181 — not the graph apply).
+                        if node.type_str == "todo"
+                            && graph.links.iter().any(|link| {
+                                link.from == node.handle
+                                    && matches!(
+                                        link.kind,
+                                        LinkKind::TodoProject | LinkKind::TodoPerson
+                                    )
+                                    && !decisions.is_rejected(&link.to)
+                            })
+                        {
+                            return Err(ApplyError::InvalidMutation(format!(
+                                "intent graph todo {} resolves to an existing Todo but carries \
+                                 outgoing relationship links; the graph does not edit an existing \
+                                 Todo's links",
+                                node.handle
+                            )));
+                        }
+                        handle_to_id.insert(node.handle.clone(), existing_id);
+                    }
+                    Disposition::Create(payload) => {
+                        let create = ResolvedCreate {
+                            kind: node.kind,
+                            // The payload may carry an `edited_fields` correction merged
+                            // over the node's create payload (ADR-0042); else it is the
+                            // node's own payload.
+                            payload,
+                            handle: node.handle.clone(),
+                            // Anchor-reuse is a JE-node concept; entity-node creates carry none.
+                            existing_id: None,
+                        };
+                        if node.type_str == "todo" {
+                            todo_creates.push(create);
+                        } else {
+                            non_todo_creates.push(create);
+                        }
+                    }
+                }
             }
-            Disposition::Create(payload) => {
-                let create = ResolvedCreate {
-                    kind: node.kind,
-                    // The payload may carry an `edited_fields` correction merged
-                    // over the node's create payload (ADR-0042); else it is the
-                    // node's own payload.
-                    payload,
-                    handle: node.handle.clone(),
-                    // Anchor-reuse is a JE-node concept; entity-node creates carry none.
-                    existing_id: None,
+
+            // Mint the non-todo entity creates FIRST, recording each minted handle → id so
+            // the todos minted next can resolve their link endpoints. These entities carry
+            // NO source row (ADR-0042 "No provenance writes").
+            let mut first_entity_id: Option<String> = None;
+            for create in &non_todo_creates {
+                let entity_id =
+                    mint_create(&mut tx, create, proposal_id, /* source */ None, now_ms).await?;
+                handle_to_id.insert(create.handle.clone(), entity_id.clone());
+                first_entity_id.get_or_insert(entity_id);
+            }
+
+            // Mint the todos NEXT, folding their `todo_project`/`todo_person` links into
+            // the create payload so the SAME `apply_entity_mutation(CreateTodo, …)` writes
+            // `project_id` (with its in-tx `recheck_todo_project_link`) and the
+            // `todo_person_refs` rows — link application reuses the create-todo path.
+            for create in &mut todo_creates {
+                fold_links_into_todo(
+                    &graph.links,
+                    &create.handle,
+                    &mut create.payload,
+                    &handle_to_id,
+                    &decisions,
+                )?;
+                let entity_id =
+                    mint_create(&mut tx, create, proposal_id, /* source */ None, now_ms).await?;
+                handle_to_id.insert(create.handle.clone(), entity_id.clone());
+                first_entity_id.get_or_insert(entity_id);
+            }
+
+            // Resolve the JE LAST — every entity it could reference is now in `handle_to_id`.
+            // The JE node has TWO modes (ADR-0042):
+            //   - ANCHOR-REUSE (`existing_id` is Some): the re-scan path. No new JE is minted
+            //     — the named EXISTING JE is reused; each surviving `journal_ref` splices a
+            //     chip into its STORED body (one new revision of the SAME entity row) and
+            //     inserts a backlink row. See [`anchor_reuse_journal_entry`].
+            //   - CREATE (`existing_id` is None): today's path. Mint a fresh JE LAST
+            //     (ADR-0042 "Multi-ref Journal Entry weave is one write"); the JE body's
+            //     `{entity_ref, target:@handle}` placeholders weave into stored
+            //     `{entity_ref, ref_id}` nodes in the JE's SINGLE seq-1 revision — never a
+            //     text-only insert followed by an update. The JE *entity row* is minted last
+            //     because its body needs the referenced ids; its `entity_ref` rows
+            //     (source = JE) are inserted after the JE row exists.
+            let mut anchor_entity_id: Option<String> = None;
+            if let Some(je) = &je_create {
+                let ctx = WeaveContext {
+                    run_id,
+                    links: &graph.links,
+                    handle_to_id: &handle_to_id,
+                    handle_to_label: &handle_to_label,
+                    decisions: &decisions,
+                    proposal_id,
+                    now_ms,
                 };
-                if node.type_str == "todo" {
-                    todo_creates.push(create);
-                } else {
-                    non_todo_creates.push(create);
-                }
+                let je_id = match je.existing_id.as_deref().filter(|id| !id.trim().is_empty()) {
+                    Some(existing_id) => {
+                        anchor_reuse_journal_entry(&mut tx, je, existing_id, &ctx).await?
+                    }
+                    None => weave_and_mint_journal_entry(&mut tx, je, &ctx).await?,
+                };
+                first_entity_id.get_or_insert_with(|| je_id.clone());
+                anchor_entity_id = Some(je_id);
             }
-        }
-    }
 
-    // Mint the non-todo entity creates FIRST, recording each minted handle → id so
-    // the todos minted next can resolve their link endpoints. These entities carry
-    // NO source row (ADR-0042 "No provenance writes").
-    let mut first_entity_id: Option<String> = None;
-    for create in &non_todo_creates {
-        let entity_id =
-            mint_create(&mut tx, create, proposal_id, /* source */ None, now_ms).await?;
-        handle_to_id.insert(create.handle.clone(), entity_id.clone());
-        first_entity_id.get_or_insert(entity_id);
-    }
+            // The anchor is the JE id; a JE-less direct-capture graph (or a graph whose JE
+            // node was rejected) reports the first MINTED entity (ADR-0042). A graph whose
+            // only nodes all resolved to `reuse` (mints nothing) has no anchor — a
+            // degenerate all-reuse graph that surfaces a clean `InvalidMutation`, not a
+            // panic.
+            let anchor = anchor_entity_id.or(first_entity_id).ok_or_else(|| {
+                ApplyError::InvalidMutation("intent graph created no entity".to_string())
+            })?;
 
-    // Mint the todos NEXT, folding their `todo_project`/`todo_person` links into
-    // the create payload so the SAME `apply_entity_mutation(CreateTodo, …)` writes
-    // `project_id` (with its in-tx `recheck_todo_project_link`) and the
-    // `todo_person_refs` rows — link application reuses the create-todo path.
-    for create in &mut todo_creates {
-        fold_links_into_todo(
-            &graph.links,
-            &create.handle,
-            &mut create.payload,
-            &handle_to_id,
-            &decisions,
-        )?;
-        let entity_id =
-            mint_create(&mut tx, create, proposal_id, /* source */ None, now_ms).await?;
-        handle_to_id.insert(create.handle.clone(), entity_id.clone());
-        first_entity_id.get_or_insert(entity_id);
-    }
+            let result_payload = decision_result_payload(&anchor);
+            Ok((tx, anchor, result_payload))
+        }) as decide_proposal::WriterFuture<'_, String>
+    };
 
-    // Resolve the JE LAST — every entity it could reference is now in `handle_to_id`.
-    // The JE node has TWO modes (ADR-0042):
-    //   - ANCHOR-REUSE (`existing_id` is Some): the re-scan path. No new JE is minted
-    //     — the named EXISTING JE is reused; each surviving `journal_ref` splices a
-    //     chip into its STORED body (one new revision of the SAME entity row) and
-    //     inserts a backlink row. See [`anchor_reuse_journal_entry`].
-    //   - CREATE (`existing_id` is None): today's path. Mint a fresh JE LAST
-    //     (ADR-0042 "Multi-ref Journal Entry weave is one write"); the JE body's
-    //     `{entity_ref, target:@handle}` placeholders weave into stored
-    //     `{entity_ref, ref_id}` nodes in the JE's SINGLE seq-1 revision — never a
-    //     text-only insert followed by an update. The JE *entity row* is minted last
-    //     because its body needs the referenced ids; its `entity_ref` rows
-    //     (source = JE) are inserted after the JE row exists.
-    let mut anchor_entity_id: Option<String> = None;
-    if let Some(je) = &je_create {
-        let ctx = WeaveContext {
-            run_id,
-            links: &graph.links,
-            handle_to_id: &handle_to_id,
-            handle_to_label: &handle_to_label,
-            decisions: &decisions,
-            proposal_id,
-            now_ms,
-        };
-        let je_id = match je.existing_id.as_deref().filter(|id| !id.trim().is_empty()) {
-            Some(existing_id) => {
-                anchor_reuse_journal_entry(&mut tx, je, existing_id, &ctx).await?
-            }
-            None => weave_and_mint_journal_entry(&mut tx, je, &ctx).await?,
-        };
-        first_entity_id.get_or_insert_with(|| je_id.clone());
-        anchor_entity_id = Some(je_id);
-    }
-
-    // The anchor is the JE id; a JE-less direct-capture graph (or a graph whose JE
-    // node was rejected) reports the first MINTED entity (ADR-0042). A graph whose
-    // only nodes all resolved to `reuse` (mints nothing) has no anchor — a
-    // degenerate all-reuse graph that surfaces a clean `InvalidMutation`, not a
-    // panic.
-    let anchor = anchor_entity_id.or(first_entity_id).ok_or_else(|| {
-        ApplyError::InvalidMutation("intent graph created no entity".to_string())
-    })?;
-
-    let result_payload = decision_result_payload(&anchor);
-    queries::resolve_tool_call(&mut *tx, tool_call_id, "completed", &result_payload, now_ms).await?;
-
-    tx.commit().await?;
-    Ok(IntentGraphOutcome::Applied(anchor))
+    decide_proposal::accept(
+        pool, ctx,
+        // The graph is not corrected via the whole-payload `edited_payload`
+        // (ADR-0042: per-node `edited_fields`, applied inside the writer).
+        // Record no edit here.
+        None, writer,
+    )
+    .await
+    .map(IntentGraphOutcome::Applied)
 }
 
 /// Whether the decision vector rejects EVERY node in the graph — the JE node (if
@@ -596,46 +591,6 @@ fn accepted_subset_is_empty(graph: &ExtractedGraph, decisions: &NodeDecisions) -
         .iter()
         .all(|node| decisions.is_rejected(&node.handle));
     je_rejected && all_entities_rejected
-}
-
-/// Resolve a reject-all decision vector (ADR-0042): the accepted subset is empty,
-/// so the graph is declined wholesale — the Proposal flips `rejected` and the
-/// awaited tool call resolves as a NON-error decline (so the resumed model
-/// continues conversationally), exactly like a scalar `reject`. Returns
-/// [`IntentGraphOutcome::RejectedAll`]; nothing is minted. The guarded reject-flip
-/// is the SAME concurrency choke `reject_proposal` uses — on 0 rows a racing decide
-/// won (`NotPending`).
-async fn reject_whole_graph(
-    pool: &sqlx::SqlitePool,
-    run_id: Uuid,
-    proposal_id: &str,
-    tool_call_id: &str,
-    decision_idempotency_key: Option<&str>,
-    now_ms: i64,
-) -> Result<IntentGraphOutcome, ApplyError> {
-    let mut tx = pool.begin().await?;
-
-    let rejected =
-        ProposalStatus::reject(&mut tx, run_id, proposal_id, decision_idempotency_key, now_ms)
-            .await?;
-    if !rejected.won() {
-        return Err(ApplyError::NotPending);
-    }
-
-    // A decline renders as a NORMAL (non-error) tool result — mirrors
-    // `reject_proposal`'s decision payload so the resumed model continues
-    // conversationally rather than treating the decline as a tool failure.
-    let decision_payload = serde_json::json!({
-        "decision": "reject",
-        "content": "User declined every node of this proposal.",
-        "is_error": false,
-    })
-    .to_string();
-    queries::resolve_tool_call(&mut *tx, tool_call_id, "completed", &decision_payload, now_ms)
-        .await?;
-
-    tx.commit().await?;
-    Ok(IntentGraphOutcome::RejectedAll)
 }
 
 /// The per-node decision vector keyed by handle (ADR-0042). A node with NO entry
@@ -2410,14 +2365,16 @@ mod tests {
 
         let outcome = apply_intent_graph_proposal(
             &pool,
-            scaffold.run_id,
-            &scaffold.proposal_id,
-            &scaffold.tool_call_id,
+            DecisionCtx {
+                run_id: scaffold.run_id,
+                proposal_id: &scaffold.proposal_id,
+                tool_call_id: &scaffold.tool_call_id,
+                decision_idempotency_key: None,
+                now_ms: crate::db::now_ms(),
+            },
             &payload,
             None,
-            None,
             |anchor| format!("anchor:{anchor}"),
-            crate::db::now_ms(),
         )
         .await
         .expect("anchor-reuse applies");
@@ -2495,14 +2452,16 @@ mod tests {
         });
         apply_intent_graph_proposal(
             &pool,
-            scaffold.run_id,
-            &scaffold.proposal_id,
-            &scaffold.tool_call_id,
+            DecisionCtx {
+                run_id: scaffold.run_id,
+                proposal_id: &scaffold.proposal_id,
+                tool_call_id: &scaffold.tool_call_id,
+                decision_idempotency_key: None,
+                now_ms: crate::db::now_ms(),
+            },
             &payload,
             None,
-            None,
             |a| a.to_string(),
-            crate::db::now_ms(),
         )
         .await
         .expect("anchor-reuse applies");
@@ -2558,14 +2517,16 @@ mod tests {
         });
         apply_intent_graph_proposal(
             &pool,
-            scaffold.run_id,
-            &scaffold.proposal_id,
-            &scaffold.tool_call_id,
+            DecisionCtx {
+                run_id: scaffold.run_id,
+                proposal_id: &scaffold.proposal_id,
+                tool_call_id: &scaffold.tool_call_id,
+                decision_idempotency_key: None,
+                now_ms: crate::db::now_ms(),
+            },
             &payload,
             None,
-            None,
             |a| a.to_string(),
-            crate::db::now_ms(),
         )
         .await
         .expect("re-anchor is a clean no-op");
@@ -2621,14 +2582,16 @@ mod tests {
         });
         let result = apply_intent_graph_proposal(
             &pool,
-            scaffold.run_id,
-            &scaffold.proposal_id,
-            &scaffold.tool_call_id,
+            DecisionCtx {
+                run_id: scaffold.run_id,
+                proposal_id: &scaffold.proposal_id,
+                tool_call_id: &scaffold.tool_call_id,
+                decision_idempotency_key: None,
+                now_ms: crate::db::now_ms(),
+            },
             &payload,
             None,
-            None,
             |a| a.to_string(),
-            crate::db::now_ms(),
         )
         .await;
         match result {
@@ -2674,14 +2637,16 @@ mod tests {
         });
         let result = apply_intent_graph_proposal(
             &pool,
-            scaffold.run_id,
-            &scaffold.proposal_id,
-            &scaffold.tool_call_id,
+            DecisionCtx {
+                run_id: scaffold.run_id,
+                proposal_id: &scaffold.proposal_id,
+                tool_call_id: &scaffold.tool_call_id,
+                decision_idempotency_key: None,
+                now_ms: crate::db::now_ms(),
+            },
             &payload,
             None,
-            None,
             |a| a.to_string(),
-            crate::db::now_ms(),
         )
         .await;
         match result {
@@ -2725,14 +2690,16 @@ mod tests {
         });
         let outcome = apply_intent_graph_proposal(
             &pool,
-            scaffold.run_id,
-            &scaffold.proposal_id,
-            &scaffold.tool_call_id,
+            DecisionCtx {
+                run_id: scaffold.run_id,
+                proposal_id: &scaffold.proposal_id,
+                tool_call_id: &scaffold.tool_call_id,
+                decision_idempotency_key: None,
+                now_ms: crate::db::now_ms(),
+            },
             &payload,
             None,
-            None,
             |a| a.to_string(),
-            crate::db::now_ms(),
         )
         .await
         .expect("create-mode applies");
@@ -2775,14 +2742,16 @@ mod tests {
         });
         let result = apply_intent_graph_proposal(
             &pool,
-            scaffold.run_id,
-            &scaffold.proposal_id,
-            &scaffold.tool_call_id,
+            DecisionCtx {
+                run_id: scaffold.run_id,
+                proposal_id: &scaffold.proposal_id,
+                tool_call_id: &scaffold.tool_call_id,
+                decision_idempotency_key: None,
+                now_ms: crate::db::now_ms(),
+            },
             &payload,
             None,
-            None,
             |a| a.to_string(),
-            crate::db::now_ms(),
         )
         .await;
         assert!(
@@ -2822,14 +2791,16 @@ mod tests {
         });
         let result = apply_intent_graph_proposal(
             &pool,
-            scaffold.run_id,
-            &scaffold.proposal_id,
-            &scaffold.tool_call_id,
+            DecisionCtx {
+                run_id: scaffold.run_id,
+                proposal_id: &scaffold.proposal_id,
+                tool_call_id: &scaffold.tool_call_id,
+                decision_idempotency_key: None,
+                now_ms: crate::db::now_ms(),
+            },
             &payload,
             None,
-            None,
             |a| a.to_string(),
-            crate::db::now_ms(),
         )
         .await;
         assert!(
@@ -2868,14 +2839,16 @@ mod tests {
 
         let outcome = apply_intent_graph_proposal(
             &pool,
-            scaffold.run_id,
-            &scaffold.proposal_id,
-            &scaffold.tool_call_id,
+            DecisionCtx {
+                run_id: scaffold.run_id,
+                proposal_id: &scaffold.proposal_id,
+                tool_call_id: &scaffold.tool_call_id,
+                decision_idempotency_key: None,
+                now_ms: crate::db::now_ms(),
+            },
             &payload,
             None,
-            None,
             |a| a.to_string(),
-            crate::db::now_ms(),
         )
         .await
         .expect("append-mode anchor-reuse applies");
@@ -2954,14 +2927,16 @@ mod tests {
 
         let outcome = apply_intent_graph_proposal(
             &pool,
-            scaffold.run_id,
-            &scaffold.proposal_id,
-            &scaffold.tool_call_id,
+            DecisionCtx {
+                run_id: scaffold.run_id,
+                proposal_id: &scaffold.proposal_id,
+                tool_call_id: &scaffold.tool_call_id,
+                decision_idempotency_key: None,
+                now_ms: crate::db::now_ms(),
+            },
             &payload,
             None,
-            None,
             |a| a.to_string(),
-            crate::db::now_ms(),
         )
         .await
         .expect("append-mode anchor-reuse applies even when the label is in the prose");
@@ -3034,14 +3009,16 @@ mod tests {
 
         let outcome = apply_intent_graph_proposal(
             &pool,
-            scaffold.run_id,
-            &scaffold.proposal_id,
-            &scaffold.tool_call_id,
+            DecisionCtx {
+                run_id: scaffold.run_id,
+                proposal_id: &scaffold.proposal_id,
+                tool_call_id: &scaffold.tool_call_id,
+                decision_idempotency_key: None,
+                now_ms: crate::db::now_ms(),
+            },
             &payload,
             None,
-            None,
             |a| a.to_string(),
-            crate::db::now_ms(),
         )
         .await
         .expect("a clause that opens with the entity name applies (no standalone-space rejection)");
@@ -3094,14 +3071,16 @@ mod tests {
 
         let outcome = apply_intent_graph_proposal(
             &pool,
-            scaffold.run_id,
-            &scaffold.proposal_id,
-            &scaffold.tool_call_id,
+            DecisionCtx {
+                run_id: scaffold.run_id,
+                proposal_id: &scaffold.proposal_id,
+                tool_call_id: &scaffold.tool_call_id,
+                decision_idempotency_key: None,
+                now_ms: crate::db::now_ms(),
+            },
             &payload,
             None,
-            None,
             |a| a.to_string(),
-            crate::db::now_ms(),
         )
         .await
         .expect("append onto a chip-trailing body applies");
@@ -3156,14 +3135,16 @@ mod tests {
 
         let outcome = apply_intent_graph_proposal(
             &pool,
-            scaffold.run_id,
-            &scaffold.proposal_id,
-            &scaffold.tool_call_id,
+            DecisionCtx {
+                run_id: scaffold.run_id,
+                proposal_id: &scaffold.proposal_id,
+                tool_call_id: &scaffold.tool_call_id,
+                decision_idempotency_key: None,
+                now_ms: crate::db::now_ms(),
+            },
             &payload,
             None,
-            None,
             |a| a.to_string(),
-            crate::db::now_ms(),
         )
         .await
         .expect("label-leading clause onto a chip-trailing body applies (no standalone-space node)");
@@ -3215,14 +3196,16 @@ mod tests {
 
         let outcome = apply_intent_graph_proposal(
             &pool,
-            scaffold.run_id,
-            &scaffold.proposal_id,
-            &scaffold.tool_call_id,
+            DecisionCtx {
+                run_id: scaffold.run_id,
+                proposal_id: &scaffold.proposal_id,
+                tool_call_id: &scaffold.tool_call_id,
+                decision_idempotency_key: None,
+                now_ms: crate::db::now_ms(),
+            },
             &payload,
             None,
-            None,
             |a| a.to_string(),
-            crate::db::now_ms(),
         )
         .await
         .expect("an already-spaced clause applies");
@@ -3269,14 +3252,16 @@ mod tests {
 
         let outcome = apply_intent_graph_proposal(
             &pool,
-            scaffold.run_id,
-            &scaffold.proposal_id,
-            &scaffold.tool_call_id,
+            DecisionCtx {
+                run_id: scaffold.run_id,
+                proposal_id: &scaffold.proposal_id,
+                tool_call_id: &scaffold.tool_call_id,
+                decision_idempotency_key: None,
+                now_ms: crate::db::now_ms(),
+            },
             &payload,
             None,
-            None,
             |a| a.to_string(),
-            crate::db::now_ms(),
         )
         .await
         .expect("a leading-space label-leading clause applies (trimmed, no standalone-space node)");
@@ -3323,14 +3308,16 @@ mod tests {
         });
         let result = apply_intent_graph_proposal(
             &pool,
-            scaffold.run_id,
-            &scaffold.proposal_id,
-            &scaffold.tool_call_id,
+            DecisionCtx {
+                run_id: scaffold.run_id,
+                proposal_id: &scaffold.proposal_id,
+                tool_call_id: &scaffold.tool_call_id,
+                decision_idempotency_key: None,
+                now_ms: crate::db::now_ms(),
+            },
             &payload,
             None,
-            None,
             |a| a.to_string(),
-            crate::db::now_ms(),
         )
         .await;
         match result {
@@ -3359,14 +3346,16 @@ mod tests {
         });
         let result = apply_intent_graph_proposal(
             &pool,
-            scaffold.run_id,
-            &scaffold.proposal_id,
-            &scaffold.tool_call_id,
+            DecisionCtx {
+                run_id: scaffold.run_id,
+                proposal_id: &scaffold.proposal_id,
+                tool_call_id: &scaffold.tool_call_id,
+                decision_idempotency_key: None,
+                now_ms: crate::db::now_ms(),
+            },
             &payload,
             None,
-            None,
             |a| a.to_string(),
-            crate::db::now_ms(),
         )
         .await;
         match result {
@@ -3423,14 +3412,16 @@ mod tests {
         let scaffold = seed_direct_capture(&pool).await;
         let outcome = apply_intent_graph_proposal(
             &pool,
-            scaffold.run_id,
-            &scaffold.proposal_id,
-            &scaffold.tool_call_id,
+            DecisionCtx {
+                run_id: scaffold.run_id,
+                proposal_id: &scaffold.proposal_id,
+                tool_call_id: &scaffold.tool_call_id,
+                decision_idempotency_key: None,
+                now_ms: crate::db::now_ms(),
+            },
             &payload,
             None,
-            None,
             |anchor| format!("anchor:{anchor}"),
-            crate::db::now_ms(),
         )
         .await
         .expect("reuse+create apply succeeds");
@@ -3477,14 +3468,16 @@ mod tests {
         let scaffold = seed_direct_capture(&pool).await;
         let result = apply_intent_graph_proposal(
             &pool,
-            scaffold.run_id,
-            &scaffold.proposal_id,
-            &scaffold.tool_call_id,
+            DecisionCtx {
+                run_id: scaffold.run_id,
+                proposal_id: &scaffold.proposal_id,
+                tool_call_id: &scaffold.tool_call_id,
+                decision_idempotency_key: None,
+                now_ms: crate::db::now_ms(),
+            },
             &payload,
             None,
-            None,
             |anchor| format!("anchor:{anchor}"),
-            crate::db::now_ms(),
         )
         .await;
         match result {
