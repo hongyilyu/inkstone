@@ -23,6 +23,7 @@ mod resume;
 mod runs;
 mod settings;
 mod skills;
+mod start_run;
 mod tools;
 #[cfg(not(debug_assertions))]
 mod web_embed;
