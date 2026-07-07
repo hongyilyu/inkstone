@@ -48,6 +48,8 @@ enum vs. a second parallel store).
    - No stored credential: `None` (the Run proceeds tokenless; the provider call
      fails with an auth error, prompting the user to connect).
 
+   (As-built amendment: Run-creation sites now gate on `credentials::is_connected` *before* persisting the Run — a missing or corrupt credential rejects with `-32004` `ProviderNotConnected` and writes zero rows, rather than spawning a tokenless Worker. The gate lives in `crate::start_run::ensure_provider_connected`; `resolve_access_token`'s `None` branch above remains the Worker-side fallback for tokens that expire mid-flight.)
+
    The single-flight refresh machinery stays **OAuth-only**; the static-key arm
    never touches it.
 
