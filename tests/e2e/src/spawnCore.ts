@@ -166,6 +166,12 @@ export interface SpawnCoreOptions {
 	readonly faux?: "propose" | "extract" | "capture";
 	/** Direct propose-worker fixture knob. Emits params loaded from this JSON file. */
 	readonly proposalParamsFile?: string;
+	/** Faux propose scenario (`INKSTONE_FAUX_PROPOSE_PARAMS`): `{ turns: [{ action: create|update|delete, body?, occurred_at? }] }`
+	 * JSON file the faux `propose` mode plays back by manifest position — the
+	 * prompt's prose never routes the action. NOT the neighboring
+	 * `proposalParamsFile`/`INKSTONE_PROPOSE_PARAMS_FILE`, which is the UNRELATED
+	 * direct propose-worker fixture knob above. */
+	readonly proposeParamsFile?: string;
 	/** Faux extraction scenario (`INKSTONE_FAUX_EXTRACT_PARAMS`): `{ journal_text, person_name }` JSON file the extract mode reads. */
 	readonly extractParamsFile?: string;
 	/** Faux direct-capture scenario (`INKSTONE_FAUX_CAPTURE_PARAMS`): `{ intent, todo?, project?, person?, enrich? }` JSON file the capture mode reads. */
@@ -331,6 +337,7 @@ export async function spawnCore(
 		"INKSTONE_FAUX_TOOL_CALL",
 		"INKSTONE_FAUX_LOAD_SKILL",
 		"INKSTONE_FAUX_PROPOSE",
+		"INKSTONE_FAUX_PROPOSE_PARAMS",
 		"INKSTONE_FAUX_EXTRACT",
 		"INKSTONE_FAUX_EXTRACT_PARAMS",
 		"INKSTONE_FAUX_CAPTURE",
@@ -478,6 +485,9 @@ export async function spawnCore(
 			env.INKSTONE_FAUX_LOAD_SKILL = opts.fauxLoadSkill;
 		} else if (opts.faux === "propose") {
 			env.INKSTONE_FAUX_PROPOSE = "1";
+			if (opts.proposeParamsFile !== undefined) {
+				env.INKSTONE_FAUX_PROPOSE_PARAMS = opts.proposeParamsFile;
+			}
 		} else if (opts.faux === "extract") {
 			env.INKSTONE_FAUX_EXTRACT = "1";
 			if (opts.extractParamsFile !== undefined) {

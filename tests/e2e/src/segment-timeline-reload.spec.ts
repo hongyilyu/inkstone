@@ -1,5 +1,6 @@
+import path from "node:path";
 import { expect, test } from "./fixtures.js";
-import { FAUX_WORKER_CMD } from "./spawnCore.js";
+import { FAUX_WORKER_CMD, REPO_ROOT } from "./spawnCore.js";
 
 /**
  * Segment-timeline order survives reload (ADR-0045). An assistant turn that parks
@@ -19,6 +20,10 @@ test.use({
 	coreOptions: {
 		workerCmd: FAUX_WORKER_CMD,
 		faux: "propose",
+		proposeParamsFile: path.join(
+			REPO_ROOT,
+			"tests/e2e/fixtures/faux-propose-journal.json",
+		),
 	},
 });
 

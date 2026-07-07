@@ -81,6 +81,10 @@ test.describe("faux proposal parity", () => {
 		coreOptions: {
 			workerCmd: FAUX_WORKER_CMD,
 			faux: "propose",
+			proposeParamsFile: path.join(
+				REPO_ROOT,
+				"tests/e2e/fixtures/faux-propose-journal.json",
+			),
 		},
 	});
 

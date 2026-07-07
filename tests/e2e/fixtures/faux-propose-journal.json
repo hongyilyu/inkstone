@@ -1,0 +1,9 @@
+{
+	"turns": [
+		{
+			"action": "create",
+			"body": "Bought milk after daycare pickup.",
+			"occurred_at": "2026-06-10T10:30:00"
+		}
+	]
+}

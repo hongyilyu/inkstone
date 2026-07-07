@@ -1,7 +1,8 @@
+import path from "node:path";
 import { expect, test } from "./fixtures.js";
 // FAUX_WORKER_CMD drives the parked-interpreter angle only (the describe block
 // below); the wire test uses the default echo worker (which reaches `done`).
-import { FAUX_WORKER_CMD } from "./spawnCore.js";
+import { FAUX_WORKER_CMD, REPO_ROOT } from "./spawnCore.js";
 
 /**
  * The recent-Runs feed end-to-end (ADR-0028 as-built). Two angles:
@@ -136,7 +137,16 @@ test("run/get_history returns driven Runs newest-first over the WebSocket", asyn
 });
 
 test.describe("with a parked faux interpreter", () => {
-	test.use({ coreOptions: { workerCmd: FAUX_WORKER_CMD, faux: "propose" } });
+	test.use({
+		coreOptions: {
+			workerCmd: FAUX_WORKER_CMD,
+			faux: "propose",
+			proposeParamsFile: path.join(
+				REPO_ROOT,
+				"tests/e2e/fixtures/faux-propose-journal.json",
+			),
+		},
+	});
 
 	test("the recent-Runs feed surfaces a parked Run as Waiting", async ({
 		chat,
