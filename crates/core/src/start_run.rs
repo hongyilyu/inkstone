@@ -14,8 +14,8 @@
 //!    before the spawn, with the byte-identical non-fatal eprintln fallback.
 //!
 //! The persist step is a closed [`PersistStep`] enum (exactly three variants
-//! eventually — `FreshRun` now; `CreateThread` and `RetryCas` land in later
-//! slices), not user-extensible: each variant keeps its current transactional
+//! eventually — `FreshRun` and `CreateThread` now; `RetryCas` lands in slice
+//! 3), not user-extensible: each variant keeps its current transactional
 //! shape behind the shared sequence. The Worker spawn is INJECTED as `spawn_fn`
 //! (production: [`default_spawn`]) so the sequence is assertable against a
 //! `:memory:` pool without a real Worker binary — mirroring how
@@ -33,8 +33,8 @@ use crate::protocol::ManifestAttachment;
 use crate::workflow::Workflow;
 
 /// What the persist step does — a closed set (exactly three variants
-/// eventually: `FreshRun` now; `CreateThread` and `RetryCas` land in later
-/// slices), not user-extensible. The resolved [`Workflow`] is NOT an input:
+/// eventually: `FreshRun` and `CreateThread` now; `RetryCas` lands in slice
+/// 3), not user-extensible. The resolved [`Workflow`] is NOT an input:
 /// [`start_run`] resolves it via `dispatch_and_resolve` and passes it into the
 /// variant's persist execution.
 pub enum PersistStep {
@@ -50,6 +50,26 @@ pub enum PersistStep {
         attachments: Vec<db::AttachmentSeed>,
         now: i64,
     },
+    /// Message-first thread creation (`thread/create`, ADR-0022) —
+    /// `db::persist_thread_with_first_run`'s one transaction: mint the Thread
+    /// row THEN the same initial-run rows, atomically.
+    ///
+    /// CHOICE: the Thread id is NOT duplicated here — the variant reuses
+    /// [`StartRunParams::thread_id`] (the verb's shared input), so the persist
+    /// and the rest of the sequence can never disagree on which Thread.
+    CreateThread {
+        run_id: Uuid,
+        user_message_id: Uuid,
+        assistant_message_id: Uuid,
+        /// The user Message's resolved media links (ADR-0058), validated by
+        /// the shell BEFORE the verb runs — persisted in the same transaction
+        /// as the Thread + first-run rows.
+        attachments: Vec<db::AttachmentSeed>,
+        /// The prompt-derived placeholder title (ADR-0048) — computed by the
+        /// shell, which owns prompt validation/derivation.
+        title: String,
+        now: i64,
+    },
 }
 
 impl PersistStep {
@@ -58,6 +78,7 @@ impl PersistStep {
     fn run_id(&self) -> Uuid {
         match self {
             PersistStep::FreshRun { run_id, .. } => *run_id,
+            PersistStep::CreateThread { run_id, .. } => *run_id,
         }
     }
 
@@ -65,6 +86,10 @@ impl PersistStep {
     fn assistant_message_id(&self) -> Uuid {
         match self {
             PersistStep::FreshRun {
+                assistant_message_id,
+                ..
+            } => *assistant_message_id,
+            PersistStep::CreateThread {
                 assistant_message_id,
                 ..
             } => *assistant_message_id,
@@ -101,6 +126,28 @@ impl PersistStep {
                 )
                 .await
             }
+            PersistStep::CreateThread {
+                run_id,
+                user_message_id,
+                assistant_message_id,
+                attachments,
+                title,
+                now,
+            } => {
+                db::persist_thread_with_first_run(
+                    pool,
+                    thread_id,
+                    *run_id,
+                    *user_message_id,
+                    *assistant_message_id,
+                    workflow,
+                    prompt,
+                    attachments,
+                    title,
+                    *now,
+                )
+                .await
+            }
         }
     }
 }
@@ -130,6 +177,10 @@ pub struct StartedRun {
     /// slices.
     #[allow(dead_code)]
     pub assistant_message_id: Uuid,
+    /// The resolved Workflow's provider id — GUARANTEED connected (the verb's
+    /// ADR-0062 gate rejects a disconnected one before this point).
+    /// `thread/create`'s shell hands it to the titler (ADR-0046).
+    pub provider: String,
     /// `Some` only when [`StartRunParams::deferred_spawn`] was set: the spawn,
     /// unfired, for the caller to invoke AFTER framing its Response. Unread by
     /// the fresh paths (always `None` there); `retry` fires it in slice 3.
@@ -258,6 +309,7 @@ where
 
     // 6. Spawn: immediately on the fresh paths; as an unfired closure when
     //    deferred (retry frames its Response BEFORE the spawn).
+    let provider = workflow.provider.clone();
     let manifest = SpawnManifest {
         run_id,
         workflow,
@@ -279,6 +331,7 @@ where
     Ok(StartedRun {
         run_id,
         assistant_message_id,
+        provider,
         deferred_spawn: deferred,
     })
 }
@@ -484,7 +537,62 @@ mod tests {
         assert_eq!(*spawned.lock().unwrap(), vec![run_id], "firing the closure spawns once");
     }
 
-    // 4. skip_history: true → the manifest carries an EMPTY history even when
+    // 4. PersistStep::CreateThread on a FRESH thread_id: one atomic
+    //    thread+run transaction (db::persist_thread_with_first_run). After
+    //    return: the threads row exists with the given title, the runs row is
+    //    `running`, the hub is registered, and the spawn recorder fired once.
+    #[tokio::test]
+    async fn create_thread_persists_thread_and_run_atomically() {
+        let _cred = credentials_dir(true);
+        let pool = memory_pool().await;
+        let hubs = hub::new_hubs();
+        crate::workflow::init().expect("load default workflow");
+
+        let thread_id = Uuid::now_v7();
+        let run_id = Uuid::now_v7();
+        let params = StartRunParams {
+            thread_id,
+            prompt: "the prompt".to_string(),
+            manifest_attachments: Vec::new(),
+            persist_step: PersistStep::CreateThread {
+                run_id,
+                user_message_id: Uuid::now_v7(),
+                assistant_message_id: Uuid::now_v7(),
+                attachments: Vec::new(),
+                title: "the title".to_string(),
+                now: 1,
+            },
+            skip_history: true,
+            deferred_spawn: false,
+        };
+
+        let spawned: Arc<Mutex<Vec<Uuid>>> = Arc::new(Mutex::new(Vec::new()));
+        let recorder = {
+            let spawned = spawned.clone();
+            move |m: SpawnManifest| spawned.lock().unwrap().push(m.run_id)
+        };
+
+        let started = start_run(&pool, &hubs, params, recorder)
+            .await
+            .expect("start_run succeeds");
+
+        assert_eq!(started.run_id, run_id);
+        let title: Option<String> = sqlx::query_scalar("SELECT title FROM threads WHERE id = ?1")
+            .bind(thread_id.to_string())
+            .fetch_optional(&pool)
+            .await
+            .expect("query thread");
+        assert_eq!(title.as_deref(), Some("the title"), "the Thread row exists with the given title");
+        assert_eq!(
+            db::run_status(&pool, run_id).await.expect("status").map(db::RunStatus::as_str),
+            Some("running"),
+            "the first run is running"
+        );
+        assert!(hub::get(&hubs, run_id).is_some(), "the hub is registered");
+        assert_eq!(*spawned.lock().unwrap(), vec![run_id], "spawn ran once with the run id");
+    }
+
+    // 5. skip_history: true → the manifest carries an EMPTY history even when
     //    the thread has a prior run with completed messages. The control run on
     //    the same thread (skip_history: false) proves the seed produced real
     //    history — without it an empty history would be vacuous.

@@ -8,11 +8,8 @@
 //! has no resolvable origin Thread is `invalid_params` (-32602) with ZERO rows
 //! written — no Run is spawned.
 //!
-//! The run-creation path is `run/post_message`'s, verbatim
-//! (`dispatch_and_resolve` → `persist_initial_run` → `hub::create` →
-//! `history_for_run` → `worker::spawn`). The only differences: the Thread is
-//! resolved from `je_id` instead of taken from params, and the prompt is a fixed
-//! synthesized re-scan instruction instead of user input.
+//! The shared run-creation path (dispatch → gate → persist → hub → history →
+//! spawn) now lives in the deep verb [`crate::start_run`].
 
 use sqlx::SqlitePool;
 use tokio::sync::mpsc::UnboundedSender;
@@ -20,10 +17,9 @@ use uuid::Uuid;
 
 use super::handler::{self, HandlerError};
 use crate::db;
-use crate::dispatcher;
-use crate::hub::{self, Hubs};
+use crate::hub::Hubs;
 use crate::protocol::{JournalEntryRescanParams, JournalEntryRescanResult};
-use crate::worker;
+use crate::start_run::{self, PersistStep, StartRunError, StartRunParams};
 
 /// The fixed re-scan instruction. Names the JE and asks the agent to surface
 /// only entities mentioned but not yet captured. The re-scan recognition prompt
@@ -59,61 +55,43 @@ pub(super) async fn handle(
         let thread_uuid =
             Uuid::parse_str(&thread_id).map_err(|e| HandlerError::Internal(e.into()))?;
 
-        let prompt = rescan_prompt(&params.je_id);
-        let now = db::now_ms();
-
-        // From here this is `run/post_message`'s spawn sequence verbatim: pick a
-        // Workflow + resolve its model/effort, persist the initial Run, create the
-        // hub before spawning, gather prior-Run history, spawn the Worker.
-        let workflow = dispatcher::dispatch_and_resolve(pool, thread_uuid, &prompt).await;
-
-        // Reject BEFORE persisting/spawning if the resolved model's provider has no
-        // credential (ADR-0062) — same fail-loud gate as run/post_message.
-        handler::ensure_provider_connected(&workflow.provider)?;
-
-        let run_id = Uuid::now_v7();
-        let user_message_id = Uuid::now_v7();
-        let assistant_message_id = Uuid::now_v7();
-
-        db::persist_initial_run(
+        // From here this is `run/post_message`'s Run-start sequence — the deep
+        // verb (dispatch → gate → persist → hub → history → spawn). The only
+        // differences: the Thread is resolved from `je_id` instead of taken
+        // from params, and the prompt is the fixed synthesized re-scan
+        // instruction instead of user input.
+        let started = start_run::start_run(
             pool,
-            run_id,
-            thread_uuid,
-            user_message_id,
-            assistant_message_id,
-            &workflow,
-            &prompt,
-            // A rescan prompt is synthetic — it never carries attachments.
-            &[],
-            now,
+            hubs,
+            StartRunParams {
+                thread_id: thread_uuid,
+                prompt: rescan_prompt(&params.je_id),
+                // A synthetic rescan prompt never carries attachments.
+                manifest_attachments: Vec::new(),
+                persist_step: PersistStep::FreshRun {
+                    run_id: Uuid::now_v7(),
+                    user_message_id: Uuid::now_v7(),
+                    assistant_message_id: Uuid::now_v7(),
+                    // A rescan prompt is synthetic — it never carries
+                    // attachments.
+                    attachments: Vec::new(),
+                    now: db::now_ms(),
+                },
+                skip_history: false,
+                deferred_spawn: false,
+            },
+            start_run::default_spawn,
         )
         .await
-        .map_err(|e| HandlerError::Internal(e.into()))?;
-
-        let run_hub = hub::create(hubs, run_id);
-
-        let history = db::history_for_run(pool, thread_uuid, run_id)
-            .await
-            .unwrap_or_else(|e| {
-                eprintln!("history_for_run failed for run {run_id}: {e}");
-                Vec::new()
-            });
-
-        worker::spawn(
-            run_id,
-            workflow,
-            prompt,
-            history,
-            // A synthetic rescan prompt never carries attachments.
-            Vec::new(),
-            pool.clone(),
-            assistant_message_id,
-            hubs.clone(),
-            run_hub,
-        );
+        .map_err(|e| match e {
+            StartRunError::ProviderNotConnected(provider) => {
+                HandlerError::ProviderNotConnected { provider }
+            }
+            StartRunError::Internal(e) => HandlerError::Internal(e),
+        })?;
 
         Ok(JournalEntryRescanResult {
-            run_id: run_id.to_string(),
+            run_id: started.run_id.to_string(),
             thread_id,
         })
     })
