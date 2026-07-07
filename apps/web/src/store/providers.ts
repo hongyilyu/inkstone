@@ -3,7 +3,7 @@ import type {
 	ProviderTestResult,
 } from "@inkstone/protocol";
 import { WsClient } from "@inkstone/ui-sdk";
-import { Effect } from "effect";
+import { Cause, Effect, Exit } from "effect";
 import type { WsRuntime } from "../runtime.js";
 
 // Thin imperative bridge between the settings UI and the SDK provider/* methods (ADR-0023); no store state of its own.
@@ -26,7 +26,11 @@ const defaultOpenUrl: OpenUrl = (url) => {
 	window.open(url, "_blank", "noopener,noreferrer");
 };
 
-/** Begin a provider login: fetch the authorize URL and open it in a new tab (credential write happens out-of-band). */
+/** Begin a provider login: fetch the authorize URL and open it in a new tab
+ * (credential write happens out-of-band). Rejects with the SQUASHED cause (the
+ * useEntityMutation idiom) rather than `runPromise`'s `FiberFailure` wrapper, so
+ * the caller's catch sees the tagged `WsError` (e.g. `ProviderLoginFailedError`
+ * carrying Core's sanitized reason) and can branch on `_tag`. */
 export async function startLogin(
 	runtime: WsRuntime,
 	provider: string,
@@ -36,8 +40,12 @@ export async function startLogin(
 		const client = yield* WsClient;
 		return yield* client.providerLoginStart(provider);
 	});
-	const { authorize_url } = await runtime.runPromise(program);
-	openUrl(authorize_url);
+	const exit = await runtime.runPromiseExit(program);
+	if (Exit.isSuccess(exit)) {
+		openUrl(exit.value.authorize_url);
+		return;
+	}
+	throw Cause.squash(exit.cause);
 }
 
 /** Configure a key-provider: store the pasted API key via `provider/configure`

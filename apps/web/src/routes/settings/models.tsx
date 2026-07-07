@@ -19,6 +19,7 @@ import {
 	type SaveStatus,
 	useOptimisticSetting,
 } from "@/lib/hooks/useOptimisticSetting";
+import { taggedErrorMessage } from "@/lib/taggedErrorMessage";
 import { cn } from "@/lib/utils";
 import { useRuntime } from "@/runtime";
 import {
@@ -66,8 +67,10 @@ function ModelsSettings() {
 	const [statusFailed, setStatusFailed] = useState(false);
 	// Master/detail: null = provider list, otherwise the focused provider's id.
 	const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
-	// Whether a provider login failed to start (surfaced in the shared status line).
-	const [connectFailed, setConnectFailed] = useState(false);
+	// The message for a provider login that failed to start (surfaced in the
+	// shared status line); null = no failure. Carries Core's sanitized -32003
+	// reason verbatim when the failure is typed, else the generic copy.
+	const [connectError, setConnectError] = useState<string | null>(null);
 	// The key-provider id whose inline Configure form is open (null = none).
 	const [configuringId, setConfiguringId] = useState<string | null>(null);
 
@@ -107,17 +110,18 @@ function ModelsSettings() {
 	);
 
 	// One shared acknowledgement line for the section: error wins over saved.
-	const saveStatus: SaveStatus = connectFailed
-		? "error"
-		: effort.status === "error" ||
-				model.status === "error" ||
-				enabledModels.status === "error"
+	const saveStatus: SaveStatus =
+		connectError !== null
 			? "error"
-			: effort.status === "saved" ||
-					model.status === "saved" ||
-					enabledModels.status === "saved"
-				? "saved"
-				: "idle";
+			: effort.status === "error" ||
+					model.status === "error" ||
+					enabledModels.status === "error"
+				? "error"
+				: effort.status === "saved" ||
+						model.status === "saved" ||
+						enabledModels.status === "saved"
+					? "saved"
+					: "idle";
 
 	// The shared live-refresh chokepoint (ADR-0049): commit a freshly-read
 	// provider/status into BOTH the per-row map and the ["provider-status"] cache
@@ -203,7 +207,7 @@ function ModelsSettings() {
 			});
 	}, [runtime, applyStatus, providers]);
 
-	// Clear the transient acknowledgement after a beat (all hooks + the connect flag).
+	// Clear the transient acknowledgement after a beat (all hooks + the connect error).
 	const { clearStatus: clearEffortStatus } = effort;
 	const { clearStatus: clearModelStatus } = model;
 	const { clearStatus: clearEnabledStatus } = enabledModels;
@@ -213,7 +217,7 @@ function ModelsSettings() {
 			clearEffortStatus();
 			clearModelStatus();
 			clearEnabledStatus();
-			setConnectFailed(false);
+			setConnectError(null);
 		}, 2500);
 		return () => clearTimeout(t);
 	}, [saveStatus, clearEffortStatus, clearModelStatus, clearEnabledStatus]);
@@ -324,12 +328,21 @@ function ModelsSettings() {
 	const onConnect = useCallback(
 		(providerId: string) => {
 			setBusy(true);
-			setConnectFailed(false);
+			setConnectError(null);
 			startLogin(runtime, providerId)
 				// A login that can't even start (helper missing, port busy) was
 				// swallowed, leaving the user staring at an unchanged "Not connected"
-				// row. Surface it.
-				.catch(() => setConnectFailed(true))
+				// row. Surface it — a typed -32003 (ProviderLoginFailedError) carries
+				// Core's sanitized reason verbatim; anything else (or an empty
+				// message) gets the generic couldn't-start copy.
+				.catch((e: unknown) => {
+					const reason = taggedErrorMessage(e, "ProviderLoginFailedError");
+					setConnectError(
+						reason !== undefined && reason.length > 0
+							? reason
+							: "Couldn't start the connection. Try Connect again.",
+					);
+				})
 				.finally(() => setBusy(false));
 		},
 		[runtime],
@@ -375,10 +388,11 @@ function ModelsSettings() {
 						{saveStatus === "error"
 							? // A failed connect (login couldn't start) needs its own copy —
 								// the generic save-failed line misdirects the user to the wrong
-								// cause. connectFailed wins the shared error slot when set.
-								connectFailed
-								? "Couldn't start the connection. Try Connect again."
-								: "Something didn't go through. Check that Inkstone is running and try again."
+								// cause. connectError wins the shared error slot when set,
+								// carrying either Core's sanitized -32003 reason or the
+								// generic couldn't-start line (onConnect picks which).
+								(connectError ??
+								"Something didn't go through. Check that Inkstone is running and try again.")
 							: "Saved."}
 					</p>
 				)}

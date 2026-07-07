@@ -1,6 +1,12 @@
 import type { ModelInfo, ProviderStatusResult } from "@inkstone/protocol";
 import * as sdk from "@inkstone/ui-sdk";
-import { stubWsClient, WsClient } from "@inkstone/ui-sdk";
+import {
+	ProviderLoginFailedError,
+	stubWsClient,
+	WsClient,
+	type WsClientService,
+	WsRequestError,
+} from "@inkstone/ui-sdk";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
 	createMemoryHistory,
@@ -40,6 +46,9 @@ function makeRuntime(opts: {
 	// The verdict provider/test resolves to (ADR-0062). When omitted the
 	// providerTest stub dies (it isn't exercised); tests that click "Test" set it.
 	testResult?: { alive: boolean; message?: string };
+	// Replaces the default always-succeeding provider/login_start stub — tests
+	// exercising a failed Connect inject the typed failure here.
+	loginStart?: WsClientService["providerLoginStart"];
 }) {
 	// Flips false → true after the first successful provider/configure call, so
 	// the row reflects "Connected" once the key is stored.
@@ -95,8 +104,9 @@ function makeRuntime(opts: {
 						: []),
 				],
 			}),
-		providerLoginStart: () =>
-			Effect.succeed({ authorize_url: "https://auth.example/x" }),
+		providerLoginStart:
+			opts.loginStart ??
+			(() => Effect.succeed({ authorize_url: "https://auth.example/x" })),
 		providerConfigure,
 		providerTest,
 		modelCatalog: () =>
@@ -732,6 +742,77 @@ describe("Models settings page (ADR-0024)", () => {
 		).toBeInTheDocument();
 
 		await runtime.dispose();
+	});
+});
+
+describe("Models settings — failed Connect surfaces Core's reason", () => {
+	it("renders a ProviderLoginFailedError's sanitized message verbatim in the status line", async () => {
+		const user = userEvent.setup();
+		// provider/login_start fails TYPED (-32003 → ProviderLoginFailedError):
+		// Core's sanitized reason must reach the status line verbatim, not be
+		// flattened into the generic couldn't-start copy.
+		const { runtime } = makeRuntime({
+			connected: false,
+			loginStart: () =>
+				Effect.fail(
+					new ProviderLoginFailedError({
+						message: "a provider login is already in progress",
+					}),
+				),
+		});
+		renderPage(runtime);
+
+		await user.click(await screen.findByRole("button", { name: /^connect$/i }));
+
+		const status = await screen.findByRole("status");
+		await waitFor(() =>
+			expect(status).toHaveTextContent(
+				"a provider login is already in progress",
+			),
+		);
+		expect(status.textContent).toBe("a provider login is already in progress");
+	});
+
+	it("keeps the generic couldn't-start copy for a non-login-failed error", async () => {
+		const user = userEvent.setup();
+		// A transport-level failure (no -32003 envelope) has no sanitized reason
+		// to show — the generic copy stays.
+		const { runtime } = makeRuntime({
+			connected: false,
+			loginStart: () =>
+				Effect.fail(new WsRequestError({ reason: "send_failed" })),
+		});
+		renderPage(runtime);
+
+		await user.click(await screen.findByRole("button", { name: /^connect$/i }));
+
+		const status = await screen.findByRole("status");
+		await waitFor(() =>
+			expect(status).toHaveTextContent(
+				"Couldn't start the connection. Try Connect again.",
+			),
+		);
+	});
+
+	it("falls back to the generic copy for a ProviderLoginFailedError with an empty message", async () => {
+		const user = userEvent.setup();
+		// Core never emits an empty -32003 message today, but an empty string
+		// would render a blank status line — the guard downgrades it.
+		const { runtime } = makeRuntime({
+			connected: false,
+			loginStart: () =>
+				Effect.fail(new ProviderLoginFailedError({ message: "" })),
+		});
+		renderPage(runtime);
+
+		await user.click(await screen.findByRole("button", { name: /^connect$/i }));
+
+		const status = await screen.findByRole("status");
+		await waitFor(() =>
+			expect(status).toHaveTextContent(
+				"Couldn't start the connection. Try Connect again.",
+			),
+		);
 	});
 });
 
