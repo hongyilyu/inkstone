@@ -219,9 +219,7 @@ async fn drive(
                 pool,
                 assistant_message_id,
                 hubs,
-                run_hub.tx.clone(),
-                run_hub.gate.clone(),
-                run_hub.cancel_rx(),
+                run_hub,
             )
             .await;
         }

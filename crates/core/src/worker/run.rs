@@ -4,16 +4,13 @@
 //! transaction. Generic over the port: production spawns a
 //! [`super::child::ChildWorker`]; tests drive an in-memory `ScriptedWorker`.
 
-use std::sync::Arc;
-
 use sqlx::SqlitePool;
-use tokio::sync::{broadcast, watch};
 use uuid::Uuid;
 
 use super::port::{Exit, WorkerPort};
 use crate::db;
 use crate::db::TerminalReason;
-use crate::hub::Hubs;
+use crate::hub::{Hubs, RunHub};
 use crate::protocol::{
     RunEvent, ToolCallStatus, ToolErrorWire, ToolOutcome, ToolResult, WorkerStdout,
 };
@@ -24,7 +21,6 @@ use crate::workflow::Workflow;
 /// (ADR-0018/0025), commits the terminal tx unless the Run parked, publishes
 /// the terminal Run Event after the tx commits, removes the hub, and returns
 /// the [`Exit`] taken.
-#[allow(clippy::too_many_arguments)]
 pub(super) async fn run_loop<P: WorkerPort + Send>(
     mut worker: P,
     run_id: Uuid,
@@ -32,10 +28,9 @@ pub(super) async fn run_loop<P: WorkerPort + Send>(
     pool: SqlitePool,
     assistant_message_id: Uuid,
     hubs: Hubs,
-    tx: broadcast::Sender<RunEvent>,
-    gate: Arc<tokio::sync::Mutex<()>>,
-    mut cancel_rx: watch::Receiver<bool>,
+    run_hub: RunHub,
 ) -> Exit {
+    let mut cancel_rx = run_hub.cancel_rx();
     let mut saw_done = false;
     let mut worker_error: Option<String> = None;
     let mut parked = false;
@@ -92,8 +87,7 @@ pub(super) async fn run_loop<P: WorkerPort + Send>(
                     &pool,
                     run_id,
                     assistant_message_id,
-                    &gate,
-                    &tx,
+                    &run_hub,
                     db::PartType::Text,
                     &mut open_text_part,
                     &mut open_reasoning_part,
@@ -106,8 +100,7 @@ pub(super) async fn run_loop<P: WorkerPort + Send>(
                     &pool,
                     run_id,
                     assistant_message_id,
-                    &gate,
-                    &tx,
+                    &run_hub,
                     db::PartType::Reasoning,
                     &mut open_reasoning_part,
                     &mut open_text_part,
@@ -149,7 +142,7 @@ pub(super) async fn run_loop<P: WorkerPort + Send>(
                         worker.shutdown().await;
                         break;
                     }
-                    let guard = gate.lock().await;
+                    let guard = run_hub.gate().await;
                     parked = park_on_proposal(&pool, run_id, &tool_call_id, &name, &params).await;
                     drop(guard);
                     worker.shutdown().await;
@@ -161,14 +154,14 @@ pub(super) async fn run_loop<P: WorkerPort + Send>(
                 // the live row matches the one `thread/get` rehydrates.
                 let arg = crate::tools::display_arg(&name, &params);
 
-                let guard = gate.lock().await;
+                let guard = run_hub.gate().await;
                 if *cancel_rx.borrow() {
                     drop(guard);
                     worker.shutdown().await;
                     cancelled_by_core = true;
                     break;
                 }
-                let _ = tx.send(RunEvent::ToolCall {
+                run_hub.send(RunEvent::ToolCall {
                     tool_call_id: tool_call_id.clone(),
                     name: name.clone(),
                     status: ToolCallStatus::Started,
@@ -179,14 +172,14 @@ pub(super) async fn run_loop<P: WorkerPort + Send>(
                 let outcome =
                     handle_tool_request(&pool, run_id, &workflow, &tool_call_id, &name, params)
                         .await;
-                let guard = gate.lock().await;
+                let guard = run_hub.gate().await;
                 if *cancel_rx.borrow() {
                     drop(guard);
                     worker.shutdown().await;
                     cancelled_by_core = true;
                     break;
                 }
-                let _ = tx.send(RunEvent::ToolCall {
+                run_hub.send(RunEvent::ToolCall {
                     tool_call_id: tool_call_id.clone(),
                     name,
                     status: match &outcome {
@@ -239,16 +232,18 @@ pub(super) async fn run_loop<P: WorkerPort + Send>(
 
         // Publish the terminal Run Event ONLY AFTER this loop's terminal tx
         // wins. If cancellation already committed, the guarded transition loses
-        // and `run/cancel` owns the terminal `cancelled` event.
+        // and `run/cancel` owns the terminal `cancelled` event. Ungated
+        // `RunHub::send`: the commit itself orders this publish (a subscriber
+        // snapshotting concurrently reads the terminal status from tier 2).
         match result {
             Ok(moved) if moved.won() => match (&worker_error, saw_done) {
                 (Some(message), _) => {
-                    let _ = tx.send(RunEvent::Error {
+                    run_hub.send(RunEvent::Error {
                         message: message.clone(),
                     });
                 }
                 (None, true) => {
-                    let _ = tx.send(RunEvent::Done);
+                    run_hub.send(RunEvent::Done);
                 }
                 (None, false) => {}
             },
@@ -370,8 +365,7 @@ async fn stream_message_delta(
     pool: &SqlitePool,
     run_id: Uuid,
     assistant_message_id: Uuid,
-    gate: &Arc<tokio::sync::Mutex<()>>,
-    tx: &broadcast::Sender<RunEvent>,
+    run_hub: &RunHub,
     part_type: db::PartType,
     own_slot: &mut Option<i64>,
     other_slot: &mut Option<i64>,
@@ -380,7 +374,7 @@ async fn stream_message_delta(
     // A delta of this type seals any open segment of the OTHER type: the next
     // opposite-type delta opens a fresh part sequenced AFTER this one.
     *other_slot = None;
-    let guard = gate.lock().await;
+    let guard = run_hub.gate().await;
     // Open a fresh segment on the first delta after a boundary (ADR-0045), else
     // append into the open one. Either path advances only which part is "open" —
     // the gate's critical section is unchanged (ADR-0022). `own_slot` caches the
@@ -412,7 +406,7 @@ async fn stream_message_delta(
                 db::PartType::Text => RunEvent::TextDelta { delta },
                 db::PartType::Reasoning => RunEvent::ReasoningDelta { delta },
             };
-            let _ = tx.send(event);
+            run_hub.send(event);
         }
         Ok(false) => {}
         Err(e) => {
@@ -474,9 +468,10 @@ async fn park_on_proposal(
 #[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
 
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+    use tokio::sync::broadcast;
 
     use super::*;
 
@@ -655,9 +650,7 @@ mod tests {
             pool.clone(),
             amid,
             hubs,
-            run_hub.tx.clone(),
-            run_hub.gate.clone(),
-            run_hub.cancel_rx(),
+            run_hub.clone(),
         )
         .await;
 
@@ -693,9 +686,7 @@ mod tests {
             pool.clone(),
             _amid,
             hubs,
-            run_hub.tx.clone(),
-            run_hub.gate.clone(),
-            run_hub.cancel_rx(),
+            run_hub.clone(),
         )
         .await;
 
@@ -727,9 +718,7 @@ mod tests {
             pool.clone(),
             amid,
             hubs,
-            run_hub.tx.clone(),
-            run_hub.gate.clone(),
-            run_hub.cancel_rx(),
+            run_hub.clone(),
         )
         .await;
 
@@ -766,9 +755,7 @@ mod tests {
             pool.clone(),
             amid,
             hubs,
-            run_hub.tx.clone(),
-            run_hub.gate.clone(),
-            run_hub.cancel_rx(),
+            run_hub.clone(),
         )
         .await;
 
@@ -852,9 +839,7 @@ mod tests {
             pool.clone(),
             amid,
             hubs,
-            run_hub.tx.clone(),
-            run_hub.gate.clone(),
-            run_hub.cancel_rx(),
+            run_hub.clone(),
         )
         .await;
 
@@ -927,7 +912,7 @@ mod tests {
         let wf = test_workflow(&["read_thread"]);
         let (run_id, thread_id, amid) = seed_run(&pool, &wf).await;
         let (hubs, run_hub) = fixtures(run_id);
-        let mut rx = run_hub.tx.subscribe();
+        let mut rx = run_hub.subscribe_raw();
         let (worker, _sent, _sd) = ScriptedWorker::new(vec![
             WorkerStdout::TextDelta {
                 delta: "Plan: ".to_string(),
@@ -957,9 +942,7 @@ mod tests {
             pool.clone(),
             amid,
             hubs,
-            run_hub.tx.clone(),
-            run_hub.gate.clone(),
-            run_hub.cancel_rx(),
+            run_hub.clone(),
         )
         .await;
 
@@ -1042,9 +1025,7 @@ mod tests {
             pool.clone(),
             amid,
             hubs,
-            run_hub.tx.clone(),
-            run_hub.gate.clone(),
-            run_hub.cancel_rx(),
+            run_hub.clone(),
         )
         .await;
 
@@ -1101,9 +1082,7 @@ mod tests {
             pool.clone(),
             amid,
             hubs,
-            run_hub.tx.clone(),
-            run_hub.gate.clone(),
-            run_hub.cancel_rx(),
+            run_hub.clone(),
         )
         .await;
 
@@ -1155,9 +1134,7 @@ mod tests {
             pool.clone(),
             amid,
             hubs,
-            run_hub.tx.clone(),
-            run_hub.gate.clone(),
-            run_hub.cancel_rx(),
+            run_hub.clone(),
         )
         .await;
 
@@ -1210,9 +1187,7 @@ mod tests {
             pool.clone(),
             amid,
             hubs,
-            run_hub.tx.clone(),
-            run_hub.gate.clone(),
-            run_hub.cancel_rx(),
+            run_hub.clone(),
         )
         .await;
 
@@ -1241,7 +1216,7 @@ mod tests {
         let (hubs, run_hub) = fixtures(run_id);
         // run/cancel already won the guarded transition before the loop starts.
         run_hub.cancel();
-        let mut tail = run_hub.tx.subscribe();
+        let mut tail = run_hub.subscribe_raw();
         let (worker, _sent, shutdowns) = ScriptedWorker::new(vec![
             WorkerStdout::TextDelta {
                 delta: "late".to_string(),
@@ -1256,9 +1231,7 @@ mod tests {
             pool.clone(),
             _amid,
             hubs,
-            run_hub.tx.clone(),
-            run_hub.gate.clone(),
-            run_hub.cancel_rx(),
+            run_hub.clone(),
         )
         .await;
 
@@ -1291,7 +1264,7 @@ mod tests {
         let wf = test_workflow(&[]);
         let (run_id, _t, amid) = seed_run(&pool, &wf).await;
         let (hubs, run_hub) = fixtures(run_id);
-        let mut tail = run_hub.tx.subscribe();
+        let mut tail = run_hub.subscribe_raw();
         // First delta streams; cancel flips before the Done recv, so the
         // post-recv check trips and Done is dropped.
         let (worker, _sent, shutdowns) = CancelingWorker::new(
@@ -1312,9 +1285,7 @@ mod tests {
             pool.clone(),
             amid,
             hubs,
-            run_hub.tx.clone(),
-            run_hub.gate.clone(),
-            run_hub.cancel_rx(),
+            run_hub.clone(),
         )
         .await;
 
@@ -1340,7 +1311,7 @@ mod tests {
         let wf = test_workflow(&[]);
         let (run_id, _t, amid) = seed_run(&pool, &wf).await;
         let (hubs, run_hub) = fixtures(run_id);
-        let mut tail = run_hub.tx.subscribe();
+        let mut tail = run_hub.subscribe_raw();
         // Pre-commit the cancellation (as run/cancel would, racing ahead).
         assert!(
             db::cancel_running_run(&pool, run_id, db::now_ms())
@@ -1359,9 +1330,7 @@ mod tests {
             pool.clone(),
             amid,
             hubs,
-            run_hub.tx.clone(),
-            run_hub.gate.clone(),
-            run_hub.cancel_rx(),
+            run_hub.clone(),
         )
         .await;
 
@@ -1409,9 +1378,7 @@ mod tests {
             pool.clone(),
             amid,
             hubs,
-            run_hub.tx.clone(),
-            run_hub.gate.clone(),
-            run_hub.cancel_rx(),
+            run_hub.clone(),
         )
         .await;
         assert!(matches!(exit, Exit::Errored(_)), "errored on first attempt");
@@ -1802,9 +1769,7 @@ mod tests {
             pool.clone(),
             amid,
             hubs,
-            run_hub.tx.clone(),
-            run_hub.gate.clone(),
-            run_hub.cancel_rx(),
+            run_hub.clone(),
         )
         .await;
 

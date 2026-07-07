@@ -94,17 +94,15 @@ where
 
 /// Publish the terminal `Cancelled` Run Event and remove the hub, after a won
 /// running-cancel. Called by the handler AFTER it frames the cancel Response, so
-/// the client always sees `response → cancelled` (not a racing broadcast). Moved
-/// verbatim from the former `runs/cancel.rs::publish_cancelled`: take the per-run
-/// gate, send `Cancelled`, drop the gate, then `hub::remove`.
+/// the client always sees `response → cancelled` (not a racing broadcast). The
+/// gated publish (`lock → send → unlock`, ADR-0022) is
+/// [`RunHub::publish_gated`]; then `hub::remove`.
 pub async fn publish_cancelled(hubs: &Hubs, run_id: Uuid, hub: Option<RunHub>) {
     let Some(run_hub) = hub else {
         return;
     };
 
-    let guard = run_hub.gate.lock().await;
-    let _ = run_hub.tx.send(RunEvent::Cancelled);
-    drop(guard);
+    run_hub.publish_gated(RunEvent::Cancelled).await;
 
     hub::remove(hubs, run_id);
 }
@@ -250,7 +248,7 @@ mod tests {
         // A real registered hub + a tail subscriber to observe the published event.
         let hubs = hub::new_hubs();
         let registered = hub::create(&hubs, run_id);
-        let mut tail = registered.tx.subscribe();
+        let mut tail = registered.subscribe_raw();
 
         let outcome = cancel(&pool, run_id, |id| hub::get(&hubs, id))
             .await
