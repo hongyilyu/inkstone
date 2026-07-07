@@ -1,4 +1,5 @@
 import { expect, test } from "./fixtures.js";
+import { GtdPage } from "./page-objects/GtdPage.js";
 import { dbPathFor, seedEntities } from "./seed.js";
 
 /**
@@ -23,19 +24,20 @@ test("GTD views derive Inbox, Waiting, Review and Todo detail from live data", a
 	workspace,
 }) => {
 	const dbPath = dbPathFor(workspace.path);
+	const gtd = new GtdPage(page, core.url);
 	seedGtdWorkspace(dbPath);
 
 	// ── Inbox: the unorganized errand only ──────────────────────────────────
-	await page.goto(`${core.url}/library/inbox`);
-	const inbox = page.getByRole("region", { name: /inbox/i });
+	await gtd.gotoView("inbox");
+	const inbox = gtd.region(/inbox/i);
 	await expect(inbox.getByText("Buy stamps")).toBeVisible({ timeout: 15_000 });
 	// Organized todos must not leak into Inbox.
 	await expect(inbox.getByText("Wait for Alice's draft")).toHaveCount(0);
 	await expect(inbox.getByText("Cut over the API")).toHaveCount(0);
 
 	// ── Waiting: only the waiting_on todo ───────────────────────────────────
-	await page.goto(`${core.url}/library/waiting`);
-	const waiting = page.getByRole("region", { name: /waiting/i });
+	await gtd.gotoView("waiting");
+	const waiting = gtd.region(/waiting/i);
 	await expect(waiting.getByText("Wait for Alice's draft")).toBeVisible({
 		timeout: 15_000,
 	});
@@ -44,33 +46,25 @@ test("GTD views derive Inbox, Waiting, Review and Todo detail from live data", a
 	await expect(waiting.getByText("Buy stamps")).toHaveCount(0);
 
 	// ── Review: the overdue active project ──────────────────────────────────
-	await page.goto(`${core.url}/library/review`);
-	const review = page.getByRole("region", { name: /review/i });
+	await gtd.gotoView("review");
+	const review = gtd.region(/review/i);
 	await expect(review.getByText("API migration")).toBeVisible({
 		timeout: 15_000,
 	});
 
 	// ── Todo detail: linked person with role + owning project ───────────────
-	await page.goto(`${core.url}/library/todos?id=${TODO_WAITING}`);
-	const detail = page.getByRole("complementary", {
-		name: /Wait for Alice's draft details/i,
-	});
+	await gtd.gotoTodo(TODO_WAITING);
+	const detail = gtd.detailRail(/Wait for Alice's draft details/i);
 	await expect(detail).toBeVisible({ timeout: 15_000 });
 	// The waiting_on Person rides on the Todo row's person_refs (slice-3 wire):
 	// the linked-person row is a button labelled by the name + its role chip.
-	await expect(
-		detail.getByRole("button", { name: /Alice Waiting on/ }),
-	).toBeVisible();
+	await expect(gtd.linkedPerson(detail, /Alice Waiting on/)).toBeVisible();
 
 	// ── Todo detail: owning Project link (derived from project_id) ──────────
-	await page.goto(`${core.url}/library/todos?id=${TODO_IN_PROJECT}`);
-	const projectDetail = page.getByRole("complementary", {
-		name: /Cut over the API details/i,
-	});
+	await gtd.gotoTodo(TODO_IN_PROJECT);
+	const projectDetail = gtd.detailRail(/Cut over the API details/i);
 	await expect(projectDetail).toBeVisible({ timeout: 15_000 });
-	await expect(
-		projectDetail.getByRole("button", { name: /API migration/ }),
-	).toBeVisible();
+	await expect(gtd.owningProject(projectDetail, /API migration/)).toBeVisible();
 });
 
 function seedGtdWorkspace(dbPath: string): void {

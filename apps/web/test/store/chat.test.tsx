@@ -1,12 +1,11 @@
 import {
 	type RunEventValue,
 	type RunId,
-	stubWsClient,
-	WsClient,
 	type WsError,
 	WsRequestError,
 } from "@inkstone/ui-sdk";
-import { Effect, Layer, ManagedRuntime, Queue, Stream } from "effect";
+import { makeCoreRuntime } from "@test/test-utils/renderWithCore";
+import { Effect, Queue, Stream } from "effect";
 import { beforeEach, describe, expect, it } from "vitest";
 import { awaitRun, resetBridge, send } from "@/store/bridge.js";
 import {
@@ -26,11 +25,12 @@ import {
 
 // Stub WsClient backed by an in-memory Queue — see docs/design/web-store-tests.md
 function makeStubRuntime(queue: Queue.Queue<RunEventValue>, runId: RunId) {
-	const stub = stubWsClient({
-		postMessage: () => Effect.succeed(runId),
-		subscribeRun: () => Stream.fromQueue(queue),
+	return makeCoreRuntime({
+		overrides: {
+			postMessage: () => Effect.succeed(runId),
+			subscribeRun: () => Stream.fromQueue(queue),
+		},
 	});
-	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 }
 
 beforeEach(() => {
@@ -145,19 +145,20 @@ describe("chat store + stream bridge", () => {
 		// rather than emitting a terminal event. Without a failure handler the fiber
 		// would die silently and the bubble would hang at `streaming` forever with a
 		// live Stop button. The bridge's catchAll must synthesize a terminal error.
-		const stub = stubWsClient({
-			postMessage: () => Effect.succeed("run-drop" as RunId),
-			// Emit one delta, then FAIL the stream like a dropped socket would.
-			subscribeRun: (): Stream.Stream<RunEventValue, WsError> =>
-				Stream.fromIterable<RunEventValue>([
-					{ kind: "text_delta", delta: "partial" },
-				]).pipe(
-					Stream.concat(
-						Stream.fail(new WsRequestError({ reason: "socket closed" })),
+		const runtime = makeCoreRuntime({
+			overrides: {
+				postMessage: () => Effect.succeed("run-drop" as RunId),
+				// Emit one delta, then FAIL the stream like a dropped socket would.
+				subscribeRun: (): Stream.Stream<RunEventValue, WsError> =>
+					Stream.fromIterable<RunEventValue>([
+						{ kind: "text_delta", delta: "partial" },
+					]).pipe(
+						Stream.concat(
+							Stream.fail(new WsRequestError({ reason: "socket closed" })),
+						),
 					),
-				),
+			},
 		});
-		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
 		await send(runtime, "threadA", "hi");
 		await awaitRun(runtime, "run-drop" as RunId);

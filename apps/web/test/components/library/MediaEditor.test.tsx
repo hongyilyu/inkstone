@@ -1,54 +1,17 @@
-import type {
-	EntityMutateParams,
-	EntityMutateResult,
-} from "@inkstone/protocol";
-import {
-	stubWsClient,
-	WsClient,
-	type WsError,
-	WsRequestError,
-} from "@inkstone/ui-sdk";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import type { EntityMutateParams } from "@inkstone/protocol";
+import { WsRequestError } from "@inkstone/ui-sdk";
+import { renderEntityEditor } from "@test/test-utils/renderWithCore";
+import { cleanup, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Effect, Layer, ManagedRuntime } from "effect";
-import type { ReactNode } from "react";
+import { Effect } from "effect";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MediaEditor } from "@/components/library/MediaEditor";
 import type { Media } from "@/lib/libraryItems";
-import { RuntimeProvider } from "@/runtime";
 
-// Stub WsClient whose `entityMutate` records params and succeeds; unused methods die.
-function makeRuntime(
-	entityMutate: (
-		params: EntityMutateParams,
-	) => Effect.Effect<EntityMutateResult, WsError>,
-) {
-	const stub = stubWsClient({ entityMutate });
-	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
-}
-
-function renderEditor(
+const renderEditor = (
 	props: Parameters<typeof MediaEditor>[0],
-	entityMutate: (
-		params: EntityMutateParams,
-	) => Effect.Effect<EntityMutateResult, WsError> = () =>
-		Effect.succeed({ entity_id: "01900000-0000-7000-8000-000000000099" }),
-) {
-	const runtime = makeRuntime(entityMutate);
-	const client = new QueryClient({
-		defaultOptions: {
-			queries: { retry: false },
-			mutations: { retry: false },
-		},
-	});
-	const Wrapper = ({ children }: { children: ReactNode }) => (
-		<QueryClientProvider client={client}>
-			<RuntimeProvider runtime={runtime}>{children}</RuntimeProvider>
-		</QueryClientProvider>
-	);
-	return render(<MediaEditor {...props} />, { wrapper: Wrapper });
-}
+	entityMutate?: Parameters<typeof renderEntityEditor>[2],
+) => renderEntityEditor(MediaEditor, props, entityMutate);
 
 const existing: Media = {
 	id: "01900000-0000-7000-8000-0000000000b1",

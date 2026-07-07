@@ -1,42 +1,21 @@
 import type { RunHistoryItem, RunHistoryResult } from "@inkstone/protocol";
-import { stubWsClient, WsClient, type WsError } from "@inkstone/ui-sdk";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import {
-	cleanup,
-	render,
-	screen,
-	waitFor,
-	within,
-} from "@testing-library/react";
+import type { WsError } from "@inkstone/ui-sdk";
+import { renderWithCore } from "@test/test-utils/renderWithCore";
+import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Effect, Layer, ManagedRuntime } from "effect";
-import type { ReactNode } from "react";
+import { Effect } from "effect";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RunFeed } from "@/components/RunFeed";
-import { RuntimeProvider } from "@/runtime";
 
-/** Stub WsClient whose `getRunHistory` runs the provided handler; others die. */
-function makeRuntime(
-	getRunHistory: () => Effect.Effect<RunHistoryResult, WsError>,
-) {
-	const stub = stubWsClient({ getRunHistory });
-	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
-}
-
+/** Mount RunFeed over a stubbed `getRunHistory`; other un-stubbed request verbs
+ * die, while the harness serves empty entity/backlink/run-event reads. */
 function renderFeed(
 	getRunHistory: () => Effect.Effect<RunHistoryResult, WsError>,
 	onOpenThread: (id: string) => void = () => {},
 ) {
-	const runtime = makeRuntime(getRunHistory);
-	const client = new QueryClient({
-		defaultOptions: { queries: { retry: false } },
+	return renderWithCore(<RunFeed onOpenThread={onOpenThread} />, {
+		overrides: { getRunHistory },
 	});
-	const Wrapper = ({ children }: { children: ReactNode }) => (
-		<QueryClientProvider client={client}>
-			<RuntimeProvider runtime={runtime}>{children}</RuntimeProvider>
-		</QueryClientProvider>
-	);
-	return render(<RunFeed onOpenThread={onOpenThread} />, { wrapper: Wrapper });
 }
 
 // A fixed "now" (noon local) so recency buckets don't flake around midnight.

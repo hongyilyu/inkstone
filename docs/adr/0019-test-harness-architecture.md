@@ -14,6 +14,8 @@ The harness was implemented after the Web Client was wired to real Core (the `wi
 
 The harness package lives at `tests/e2e/` (registered in `pnpm-workspace.yaml`; root `pnpm test:e2e` delegates to it). Fixtures expose `{core, workspace, chat}` where `chat` is the `ChatPage` page object; the `workspace` fixture exposes `path` only (WS-level setup helpers are deferred — the current specs drive through the UI).
 
+`apps/web/test/test-utils/renderWithCore.tsx` and `rows.ts` provide a deep test-data-builder library and a single-entry render harness for Web Client view tests (the foreseen follow-up to the "Test-data-builder library" bullet under "What this does not decide"); page objects extend to LibraryPage, GtdPage, and SettingsPage under `tests/e2e/src/page-objects/`.
+
 ## As-built amendment: `faux` realizes the deferred mock-LLM seam (ADR-0023 feature)
 
 The "Mock LLM provider compiled into Worker" decision below is now realized — not by a bespoke compiled-in mock, but by **`pi-ai`'s built-in `faux` provider**. When the generic interpreter replaced the echo Worker, the Worker gained a real provider-routing layer (`streamSimple` dispatched by `model.api`). `faux` is a first-class provider in that layer, so a Workflow with `provider = "faux"` drives the entire interpreter path — manifest parsing, message mapping, the `pi-agent-core` loop, Run Event emission — with zero network and deterministic output. This is strictly better than a hand-rolled mock: it exercises the *real* `pi-agent-core` loop and the *real* provider seam, not a stand-in for them.

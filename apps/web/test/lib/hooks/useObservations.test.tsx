@@ -1,15 +1,13 @@
 import type { ObservationRow } from "@inkstone/protocol";
-import { stubWsClient, WsClient, WsRequestError } from "@inkstone/ui-sdk";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { type WsClient, WsRequestError } from "@inkstone/ui-sdk";
+import { makeCoreWrapper } from "@test/test-utils/renderWithCore";
 import { renderHook, waitFor } from "@testing-library/react";
-import { Effect, Layer, ManagedRuntime } from "effect";
-import type { ReactNode } from "react";
+import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 import {
 	assembleObservationItems,
 	useObservations,
 } from "@/lib/hooks/useObservations.js";
-import { RuntimeProvider } from "@/runtime";
 
 const row = (
 	over: Partial<ObservationRow> & Pick<ObservationRow, "schema_key" | "values">,
@@ -41,34 +39,22 @@ describe("assembleObservationItems", () => {
 });
 
 // A WsClient stub whose `observationQuery` runs the supplied handler; the rest die.
-function makeRuntime(observationQuery: WsClient["Type"]["observationQuery"]) {
-	const stub = stubWsClient({ observationQuery });
-	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
-}
-
-function wrapper(runtime: ReturnType<typeof makeRuntime>, client: QueryClient) {
-	return ({ children }: { children: ReactNode }) => (
-		<QueryClientProvider client={client}>
-			<RuntimeProvider runtime={runtime}>{children}</RuntimeProvider>
-		</QueryClientProvider>
-	);
+function makeWrapper(observationQuery: WsClient["Type"]["observationQuery"]) {
+	return makeCoreWrapper({ overrides: { observationQuery } }).wrapper;
 }
 
 describe("useObservations", () => {
 	it("maps queried rows through the view layer", async () => {
-		const runtime = makeRuntime(() =>
+		const wrapper = makeWrapper(() =>
 			Effect.succeed({
 				observations: [
 					row({ id: "bw", schema_key: "bodyweight", values: { kg: 72.4 } }),
 				],
 			}),
 		);
-		const client = new QueryClient({
-			defaultOptions: { queries: { retry: false } },
-		});
 
 		const { result } = renderHook(() => useObservations(), {
-			wrapper: wrapper(runtime, client),
+			wrapper,
 		});
 
 		await waitFor(() => expect(result.current.data).toHaveLength(1));
@@ -79,15 +65,12 @@ describe("useObservations", () => {
 		// The load-bearing guarantee (mirrors useLibraryItems): a failed read must
 		// reject so the view shows the distinct "Couldn't load" state, never []. A
 		// regression that swallowed the rejection to [] would otherwise pass silently.
-		const runtime = makeRuntime(() =>
+		const wrapper = makeWrapper(() =>
 			Effect.fail(new WsRequestError({ reason: "connection_lost" })),
 		);
-		const client = new QueryClient({
-			defaultOptions: { queries: { retry: false } },
-		});
 
 		const { result } = renderHook(() => useObservations(), {
-			wrapper: wrapper(runtime, client),
+			wrapper,
 		});
 
 		await waitFor(() => expect(result.current.isError).toBe(true));

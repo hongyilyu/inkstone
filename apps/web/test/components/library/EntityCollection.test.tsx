@@ -1,55 +1,30 @@
 import type { EntityListResult } from "@inkstone/protocol";
-import { stubWsClient, WsClient } from "@inkstone/ui-sdk";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { renderWithCore } from "@test/test-utils/renderWithCore";
+import {
+	journalEntryRow,
+	mediaRow,
+	personRow,
+	projectRow,
+	type TodoData,
+	todoRow,
+} from "@test/test-utils/rows";
+import { cleanup, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Effect, Layer, ManagedRuntime } from "effect";
-import type { ReactNode } from "react";
+import { Effect } from "effect";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { EntityCollection } from "@/components/library/EntityCollection";
 import type { LibraryItemKind } from "@/lib/libraryItems";
-import { RuntimeProvider } from "@/runtime";
 
 // Live People rows the stub serves for `type === "person"` (no static preview people merged in).
 const livePeople: EntityListResult["entities"] = [
-	{
-		id: "01900000-0000-7000-8000-0000000000a1",
-		type: "person",
-		data: { name: "Ada Lovelace", note: "met at the analytical engine demo" },
-		created_at: 1_700_000_100_000,
-		updated_at: 1_700_000_100_000,
-	},
-	{
-		id: "01900000-0000-7000-8000-0000000000a2",
-		type: "person",
-		data: { name: "Grace Hopper" },
-		created_at: 1_700_000_000_000,
-		updated_at: 1_700_000_000_000,
-	},
+	personRow(
+		"01900000-0000-7000-8000-0000000000a1",
+		"Ada Lovelace",
+		{ note: "met at the analytical engine demo" },
+		{ created_at: 1_700_000_100_000, updated_at: 1_700_000_100_000 },
+	),
+	personRow("01900000-0000-7000-8000-0000000000a2", "Grace Hopper"),
 ];
-
-// Stub WsClient whose `entity/list` answers by type; unused methods die if exercised.
-function makeRuntime(
-	people: EntityListResult["entities"],
-	todos: EntityListResult["entities"],
-	journalEntries: EntityListResult["entities"],
-	projects: EntityListResult["entities"] = [],
-	media: EntityListResult["entities"] = [],
-) {
-	const stub = stubWsClient({
-		listEntities: (type) => {
-			if (type === "person") return Effect.succeed({ entities: people });
-			if (type === "todo") return Effect.succeed({ entities: todos });
-			if (type === "journal_entry") {
-				return Effect.succeed({ entities: journalEntries });
-			}
-			if (type === "project") return Effect.succeed({ entities: projects });
-			if (type === "media") return Effect.succeed({ entities: media });
-			return Effect.succeed({ entities: [] });
-		},
-	});
-	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
-}
 
 function renderCollection(
 	kind: LibraryItemKind,
@@ -66,31 +41,22 @@ function renderCollection(
 		onNew?: () => void;
 	},
 ) {
-	const runtime = makeRuntime(
-		rows.people ?? [],
-		rows.todos ?? [],
-		rows.journalEntries ?? [],
-		rows.projects ?? [],
-		rows.media ?? [],
-	);
-	const client = new QueryClient({
-		defaultOptions: {
-			queries: { staleTime: Number.POSITIVE_INFINITY, retry: false },
-		},
-	});
-	const Wrapper = ({ children }: { children: ReactNode }) => (
-		<QueryClientProvider client={client}>
-			<RuntimeProvider runtime={runtime}>{children}</RuntimeProvider>
-		</QueryClientProvider>
-	);
-	return render(
+	return renderWithCore(
 		<EntityCollection
 			kind={kind}
 			selectedId={overrides?.selectedId ?? null}
 			onSelect={overrides?.onSelect ?? (() => {})}
 			onNew={overrides?.onNew}
 		/>,
-		{ wrapper: Wrapper },
+		{
+			entities: {
+				person: rows.people ?? [],
+				todo: rows.todos ?? [],
+				journal_entry: rows.journalEntries ?? [],
+				project: rows.projects ?? [],
+				media: rows.media ?? [],
+			},
+		},
 	);
 }
 
@@ -100,18 +66,15 @@ describe("EntityCollection", () => {
 	it("lists live Media read from entity/list", async () => {
 		renderCollection("media", {
 			media: [
-				{
-					id: "01900000-0000-7000-8000-0000000000e1",
-					type: "media",
-					data: {
-						title: "Effect docs",
-						medium: "link",
-						state: "done",
+				mediaRow(
+					"01900000-0000-7000-8000-0000000000e1",
+					"Effect docs",
+					"link",
+					"done",
+					{
 						url: "https://effect.website",
 					},
-					created_at: 1_700_000_000_000,
-					updated_at: 1_700_000_000_000,
-				},
+				),
 			],
 		});
 
@@ -132,21 +95,7 @@ describe("EntityCollection", () => {
 		// surface as the query's `isError` (rather than swallowing it to []), so the
 		// view shows the distinct "Couldn't load" state — NOT a misleading empty
 		// Library that looks identical to a brand-new workspace.
-		const stub = stubWsClient({
-			listEntities: (type) =>
-				type === "todo"
-					? Effect.die("todo read failed")
-					: type === "person"
-						? Effect.succeed({ entities: livePeople })
-						: Effect.succeed({ entities: [] }),
-		});
-		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
-		const client = new QueryClient({
-			defaultOptions: {
-				queries: { staleTime: Number.POSITIVE_INFINITY, retry: false },
-			},
-		});
-		render(
+		await renderWithCore(
 			<EntityCollection
 				kind="person"
 				selectedId={null}
@@ -154,11 +103,14 @@ describe("EntityCollection", () => {
 				onNew={() => {}}
 			/>,
 			{
-				wrapper: ({ children }: { children: ReactNode }) => (
-					<QueryClientProvider client={client}>
-						<RuntimeProvider runtime={runtime}>{children}</RuntimeProvider>
-					</QueryClientProvider>
-				),
+				overrides: {
+					listEntities: (type) =>
+						type === "todo"
+							? Effect.die("todo read failed")
+							: type === "person"
+								? Effect.succeed({ entities: livePeople })
+								: Effect.succeed({ entities: [] }),
+				},
 			},
 		);
 
@@ -179,15 +131,7 @@ describe("EntityCollection", () => {
 
 	it("renders live Todos read from entity/list", async () => {
 		renderCollection("todo", {
-			todos: [
-				{
-					id: "01900000-0000-7000-8000-000000000030",
-					type: "todo",
-					data: { title: "buy milk", status: "active" },
-					created_at: 1_700_000_000_000,
-					updated_at: 1_700_000_000_000,
-				},
-			],
+			todos: [todoRow("01900000-0000-7000-8000-000000000030", "buy milk")],
 		});
 		expect(await screen.findByText("buy milk")).toBeInTheDocument();
 		// Preview Todos are not shown — Todos are live for this read.
@@ -197,22 +141,15 @@ describe("EntityCollection", () => {
 	});
 
 	it("orders todos active-first, then earliest due, undated last", async () => {
-		const mk = (id: string, title: string, data: Record<string, unknown>) => ({
-			id,
-			type: "todo" as const,
-			data: { title, ...data },
-			created_at: 1_700_000_000_000,
-			updated_at: 1_700_000_000_000,
-		});
 		renderCollection("todo", {
 			todos: [
-				mk("done", "Zed completed", { status: "completed" }),
-				mk("undated", "Active no due", { status: "active" }),
-				mk("late", "Active due later", {
+				todoRow("done", "Zed completed", { status: "completed" }),
+				todoRow("undated", "Active no due", { status: "active" }),
+				todoRow("late", "Active due later", {
 					status: "active",
 					due_at: "2026-06-20T00:00:00",
 				}),
-				mk("soon", "Active due soon", {
+				todoRow("soon", "Active due soon", {
 					status: "active",
 					due_at: "2026-06-13T00:00:00",
 				}),
@@ -281,15 +218,7 @@ describe("EntityCollection", () => {
 		renderCollection(
 			"todo",
 			{
-				todos: [
-					{
-						id: "01900000-0000-7000-8000-000000000031",
-						type: "todo",
-						data: { title: "existing", status: "active" },
-						created_at: 1_700_000_000_000,
-						updated_at: 1_700_000_000_000,
-					},
-				],
+				todos: [todoRow("01900000-0000-7000-8000-000000000031", "existing")],
 			},
 			{ onNew },
 		);
@@ -302,36 +231,23 @@ describe("EntityCollection", () => {
 	it("groups Journal Entries by occurred day and orders rows by occurred time", async () => {
 		renderCollection("journal_entry", {
 			journalEntries: [
-				{
-					id: "01900000-0000-7000-8000-0000000000c1",
-					type: "journal_entry",
-					data: {
-						occurred_at: "2026-06-10T18:30:00",
-						body: [{ type: "text", text: "Evening retro" }],
-					},
-					created_at: 1_700_000_300_000,
-					updated_at: 1_700_000_300_000,
-				},
-				{
-					id: "01900000-0000-7000-8000-0000000000c2",
-					type: "journal_entry",
-					data: {
-						occurred_at: "2026-06-10T09:00:00",
-						body: [{ type: "text", text: "Morning sync" }],
-					},
-					created_at: 1_700_000_100_000,
-					updated_at: 1_700_000_100_000,
-				},
-				{
-					id: "01900000-0000-7000-8000-0000000000c3",
-					type: "journal_entry",
-					data: {
-						occurred_at: "2026-06-11T08:00:00",
-						body: [{ type: "text", text: "Next day note" }],
-					},
-					created_at: 1_700_000_000_000,
-					updated_at: 1_700_000_000_000,
-				},
+				journalEntryRow(
+					"01900000-0000-7000-8000-0000000000c1",
+					[{ type: "text", text: "Evening retro" }],
+					{ occurred_at: "2026-06-10T18:30:00" },
+					{ created_at: 1_700_000_300_000, updated_at: 1_700_000_300_000 },
+				),
+				journalEntryRow(
+					"01900000-0000-7000-8000-0000000000c2",
+					[{ type: "text", text: "Morning sync" }],
+					{ occurred_at: "2026-06-10T09:00:00" },
+					{ created_at: 1_700_000_100_000, updated_at: 1_700_000_100_000 },
+				),
+				journalEntryRow(
+					"01900000-0000-7000-8000-0000000000c3",
+					[{ type: "text", text: "Next day note" }],
+					{ occurred_at: "2026-06-11T08:00:00" },
+				),
 			],
 		});
 
@@ -353,33 +269,32 @@ describe("EntityCollection", () => {
 	it("lists mixed Journal Entry bodies using resolved ref labels in order", async () => {
 		renderCollection("journal_entry", {
 			journalEntries: [
-				{
-					id: "01900000-0000-7000-8000-0000000000d1",
-					type: "journal_entry",
-					data: {
-						occurred_at: "2026-06-10T18:30:00",
-						body: [
-							{ type: "text", text: "Met " },
-							{
-								type: "entity_ref",
-								ref_id: "01900000-0000-7000-8000-0000000000f1",
-							},
-							{ type: "text", text: " at school." },
-						],
-					},
-					refs: [
+				journalEntryRow(
+					"01900000-0000-7000-8000-0000000000d1",
+					[
+						{ type: "text", text: "Met " },
 						{
-							id: "01900000-0000-7000-8000-0000000000f1",
-							source_entity_id: "01900000-0000-7000-8000-0000000000d1",
-							target_entity_id: "01900000-0000-7000-8000-0000000000a1",
-							target_entity_type: "person",
-							target_title: "Ada Lovelace",
-							label_snapshot: "Ada",
+							type: "entity_ref",
+							ref_id: "01900000-0000-7000-8000-0000000000f1",
 						},
+						{ type: "text", text: " at school." },
 					],
-					created_at: 1_700_000_300_000,
-					updated_at: 1_700_000_300_000,
-				},
+					{ occurred_at: "2026-06-10T18:30:00" },
+					{
+						refs: [
+							{
+								id: "01900000-0000-7000-8000-0000000000f1",
+								source_entity_id: "01900000-0000-7000-8000-0000000000d1",
+								target_entity_id: "01900000-0000-7000-8000-0000000000a1",
+								target_entity_type: "person",
+								target_title: "Ada Lovelace",
+								label_snapshot: "Ada",
+							},
+						],
+						created_at: 1_700_000_300_000,
+						updated_at: 1_700_000_300_000,
+					},
+				),
 			],
 		});
 
@@ -390,18 +305,6 @@ describe("EntityCollection", () => {
 
 	// --- Facets (slice-2: Status) ---
 
-	const mkTodo = (
-		id: string,
-		title: string,
-		data: Record<string, unknown>,
-	) => ({
-		id,
-		type: "todo" as const,
-		data: { title, ...data },
-		created_at: 1_700_000_000_000,
-		updated_at: 1_700_000_000_000,
-	});
-
 	// `person_refs` lives at the ROW level on the wire (not inside `data`), so a
 	// fixture linking a Todo to People must set it there — `parseTodo` reads
 	// `row.person_refs`, not `data.person_refs`.
@@ -410,22 +313,15 @@ describe("EntityCollection", () => {
 	const mkTodoWithPeople = (
 		id: string,
 		title: string,
-		data: Record<string, unknown>,
+		data: Partial<TodoData>,
 		personRefs: { person_id: string; role: "waiting_on" | "related" }[],
-	) => ({
-		id,
-		type: "todo" as const,
-		data: { title, ...data },
-		person_refs: personRefs,
-		created_at: 1_700_000_000_000,
-		updated_at: 1_700_000_000_000,
-	});
+	) => todoRow(id, title, data, { person_refs: personRefs });
 
 	// Three todos spanning active/completed/dropped so the Status facet can partition.
 	const mixedStatusTodos: EntityListResult["entities"] = [
-		mkTodo("st-active", "Active todo", { status: "active" }),
-		mkTodo("st-done", "Completed todo", { status: "completed" }),
-		mkTodo("st-dropped", "Dropped todo", { status: "dropped" }),
+		todoRow("st-active", "Active todo", { status: "active" }),
+		todoRow("st-done", "Completed todo", { status: "completed" }),
+		todoRow("st-dropped", "Dropped todo", { status: "dropped" }),
 	];
 
 	// Facet chips share label text with row titles ("Active todo" vs the "Active"
@@ -448,8 +344,8 @@ describe("EntityCollection", () => {
 	it("does not show a Status facet group when all rows share one status", async () => {
 		renderCollection("todo", {
 			todos: [
-				mkTodo("a1", "Only active one", { status: "active" }),
-				mkTodo("a2", "Only active two", { status: "active" }),
+				todoRow("a1", "Only active one", { status: "active" }),
+				todoRow("a2", "Only active two", { status: "active" }),
 			],
 		});
 		await screen.findByText("Only active one");
@@ -477,9 +373,9 @@ describe("EntityCollection", () => {
 		const user = userEvent.setup();
 		renderCollection("todo", {
 			todos: [
-				mkTodo("q1", "Alpha active", { status: "active" }),
-				mkTodo("q2", "Beta active", { status: "active" }),
-				mkTodo("q3", "Alpha completed", { status: "completed" }),
+				todoRow("q1", "Alpha active", { status: "active" }),
+				todoRow("q2", "Beta active", { status: "active" }),
+				todoRow("q3", "Alpha completed", { status: "completed" }),
 			],
 		});
 		await screen.findByText("Alpha active");
@@ -503,8 +399,8 @@ describe("EntityCollection", () => {
 		const user = userEvent.setup();
 		renderCollection("todo", {
 			todos: [
-				mkTodo("e1", "Findable active", { status: "active" }),
-				mkTodo("e2", "Other completed", { status: "completed" }),
+				todoRow("e1", "Findable active", { status: "active" }),
+				todoRow("e2", "Other completed", { status: "completed" }),
 			],
 		});
 		await screen.findByText("Findable active");
@@ -560,15 +456,15 @@ describe("EntityCollection", () => {
 		const user = userEvent.setup();
 		renderCollection("todo", {
 			todos: [
-				mkTodo("d-over", "Overdue todo", {
+				todoRow("d-over", "Overdue todo", {
 					status: "active",
 					due_at: dayOffset(-3),
 				}),
-				mkTodo("d-soon", "Soon todo", {
+				todoRow("d-soon", "Soon todo", {
 					status: "active",
 					due_at: dayOffset(2),
 				}),
-				mkTodo("d-none", "Undated todo", { status: "active" }),
+				todoRow("d-none", "Undated todo", { status: "active" }),
 			],
 		});
 		await screen.findByText("Overdue todo");
@@ -647,22 +543,7 @@ describe("EntityCollection", () => {
 		const user = userEvent.setup();
 		renderCollection("project", {
 			people: livePeople,
-			projects: [
-				{
-					id: "pr-a",
-					type: "project",
-					data: { name: "Apollo", status: "active" },
-					created_at: 1_700_000_000_000,
-					updated_at: 1_700_000_000_000,
-				},
-				{
-					id: "pr-b",
-					type: "project",
-					data: { name: "Borealis", status: "active" },
-					created_at: 1_700_000_000_000,
-					updated_at: 1_700_000_000_000,
-				},
-			],
+			projects: [projectRow("pr-a", "Apollo"), projectRow("pr-b", "Borealis")],
 			todos: [
 				mkTodoWithPeople(
 					"pt-ada",
@@ -695,23 +576,21 @@ describe("EntityCollection", () => {
 			journalEntries: [
 				{
 					// Malformed: no `occurred_at` — the strict parser throws on this row.
+					// Stays an inline literal: journalEntryRow always defaults occurred_at,
+					// so the builder can't express this deliberately broken shape.
 					id: "01900000-0000-7000-8000-0000000000b1",
 					type: "journal_entry",
 					data: { body: [{ type: "text", text: "missing occurred time" }] },
 					created_at: 1_700_000_000_000,
 					updated_at: 1_700_000_000_000,
 				},
-				{
-					// Valid sibling — must survive even though the row above is dropped.
-					id: "01900000-0000-7000-8000-0000000000b2",
-					type: "journal_entry",
-					data: {
-						occurred_at: "2026-06-10T09:00:00",
-						body: [{ type: "text", text: "valid entry survives" }],
-					},
-					created_at: 1_700_000_100_000,
-					updated_at: 1_700_000_100_000,
-				},
+				// Valid sibling — must survive even though the row above is dropped.
+				journalEntryRow(
+					"01900000-0000-7000-8000-0000000000b2",
+					[{ type: "text", text: "valid entry survives" }],
+					{ occurred_at: "2026-06-10T09:00:00" },
+					{ created_at: 1_700_000_100_000, updated_at: 1_700_000_100_000 },
+				),
 			],
 		});
 

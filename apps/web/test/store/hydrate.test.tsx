@@ -3,13 +3,12 @@ import {
 	InvalidParamsError,
 	type RunEventValue,
 	type RunId,
-	stubWsClient,
 	UnknownThreadError,
-	WsClient,
 	type WsError,
 	WsRequestError,
 } from "@inkstone/ui-sdk";
-import { Deferred, Effect, Layer, ManagedRuntime, Queue, Stream } from "effect";
+import { makeCoreRuntime } from "@test/test-utils/renderWithCore";
+import { Deferred, Effect, Queue, Stream } from "effect";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { awaitRun, resetBridge } from "@/store/bridge.js";
 import {
@@ -54,12 +53,13 @@ describe("refresh-durable hydration", () => {
 				},
 			],
 		};
-		const stub = stubWsClient({
-			threadGet: (id) =>
-				id === "tA" ? Effect.succeed(result) : Effect.die("unknown thread"),
-			subscribeRun,
+		const runtime = makeCoreRuntime({
+			overrides: {
+				threadGet: (id) =>
+					id === "tA" ? Effect.succeed(result) : Effect.die("unknown thread"),
+				subscribeRun,
+			},
 		});
-		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
 		await hydrateThread(runtime, "tA");
 
@@ -115,12 +115,15 @@ describe("refresh-durable hydration", () => {
 				},
 			],
 		};
-		const stub = stubWsClient({
-			threadGet: (id) =>
-				id === "tTools" ? Effect.succeed(result) : Effect.die("unknown thread"),
-			subscribeRun,
+		const runtime = makeCoreRuntime({
+			overrides: {
+				threadGet: (id) =>
+					id === "tTools"
+						? Effect.succeed(result)
+						: Effect.die("unknown thread"),
+				subscribeRun,
+			},
 		});
-		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
 		await hydrateThread(runtime, "tTools");
 
@@ -166,13 +169,14 @@ describe("refresh-durable hydration", () => {
 				},
 			],
 		};
-		const stub = stubWsClient({
-			threadGet: (id) =>
-				id === "tReason"
-					? Effect.succeed(result)
-					: Effect.die("unknown thread"),
+		const runtime = makeCoreRuntime({
+			overrides: {
+				threadGet: (id) =>
+					id === "tReason"
+						? Effect.succeed(result)
+						: Effect.die("unknown thread"),
+			},
 		});
-		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
 		await hydrateThread(runtime, "tReason");
 
@@ -206,13 +210,14 @@ describe("refresh-durable hydration", () => {
 				},
 			],
 		};
-		const stub = stubWsClient({
-			threadGet: (id) =>
-				id === "tCancel"
-					? Effect.succeed(result)
-					: Effect.die("unknown thread"),
+		const runtime = makeCoreRuntime({
+			overrides: {
+				threadGet: (id) =>
+					id === "tCancel"
+						? Effect.succeed(result)
+						: Effect.die("unknown thread"),
+			},
 		});
-		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
 		await hydrateThread(runtime, "tCancel");
 
@@ -238,11 +243,12 @@ describe("refresh-durable hydration", () => {
 				},
 			],
 		};
-		const stub = stubWsClient({
-			threadGet: (id) =>
-				id === "tErr" ? Effect.succeed(result) : Effect.die("unknown thread"),
+		const runtime = makeCoreRuntime({
+			overrides: {
+				threadGet: (id) =>
+					id === "tErr" ? Effect.succeed(result) : Effect.die("unknown thread"),
+			},
 		});
-		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
 		await hydrateThread(runtime, "tErr");
 
@@ -268,11 +274,14 @@ describe("refresh-durable hydration", () => {
 				},
 			],
 		};
-		const stub = stubWsClient({
-			threadGet: (id) =>
-				id === "tUser" ? Effect.succeed(result) : Effect.die("unknown thread"),
+		const runtime = makeCoreRuntime({
+			overrides: {
+				threadGet: (id) =>
+					id === "tUser"
+						? Effect.succeed(result)
+						: Effect.die("unknown thread"),
+			},
 		});
-		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
 		await hydrateThread(runtime, "tUser");
 
@@ -297,13 +306,14 @@ describe("refresh-durable hydration", () => {
 				},
 			],
 		};
-		const stub = stubWsClient({
-			threadGet: (id) =>
-				id === "tNoReason"
-					? Effect.succeed(result)
-					: Effect.die("unknown thread"),
+		const runtime = makeCoreRuntime({
+			overrides: {
+				threadGet: (id) =>
+					id === "tNoReason"
+						? Effect.succeed(result)
+						: Effect.die("unknown thread"),
+			},
 		});
-		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
 		await hydrateThread(runtime, "tNoReason");
 
@@ -339,11 +349,12 @@ describe("refresh-durable hydration", () => {
 				},
 			],
 		};
-		const stub = stubWsClient({
-			threadGet: (id) =>
-				id === "tAtt" ? Effect.succeed(result) : Effect.die("unknown thread"),
+		const runtime = makeCoreRuntime({
+			overrides: {
+				threadGet: (id) =>
+					id === "tAtt" ? Effect.succeed(result) : Effect.die("unknown thread"),
+			},
 		});
-		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
 		await hydrateThread(runtime, "tAtt");
 
@@ -394,11 +405,14 @@ describe("refresh-durable hydration", () => {
 				},
 			],
 		};
-		const stub = stubWsClient({
-			threadGet: (id) =>
-				id === "tProp" ? Effect.succeed(result) : Effect.die("unknown thread"),
+		const runtime = makeCoreRuntime({
+			overrides: {
+				threadGet: (id) =>
+					id === "tProp"
+						? Effect.succeed(result)
+						: Effect.die("unknown thread"),
+			},
 		});
-		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
 		await hydrateThread(runtime, "tProp");
 
@@ -444,11 +458,12 @@ describe("refresh-durable hydration", () => {
 				},
 			],
 		};
-		const stub = stubWsClient({
-			threadGet: (id) =>
-				id === "tSeg" ? Effect.succeed(result) : Effect.die("unknown thread"),
+		const runtime = makeCoreRuntime({
+			overrides: {
+				threadGet: (id) =>
+					id === "tSeg" ? Effect.succeed(result) : Effect.die("unknown thread"),
+			},
 		});
-		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
 		await hydrateThread(runtime, "tSeg");
 
@@ -487,11 +502,12 @@ describe("refresh-durable hydration", () => {
 				},
 			],
 		};
-		const stub = stubWsClient({
-			threadGet: (id) =>
-				id === "tRej" ? Effect.succeed(result) : Effect.die("unknown thread"),
+		const runtime = makeCoreRuntime({
+			overrides: {
+				threadGet: (id) =>
+					id === "tRej" ? Effect.succeed(result) : Effect.die("unknown thread"),
+			},
 		});
-		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
 		await hydrateThread(runtime, "tRej");
 
@@ -524,11 +540,12 @@ describe("refresh-durable hydration", () => {
 				},
 			],
 		};
-		const stub = stubWsClient({
-			threadGet: (id) =>
-				id === "tBad" ? Effect.succeed(result) : Effect.die("unknown thread"),
+		const runtime = makeCoreRuntime({
+			overrides: {
+				threadGet: (id) =>
+					id === "tBad" ? Effect.succeed(result) : Effect.die("unknown thread"),
+			},
 		});
-		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
 		await hydrateThread(runtime, "tBad");
 
@@ -570,11 +587,14 @@ describe("refresh-durable hydration", () => {
 				},
 			],
 		};
-		const stub = stubWsClient({
-			threadGet: (id) =>
-				id === "tProp2" ? Effect.succeed(result) : Effect.die("unknown thread"),
+		const runtime = makeCoreRuntime({
+			overrides: {
+				threadGet: (id) =>
+					id === "tProp2"
+						? Effect.succeed(result)
+						: Effect.die("unknown thread"),
+			},
 		});
-		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
 		await hydrateThread(runtime, "tProp2");
 
@@ -611,12 +631,13 @@ describe("refresh-durable hydration", () => {
 				},
 			],
 		};
-		const stub = stubWsClient({
-			threadGet: (id) =>
-				id === "tB" ? Effect.succeed(result) : Effect.die("unknown thread"),
-			subscribeRun,
+		const runtime = makeCoreRuntime({
+			overrides: {
+				threadGet: (id) =>
+					id === "tB" ? Effect.succeed(result) : Effect.die("unknown thread"),
+				subscribeRun,
+			},
 		});
-		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
 		await hydrateThread(runtime, "tB");
 
@@ -671,12 +692,13 @@ describe("refresh-durable hydration", () => {
 				},
 			],
 		};
-		const stub = stubWsClient({
-			threadGet: (id) =>
-				id === "tC" ? Deferred.await(gate) : Effect.die("unknown thread"),
-			subscribeRun,
+		const runtime = makeCoreRuntime({
+			overrides: {
+				threadGet: (id) =>
+					id === "tC" ? Deferred.await(gate) : Effect.die("unknown thread"),
+				subscribeRun,
+			},
 		});
-		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
 		// Start hydration; threadGet is parked on the latch.
 		const hydrating = hydrateThread(runtime, "tC");
@@ -722,11 +744,12 @@ describe("refresh-durable hydration", () => {
 		// Contrast to the became-live success case: here thread/get REJECTS after the user sent.
 		// A failed fetch must not paint a recoverable-error screen over the valid live turn — it settles `ready`.
 		const gate = Effect.runSync(Deferred.make<ThreadGetResult, WsError>());
-		const stub = stubWsClient({
-			threadGet: (id) =>
-				id === "tD" ? Deferred.await(gate) : Effect.die("unknown thread"),
+		const runtime = makeCoreRuntime({
+			overrides: {
+				threadGet: (id) =>
+					id === "tD" ? Deferred.await(gate) : Effect.die("unknown thread"),
+			},
 		});
-		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
 		// Start hydration; threadGet is parked on the latch.
 		const hydrating = hydrateThread(runtime, "tD");
@@ -769,11 +792,12 @@ describe("refresh-durable hydration", () => {
 		// A genuinely missing Thread (Core `-32001`) is a deterministic dead-end:
 		// it must end in `not_found` so the UI shows an honest "isn't available"
 		// state with a Back-to-New-Chat exit, never a retry that can't succeed.
-		const stub = stubWsClient({
-			threadGet: () =>
-				Effect.fail(new UnknownThreadError({ message: "no such thread" })),
+		const runtime = makeCoreRuntime({
+			overrides: {
+				threadGet: () =>
+					Effect.fail(new UnknownThreadError({ message: "no such thread" })),
+			},
 		});
-		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
 		await hydrateThread(runtime, "tGhost");
 
@@ -788,13 +812,14 @@ describe("refresh-durable hydration", () => {
 		// Core's uuid decode → -32602 → InvalidParamsError. It's as deterministic a
 		// dead-end as an unknown thread — retrying re-fails identically — so it must
 		// land on not_found, NOT the recoverable retry path (deep-review finding).
-		const stub = stubWsClient({
-			threadGet: () =>
-				Effect.fail(
-					new InvalidParamsError({ message: "thread_id must be a UUID" }),
-				),
+		const runtime = makeCoreRuntime({
+			overrides: {
+				threadGet: () =>
+					Effect.fail(
+						new InvalidParamsError({ message: "thread_id must be a UUID" }),
+					),
+			},
 		});
-		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
 		await hydrateThread(runtime, "not-a-uuid");
 
@@ -807,11 +832,12 @@ describe("refresh-durable hydration", () => {
 		// A send can turn a "missing" Thread live (the optimistic seed) before the
 		// UnknownThreadError lands — keep that live turn rather than blanking it.
 		const gate = Effect.runSync(Deferred.make<ThreadGetResult, WsError>());
-		const stub = stubWsClient({
-			threadGet: (id) =>
-				id === "tRace" ? Deferred.await(gate) : Effect.die("unknown thread"),
+		const runtime = makeCoreRuntime({
+			overrides: {
+				threadGet: (id) =>
+					id === "tRace" ? Deferred.await(gate) : Effect.die("unknown thread"),
+			},
 		});
-		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
 		const hydrating = hydrateThread(runtime, "tRace");
 		appendUserMessage("tRace", {
@@ -841,10 +867,11 @@ describe("refresh-durable hydration", () => {
 
 	it("marks a failed thread/get as `error` (recoverable, not an eternal skeleton)", async () => {
 		// A wire failure: thread/get rejects. The thread must end in `error` status — never stuck `loading`.
-		const stub = stubWsClient({
-			threadGet: () => Effect.fail(new WsRequestError({ reason: "boom" })),
+		const runtime = makeCoreRuntime({
+			overrides: {
+				threadGet: () => Effect.fail(new WsRequestError({ reason: "boom" })),
+			},
 		});
-		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
 		await hydrateThread(runtime, "tFail");
 
@@ -865,10 +892,11 @@ describe("refresh-durable hydration", () => {
 				},
 			],
 		};
-		const okStub = stubWsClient({
-			threadGet: () => Effect.succeed(ok),
+		const okRuntime = makeCoreRuntime({
+			overrides: {
+				threadGet: () => Effect.succeed(ok),
+			},
 		});
-		const okRuntime = ManagedRuntime.make(Layer.succeed(WsClient, okStub));
 
 		await hydrateThread(okRuntime, "tFail");
 

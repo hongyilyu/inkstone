@@ -10,12 +10,11 @@ import {
 	ProposalNotPendingError,
 	type RunEventValue,
 	type RunId,
-	stubWsClient,
-	WsClient,
 	type WsError,
 	WsRequestError,
 } from "@inkstone/ui-sdk";
-import { Effect, Layer, ManagedRuntime, Queue, Stream } from "effect";
+import { makeCoreRuntime } from "@test/test-utils/renderWithCore";
+import { Effect, Queue, Stream } from "effect";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
 	decideProposal,
@@ -60,37 +59,38 @@ function makeStubRuntime(opts: {
 }) {
 	// Each subscribeRun gets the next queue in runQueues (a fresh hub per subscribe).
 	let subscribeIdx = 0;
-	const stub = stubWsClient({
-		subscribeRun: () => {
-			opts.onSubscribe?.();
-			if (opts.runQueues) {
-				const q = opts.runQueues[subscribeIdx];
-				subscribeIdx += 1;
-				return q ? Stream.fromQueue(q) : Stream.empty;
-			}
-			return opts.runQueue ? Stream.fromQueue(opts.runQueue) : Stream.empty;
+	return makeCoreRuntime({
+		overrides: {
+			subscribeRun: () => {
+				opts.onSubscribe?.();
+				if (opts.runQueues) {
+					const q = opts.runQueues[subscribeIdx];
+					subscribeIdx += 1;
+					return q ? Stream.fromQueue(q) : Stream.empty;
+				}
+				return opts.runQueue ? Stream.fromQueue(opts.runQueue) : Stream.empty;
+			},
+			proposalGet:
+				opts.proposalGet ??
+				((runId: RunId) =>
+					Effect.succeed({
+						proposal_id: "prop-1",
+						run_id: runId,
+						mutation_kind: "create_journal_entry",
+						payload: JOURNAL_ENTRY,
+						rationale: "the user asked to remember this",
+						status: "pending",
+					})),
+			proposalDecide:
+				opts.onDecide ??
+				((params) =>
+					Effect.succeed({
+						status: params.decision === "accept" ? "accepted" : "rejected",
+					} as const)),
+			proposalNotifications: () => Stream.fromQueue(opts.proposalQueue),
+			...(opts.threadGet !== undefined ? { threadGet: opts.threadGet } : {}),
 		},
-		proposalGet:
-			opts.proposalGet ??
-			((runId: RunId) =>
-				Effect.succeed({
-					proposal_id: "prop-1",
-					run_id: runId,
-					mutation_kind: "create_journal_entry",
-					payload: JOURNAL_ENTRY,
-					rationale: "the user asked to remember this",
-					status: "pending",
-				})),
-		proposalDecide:
-			opts.onDecide ??
-			((params) =>
-				Effect.succeed({
-					status: params.decision === "accept" ? "accepted" : "rejected",
-				} as const)),
-		proposalNotifications: () => Stream.fromQueue(opts.proposalQueue),
-		...(opts.threadGet !== undefined ? { threadGet: opts.threadGet } : {}),
 	});
-	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 }
 
 beforeEach(() => {

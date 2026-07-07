@@ -1,11 +1,10 @@
 import type {
-	EntityListResult,
 	EntityMutateParams,
 	EntityMutateResult,
 } from "@inkstone/protocol";
-import { stubWsClient, WsClient, type WsError } from "@inkstone/ui-sdk";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { WsError } from "@inkstone/ui-sdk";
 import { people, todos } from "@test/lib/libraryItems.fixtures";
+import { renderWithCore } from "@test/test-utils/renderWithCore";
 import {
 	cleanup,
 	fireEvent,
@@ -14,12 +13,11 @@ import {
 	waitFor,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Effect, Layer, ManagedRuntime } from "effect";
+import { Effect } from "effect";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { EntityRow, TodoRow } from "@/components/library/EntityRow";
 import { addDays, type Todo } from "@/lib/libraryItems";
-import { RuntimeProvider } from "@/runtime";
 
 const todo = (id: string) => {
 	const t = todos.find((x) => x.id === id);
@@ -35,32 +33,15 @@ const person = (id: string) => {
 type EntityMutate = (
 	params: EntityMutateParams,
 ) => Effect.Effect<EntityMutateResult, WsError>;
-type Rows = EntityListResult["entities"];
 
 // Inline-complete needs the mutation harness (TodoRow runs `useEntityMutation`
-// per-row). Mirror ProjectReviewView.test.tsx's stub — every WsClient method
-// must be present or the type fails; only `entityMutate` is exercised here.
+// per-row) — render under the shared Core harness; only `entityMutate` is
+// exercised here.
 function renderTodoRow(
 	node: ReactNode,
 	entityMutate: EntityMutate = () => Effect.die("entityMutate not exercised"),
 ) {
-	const stub = stubWsClient({
-		listEntities: () => Effect.succeed({ entities: [] as Rows }),
-		entityMutate,
-	});
-	const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
-	const client = new QueryClient({
-		defaultOptions: {
-			queries: { staleTime: Number.POSITIVE_INFINITY, retry: false },
-		},
-	});
-	return render(<ul>{node}</ul>, {
-		wrapper: ({ children }: { children: ReactNode }) => (
-			<QueryClientProvider client={client}>
-				<RuntimeProvider runtime={runtime}>{children}</RuntimeProvider>
-			</QueryClientProvider>
-		),
-	});
+	return renderWithCore(<ul>{node}</ul>, { overrides: { entityMutate } });
 }
 
 afterEach(cleanup);

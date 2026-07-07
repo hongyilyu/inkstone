@@ -1,22 +1,21 @@
-import { stubWsClient, WsClient } from "@inkstone/ui-sdk";
+import type { WsClientService } from "@inkstone/ui-sdk";
 import {
 	createMemoryHistory,
 	createRouter,
 	RouterProvider,
 } from "@tanstack/react-router";
-import { renderWithQuery } from "@test/test-utils/renderWithQuery";
+import { renderWithCore } from "@test/test-utils/renderWithCore";
 import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Effect, Layer } from "effect";
+import { Effect } from "effect";
 import { act } from "react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { routeTree } from "@/routeTree.gen";
-import { RuntimeProvider } from "@/runtime";
 import { openCommand, resetCommandStore } from "@/store/command";
 
 // Stub: empty threadList so the open-triggered query resolves; Alice (person)
 // and a matching daycare todo seeded as stable live entity/list results.
-const stub = stubWsClient({
+const overrides: Partial<WsClientService> = {
 	threadList: () => Effect.succeed({ threads: [] }),
 	listEntities: (type) => {
 		if (type === "person") {
@@ -79,18 +78,14 @@ const stub = stubWsClient({
 					],
 				})
 			: Effect.succeed({ hits: [] }),
-});
+};
 
-function renderApp() {
+async function renderApp() {
 	const router = createRouter({
 		routeTree,
 		history: createMemoryHistory({ initialEntries: ["/library"] }),
 	});
-	renderWithQuery(
-		<RuntimeProvider layer={Layer.succeed(WsClient, stub)}>
-			<RouterProvider router={router} />
-		</RuntimeProvider>,
-	);
+	await renderWithCore(<RouterProvider router={router} />, { overrides });
 	return router;
 }
 
@@ -104,7 +99,7 @@ afterEach(cleanup);
 
 describe("CommandPalette (⌘K)", () => {
 	it("is closed until the shortcut, then opens and filters", async () => {
-		renderApp();
+		await renderApp();
 		expect(screen.queryByPlaceholderText(PLACEHOLDER)).not.toBeInTheDocument();
 
 		await pressCmdK();
@@ -121,7 +116,7 @@ describe("CommandPalette (⌘K)", () => {
 	});
 
 	it("activates the selected result with the keyboard and navigates", async () => {
-		const router = renderApp();
+		const router = await renderApp();
 		openPalette();
 		const input = await screen.findByPlaceholderText(PLACEHOLDER);
 
@@ -139,7 +134,7 @@ describe("CommandPalette (⌘K)", () => {
 	// it; route.tsx mounts the detail rail) — a regression guard for the one slug that
 	// shadows $kind (ADR-0059 web-surface routing).
 	it("navigates to a Media item on the static topic route, preserving the id", async () => {
-		const router = renderApp();
+		const router = await renderApp();
 		openPalette();
 		const input = await screen.findByPlaceholderText(PLACEHOLDER);
 
@@ -152,7 +147,7 @@ describe("CommandPalette (⌘K)", () => {
 	});
 
 	it("surfaces matching messages and navigates to their thread", async () => {
-		const router = renderApp();
+		const router = await renderApp();
 		openPalette();
 		const input = await screen.findByPlaceholderText(PLACEHOLDER);
 
@@ -184,7 +179,7 @@ describe("CommandPalette (⌘K)", () => {
 	});
 
 	it("shows no Messages group for an empty query", async () => {
-		renderApp();
+		await renderApp();
 		openPalette();
 		await screen.findByPlaceholderText(PLACEHOLDER);
 
@@ -193,7 +188,7 @@ describe("CommandPalette (⌘K)", () => {
 	});
 
 	it("teaches a no-match instead of going blank", async () => {
-		renderApp();
+		await renderApp();
 		openPalette();
 		const input = await screen.findByPlaceholderText(PLACEHOLDER);
 
@@ -207,7 +202,7 @@ describe("CommandPalette (⌘K)", () => {
 		// shrinks out from under the cursor; the active index must re-clamp so Enter
 		// still activates a real row (the bug: a stale index past the end → Enter
 		// silently no-ops on `flat[active] === undefined`).
-		const router = renderApp();
+		const router = await renderApp();
 		openPalette();
 		const input = await screen.findByPlaceholderText(PLACEHOLDER);
 
@@ -248,7 +243,7 @@ describe("CommandPalette (⌘K)", () => {
 	});
 
 	it("closes on Escape", async () => {
-		renderApp();
+		await renderApp();
 		openPalette();
 		const input = await screen.findByPlaceholderText(PLACEHOLDER);
 

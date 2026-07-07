@@ -1,30 +1,16 @@
 import type { EntityListResult } from "@inkstone/protocol";
-import { stubWsClient, WsClient } from "@inkstone/ui-sdk";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen } from "@testing-library/react";
+import { renderWithCore } from "@test/test-utils/renderWithCore";
+import { journalEntryRow } from "@test/test-utils/rows";
+import { cleanup, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Effect, Layer, ManagedRuntime } from "effect";
-import type { ReactNode } from "react";
 import { useState } from "react";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	type TimelineFilter,
 	TimelineView,
 } from "@/components/library/TimelineView";
-import { RuntimeProvider } from "@/runtime";
 
 type Rows = EntityListResult["entities"];
-
-/** Stub WsClient serving the given journal-entry rows; unused methods die. */
-function makeRuntime(journalEntries: Rows) {
-	const stub = stubWsClient({
-		listEntities: (type) =>
-			type === "journal_entry"
-				? Effect.succeed({ entities: journalEntries })
-				: Effect.succeed({ entities: [] }),
-	});
-	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
-}
 
 /** Drives the controlled TimelineView; clicking a tab flips `filter` locally and a
  * chip sets the focus selection. */
@@ -44,28 +30,14 @@ function StatefulTimeline() {
 /** TimelineView's chips are plain buttons (they set `?focus=` via a callback),
  * so no router context is needed — render directly under the providers. */
 function renderTimeline(journalEntries: Rows) {
-	const runtime = makeRuntime(journalEntries);
-	const client = new QueryClient({
-		defaultOptions: {
-			queries: { staleTime: Number.POSITIVE_INFINITY, retry: false },
-		},
+	return renderWithCore(<StatefulTimeline />, {
+		entities: { journal_entry: journalEntries },
 	});
-	const Wrapper = ({ children }: { children: ReactNode }) => (
-		<QueryClientProvider client={client}>
-			<RuntimeProvider runtime={runtime}>{children}</RuntimeProvider>
-		</QueryClientProvider>
-	);
-	return render(<StatefulTimeline />, { wrapper: Wrapper });
 }
 
 /** A journal-entry row with a plain-text body. */
-const je = (id: string, occurredAt: string, text: string): Rows[number] => ({
-	id,
-	type: "journal_entry",
-	data: { occurred_at: occurredAt, body: [{ type: "text", text }] },
-	created_at: 1_700_000_000_000,
-	updated_at: 1_700_000_000_000,
-});
+const je = (id: string, occurredAt: string, text: string): Rows[number] =>
+	journalEntryRow(id, [{ type: "text", text }], { occurred_at: occurredAt });
 
 /** A journal-entry row whose body references one person, resolved via `refs`. */
 const jeWithPerson = (
@@ -74,28 +46,26 @@ const jeWithPerson = (
 	text: string,
 	personId: string,
 	personName: string,
-): Rows[number] => ({
-	id,
-	type: "journal_entry",
-	data: {
-		occurred_at: occurredAt,
-		body: [
+): Rows[number] =>
+	journalEntryRow(
+		id,
+		[
 			{ type: "text", text },
 			{ type: "entity_ref", ref_id: `${id}_r1` },
 		],
-	},
-	refs: [
+		{ occurred_at: occurredAt },
 		{
-			id: `${id}_r1`,
-			source_entity_id: id,
-			target_entity_id: personId,
-			target_entity_type: "person",
-			target_title: personName,
+			refs: [
+				{
+					id: `${id}_r1`,
+					source_entity_id: id,
+					target_entity_id: personId,
+					target_entity_type: "person",
+					target_title: personName,
+				},
+			],
 		},
-	],
-	created_at: 1_700_000_000_000,
-	updated_at: 1_700_000_000_000,
-});
+	);
 
 /** A journal-entry row whose body references one project, resolved via `refs`. */
 const jeWithProject = (
@@ -104,28 +74,26 @@ const jeWithProject = (
 	text: string,
 	projectId: string,
 	projectName: string,
-): Rows[number] => ({
-	id,
-	type: "journal_entry",
-	data: {
-		occurred_at: occurredAt,
-		body: [
+): Rows[number] =>
+	journalEntryRow(
+		id,
+		[
 			{ type: "text", text },
 			{ type: "entity_ref", ref_id: `${id}_r1` },
 		],
-	},
-	refs: [
+		{ occurred_at: occurredAt },
 		{
-			id: `${id}_r1`,
-			source_entity_id: id,
-			target_entity_id: projectId,
-			target_entity_type: "project",
-			target_title: projectName,
+			refs: [
+				{
+					id: `${id}_r1`,
+					source_entity_id: id,
+					target_entity_id: projectId,
+					target_entity_type: "project",
+					target_title: projectName,
+				},
+			],
 		},
-	],
-	created_at: 1_700_000_000_000,
-	updated_at: 1_700_000_000_000,
-});
+	);
 
 afterEach(cleanup);
 

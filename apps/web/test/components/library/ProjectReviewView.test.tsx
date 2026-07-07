@@ -3,44 +3,20 @@ import type {
 	EntityMutateParams,
 	EntityMutateResult,
 } from "@inkstone/protocol";
-import {
-	InvalidParamsError,
-	stubWsClient,
-	WsClient,
-	type WsError,
-} from "@inkstone/ui-sdk";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { InvalidParamsError, type WsError } from "@inkstone/ui-sdk";
+import { renderWithCore } from "@test/test-utils/renderWithCore";
+import { projectRow, todoRow } from "@test/test-utils/rows";
+import { cleanup, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Effect, Layer, ManagedRuntime } from "effect";
-import type { ReactNode } from "react";
+import { Effect } from "effect";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ProjectReviewView } from "@/components/library/ProjectReviewView";
-import { RuntimeProvider } from "@/runtime";
 
 type Rows = EntityListResult["entities"];
 
 type EntityMutate = (
 	params: EntityMutateParams,
 ) => Effect.Effect<EntityMutateResult, WsError>;
-
-function makeRuntime(
-	projects: Rows,
-	todos: Rows,
-	people: Rows,
-	entityMutate: EntityMutate,
-) {
-	const stub = stubWsClient({
-		listEntities: (type) => {
-			if (type === "project") return Effect.succeed({ entities: projects });
-			if (type === "todo") return Effect.succeed({ entities: todos });
-			if (type === "person") return Effect.succeed({ entities: people });
-			return Effect.succeed({ entities: [] });
-		},
-		entityMutate,
-	});
-	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
-}
 
 function renderReview(
 	projects: Rows,
@@ -49,45 +25,14 @@ function renderReview(
 	entityMutate: EntityMutate = () => Effect.die("entityMutate not exercised"),
 	onSelect: (id: string) => void = () => {},
 ) {
-	const runtime = makeRuntime(projects, todos, people, entityMutate);
-	const client = new QueryClient({
-		defaultOptions: {
-			queries: { staleTime: Number.POSITIVE_INFINITY, retry: false },
+	return renderWithCore(
+		<ProjectReviewView selectedId={null} onSelect={onSelect} />,
+		{
+			entities: { project: projects, todo: todos, person: people },
+			overrides: { entityMutate },
 		},
-	});
-	const Wrapper = ({ children }: { children: ReactNode }) => (
-		<QueryClientProvider client={client}>
-			<RuntimeProvider runtime={runtime}>{children}</RuntimeProvider>
-		</QueryClientProvider>
 	);
-	return render(<ProjectReviewView selectedId={null} onSelect={onSelect} />, {
-		wrapper: Wrapper,
-	});
 }
-
-const project = (
-	id: string,
-	name: string,
-	data: Record<string, unknown>,
-): Rows[number] => ({
-	id,
-	type: "project",
-	data: { name, status: "active", ...data },
-	created_at: 1_700_000_000_000,
-	updated_at: 1_700_000_000_000,
-});
-
-const todo = (
-	id: string,
-	title: string,
-	data: Record<string, unknown>,
-): Rows[number] => ({
-	id,
-	type: "todo",
-	data: { title, status: "active", ...data },
-	created_at: 1_700_000_000_000,
-	updated_at: 1_700_000_000_000,
-});
 
 // Past = unambiguously due regardless of real "now"; far future = never due.
 const PAST = "2000-01-01T20:00:00";
@@ -98,13 +43,13 @@ afterEach(cleanup);
 describe("ProjectReviewView (focused queue)", () => {
 	it("focuses one due project with a position counter, excludes future/terminal", async () => {
 		renderReview([
-			project("p_active", "Active due", { next_review_at: PAST }),
-			project("p_hold", "On hold due", {
+			projectRow("p_active", "Active due", { next_review_at: PAST }),
+			projectRow("p_hold", "On hold due", {
 				status: "on_hold",
 				next_review_at: PAST,
 			}),
-			project("p_future", "Not yet due", { next_review_at: FUTURE }),
-			project("p_done", "Completed", {
+			projectRow("p_future", "Not yet due", { next_review_at: FUTURE }),
+			projectRow("p_done", "Completed", {
 				status: "completed",
 				completed_at: PAST,
 				next_review_at: PAST,
@@ -122,8 +67,10 @@ describe("ProjectReviewView (focused queue)", () => {
 	it("steps between projects with the up/down chevrons", async () => {
 		// Two due projects, ordered by next_review_at (soonest first).
 		renderReview([
-			project("p1", "First project", { next_review_at: "2000-01-01T20:00:00" }),
-			project("p2", "Second project", {
+			projectRow("p1", "First project", {
+				next_review_at: "2000-01-01T20:00:00",
+			}),
+			projectRow("p2", "Second project", {
 				next_review_at: "2000-01-02T20:00:00",
 			}),
 		]);
@@ -155,15 +102,15 @@ describe("ProjectReviewView (focused queue)", () => {
 	it("renders the cadence label, last-reviewed, and the project's active todos", async () => {
 		renderReview(
 			[
-				project("p1", "API migration", {
+				projectRow("p1", "API migration", {
 					next_review_at: PAST,
 					last_reviewed_at: "2026-06-01T20:00:00",
 					review_every: { interval: 1, unit: "week" },
 				}),
 			],
 			[
-				todo("t1", "Cut over traffic", { project_id: "p1" }),
-				todo("t2", "Old done task", {
+				todoRow("t1", "Cut over traffic", { project_id: "p1" }),
+				todoRow("t2", "Old done task", {
 					status: "completed",
 					completed_at: PAST,
 					project_id: "p1",
@@ -180,7 +127,7 @@ describe("ProjectReviewView (focused queue)", () => {
 	});
 
 	it("teaches the empty state when nothing is due", async () => {
-		renderReview([project("p_future", "Later", { next_review_at: FUTURE })]);
+		renderReview([projectRow("p_future", "Later", { next_review_at: FUTURE })]);
 		expect(await screen.findByText("All caught up")).toBeInTheDocument();
 	});
 
@@ -189,7 +136,7 @@ describe("ProjectReviewView (focused queue)", () => {
 			Effect.succeed({ entity_id: "p1" }),
 		);
 		renderReview(
-			[project("p1", "API migration", { next_review_at: PAST })],
+			[projectRow("p1", "API migration", { next_review_at: PAST })],
 			[],
 			[],
 			entityMutate,
@@ -212,8 +159,8 @@ describe("ProjectReviewView (focused queue)", () => {
 			Effect.succeed({ entity_id: "t1" }),
 		);
 		renderReview(
-			[project("p1", "API migration", { next_review_at: PAST })],
-			[todo("t1", "Cut over traffic", { project_id: "p1" })],
+			[projectRow("p1", "API migration", { next_review_at: PAST })],
+			[todoRow("t1", "Cut over traffic", { project_id: "p1" })],
 			[],
 			entityMutate,
 		);
@@ -235,8 +182,8 @@ describe("ProjectReviewView (focused queue)", () => {
 	it("selects a todo (opens the rail via ?id) when its body is clicked", async () => {
 		const onSelect = vi.fn();
 		renderReview(
-			[project("p1", "API migration", { next_review_at: PAST })],
-			[todo("t1", "Cut over traffic", { project_id: "p1" })],
+			[projectRow("p1", "API migration", { next_review_at: PAST })],
+			[todoRow("t1", "Cut over traffic", { project_id: "p1" })],
 			[],
 			() => Effect.die("entityMutate not exercised"),
 			onSelect,
@@ -255,7 +202,7 @@ describe("ProjectReviewView (focused queue)", () => {
 			),
 		);
 		renderReview(
-			[project("p1", "API migration", { next_review_at: PAST })],
+			[projectRow("p1", "API migration", { next_review_at: PAST })],
 			[],
 			[],
 			entityMutate,
@@ -274,23 +221,14 @@ describe("ProjectReviewView (focused queue)", () => {
 	// While the first Core read is still in flight, the view must show the
 	// skeleton and NOT seed the session-snapshot queue (an empty list would
 	// freeze "All caught up" before any project has loaded).
-	it("shows the skeleton while the first read is pending, not a snapshot of projects", () => {
+	it("shows the skeleton while the first read is pending, not a snapshot of projects", async () => {
 		// A runtime whose reads never resolve, so the query stays pending.
-		const never = Effect.never;
-		const stub = stubWsClient({ listEntities: () => never });
-		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
-		const client = new QueryClient({
-			defaultOptions: {
-				queries: { staleTime: Number.POSITIVE_INFINITY, retry: false },
+		await renderWithCore(
+			<ProjectReviewView selectedId={null} onSelect={() => {}} />,
+			{
+				overrides: { listEntities: () => Effect.never },
 			},
-		});
-		render(<ProjectReviewView selectedId={null} onSelect={() => {}} />, {
-			wrapper: ({ children }: { children: ReactNode }) => (
-				<QueryClientProvider client={client}>
-					<RuntimeProvider runtime={runtime}>{children}</RuntimeProvider>
-				</QueryClientProvider>
-			),
-		});
+		);
 
 		// The skeleton renders; no project is focused, so the queue was never
 		// seeded while the read was still pending.
@@ -308,10 +246,10 @@ describe("ProjectReviewView (focused queue)", () => {
 		);
 		renderReview(
 			[
-				project("p1", "First project", {
+				projectRow("p1", "First project", {
 					next_review_at: "2000-01-01T20:00:00",
 				}),
-				project("p2", "Second project", {
+				projectRow("p2", "Second project", {
 					next_review_at: "2000-01-02T20:00:00",
 				}),
 			],
@@ -352,8 +290,8 @@ describe("ProjectReviewView (focused queue)", () => {
 			Effect.succeed({ entity_id: "t1" }),
 		);
 		renderReview(
-			[project("p1", "API migration", { next_review_at: PAST })],
-			[todo("t1", "Cut over traffic", { project_id: "p1" })],
+			[projectRow("p1", "API migration", { next_review_at: PAST })],
+			[todoRow("t1", "Cut over traffic", { project_id: "p1" })],
 			[],
 			entityMutate,
 		);

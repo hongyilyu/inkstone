@@ -1,38 +1,29 @@
 import type { ModelInfo, ProviderStatusResult } from "@inkstone/protocol";
+import type { WsClientService } from "@inkstone/ui-sdk";
 import * as sdk from "@inkstone/ui-sdk";
-import {
-	ProviderLoginFailedError,
-	stubWsClient,
-	WsClient,
-	type WsClientService,
-	WsRequestError,
-} from "@inkstone/ui-sdk";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { ProviderLoginFailedError, WsRequestError } from "@inkstone/ui-sdk";
+import type { QueryClient } from "@tanstack/react-query";
 import {
 	createMemoryHistory,
 	createRouter,
 	RouterProvider,
 } from "@tanstack/react-router";
-import { renderWithQuery } from "@test/test-utils/renderWithQuery";
 import {
-	cleanup,
-	render,
-	screen,
-	waitFor,
-	within,
-} from "@testing-library/react";
+	makeQueryClient,
+	renderWithCore,
+} from "@test/test-utils/renderWithCore";
+import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Effect, Layer, ManagedRuntime } from "effect";
+import { Effect } from "effect";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { routeTree } from "@/routeTree.gen";
-import { RuntimeProvider } from "@/runtime";
 
 afterEach(() => {
 	cleanup();
 	sdk.resetNotificationHandlers();
 });
 
-function makeRuntime(opts: {
+function makeOverrides(opts: {
 	connected?: boolean;
 	effort?: string;
 	models?: readonly ModelInfo[];
@@ -84,7 +75,7 @@ function makeRuntime(opts: {
 			? Effect.die("provider/test not exercised")
 			: Effect.succeed(opts.testResult),
 	);
-	const stub = stubWsClient({
+	const overrides: Partial<WsClientService> = {
 		providerStatus: () =>
 			Effect.succeed({
 				providers: [
@@ -126,25 +117,21 @@ function makeRuntime(opts: {
 				enabled_models: opts.enabledModels ?? [],
 			}),
 		settingsSet,
-	});
+	};
 	return {
-		runtime: ManagedRuntime.make(Layer.succeed(WsClient, stub)),
+		overrides,
 		settingsSet,
 		providerConfigure,
 		providerTest,
 	};
 }
 
-function renderPage(runtime: ReturnType<typeof makeRuntime>["runtime"]) {
+function renderPage(overrides: Partial<WsClientService>) {
 	const router = createRouter({
 		routeTree,
 		history: createMemoryHistory({ initialEntries: ["/settings/models"] }),
 	});
-	renderWithQuery(
-		<RuntimeProvider runtime={runtime}>
-			<RouterProvider router={router} />
-		</RuntimeProvider>,
-	);
+	return renderWithCore(<RouterProvider router={router} />, { overrides });
 }
 
 /** From the provider LIST view, click into the OpenAI provider's detail. */
@@ -155,8 +142,8 @@ async function openProviderDetail(user: ReturnType<typeof userEvent.setup>) {
 
 describe("Models settings page (ADR-0024)", () => {
 	it("reflects provider connection + global effort from the backend", async () => {
-		const { runtime } = makeRuntime({ connected: true, effort: "high" });
-		renderPage(runtime);
+		const { overrides } = makeOverrides({ connected: true, effort: "high" });
+		await renderPage(overrides);
 
 		// Connection status shows per-provider on the LIST view.
 		await waitFor(() =>
@@ -177,8 +164,8 @@ describe("Models settings page (ADR-0024)", () => {
 		const models: ModelInfo[] = [
 			{ id: "gpt-5.5", name: "GPT-5.5", reasoning: true, input: ["text"] },
 		];
-		const { runtime } = makeRuntime({ connected: true, models });
-		renderPage(runtime);
+		const { overrides } = makeOverrides({ connected: true, models });
+		await renderPage(overrides);
 
 		// LIST view: a clickable provider entry for "OpenAI". No model rows yet.
 		const entry = await screen.findByRole("button", { name: /OpenAI/ });
@@ -212,7 +199,7 @@ describe("Models settings page (ADR-0024)", () => {
 		// provider/status REJECTS (the factory default `Effect.die` for an un-stubbed
 		// verb) — runPromise rejects, hitting refreshConnected's .catch. The error
 		// value is irrelevant (the catch ignores it).
-		const stub = stubWsClient({
+		const overrides: Partial<WsClientService> = {
 			providerLoginStart: () =>
 				Effect.succeed({ authorize_url: "https://auth.example/x" }),
 			modelCatalog: () =>
@@ -233,9 +220,8 @@ describe("Models settings page (ADR-0024)", () => {
 					effort: "off",
 					enabled_models: [],
 				}),
-		});
-		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
-		renderPage(runtime);
+		};
+		await renderPage(overrides);
 
 		// The row settles to an honest "Not connected" — never permanent "Checking…".
 		await waitFor(() =>
@@ -262,8 +248,6 @@ describe("Models settings page (ADR-0024)", () => {
 		expect(
 			screen.getByRole("button", { name: /try again/i }),
 		).toBeInTheDocument();
-
-		await runtime.dispose();
 	});
 
 	it("clears a STALE auth kind on a later status failure: a prior success's Connect button does not linger beside the failure banner", async () => {
@@ -285,7 +269,7 @@ describe("Models settings page (ADR-0024)", () => {
 						],
 					}),
 		);
-		const stub = stubWsClient({
+		const overrides: Partial<WsClientService> = {
 			providerStatus,
 			providerLoginStart: () =>
 				Effect.succeed({ authorize_url: "https://auth.example/x" }),
@@ -307,9 +291,8 @@ describe("Models settings page (ADR-0024)", () => {
 					effort: "off",
 					enabled_models: [],
 				}),
-		});
-		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
-		renderPage(runtime);
+		};
+		await renderPage(overrides);
 
 		// First read succeeded → the real oauth Connect affordance is present.
 		expect(
@@ -328,8 +311,6 @@ describe("Models settings page (ADR-0024)", () => {
 			).toBeInTheDocument(),
 		);
 		expect(screen.queryByRole("button", { name: /^connect$/i })).toBeNull();
-
-		await runtime.dispose();
 	});
 
 	it("recovers from a provider/status failure: 'Try again' re-reads status, clears the banner, and reveals the real Connect affordance", async () => {
@@ -355,7 +336,7 @@ describe("Models settings page (ADR-0024)", () => {
 						],
 					}),
 		);
-		const stub = stubWsClient({
+		const overrides: Partial<WsClientService> = {
 			providerStatus,
 			providerLoginStart: () =>
 				Effect.succeed({ authorize_url: "https://auth.example/x" }),
@@ -377,9 +358,8 @@ describe("Models settings page (ADR-0024)", () => {
 					effort: "off",
 					enabled_models: [],
 				}),
-		});
-		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
-		renderPage(runtime);
+		};
+		await renderPage(overrides);
 
 		// Mount poll failed → banner + retry, no action button yet.
 		const retry = await screen.findByRole("button", { name: /try again/i });
@@ -401,17 +381,15 @@ describe("Models settings page (ADR-0024)", () => {
 		expect(
 			screen.queryByText(/couldn't check provider connections/i),
 		).toBeNull();
-
-		await runtime.dispose();
 	});
 
 	it("persists an effort change via settings/set", async () => {
 		const user = userEvent.setup();
-		const { runtime, settingsSet } = makeRuntime({
+		const { overrides, settingsSet } = makeOverrides({
 			connected: false,
 			effort: "off",
 		});
-		renderPage(runtime);
+		await renderPage(overrides);
 
 		await waitFor(() =>
 			expect(screen.getByRole("radio", { name: "Off" })).toHaveAttribute(
@@ -447,7 +425,7 @@ describe("Models settings page (ADR-0024)", () => {
 				}),
 			),
 		);
-		const stub = stubWsClient({
+		const overrides: Partial<WsClientService> = {
 			providerStatus: () =>
 				Effect.succeed({
 					providers: [
@@ -470,9 +448,8 @@ describe("Models settings page (ADR-0024)", () => {
 					enabled_models: [],
 				}),
 			settingsSet,
-		});
-		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
-		renderPage(runtime);
+		};
+		await renderPage(overrides);
 
 		// Loads persisted "low".
 		await waitFor(() =>
@@ -509,8 +486,6 @@ describe("Models settings page (ADR-0024)", () => {
 				"true",
 			),
 		);
-
-		await runtime.dispose();
 	});
 
 	it("lists the catalog in the provider detail and persists a preferred model via settings/set", async () => {
@@ -529,8 +504,11 @@ describe("Models settings page (ADR-0024)", () => {
 				input: ["text", "image"],
 			},
 		];
-		const { runtime, settingsSet } = makeRuntime({ connected: true, models });
-		renderPage(runtime);
+		const { overrides, settingsSet } = makeOverrides({
+			connected: true,
+			models,
+		});
+		await renderPage(overrides);
 
 		// Preferred model lives in the provider detail — drill in first.
 		await openProviderDetail(user);
@@ -569,13 +547,13 @@ describe("Models settings page (ADR-0024)", () => {
 			},
 		];
 		// Stored enabled set is empty (= "all enabled", slice 3 rule); default is GPT-5.5.
-		const { runtime, settingsSet } = makeRuntime({
+		const { overrides, settingsSet } = makeOverrides({
 			connected: true,
 			models,
 			model: "gpt-5.5",
 			enabledModels: [],
 		});
-		renderPage(runtime);
+		await renderPage(overrides);
 
 		await openProviderDetail(user);
 
@@ -670,7 +648,7 @@ describe("Models settings page (ADR-0024)", () => {
 				}),
 			),
 		);
-		const stub = stubWsClient({
+		const overrides: Partial<WsClientService> = {
 			providerStatus: () =>
 				Effect.succeed({
 					providers: [
@@ -693,9 +671,8 @@ describe("Models settings page (ADR-0024)", () => {
 					enabled_models: [],
 				}),
 			settingsSet,
-		});
-		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
-		renderPage(runtime);
+		};
+		await renderPage(overrides);
 
 		// Preferred-model picks happen in the provider detail.
 		await openProviderDetail(user);
@@ -740,8 +717,6 @@ describe("Models settings page (ADR-0024)", () => {
 				},
 			),
 		).toBeInTheDocument();
-
-		await runtime.dispose();
 	});
 });
 
@@ -751,7 +726,7 @@ describe("Models settings — failed Connect surfaces Core's reason", () => {
 		// provider/login_start fails TYPED (-32003 → ProviderLoginFailedError):
 		// Core's sanitized reason must reach the status line verbatim, not be
 		// flattened into the generic couldn't-start copy.
-		const { runtime } = makeRuntime({
+		const { overrides } = makeOverrides({
 			connected: false,
 			loginStart: () =>
 				Effect.fail(
@@ -760,7 +735,7 @@ describe("Models settings — failed Connect surfaces Core's reason", () => {
 					}),
 				),
 		});
-		renderPage(runtime);
+		await renderPage(overrides);
 
 		await user.click(await screen.findByRole("button", { name: /^connect$/i }));
 
@@ -777,12 +752,12 @@ describe("Models settings — failed Connect surfaces Core's reason", () => {
 		const user = userEvent.setup();
 		// A transport-level failure (no -32003 envelope) has no sanitized reason
 		// to show — the generic copy stays.
-		const { runtime } = makeRuntime({
+		const { overrides } = makeOverrides({
 			connected: false,
 			loginStart: () =>
 				Effect.fail(new WsRequestError({ reason: "send_failed" })),
 		});
-		renderPage(runtime);
+		await renderPage(overrides);
 
 		await user.click(await screen.findByRole("button", { name: /^connect$/i }));
 
@@ -798,12 +773,12 @@ describe("Models settings — failed Connect surfaces Core's reason", () => {
 		const user = userEvent.setup();
 		// Core never emits an empty -32003 message today, but an empty string
 		// would render a blank status line — the guard downgrades it.
-		const { runtime } = makeRuntime({
+		const { overrides } = makeOverrides({
 			connected: false,
 			loginStart: () =>
 				Effect.fail(new ProviderLoginFailedError({ message: "" })),
 		});
-		renderPage(runtime);
+		await renderPage(overrides);
 
 		await user.click(await screen.findByRole("button", { name: /^connect$/i }));
 
@@ -818,8 +793,11 @@ describe("Models settings — failed Connect surfaces Core's reason", () => {
 
 describe("Models settings — key-configurable provider (ADR-0062)", () => {
 	it("shows a 'Configure' affordance (not 'Connect') for OpenRouter while the OAuth codex row keeps 'Connect'", async () => {
-		const { runtime } = makeRuntime({ connected: false, withOpenRouter: true });
-		renderPage(runtime);
+		const { overrides } = makeOverrides({
+			connected: false,
+			withOpenRouter: true,
+		});
+		await renderPage(overrides);
 
 		// The disconnected OAuth provider (codex) still offers the OAuth "Connect".
 		await waitFor(() =>
@@ -836,11 +814,11 @@ describe("Models settings — key-configurable provider (ADR-0062)", () => {
 
 	it("submits the pasted key via provider/configure and flips the OpenRouter row to Connected live", async () => {
 		const user = userEvent.setup();
-		const { runtime, providerConfigure } = makeRuntime({
+		const { overrides, providerConfigure } = makeOverrides({
 			connected: false,
 			withOpenRouter: true,
 		});
-		renderPage(runtime);
+		await renderPage(overrides);
 
 		// Open the key-entry form.
 		await user.click(
@@ -904,7 +882,7 @@ describe("Models settings — key-configurable provider (ADR-0062)", () => {
 				],
 			}),
 		);
-		const stub = stubWsClient({
+		const overrides: Partial<WsClientService> = {
 			providerStatus,
 			providerLoginStart: () =>
 				Effect.succeed({ authorize_url: "https://auth.example/x" }),
@@ -930,9 +908,8 @@ describe("Models settings — key-configurable provider (ADR-0062)", () => {
 					effort: "off",
 					enabled_models: [],
 				}),
-		});
-		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
-		renderPage(runtime);
+		};
+		await renderPage(overrides);
 
 		// Mount poll landed disconnected → the Configure affordance is present.
 		const configureBtn = await screen.findByRole("button", {
@@ -984,13 +961,11 @@ describe("Models settings — key-configurable provider (ADR-0062)", () => {
 		expect(
 			finalRows.some((r) => /^connected$/i.test(r.textContent ?? "")),
 		).toBe(true);
-
-		await runtime.dispose();
 	});
 
 	it("surfaces a provider/configure error without crashing", async () => {
 		const user = userEvent.setup();
-		const stub = stubWsClient({
+		const overrides: Partial<WsClientService> = {
 			providerStatus: () =>
 				Effect.succeed({
 					providers: [
@@ -1031,9 +1006,8 @@ describe("Models settings — key-configurable provider (ADR-0062)", () => {
 					effort: "off",
 					enabled_models: [],
 				}),
-		});
-		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
-		renderPage(runtime);
+		};
+		await renderPage(overrides);
 
 		await user.click(
 			await screen.findByRole("button", { name: /^configure$/i }),
@@ -1045,16 +1019,14 @@ describe("Models settings — key-configurable provider (ADR-0062)", () => {
 		expect(
 			await screen.findByText(/couldn't|could not|failed/i),
 		).toBeInTheDocument();
-
-		await runtime.dispose();
 	});
 });
 
 describe("Models settings — provider liveness Test (ADR-0062)", () => {
-	// A runtime whose OpenRouter provider carries real catalog models (so its
+	// Stub verbs whose OpenRouter provider carries real catalog models (so its
 	// detail has something to probe) and whose provider/test resolves to a verdict
 	// the test controls. Both providers are connected so the detail renders.
-	function makeTestRuntime(verdict: { alive: boolean; message?: string }) {
+	function makeTestOverrides(verdict: { alive: boolean; message?: string }) {
 		const orModels: ModelInfo[] = [
 			{
 				id: "openrouter/auto",
@@ -1066,7 +1038,7 @@ describe("Models settings — provider liveness Test (ADR-0062)", () => {
 		const providerTest = vi.fn((_provider: string, _model: string) =>
 			Effect.succeed(verdict),
 		);
-		const stub = stubWsClient({
+		const overrides: Partial<WsClientService> = {
 			providerStatus: () =>
 				Effect.succeed({
 					providers: [
@@ -1106,9 +1078,9 @@ describe("Models settings — provider liveness Test (ADR-0062)", () => {
 					effort: "off",
 					enabled_models: [],
 				}),
-		});
+		};
 		return {
-			runtime: ManagedRuntime.make(Layer.succeed(WsClient, stub)),
+			overrides,
 			providerTest,
 		};
 	}
@@ -1124,8 +1096,8 @@ describe("Models settings — provider liveness Test (ADR-0062)", () => {
 
 	it("clicking Test probes provider/test with (openrouter, one of its models) and shows an alive indicator on {alive:true}", async () => {
 		const user = userEvent.setup();
-		const { runtime, providerTest } = makeTestRuntime({ alive: true });
-		renderPage(runtime);
+		const { overrides, providerTest } = makeTestOverrides({ alive: true });
+		await renderPage(overrides);
 
 		await openOpenRouterDetail(user);
 
@@ -1141,17 +1113,15 @@ describe("Models settings — provider liveness Test (ADR-0062)", () => {
 
 		// A positive/working liveness indicator renders.
 		expect(await screen.findByText(/working/i)).toBeInTheDocument();
-
-		await runtime.dispose();
 	});
 
 	it("shows a dead indicator with the failure message on {alive:false, message}", async () => {
 		const user = userEvent.setup();
-		const { runtime, providerTest } = makeTestRuntime({
+		const { overrides, providerTest } = makeTestOverrides({
 			alive: false,
 			message: "401 unauthorized",
 		});
-		renderPage(runtime);
+		await renderPage(overrides);
 
 		await openOpenRouterDetail(user);
 		await user.click(await screen.findByRole("button", { name: /^test$/i }));
@@ -1160,16 +1130,14 @@ describe("Models settings — provider liveness Test (ADR-0062)", () => {
 
 		// The dead verdict surfaces the failure message.
 		expect(await screen.findByText(/401 unauthorized/i)).toBeInTheDocument();
-
-		await runtime.dispose();
 	});
 });
 
-// A runtime whose `provider/status` flips false → true across calls: the first
+// Stub verbs whose `provider/status` flips false → true across calls: the first
 // poll is "Not connected", every poll after a (re)fetch reports "Connected".
 // Models the credential write that lands between the first mount-poll and the
 // refetch the live push (or focus) triggers.
-function makeFlippingRuntime() {
+function makeFlippingOverrides(): Partial<WsClientService> {
 	let calls = 0;
 	const providerStatus = vi.fn(() => {
 		const connected = calls > 0;
@@ -1180,7 +1148,7 @@ function makeFlippingRuntime() {
 			],
 		});
 	});
-	const stub = stubWsClient({
+	return {
 		providerStatus,
 		providerLoginStart: () =>
 			Effect.succeed({ authorize_url: "https://auth.example/x" }),
@@ -1202,8 +1170,7 @@ function makeFlippingRuntime() {
 				effort: "off",
 				enabled_models: [],
 			}),
-	});
-	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
+	};
 }
 
 describe("Models settings page — provider/connected live push (ADR-0049)", () => {
@@ -1223,8 +1190,8 @@ describe("Models settings page — provider/connected live push (ADR-0049)", () 
 		window.addEventListener("focus", focusSpy);
 
 		try {
-			const runtime = makeFlippingRuntime();
-			renderPage(runtime);
+			const overrides = makeFlippingOverrides();
+			await renderPage(overrides);
 
 			// First poll (mount) reports Not connected.
 			await waitFor(() =>
@@ -1257,25 +1224,21 @@ describe("Models settings page — provider/connected live push (ADR-0049)", () 
 		}
 	});
 
-	// renderPage builds its own internal QueryClient (renderWithQuery, no
-	// injection seam), so wrap with a test-owned client here to read/spy the
+	// Inject a test-owned client (the harness's queryClient seam) to read/spy the
 	// ["provider-status"] cache — the chat gate (connect welcome + composer
 	// soft-disable) reads it via useProviderStatus.
 	function renderPageWithClient(
-		runtime: ReturnType<typeof makeFlippingRuntime>,
+		overrides: Partial<WsClientService>,
 		client: QueryClient,
 	) {
 		const router = createRouter({
 			routeTree,
 			history: createMemoryHistory({ initialEntries: ["/settings/models"] }),
 		});
-		render(
-			<QueryClientProvider client={client}>
-				<RuntimeProvider runtime={runtime}>
-					<RouterProvider router={router} />
-				</RuntimeProvider>
-			</QueryClientProvider>,
-		);
+		return renderWithCore(<RouterProvider router={router} />, {
+			overrides,
+			queryClient: client,
+		});
 	}
 
 	it("writes connected into the ['provider-status'] cache on the live push, so a remounting chat gate reads the truth (no stale-cache flash)", async () => {
@@ -1288,9 +1251,7 @@ describe("Models settings page — provider/connected live push (ADR-0049)", () 
 			});
 
 		try {
-			const client = new QueryClient({
-				defaultOptions: { queries: { retry: false } },
-			});
+			const client = makeQueryClient();
 			// Pre-seed the cache as a prior disconnected `/` visit would have: the
 			// chat query is now INACTIVE (the user navigated here to /settings), so
 			// invalidateQueries (type:"active" by default) would NOT refetch it — only
@@ -1302,8 +1263,8 @@ describe("Models settings page — provider/connected live push (ADR-0049)", () 
 				],
 			});
 
-			const runtime = makeFlippingRuntime();
-			renderPageWithClient(runtime, client);
+			const overrides = makeFlippingOverrides();
+			await renderPageWithClient(overrides, client);
 
 			// Let mount settle: the card first reports Not connected.
 			await waitFor(() =>
@@ -1353,7 +1314,7 @@ describe("Models settings page — provider/connected live push (ADR-0049)", () 
 					{ id: "anthropic", connected: true, auth_kind: "oauth" as const },
 				],
 			};
-			const stub = stubWsClient({
+			const overrides: Partial<WsClientService> = {
 				providerStatus: () => Effect.succeed(twoProviderStatus),
 				providerLoginStart: () =>
 					Effect.succeed({ authorize_url: "https://auth.example/x" }),
@@ -1375,15 +1336,9 @@ describe("Models settings page — provider/connected live push (ADR-0049)", () 
 						effort: "off",
 						enabled_models: [],
 					}),
-			});
-			const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
-			const client = new QueryClient({
-				defaultOptions: { queries: { retry: false } },
-			});
-			renderPageWithClient(
-				runtime as unknown as ReturnType<typeof makeFlippingRuntime>,
-				client,
-			);
+			};
+			const client = makeQueryClient();
+			await renderPageWithClient(overrides, client);
 
 			if (pushed === undefined) {
 				await waitFor(() => expect(pushed).toBeDefined());
@@ -1400,8 +1355,6 @@ describe("Models settings page — provider/connected live push (ADR-0049)", () 
 					"openai-codex",
 				]);
 			});
-
-			await runtime.dispose();
 		} finally {
 			spy.mockRestore();
 		}
@@ -1410,8 +1363,8 @@ describe("Models settings page — provider/connected live push (ADR-0049)", () 
 	it("focus-refetch fallback flips the card in isolation — no push fired", async () => {
 		// Regression lock for the existing focus-refetch safety net (ADR-0023),
 		// proven independent of the live push: never fire the handler.
-		const runtime = makeFlippingRuntime();
-		renderPage(runtime);
+		const overrides = makeFlippingOverrides();
+		await renderPage(overrides);
 
 		await waitFor(() =>
 			expect(screen.getByTestId("provider-status")).toHaveTextContent(
