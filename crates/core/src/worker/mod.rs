@@ -1,7 +1,8 @@
 //! Worker process spawn (ADR-0013) behind the transport seam (ADR-0026). One
 //! Worker process per Run, stdio transport with NDJSON framing. `spawn`/`resume`
-//! build the spawn manifest (the only fresh-vs-resume difference), hand it to a
-//! [`child::ChildWorker`] (the sole `Command::spawn` site), and drive it with
+//! build the spawn manifest (the only fresh-vs-resume difference) and hand it to
+//! [`drive`] — the one shared driver body — which spawns a
+//! [`child::ChildWorker`] (the sole `Command::spawn` site) and drives it with
 //! the shared generic [`run::run_loop`]. The loop publishes each Run Event into
 //! the Run's hub (ADR-0022) — the live stream is owned by Core, observable by
 //! any connection, not bound to the issuing socket.
@@ -46,12 +47,11 @@ fn resolve_worker_cmd(run_id: Uuid) -> Option<launch::ResolvedCommand> {
 }
 
 /// Spawn a Worker for `run_id` (fresh path). Returns immediately; a Tokio task
-/// builds the manifest, spawns the Worker, and drives it via [`run::run_loop`].
-/// A pre-spawn failure (token resolution or process spawn) terminates the Run
-/// via [`finalize_error`]. `text_delta`s append to the assistant row
-/// pre-inserted at `seq=0`. `attachments` is the CURRENT turn's images, already
-/// read + base64-encoded by the handler (so a read failure fails the RPC, not
-/// this detached task).
+/// builds the manifest and hands it to [`drive`]. A pre-spawn failure (token
+/// resolution or process spawn) terminates the Run via [`finalize_error`].
+/// `text_delta`s append to the assistant row pre-inserted at `seq=0`.
+/// `attachments` is the CURRENT turn's images, already read + base64-encoded
+/// by the handler (so a read failure fails the RPC, not this detached task).
 #[allow(clippy::too_many_arguments)]
 pub fn spawn(
     run_id: Uuid,
@@ -72,6 +72,9 @@ pub fn spawn(
     tokio::spawn(
         async move {
             pre_spawn_delay_if_configured().await;
+            // Manifest-build-specific cancel check: bail before the (async)
+            // token resolution the build performs. `drive`'s own entry check
+            // re-tests after the build.
             if run_hub.is_cancelled() {
                 hub::remove(&hubs, run_id);
                 return;
@@ -82,36 +85,16 @@ pub fn spawn(
                 finalize_error(&pool, &hubs, run_id).await;
                 return;
             };
-            if run_hub.is_cancelled() {
-                hub::remove(&hubs, run_id);
-                return;
-            }
-            let Some(cmd) = resolve_worker_cmd(run_id) else {
-                finalize_error(&pool, &hubs, run_id).await;
-                return;
-            };
-            match ChildWorker::spawn(run_id, &cmd.program, &cmd.args, line).await {
-                Ok(worker) => {
-                    if run_hub.is_cancelled() {
-                        drop(worker);
-                        hub::remove(&hubs, run_id);
-                        return;
-                    }
-                    run_loop(
-                        worker,
-                        run_id,
-                        workflow,
-                        pool,
-                        assistant_message_id,
-                        hubs,
-                        run_hub.tx.clone(),
-                        run_hub.gate.clone(),
-                        run_hub.cancel_rx(),
-                    )
-                    .await;
-                }
-                Err(()) => finalize_error(&pool, &hubs, run_id).await,
-            }
+            drive(
+                line,
+                run_id,
+                workflow,
+                pool,
+                assistant_message_id,
+                hubs,
+                run_hub,
+            )
+            .await;
         }
         .instrument(span),
     );
@@ -119,8 +102,8 @@ pub fn spawn(
 
 /// Resume a parked Run after its Proposal is decided (ADR-0025). Reconstructs
 /// the transcript, flips `parked → running` (self-guarded — bails if another
-/// resume won the race), creates a fresh per-run hub, and spawns a
-/// `mode:"resume"` Worker driven by [`run::run_loop`].
+/// resume won the race), creates a fresh per-run hub, and hands the pre-built
+/// `mode:"resume"` manifest to [`drive`].
 ///
 /// Errors only on a pre-spawn failure (assistant message missing). The atomic
 /// apply is already committed, so a resume failure leaves a durably-accepted
@@ -171,41 +154,84 @@ pub async fn resume(run_id: Uuid, pool: &SqlitePool, hubs: &Hubs) -> anyhow::Res
     tokio::spawn(
         async move {
             pre_spawn_delay_if_configured().await;
-            if run_hub.is_cancelled() {
-                hub::remove(&hubs, run_id);
-                return;
-            }
-            let Some(cmd) = resolve_worker_cmd(run_id) else {
-                finalize_error(&pool, &hubs, run_id).await;
-                return;
-            };
-            match ChildWorker::spawn(run_id, &cmd.program, &cmd.args, line).await {
-                Ok(worker) => {
-                    run_loop(
-                        worker,
-                        run_id,
-                        workflow,
-                        pool,
-                        assistant_message_id,
-                        hubs,
-                        run_hub.tx.clone(),
-                        run_hub.gate.clone(),
-                        run_hub.cancel_rx(),
-                    )
-                    .await;
-                }
-                // Rare residual case: a post-flip spawn failure (the realistic
-                // token/manifest failure is handled before the flip). The decide
-                // RPC already reported success, so re-parking would leave a decided
-                // card over a silently hung turn. Finalize `errored` instead so the
-                // failure is visible and the user can re-send.
-                Err(()) => finalize_error(&pool, &hubs, run_id).await,
-            }
+            drive(
+                line,
+                run_id,
+                workflow,
+                pool,
+                assistant_message_id,
+                hubs,
+                run_hub,
+            )
+            .await;
         }
         .instrument(span),
     );
 
     Ok(())
+}
+
+/// The one Worker driver task body, shared by the fresh ([`spawn`]) and resume
+/// ([`resume`]) paths — the manifest `line` is the only caller-supplied
+/// difference. Cancel checks sit at fixed structural positions — on entry
+/// (before the command resolve) and after the child spawn — so fresh and
+/// resume honor cancellation identically BY CONSTRUCTION: the union of the two
+/// pre-collapse check sets (the old resume body lacked the post-spawn check
+/// for no reason recorded anywhere).
+///
+/// Layout: `drive` does NOT own the pre-spawn test delay or the manifest
+/// build. Each caller's task body runs `pre_spawn_delay_if_configured` first
+/// (once — no double delay), the fresh path keeps its manifest sandwich
+/// (cancel check → async build) caller-side, and `drive`'s entry check IS the
+/// fresh path's pre-collapse post-build check — so both callers' orderings are
+/// preserved exactly, with resume's post-spawn check the one union addition.
+async fn drive(
+    line: String,
+    run_id: Uuid,
+    workflow: Workflow,
+    pool: SqlitePool,
+    assistant_message_id: Uuid,
+    hubs: Hubs,
+    run_hub: RunHub,
+) {
+    if run_hub.is_cancelled() {
+        hub::remove(&hubs, run_id);
+        return;
+    }
+    let Some(cmd) = resolve_worker_cmd(run_id) else {
+        finalize_error(&pool, &hubs, run_id).await;
+        return;
+    };
+    match ChildWorker::spawn(run_id, &cmd.program, &cmd.args, line).await {
+        Ok(worker) => {
+            // Post-spawn cancel check (the union addition for resume): the
+            // cancel won while the child was spawning, so drop it before the
+            // loop ever runs — `kill_on_drop` reaps it, no orphan Worker.
+            if run_hub.is_cancelled() {
+                drop(worker);
+                hub::remove(&hubs, run_id);
+                return;
+            }
+            run_loop(
+                worker,
+                run_id,
+                workflow,
+                pool,
+                assistant_message_id,
+                hubs,
+                run_hub,
+            )
+            .await;
+        }
+        // A pre-loop spawn failure finalizes the Run `errored`. For a fresh
+        // Run this is the ordinary pre-spawn failure path. For a resume it is
+        // the rare residual case — a post-flip spawn failure (the realistic
+        // token/manifest failure is handled before the flip): the decide RPC
+        // already reported success, so re-parking would leave a decided card
+        // over a silently hung turn. Finalizing `errored` keeps the failure
+        // visible and the user can re-send.
+        Err(()) => finalize_error(&pool, &hubs, run_id).await,
+    }
 }
 
 /// Build the fresh-spawn manifest line (ADR-0018): Workflow fields, prompt,
@@ -386,6 +412,88 @@ mod tests {
         assert!(
             tool_names.contains(&"load_skill"),
             "ambient load_skill shipped despite the Workflow omitting it — got {tool_names:?}"
+        );
+    }
+
+    /// The shared driver honors a cancel signalled before the child spawn — for
+    /// the RESUME path too (the union of the two pre-collapse check sets: the
+    /// old resume task body lacked the fresh path's post-spawn check). The test
+    /// pins the check POSITION via the cancelled-before-`drive` path: cancel
+    /// first, run `drive`, assert no orphan hub and no run_loop / finalize
+    /// side effects (status untouched). Driving a real `ChildWorker` to exercise
+    /// the post-spawn check in isolation would need a spawnable worker binary
+    /// (env-dependent, non-hermetic) — and its outcome is indistinguishable
+    /// from `run_loop`'s own initial-cancel handling from outside — so the
+    /// pre-spawn structural position is the one pinned here. RED note: this
+    /// behavior was unreachable pre-collapse (the old resume body had no shared
+    /// seam to call), so the RED commit compiled this against a `todo!()` stub
+    /// of `drive` — the refactor-slice exemption.
+    #[tokio::test]
+    async fn drive_honors_cancel_signalled_before_child_spawn() {
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+
+        let options = SqliteConnectOptions::new()
+            .filename(":memory:")
+            .foreign_keys(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .expect("open in-memory sqlite");
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .expect("run migrations");
+
+        // Seed a Thread + Run so `runs.status` exists to assert against.
+        let wf = workflow(&[]);
+        let thread_id = Uuid::now_v7();
+        let run_id = Uuid::now_v7();
+        let assistant_message_id = Uuid::now_v7();
+        db::persist_thread_with_first_run(
+            &pool,
+            thread_id,
+            run_id,
+            Uuid::now_v7(),
+            assistant_message_id,
+            &wf,
+            "prompt",
+            &[],
+            "t",
+            1,
+        )
+        .await
+        .expect("seed run");
+
+        let hubs = hub::new_hubs();
+        let run_hub = hub::create(&hubs, run_id);
+        // The cancel wins BEFORE the driver reaches the child spawn.
+        run_hub.cancel();
+
+        drive(
+            "{}\n".to_string(),
+            run_id,
+            wf,
+            pool.clone(),
+            assistant_message_id,
+            hubs.clone(),
+            run_hub,
+        )
+        .await;
+
+        // Bailed at the pre-spawn check: hub removed (no orphan) ...
+        assert!(
+            hub::get(&hubs, run_id).is_none(),
+            "a cancelled driver removes the hub instead of orphaning it"
+        );
+        // ... and neither run_loop nor finalize_error ran: status untouched.
+        assert_eq!(
+            db::run_status(&pool, run_id)
+                .await
+                .unwrap()
+                .map(db::RunStatus::as_str),
+            Some("running"),
+            "no terminal tx: the driver spawned nothing and finalized nothing"
         );
     }
 

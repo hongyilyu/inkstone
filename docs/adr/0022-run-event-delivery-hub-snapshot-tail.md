@@ -27,6 +27,8 @@ Because both take the same per-run gate, every delta falls wholly before or whol
 
 If a slow subscriber overflows the bounded broadcast buffer (`broadcast::error::RecvError::Lagged`), the subscriber **re-snapshots** from tier 2 (the persisted text is always the floor) and resumes the tail. Lag degrades to "re-read the truth," never to lost text.
 
+(As-built amendment: the gate ritual is encapsulated behind `RunHub`'s own interface — `publish_gated`, `snapshot_then_attach`, and the `gate()` guard for multi-step brackets — so the two critical sections are enforced structurally by `hub.rs` rather than spelled out as lock rituals at call sites. The discipline above is unchanged.)
+
 ### Terminal-event ordering (as-built amendment, real-worker-codex slice 9)
 
 The exactly-once gate above governs **`text_delta`** delivery. The **terminal** event (`done`/`error`/`cancelled`) has a second ordering constraint the original design did not pin: it must not reach a Client *before* tier 2 reflects the terminal state. The Worker originally published every event — terminal included — from inside the event loop, before the terminal SQLite transaction (`complete_run`/`error_run`) committed. That opened a sub-millisecond window: a Client reacting to `done` (most concretely, posting the next Run in the same Thread, whose history assembly filters on `status='completed'`) could read tier 2 *before* the prior Run's assistant Message flipped from `streaming` to `completed`, and so miss that turn.

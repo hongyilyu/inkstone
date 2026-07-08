@@ -6,8 +6,12 @@
 //! DB write — zero rows persisted (ADR-0014).
 //!
 //! Pure-subscribe (ADR-0022): the response carries ONLY `{thread_id, run_id}`;
-//! the Client follows with `run/subscribe(run_id)`. Hub created before the
-//! Worker spawns (same ordering as `post_message`).
+//! the Client follows with `run/subscribe(run_id)`. The whole Run-start
+//! sequence (dispatch → provider gate → persist → hub → spawn, with its
+//! ordering invariants) lives in the deep verb [`crate::start_run`] via
+//! `PersistStep::CreateThread`; this shell validates the prompt, resolves the
+//! attachments, derives the placeholder title, mints ids, fires the titler,
+//! and maps the verb's errors onto the wire.
 
 use sqlx::SqlitePool;
 use tokio::sync::mpsc::UnboundedSender;
@@ -16,9 +20,9 @@ use uuid::Uuid;
 use super::handler::{self, HandlerError};
 use super::media::resolve_attachments;
 use crate::db;
-use crate::dispatcher;
-use crate::hub::{self, Hubs};
+use crate::hub::Hubs;
 use crate::protocol::{ThreadCreateParams, ThreadCreateResult};
+use crate::start_run::{self, PersistStep, StartRunParams};
 use crate::worker;
 
 use super::title;
@@ -47,80 +51,68 @@ pub(super) async fn handle(
         // (ADR-0046) overwrites it with a generated title on success.
         let title = title::placeholder_title(trimmed);
 
-        let now = db::now_ms();
-
-        let thread_id = Uuid::now_v7();
-        let run_id = Uuid::now_v7();
-        let user_message_id = Uuid::now_v7();
-        let assistant_message_id = Uuid::now_v7();
-
-        // Pick a Workflow (ADR-0011) and resolve its effective model/effort from
-        // user settings (ADR-0024) — one shared seam.
-        let workflow = dispatcher::dispatch_and_resolve(pool, thread_id, &params.prompt).await;
-
-        // Reject BEFORE minting the Thread if the resolved model's provider has no
-        // credential (ADR-0062) — no Thread/Run rows, no doomed tokenless Worker.
-        handler::ensure_provider_connected(&workflow.provider)?;
-
         // Resolve each attachment id via the media substrate (ADR-0058) BEFORE
-        // any persistence — an unknown id is invalid_params, an unreadable file
-        // internal, both with NO Thread minted. `manifest_attachments` carries
-        // the bytes (base64) for the fresh spawn manifest.
+        // the verb runs — pre-verb validation, like the empty-prompt guard
+        // above: an unknown id is invalid_params, an unreadable file internal,
+        // both with NO Thread minted. `manifest_attachments` carries the bytes
+        // (base64) for the fresh spawn manifest.
         let (attachments, manifest_attachments) =
             resolve_attachments(pool, &params.attachment_ids).await?;
 
-        db::persist_thread_with_first_run(
+        let thread_id = Uuid::now_v7();
+
+        let started = start_run::start_run(
             pool,
-            thread_id,
-            run_id,
-            user_message_id,
-            assistant_message_id,
-            &workflow,
-            &params.prompt,
-            &attachments,
-            &title,
-            now,
+            hubs,
+            StartRunParams {
+                thread_id,
+                // Cloned: the titler below needs the prompt after the verb
+                // moves its copy into the Worker spawn.
+                prompt: params.prompt.clone(),
+                manifest_attachments,
+                persist_step: PersistStep::CreateThread {
+                    run_id: Uuid::now_v7(),
+                    user_message_id: Uuid::now_v7(),
+                    assistant_message_id: Uuid::now_v7(),
+                    attachments,
+                    title,
+                    now: db::now_ms(),
+                },
+                // A brand-new Thread has no prior exchange — skip the history
+                // read; the Worker gets an empty history.
+                skip_history: true,
+                deferred_spawn: false,
+            },
+            start_run::default_spawn,
         )
         .await
-        .map_err(|e| HandlerError::Internal(e.into()))?;
-
-        // Create the hub BEFORE spawning the Worker so a subscribe arriving
-        // right after the response can't find a missing hub.
-        let run_hub = hub::create(hubs, run_id);
+        .map_err(HandlerError::from)?;
 
         // Fire the one-shot title Worker (ADR-0046) — fire-and-forget, so the
-        // create RESPONSE never waits on it. Clone the prompt + provider because
-        // both `params.prompt` and `workflow` are moved into the Run's
-        // `worker::spawn` below. `out_tx.clone()` is this connection's outbound
-        // channel: on a successful generation the titler frames a `thread/titled`
-        // notification onto it (ADR-0047) so the creating tab's sidebar updates
-        // live. On empty/whitespace output it silently keeps the prompt-derived
-        // placeholder and pushes nothing. (The provider is guaranteed connected
-        // here: the gate above rejects a disconnected one before this point.)
+        // create RESPONSE never waits on it. `started.provider` is the
+        // resolved Workflow's provider, guaranteed connected (the verb's
+        // ADR-0062 gate rejects a disconnected one before this point).
+        // `out_tx.clone()` is this connection's outbound channel: on a
+        // successful generation the titler frames a `thread/titled`
+        // notification onto it (ADR-0047) so the creating tab's sidebar
+        // updates live. On empty/whitespace output it silently keeps the
+        // prompt-derived placeholder and pushes nothing. Ordering: this now
+        // fires AFTER the Run's `worker::spawn` (inside the verb) instead of
+        // between hub-create and spawn — equivalent, because both are
+        // fire-and-forget onto independent subsystems (the titler is a
+        // one-shot non-Run worker sharing no state with the Run worker), so
+        // the swap is not wire-observable.
         worker::spawn_title_generation(
             thread_id,
-            params.prompt.clone(),
-            workflow.provider.clone(),
+            params.prompt,
+            started.provider,
             pool.clone(),
             out_tx.clone(),
         );
 
-        worker::spawn(
-            run_id,
-            workflow,
-            params.prompt,
-            // A brand-new Thread has no prior exchange — empty history.
-            Vec::new(),
-            manifest_attachments,
-            pool.clone(),
-            assistant_message_id,
-            hubs.clone(),
-            run_hub,
-        );
-
         Ok(ThreadCreateResult {
             thread_id: thread_id.to_string(),
-            run_id: run_id.to_string(),
+            run_id: started.run_id.to_string(),
         })
     })
     .await;

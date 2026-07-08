@@ -18,6 +18,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use uuid::Uuid;
 
 use super::reply::{send_response, send_rpc_error};
+use crate::start_run::StartRunError;
 
 /// A protocol-level failure from a handler body. Each variant owns its JSON-RPC
 /// code (ADR-0014) and client-facing message; [`frame_error`] puts it on the
@@ -77,22 +78,26 @@ impl HandlerError {
     }
 }
 
-/// Gate a fresh Run on its resolved provider being connected (ADR-0062): reject
-/// BEFORE spawning a doomed tokenless Worker so the send fails loud with a typed
-/// [`HandlerError::ProviderNotConnected`] ("connect it") instead of streaming into
-/// an opaque provider 401. Shared by every Run-creation site (post_message,
-/// thread_create, journal_entry, retry).
+/// The verb-error → wire-error map for the Run-creation shells (ADR-0029: the
+/// deep verb [`crate::start_run`] speaks its own error vocabulary; the handler
+/// layer owns the JSON-RPC mapping — this From is that single site).
 ///
-/// A missing credential is `ProviderNotConnected`; a present-but-UNPARSEABLE
-/// credential file is `Internal` (fail loud on a corrupt store, matching
-/// `credentials::read`'s contract), never a misleading "not connected".
-pub(super) fn ensure_provider_connected(provider: &str) -> Result<(), HandlerError> {
-    match crate::credentials::is_connected(provider) {
-        Ok(true) => Ok(()),
-        Ok(false) => Err(HandlerError::ProviderNotConnected {
-            provider: provider.to_string(),
-        }),
-        Err(e) => Err(HandlerError::Internal(e)),
+/// `PersistRaceLost` is total-but-honest here: only `run/retry` uses
+/// `PersistStep::RetryCas` (the one step that can lose a persist race), and its
+/// shell matches on `PersistRaceLost` BEFORE converting (a lost CAS is the
+/// `not_errored` outcome, not an error frame). Reaching this arm from any other
+/// handler is a logic bug, surfaced as a loud Internal instead of a panic.
+impl From<StartRunError> for HandlerError {
+    fn from(e: StartRunError) -> Self {
+        match e {
+            StartRunError::ProviderNotConnected(provider) => {
+                HandlerError::ProviderNotConnected { provider }
+            }
+            StartRunError::PersistRaceLost => {
+                HandlerError::Internal(anyhow::anyhow!("persist race lost outside retry"))
+            }
+            StartRunError::Internal(e) => HandlerError::Internal(e),
+        }
     }
 }
 
@@ -245,42 +250,6 @@ mod tests {
             v["error"]["message"],
             json!("provider login failed: account locked")
         );
-    }
-
-    #[test]
-    fn ensure_provider_connected_maps_missing_present_and_corrupt() {
-        use crate::credentials::{self, StoredCredential};
-
-        // Shared panic-safe fixture: points this thread's Config at a fresh
-        // credentials tempdir and restores the previous config on drop.
-        let creds = credentials::test_credentials_dir();
-
-        // No credential file → ProviderNotConnected carrying the provider id.
-        match ensure_provider_connected("openai-codex") {
-            Err(HandlerError::ProviderNotConnected { provider }) => {
-                assert_eq!(provider, "openai-codex");
-            }
-            other => panic!("expected ProviderNotConnected, got {other:?}"),
-        }
-
-        // A stored credential → Ok.
-        credentials::write(
-            "openai-codex",
-            &StoredCredential::ApiKey {
-                key: "sk-test".to_string(),
-            },
-        )
-        .expect("write credential");
-        assert!(ensure_provider_connected("openai-codex").is_ok());
-
-        // A present-but-UNPARSEABLE file → Internal (fail loud on a corrupt store),
-        // never a misleading ProviderNotConnected.
-        std::fs::write(creds.dir().join("openrouter.json"), b"{ not valid json")
-            .expect("write corrupt file");
-        match ensure_provider_connected("openrouter") {
-            Err(HandlerError::Internal(_)) => {}
-            other => panic!("expected Internal for a corrupt store, got {other:?}"),
-        }
     }
 
     #[tokio::test]

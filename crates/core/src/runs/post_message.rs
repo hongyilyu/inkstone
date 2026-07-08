@@ -5,8 +5,11 @@
 //! well-formed but unknown one → `unknown_thread` with zero rows written.
 //!
 //! Pure-subscribe (ADR-0022): the response carries ONLY `{run_id}` — the
-//! Client gets events by following with `run/subscribe(run_id)`. The hub is
-//! created BEFORE the Worker spawns so a fast subscribe can't race a missing hub.
+//! Client gets events by following with `run/subscribe(run_id)`. The whole
+//! Run-start sequence (dispatch → provider gate → persist → hub → history →
+//! spawn, with its ordering invariants) lives in the deep verb
+//! [`crate::start_run`]; this shell only validates the Thread, resolves the
+//! attachments, mints ids, and maps the verb's errors onto the wire.
 
 use sqlx::SqlitePool;
 use tokio::sync::mpsc::UnboundedSender;
@@ -15,10 +18,9 @@ use uuid::Uuid;
 use super::handler::{self, HandlerError};
 use super::media::resolve_attachments;
 use crate::db;
-use crate::dispatcher;
-use crate::hub::{self, Hubs};
+use crate::hub::Hubs;
 use crate::protocol::{PostMessageParams, PostMessageResult};
-use crate::worker;
+use crate::start_run::{self, PersistStep, StartRunParams};
 
 pub(super) async fn handle(
     pool: &SqlitePool,
@@ -39,72 +41,39 @@ pub(super) async fn handle(
             return Err(HandlerError::UnknownThread(thread_id));
         }
 
-        let now = db::now_ms();
-
-        // Pick a Workflow (ADR-0011) and resolve its effective model/effort from
-        // user settings (ADR-0024) — one shared seam.
-        let workflow = dispatcher::dispatch_and_resolve(pool, thread_id, &params.prompt).await;
-
-        // Reject BEFORE persisting/spawning if the resolved model's provider has no
-        // credential (ADR-0062): a tokenless Worker would only 401 into an opaque
-        // errored Run. Fail loud so the Client can prompt "connect it".
-        handler::ensure_provider_connected(&workflow.provider)?;
-
         // Resolve each attachment id via the media substrate (ADR-0058) BEFORE
-        // any persistence — an unknown id is invalid_params, an unreadable file
-        // internal, both with zero rows, matching the unknown-thread precedent
-        // above. `manifest_attachments` carries the bytes (base64) for the
-        // fresh spawn manifest so the model sees the current turn's images.
+        // the verb runs — pre-verb validation, like the unknown-thread gate
+        // above: an unknown id is invalid_params, an unreadable file internal,
+        // both with zero rows. `manifest_attachments` carries the bytes
+        // (base64) for the fresh spawn manifest so the model sees the current
+        // turn's images.
         let (attachments, manifest_attachments) =
             resolve_attachments(pool, &params.attachment_ids).await?;
 
-        let run_id = Uuid::now_v7();
-        let user_message_id = Uuid::now_v7();
-        let assistant_message_id = Uuid::now_v7();
-
-        db::persist_initial_run(
+        let started = start_run::start_run(
             pool,
-            run_id,
-            thread_id,
-            user_message_id,
-            assistant_message_id,
-            &workflow,
-            &params.prompt,
-            &attachments,
-            now,
+            hubs,
+            StartRunParams {
+                thread_id,
+                prompt: params.prompt,
+                manifest_attachments,
+                persist_step: PersistStep::FreshRun {
+                    run_id: Uuid::now_v7(),
+                    user_message_id: Uuid::now_v7(),
+                    assistant_message_id: Uuid::now_v7(),
+                    attachments,
+                    now: db::now_ms(),
+                },
+                skip_history: false,
+                deferred_spawn: false,
+            },
+            start_run::default_spawn,
         )
         .await
-        .map_err(|e| HandlerError::Internal(e.into()))?;
-
-        // Create the hub BEFORE spawning the Worker so a subscribe arriving
-        // right after the response can't find a missing hub.
-        let run_hub = hub::create(hubs, run_id);
-
-        // Prior-Run conversation history (ADR-0018), excluding the Run just
-        // persisted. A read failure is non-fatal: fall back to no history.
-        let history = db::history_for_run(pool, thread_id, run_id)
-            .await
-            .unwrap_or_else(|e| {
-                eprintln!("history_for_run failed for run {run_id}: {e}");
-                Vec::new()
-            });
-
-        // Spawn the Worker wired to publish into the hub; it removes the hub
-        // entry after its terminal tx.
-        worker::spawn(
-            run_id,
-            workflow,
-            params.prompt,
-            history,
-            manifest_attachments,
-            pool.clone(),
-            assistant_message_id,
-            hubs.clone(),
-            run_hub,
-        );
+        .map_err(HandlerError::from)?;
 
         Ok(PostMessageResult {
-            run_id: run_id.to_string(),
+            run_id: started.run_id.to_string(),
         })
     })
     .await;

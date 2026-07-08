@@ -32,12 +32,12 @@ pub(super) async fn handle(
     let run_id = params.run_id;
 
     match hub::get(hubs, run_id) {
-        // Run still streaming: snapshot under the gate, then attach.
+        // Run still streaming: snapshot under the gate, then attach
+        // (RunHub::snapshot_then_attach owns the ADR-0022 lock ritual).
         Some(run_hub) => {
-            let guard = run_hub.gate.lock().await;
-            let snapshot = db::select_run_snapshot(pool, run_id).await;
-            let receiver = run_hub.tx.subscribe();
-            drop(guard);
+            let (snapshot, receiver) = run_hub
+                .snapshot_then_attach(|| db::select_run_snapshot(pool, run_id))
+                .await;
 
             let (snapshot_text, status) = match snapshot {
                 Ok(Some(snap)) => (snap.text, snap.status),

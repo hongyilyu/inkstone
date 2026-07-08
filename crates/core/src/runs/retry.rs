@@ -20,7 +20,11 @@
 //!
 //! The Response is framed BEFORE the spawn, mirroring `run/cancel`'s ordering
 //! discipline (the post-response work — here the Worker spawn — happens after the
-//! client has its answer).
+//! client has its answer). The Run-start sequence itself (dispatch → provider
+//! gate → CAS persist → hub → history → spawn) lives in the deep verb
+//! [`crate::start_run`] via `PersistStep::RetryCas` + `deferred_spawn`; this
+//! shell owns the retry-only decision reads (`unknown_run` / `not_errored`),
+//! the wire framing, and firing the deferred spawn after the Response.
 
 use sqlx::SqlitePool;
 use tokio::sync::mpsc::UnboundedSender;
@@ -29,10 +33,9 @@ use super::handler::{self, HandlerError};
 use super::media::encode_manifest_attachments;
 use super::reply::send_response;
 use crate::db;
-use crate::dispatcher;
-use crate::hub::{self, Hubs};
+use crate::hub::Hubs;
 use crate::protocol::{RunRetryParams, RunRetryResult};
-use crate::worker;
+use crate::start_run::{self, PersistStep, StartRunError, StartRunParams};
 
 pub(super) async fn handle_retry(
     pool: &SqlitePool,
@@ -48,11 +51,11 @@ pub(super) async fn handle_retry(
     };
     let run_id = params.run_id;
 
-    // Decide the outcome (and gather the spawn inputs for the `accepted` path).
-    // `prepare` frames its own failures as HandlerError: a DB fault → Internal, a
+    // Decide the outcome (and, for `accepted`, drive the verb up to its deferred
+    // spawn). Failures arrive as HandlerError: a DB fault → Internal, a
     // disconnected provider → ProviderNotConnected (-32004). Both are framed here
     // BEFORE any spawn or response; the errored→running flip only happens on the
-    // Ok path, so a rejected retry never leaves a half-flipped Run.
+    // Accepted path, so a rejected retry never leaves a half-flipped Run.
     let outcome = match prepare(pool, hubs, run_id).await {
         Ok(o) => o,
         Err(e) => {
@@ -62,6 +65,8 @@ pub(super) async fn handle_retry(
     };
 
     // Frame the Response BEFORE the post-response Worker spawn (cancel's ordering).
+    // On serialize failure: frame -32603 and return WITHOUT firing the spawn —
+    // the client never learned the retry was accepted, so nothing re-drives.
     match serde_json::to_value(RunRetryResult {
         outcome: outcome.label().to_string(),
     }) {
@@ -72,31 +77,23 @@ pub(super) async fn handle_retry(
         }
     }
 
-    // On `accepted`, spawn the re-driven Worker on the SAME run_id +
-    // assistant_message_id (mode None/fresh) AFTER the Response is framed.
+    // On `accepted`, fire the verb's deferred spawn — the re-driven Worker on the
+    // SAME run_id + assistant_message_id (mode None/fresh) AFTER the Response.
+    //
+    // INVARIANT: on this path the closure MUST be fired. By now the verb has
+    // committed the errored→running flip and registered the hub; dropping the
+    // closure unfired would leak a producer-less hub and strand the Run
+    // `running` forever with no Worker driving it.
     if let Outcome::Accepted(spawn) = outcome {
-        worker::spawn(
-            run_id,
-            spawn.workflow,
-            spawn.prompt,
-            spawn.history,
-            // Retry REPLAYS the original turn's images (re-read + re-encoded in
-            // `prepare`): a retried "what's in this image?" must reach the model
-            // WITH the image, exactly like the original send. (Parked-resume
-            // still passes None — that cut stands.)
-            spawn.attachments,
-            pool.clone(),
-            spawn.assistant_message_id,
-            hubs.clone(),
-            spawn.run_hub,
-        );
+        spawn();
     }
 }
 
-/// The decided retry outcome. `Accepted` carries everything the post-response
-/// spawn needs (the hub is created in-band so a fast subscribe can't race it).
+/// The decided retry outcome. `Accepted` carries the verb's deferred spawn,
+/// unfired (the hub is already created in-band by the verb, so a fast subscribe
+/// can't race it).
 enum Outcome {
-    Accepted(Box<Spawn>),
+    Accepted(Box<dyn FnOnce() + Send>),
     NotErrored,
     UnknownRun,
 }
@@ -111,19 +108,8 @@ impl Outcome {
     }
 }
 
-struct Spawn {
-    workflow: crate::workflow::Workflow,
-    prompt: String,
-    history: Vec<(String, String)>,
-    /// The original turn's images, re-read + re-encoded so the retried fresh
-    /// manifest carries them like the original send did.
-    attachments: Vec<crate::protocol::ManifestAttachment>,
-    assistant_message_id: uuid::Uuid,
-    run_hub: crate::hub::RunHub,
-}
-
-/// The decision + (for `accepted`) the in-place retry transaction and spawn prep.
-/// Pure of any wire framing — the caller owns the Response. A DB fault maps to
+/// The decision + (for `accepted`) the verb-driven in-place retry. Pure of any
+/// wire framing — the caller owns the Response. A DB fault maps to
 /// `HandlerError::Internal`; a disconnected provider to `ProviderNotConnected`
 /// (`-32004`), both framed as error frames by the caller. The three success
 /// outcomes (`accepted`/`not_errored`/`unknown_run`) are the `Ok` values.
@@ -147,18 +133,19 @@ async fn prepare(
     // errored Run is retryable, and that established outcome must win regardless of
     // provider connectivity (a disconnected provider on a running/completed Run is
     // still `not_errored`, not `-32004`). This read is non-mutating; the guarded
-    // flip below is still the authoritative race-safe transition. A missing Run
-    // was already handled above, so `None` here would be a TOCTOU delete — treat it
-    // as not-errored (the flip would lose anyway).
+    // flip inside the verb is still the authoritative race-safe transition. A
+    // missing Run was already handled above, so `None` here would be a TOCTOU
+    // delete — treat it as not-errored (the flip would lose anyway).
     //
     // The advisory read and the authoritative flip can't produce a WRONG state: the
     // CAS in `prepare_retry` self-guards on `WHERE status='errored'`, so a Run that
-    // races out of `errored` after this read still yields `not_errored` (below).
-    // The only observable effect of a concurrent double-retry of the SAME errored
-    // Run against a disconnected provider is which truthful message wins the tie
-    // (`-32004` vs `not_errored`) — not reachable from one client (the retry
-    // affordance disappears once the bubble leaves `errored`), so we do not pay the
-    // cost of folding the credential gate into the flip transaction.
+    // races out of `errored` after this read still yields `not_errored` (below, via
+    // `PersistRaceLost`). The only observable effect of a concurrent double-retry
+    // of the SAME errored Run against a disconnected provider is which truthful
+    // message wins the tie (`-32004` vs `not_errored`) — not reachable from one
+    // client (the retry affordance disappears once the bubble leaves `errored`),
+    // so we do not pay the cost of folding the credential gate into the flip
+    // transaction.
     let status = db::run_status(pool, run_id)
         .await
         .map_err(|e| HandlerError::Internal(e.into()))?;
@@ -166,21 +153,11 @@ async fn prepare(
         return Ok(Outcome::NotErrored);
     }
 
-    // Re-resolve the Workflow from LIVE settings (NOT the snapshot), so a model
-    // switch before retry takes effect (ADR-0024 contrast with resume).
-    let workflow = dispatcher::dispatch_and_resolve(pool, thread_id, &prompt).await;
-
-    // Gate on the re-resolved provider's credential BEFORE the errored→running
-    // flip (ADR-0062): a disconnected provider must fail loud with "connect it",
-    // not re-drive a tokenless Worker into another 401. The shared helper maps
-    // missing→ProviderNotConnected (-32004) and corrupt→Internal, exactly as the
-    // fresh-send sites; the caller frames the returned HandlerError.
-    handler::ensure_provider_connected(&workflow.provider)?;
-
     // The reused assistant Message id — the bubble identity stays stable. Read it
-    // BEFORE the committing flip + hub::create: the id is immutable, so reading it
-    // earlier is order-independent, and a fault/None here aborts with the Run still
-    // in its true `errored` state and no producer-less hub left behind.
+    // BEFORE handing off to the verb (whose dispatch → gate → CAS follows): the id
+    // is immutable, so reading it earlier is order-independent, and a fault/None
+    // here aborts with the Run still in its true `errored` state and no
+    // producer-less hub left behind.
     let assistant_message_id = db::assistant_message_id_for_run(pool, run_id)
         .await
         .map_err(|e| HandlerError::Internal(e.into()))?
@@ -192,47 +169,56 @@ async fn prepare(
     // `media_attachments` rows keyed by the user Message) so the retried fresh
     // manifest replays them — a retried "what's in this image?" must reach the
     // model WITH the image. Like the send path, a read failure is Internal with
-    // no spawn; placed BEFORE the committing flip so the failure leaves the Run
-    // in its true `errored` state (still retryable) and no producer-less hub.
+    // no spawn; placed BEFORE the verb (whose committing flip follows) so the
+    // failure leaves the Run in its true `errored` state (still retryable) and
+    // no producer-less hub.
     let media_ids = db::media_ids_for_message(pool, &user_message_id)
         .await
         .map_err(|e| HandlerError::Internal(e.into()))?;
-    let attachments = encode_manifest_attachments(pool, &media_ids).await?;
+    let manifest_attachments = encode_manifest_attachments(pool, &media_ids).await?;
 
-    // The guarded flip + clear-failed-output + re-snapshot, in one tx. A lost flip
-    // (the Run raced out of `errored` since the read above) maps to not_errored,
-    // with nothing cleared — the transition stays authoritative even though the
-    // status read already reported errored.
-    let moved = db::prepare_retry(pool, run_id, &workflow, db::now_ms())
-        .await
-        .map_err(|e| HandlerError::Internal(e.into()))?;
-    if !moved.won() {
-        return Ok(Outcome::NotErrored);
+    // The deep verb: re-resolve the Workflow from LIVE settings (NOT the
+    // snapshot, so a model switch before retry takes effect — ADR-0024 contrast
+    // with resume), gate on the re-resolved provider's credential BEFORE the
+    // errored→running flip (ADR-0062), run `db::prepare_retry`'s guarded CAS on
+    // the SAME ids, create the hub, and assemble history — returning the spawn
+    // as an UNFIRED closure (`deferred_spawn`) so the caller frames its Response
+    // first.
+    match start_run::start_run(
+        pool,
+        hubs,
+        StartRunParams {
+            thread_id,
+            prompt,
+            // Retry REPLAYS the original turn's images (re-read + re-encoded
+            // above): the retried fresh manifest carries them like the
+            // original send did. (Parked-resume still passes none — that cut
+            // stands.)
+            manifest_attachments,
+            persist_step: PersistStep::RetryCas {
+                run_id,
+                assistant_message_id,
+                now: db::now_ms(),
+            },
+            skip_history: false,
+            deferred_spawn: true,
+        },
+        start_run::default_spawn,
+    )
+    .await
+    {
+        Ok(started) => Ok(Outcome::Accepted(
+            started
+                .deferred_spawn
+                .expect("deferred_spawn: true always yields a closure"),
+        )),
+        // A lost CAS (the Run raced out of `errored` since the advisory read) is
+        // `not_errored`, with nothing cleared, no hub, no spawn — matched HERE,
+        // before the From<StartRunError> conversion, because only retry's
+        // RetryCas can lose a persist race.
+        Err(StartRunError::PersistRaceLost) => Ok(Outcome::NotErrored),
+        Err(e) => Err(e.into()),
     }
-
-    // Create the hub BEFORE spawning so a subscribe arriving right after the
-    // response can't find a missing hub (mirrors run/post_message). After the
-    // committing flip + the last fallible read, so no abort leaves a stray hub.
-    let run_hub = hub::create(hubs, run_id);
-
-    // Prior-Run history, excluding this Run — `history_for_run` filters
-    // `status='completed'`, so the just-cleared errored attempt's text is excluded
-    // (the user Message stays; it is completed). A read failure falls back to none.
-    let history = db::history_for_run(pool, thread_id, run_id)
-        .await
-        .unwrap_or_else(|e| {
-            eprintln!("history_for_run failed for run {run_id}: {e}");
-            Vec::new()
-        });
-
-    Ok(Outcome::Accepted(Box::new(Spawn {
-        workflow,
-        prompt,
-        history,
-        attachments,
-        assistant_message_id,
-        run_hub,
-    })))
 }
 
 #[cfg(test)]
@@ -336,7 +322,7 @@ mod tests {
     /// A panic-safe credentials-dir fixture (shared [`crate::credentials::
     /// test_credentials_dir`]) for these Worker-free retry tests. When `connected`,
     /// seeds an openai-codex credential so the run-creation provider gate
-    /// (`handler::ensure_provider_connected`, ADR-0062) passes; when not, the dir
+    /// (the verb's `start_run::ensure_provider_connected`, ADR-0062) passes; when not, the dir
     /// stays empty (a disconnected provider). Keep the returned guard bound for the
     /// whole test — it restores the thread's previous Config override on drop.
     fn credentials_dir(connected: bool) -> crate::credentials::CredentialsDirGuard {
@@ -356,29 +342,67 @@ mod tests {
         guard
     }
 
-    /// The accepted happy-arm of `prepare` (the testable unit — `handle_retry`'s
-    /// spawn needs a real Worker binary). An ERRORED Run flips to `running`, yields
-    /// `Outcome::Accepted` (label "accepted"), creates a hub, and the carried Spawn
-    /// reuses the SAME assistant_message_id + the original prompt.
+    /// The accepted happy-arm, driven through the deep verb with
+    /// `PersistStep::RetryCas` + `deferred_spawn: true` (the testable unit —
+    /// `handle_retry`'s production spawn needs a real Worker binary). An
+    /// ERRORED Run flips to `running`, creates a hub, and firing the deferred
+    /// closure hands the recorder a manifest reusing the SAME
+    /// assistant_message_id + the original prompt.
     #[tokio::test]
     async fn errored_run_prepares_accepted_with_reused_ids() {
+        use std::sync::{Arc, Mutex};
+
+        use crate::start_run::{PersistStep, SpawnManifest, StartRunParams, start_run};
+
         // The resolved provider (default openai-codex) must be connected or the
         // ADR-0062 gate would return ProviderNotConnected before the flip.
         let _cred = credentials_dir(true);
         let pool = memory_pool().await;
         let hubs = hub::new_hubs();
         let (run_id, assistant_message_id) = seed_errored_run(&pool).await;
-
-        let outcome = super::prepare(&pool, &hubs, run_id)
+        let (prompt, thread_id, _user_message_id) = db::run_prompt_and_thread(&pool, run_id)
             .await
-            .expect("prepare succeeds");
+            .expect("read prompt+thread")
+            .expect("seeded run exists");
 
-        assert_eq!(outcome.label(), "accepted");
-        let super::Outcome::Accepted(spawn) = outcome else {
-            panic!("expected Accepted, got {}", outcome.label());
+        let recorded: Arc<Mutex<Vec<(Uuid, Uuid, String)>>> = Arc::new(Mutex::new(Vec::new()));
+        let recorder = {
+            let recorded = recorded.clone();
+            move |m: SpawnManifest| {
+                recorded.lock().unwrap().push((m.run_id, m.assistant_message_id, m.prompt));
+            }
         };
-        assert_eq!(spawn.assistant_message_id, assistant_message_id, "reused id");
-        assert_eq!(spawn.prompt, "the original prompt", "re-drives the original prompt");
+
+        let started = start_run(
+            &pool,
+            &hubs,
+            StartRunParams {
+                thread_id,
+                prompt,
+                manifest_attachments: Vec::new(),
+                persist_step: PersistStep::RetryCas {
+                    run_id,
+                    assistant_message_id,
+                    now: db::now_ms(),
+                },
+                skip_history: false,
+                deferred_spawn: true,
+            },
+            recorder,
+        )
+        .await
+        .expect("start_run accepts the errored run");
+
+        assert_eq!(started.run_id, run_id, "reused run id");
+        assert!(recorded.lock().unwrap().is_empty(), "deferred: unfired at return");
+        started.deferred_spawn.expect("the unfired spawn closure")();
+
+        let recorded = recorded.lock().unwrap();
+        assert_eq!(
+            *recorded,
+            vec![(run_id, assistant_message_id, "the original prompt".to_string())],
+            "the spawn reuses the SAME ids and re-drives the original prompt"
+        );
         assert_eq!(
             db::run_status(&pool, run_id).await.unwrap().map(db::RunStatus::as_str),
             Some("running"),
