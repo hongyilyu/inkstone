@@ -1,4 +1,5 @@
 import { expect, test } from "./fixtures.js";
+import { dbPathFor } from "./seed.js";
 import {
 	seedAcceptedPerson,
 	seedAcceptedProject,
@@ -6,7 +7,6 @@ import {
 	sqlite,
 	sqlValue,
 } from "./seed-proposal.js";
-import { dbPathFor } from "./seed.js";
 import { FAUX_PROPOSE_JOURNAL_FIXTURE, FAUX_WORKER_CMD } from "./spawnCore.js";
 
 // The seeded proposal is decided through real Core; accepting RESUMES the parked

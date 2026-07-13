@@ -31,6 +31,7 @@ import {
 	seedUpdateTodo,
 	type UpdateTodoDraft,
 } from "@/lib/proposalEdit";
+import { readString } from "@/lib/readPayload";
 import type { PendingProposal } from "@/store/chat";
 import { IntentGraphReviewCard } from "./IntentGraphReviewCard.js";
 import {
@@ -42,7 +43,6 @@ import {
 } from "./library/EntityEditor.js";
 import { ObservationEditForm } from "./ProposalCardObservations.js";
 import { journalBody, journalBodyHasEntityRef } from "./proposalBody.js";
-import { readString } from "@/lib/readPayload";
 import {
 	DecidedLibraryLink,
 	type DecideHandler,

@@ -23,13 +23,13 @@ import {
 	startRunStream,
 } from "@/store/bridge.js";
 import {
+	appendMessage,
 	attachRun,
 	clearProposal,
 	concatText,
 	getChatState,
 	nextMessageId,
 	resetChatStore,
-	appendMessage,
 } from "@/store/chat.js";
 
 const JOURNAL_ENTRY = {

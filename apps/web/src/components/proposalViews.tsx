@@ -15,6 +15,7 @@ import {
 	type LibraryItem,
 	libraryItemTitle,
 } from "@/lib/libraryItems";
+import { readObject, readString } from "@/lib/readPayload";
 import {
 	observationBatchSummary,
 	renderObservationBody,
@@ -29,7 +30,6 @@ import {
 	renderProjectBody,
 	renderUpdateTodoBody,
 } from "./proposalBody.js";
-import { readObject, readString } from "@/lib/readPayload";
 
 // The mutation kinds the Worker proposes (ADR-0025). Media and direct
 // entity-edits are user-CRUD-only (ADR-0033/0059) — never proposed — so the card

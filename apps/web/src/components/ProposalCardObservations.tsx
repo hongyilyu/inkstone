@@ -4,12 +4,12 @@ import {
 } from "@inkstone/protocol";
 import { Either, Schema as S } from "effect";
 import { type ReactNode, useId, useMemo, useState } from "react";
+import { readArray, readObject, readString } from "@/lib/readPayload";
 import {
 	EditFormFooter,
 	EditorField,
 	EditorTextarea,
 } from "./library/EntityEditor.js";
-import { readArray, readObject, readString } from "@/lib/readPayload";
 
 const decodeObservationRecordParams = S.decodeUnknownEither(
 	ObservationRecordParams,

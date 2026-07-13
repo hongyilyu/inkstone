@@ -2,8 +2,8 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { expect, test } from "./fixtures.js";
-import { jsonValue, sqlite, sqlValue } from "./seed-proposal.js";
 import { dbPathFor } from "./seed.js";
+import { jsonValue, sqlite, sqlValue } from "./seed-proposal.js";
 import { FAUX_WORKER_CMD, PROPOSE_WORKER_CMD } from "./spawnCore.js";
 
 /**
