@@ -11,10 +11,17 @@
 // reports a CLEAN review as an inline walkthrough comment naming HEAD — not a
 // formal review object — so await-review accepts EITHER signal (see
 // reviewedHead) and posts `@coderabbitai review` only as a fallback nudge (once
-// per rate-limit window). CodeRabbit throttles nearly every PR here (20-50 min
+// per rate-limit window). CodeRabbit throttles nearly every PR here (9-50 min
 // windows), so surviving the throttle while watching for the review is its
 // whole job. Run it backgrounded: a single wait can exceed the foreground Bash
 // 10-min cap.
+//
+// Rate-limit handling: CodeRabbit's notice says e.g. "Next review available
+// in: **9 minutes**" (bold-wrapped). We parse the actual stated time, add a
+// 30s buffer + 1-5 min random jitter, then sleep the full duration before
+// re-triggering. The jitter prevents instant re-throttle from per-user
+// contention (the limit is per-user across all PRs, not per-PR) and
+// desynchronizes concurrent review-loop sessions.
 
 import { execFileSync } from "node:child_process";
 
@@ -126,15 +133,22 @@ function latestRateLimit(comments) {
 }
 
 function parseWindowMs(body) {
+  // Strip markdown bold/italic markers so "**9 minutes**" parses as "9 minutes".
+  const plain = (body || "").replace(/\*{1,2}/g, "");
   const grab = (re) => {
-    const m = (body || "").match(re);
+    const m = plain.match(re);
     return m ? Number(m[1]) : 0;
   };
   const ms =
     grab(/(\d+)\s*hours?/i) * 3600000 +
     grab(/(\d+)\s*minutes?/i) * 60000 +
     grab(/(\d+)\s*seconds?/i) * 1000;
-  return ms + 30000; // +30s buffer so we don't re-trigger a hair early and get re-throttled
+  // Jitter 1-5 min on top of the parsed window + 30s buffer: avoids re-triggering
+  // at the exact lift moment (which often re-throttles due to per-user contention
+  // from other PRs). The jitter also desynchronizes multiple concurrent review-loop
+  // sessions competing for one rate-limit budget.
+  const jitterMs = (60 + Math.floor(Math.random() * 240)) * 1000; // 1-5 min in seconds
+  return ms + 30000 + jitterMs;
 }
 
 function triggerReview(owner, name, pr) {
@@ -216,12 +230,13 @@ async function awaitReview(pr, headSha, maxWaitMin = 480, pollMin = 5) {
 
     let sleepMs;
     if (now < liftMs) {
-      // Throttled: sleep the window's real remaining time, rounded up to the
-      // minute (the +30s buffer in liftMs keeps us from waking a hair early
-      // and getting instantly re-throttled). Logged up front so a long silent
-      // sleep is expected, not a hang.
-      sleepMs = Math.ceil((liftMs - now) / 60000) * 60000;
-      log(`throttled — ${Math.round((liftMs - now) / 60000)} min until window lifts; sleeping until then`);
+      // Throttled: sleep the window's real remaining time (which includes the
+      // jitter from parseWindowMs). The jitter means we wake 1-5 min AFTER the
+      // stated lift, avoiding instant re-throttle from per-user contention.
+      sleepMs = Math.min(liftMs - now, MAX_SLEEP_MS);
+      const remainMin = Math.ceil(sleepMs / 60000);
+      const liftTime = new Date(liftMs).toISOString().slice(11, 16);
+      log(`throttled — waiting ~${remainMin} min (re-trigger ~${liftTime} UTC, includes jitter)`);
     } else if (lastTriggerMs < Math.max(liftMs, sessionStart)) {
       // Not throttled, no trigger pending for this window → post the explicit
       // `@coderabbitai review` as a fallback nudge (auto-review usually fires
