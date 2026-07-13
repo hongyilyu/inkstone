@@ -10,7 +10,7 @@ use sqlx::sqlite::SqlitePoolOptions;
 use tokio_tungstenite::tungstenite::Message;
 
 mod common;
-use common::{Workspace, next_text};
+use common::{next_text, rt, Workspace};
 
 #[test]
 fn worker_error_event_marks_run_errored_with_message() {
@@ -31,10 +31,7 @@ fn worker_error_event_marks_run_errored_with_message() {
         .env("INKSTONE_FIXTURE_GATE", &gate_path)
         .spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let (run_id, saw_error_on_stream) = rt.block_on(async {
         let mut ws = core.connect().await;

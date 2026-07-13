@@ -22,72 +22,13 @@ use sqlx::sqlite::SqlitePoolOptions;
 use tokio_tungstenite::tungstenite::Message;
 
 mod common;
-use common::{CoreHandle, Workspace, next_text};
-
-/// Open a fresh socket, send a single request, return the response body.
-async fn rpc(
-    core: &CoreHandle,
-    id: u64,
-    method: &str,
-    params: serde_json::Value,
-) -> serde_json::Value {
-    let mut ws = core.connect().await;
-    let req = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": id,
-        "method": method,
-        "params": params,
-    });
-    ws.send(Message::Text(req.to_string().into()))
-        .await
-        .expect("send request frame");
-    let body = next_text(&mut ws).await;
-    ws.close(None).await.ok();
-    serde_json::from_str(&body).unwrap_or_else(|e| panic!("response is JSON: {e} — body: {body}"))
-}
-
-/// thread/create, then poll run/subscribe until status=parked; returns run_id.
-async fn create_and_park(core: &CoreHandle) -> String {
-    let resp = rpc(
-        core,
-        1,
-        "thread/create",
-        serde_json::json!({ "prompt": "I bought milk after daycare pickup and felt relieved." }),
-    )
-    .await;
-    let run_id = resp["result"]["run_id"]
-        .as_str()
-        .unwrap_or_else(|| panic!("result.run_id is a string — body: {resp}"))
-        .to_string();
-
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        if Instant::now() > deadline {
-            panic!("timed out waiting for run to park");
-        }
-        let resp = rpc(
-            core,
-            2,
-            "run/subscribe",
-            serde_json::json!({ "run_id": run_id }),
-        )
-        .await;
-        if resp["result"]["status"].as_str() == Some("parked") {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(150)).await;
-    }
-    run_id
-}
+use common::{create_and_park, next_text, rpc, rt, Workspace};
 
 #[test]
 fn resume_executes_under_snapshotted_effort_not_live_settings() {
     let workspace = Workspace::new();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     // The resume spawn echoes the manifest's thinking_level as the assistant
     // text, so the resolved effort is observable from the DB.
@@ -119,7 +60,9 @@ fn resume_executes_under_snapshotted_effort_not_live_settings() {
         );
         ws.close(None).await.ok();
 
-        create_and_park(&core).await
+        create_and_park(&core, "I bought milk after daycare pickup and felt relieved.")
+            .await
+            .0
     });
 
     // White-box: the parked Run snapshotted effort A.

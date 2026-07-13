@@ -13,109 +13,12 @@
 //! `create_todo` referencing that Person id, and create a Todo on a SECOND run
 //! against the SAME Core (and DB).
 
-use std::time::{Duration, Instant};
 
-use futures_util::SinkExt;
 use sqlx::Row;
 use sqlx::sqlite::SqlitePoolOptions;
-use tokio_tungstenite::tungstenite::Message;
 
 mod common;
-use common::{CoreHandle, Workspace, next_text};
-
-/// Open a fresh socket, send a single request, return the response body.
-async fn rpc(
-    core: &CoreHandle,
-    id: u64,
-    method: &str,
-    params: serde_json::Value,
-) -> serde_json::Value {
-    let mut ws = core.connect().await;
-    let req = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": id,
-        "method": method,
-        "params": params,
-    });
-    ws.send(Message::Text(req.to_string().into()))
-        .await
-        .expect("send request frame");
-    let body = next_text(&mut ws).await;
-    ws.close(None).await.ok();
-    serde_json::from_str(&body).unwrap_or_else(|e| panic!("response is JSON: {e} — body: {body}"))
-}
-
-/// Create a Run with `prompt` and poll run/subscribe until it parks; returns the
-/// run_id. `id` keeps the JSON-RPC request ids distinct across multiple Runs on
-/// one Core.
-async fn create_and_park(core: &CoreHandle, id: u64, prompt: &str) -> String {
-    let resp = rpc(
-        core,
-        id,
-        "thread/create",
-        serde_json::json!({ "prompt": prompt }),
-    )
-    .await;
-    let run_id = resp["result"]["run_id"]
-        .as_str()
-        .unwrap_or_else(|| panic!("result.run_id is a string — body: {resp}"))
-        .to_string();
-
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        if Instant::now() > deadline {
-            panic!("timed out waiting for run to park");
-        }
-        let resp = rpc(
-            core,
-            id + 1,
-            "run/subscribe",
-            serde_json::json!({ "run_id": run_id }),
-        )
-        .await;
-        if resp["result"]["status"].as_str() == Some("parked") {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(150)).await;
-    }
-    run_id
-}
-
-/// Poll run/subscribe until the Run reaches `completed`; panics on timeout.
-async fn await_completed(core: &CoreHandle, run_id: &str) {
-    let deadline = Instant::now() + Duration::from_secs(15);
-    loop {
-        if Instant::now() > deadline {
-            panic!("timed out waiting for run to complete");
-        }
-        let resp = rpc(
-            core,
-            99,
-            "run/subscribe",
-            serde_json::json!({ "run_id": run_id }),
-        )
-        .await;
-        if resp["result"]["status"].as_str() == Some("completed") {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(150)).await;
-    }
-}
-
-/// Read a Run's pending proposal_id.
-async fn proposal_id_for(core: &CoreHandle, id: u64, run_id: &str) -> String {
-    let resp = rpc(
-        core,
-        id,
-        "proposal/get",
-        serde_json::json!({ "run_id": run_id }),
-    )
-    .await;
-    resp["result"]["proposal_id"]
-        .as_str()
-        .unwrap_or_else(|| panic!("proposal_id is a string — body: {resp}"))
-        .to_string()
-}
+use common::{await_completed, CoreHandle, create_and_park, proposal_id_for, rpc, rt, Workspace};
 
 /// Write the raw `propose_workspace_mutation` params the fixture re-reads on its
 /// next spawn.
@@ -134,8 +37,8 @@ async fn create_person(core: &CoreHandle, params_path: &std::path::Path) -> Stri
         }),
     );
 
-    let person_run = create_and_park(core, 1, "Remember Alice.").await;
-    let person_proposal = proposal_id_for(core, 3, &person_run).await;
+    let person_run = create_and_park(core, "Remember Alice.").await.0;
+    let person_proposal = proposal_id_for(core, &person_run).await;
     let resp = rpc(
         core,
         4,
@@ -188,10 +91,7 @@ fn accept_create_todo_writes_waiting_on_person_ref() {
         .env("INKSTONE_PROPOSE_PARAMS_FILE", &params_path)
         .spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let (person_id, todo_entity_id) = rt.block_on(async {
         let person_id = create_person(&core, &params_path).await;
@@ -208,8 +108,8 @@ fn accept_create_todo_writes_waiting_on_person_ref() {
             }),
         );
 
-        let todo_run = create_and_park(&core, 10, "I need to follow up with Alice.").await;
-        let todo_proposal = proposal_id_for(&core, 13, &todo_run).await;
+        let todo_run = create_and_park(&core, "I need to follow up with Alice.").await.0;
+        let todo_proposal = proposal_id_for(&core, &todo_run).await;
         let resp = rpc(
             &core,
             14,
@@ -289,10 +189,7 @@ fn create_todo_with_non_person_ref_is_rejected_atomically() {
         .env("INKSTONE_PROPOSE_PARAMS_FILE", &params_path)
         .spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
         // Run 1: create a Project — a valid Entity, but NOT a Person.
@@ -304,8 +201,8 @@ fn create_todo_with_non_person_ref_is_rejected_atomically() {
                 "rationale": "start the outcome"
             }),
         );
-        let project_run = create_and_park(&core, 1, "Start the migration.").await;
-        let project_proposal = proposal_id_for(&core, 3, &project_run).await;
+        let project_run = create_and_park(&core, "Start the migration.").await.0;
+        let project_proposal = proposal_id_for(&core, &project_run).await;
         let resp = rpc(
             &core,
             4,
@@ -335,8 +232,8 @@ fn create_todo_with_non_person_ref_is_rejected_atomically() {
                 "rationale": "dangling person link"
             }),
         );
-        let todo_run = create_and_park(&core, 10, "Follow up on the migration.").await;
-        let todo_proposal = proposal_id_for(&core, 13, &todo_run).await;
+        let todo_run = create_and_park(&core, "Follow up on the migration.").await.0;
+        let todo_proposal = proposal_id_for(&core, &todo_run).await;
         let resp = rpc(
             &core,
             14,
@@ -389,10 +286,7 @@ fn duplicate_person_ref_collapses_with_waiting_on_winning() {
         .env("INKSTONE_PROPOSE_PARAMS_FILE", &params_path)
         .spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let (person_id, todo_entity_id) = rt.block_on(async {
         let person_id = create_person(&core, &params_path).await;
@@ -410,8 +304,8 @@ fn duplicate_person_ref_collapses_with_waiting_on_winning() {
                 "rationale": "track the follow-up"
             }),
         );
-        let todo_run = create_and_park(&core, 10, "Follow up with Alice.").await;
-        let todo_proposal = proposal_id_for(&core, 13, &todo_run).await;
+        let todo_run = create_and_park(&core, "Follow up with Alice.").await.0;
+        let todo_proposal = proposal_id_for(&core, &todo_run).await;
         let resp = rpc(
             &core,
             14,
@@ -469,10 +363,7 @@ fn person_ref_without_role_defaults_to_related() {
         .env("INKSTONE_PROPOSE_PARAMS_FILE", &params_path)
         .spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let todo_entity_id = rt.block_on(async {
         let person_id = create_person(&core, &params_path).await;
@@ -487,8 +378,8 @@ fn person_ref_without_role_defaults_to_related() {
                 "rationale": "track the follow-up"
             }),
         );
-        let todo_run = create_and_park(&core, 10, "Follow up with Alice.").await;
-        let todo_proposal = proposal_id_for(&core, 13, &todo_run).await;
+        let todo_run = create_and_park(&core, "Follow up with Alice.").await.0;
+        let todo_proposal = proposal_id_for(&core, &todo_run).await;
         let resp = rpc(
             &core,
             14,

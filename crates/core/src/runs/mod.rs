@@ -176,29 +176,13 @@ pub async fn dispatch(
 
 #[cfg(test)]
 mod tests {
+    use crate::db::test_support::memory_pool;
     use serde_json::{json, Value};
-    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
     use sqlx::SqlitePool;
     use tokio::sync::mpsc;
 
     use crate::hub;
     use crate::protocol::JsonRpcRequest;
-
-    async fn memory_pool() -> SqlitePool {
-        let options = SqliteConnectOptions::new()
-            .filename(":memory:")
-            .foreign_keys(true);
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(options)
-            .await
-            .expect("open in-memory sqlite");
-        sqlx::migrate!("./migrations")
-            .run(&pool)
-            .await
-            .expect("run migrations");
-        pool
-    }
 
     async fn dispatch_rpc(pool: &SqlitePool, method: &str) -> Option<Value> {
         let hubs = hub::new_hubs();

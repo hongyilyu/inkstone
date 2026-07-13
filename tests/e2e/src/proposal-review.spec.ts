@@ -70,7 +70,11 @@ test("renders a pending Journal Entry proposal and accept resumes the run", asyn
 	await chat.waitForAssistantText(/done.*added it/i);
 });
 
-test("edit changes the Journal Entry then resumes", async ({ chat }) => {
+test("edit changes the Journal Entry then resumes", async ({
+	chat,
+	core,
+	page,
+}) => {
 	writeScenario([CREATE_TURN]);
 	await chat.goto();
 
@@ -87,6 +91,15 @@ test("edit changes the Journal Entry then resumes", async ({ chat }) => {
 
 	await expect(card).toContainText(/added to journal/i, { timeout: 15_000 });
 	await chat.waitForAssistantText(/done.*added it/i);
+
+	// The EDITED body — not the model's proposed body — is what got persisted:
+	// the apply path stored `edited_payload`, so the Library shows "oat milk".
+	await page.goto(`${core.url}/library/journal`);
+	await expect(
+		page
+			.getByRole("region", { name: /journal/i })
+			.getByText("Bought oat milk after daycare pickup."),
+	).toBeVisible({ timeout: 15_000 });
 });
 
 test("dismiss rejects and resumes", async ({ chat }) => {

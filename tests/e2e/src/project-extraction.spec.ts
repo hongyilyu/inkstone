@@ -1,10 +1,13 @@
-import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { Page } from "@playwright/test";
 import { expect, test } from "./fixtures.js";
-import type { ChatPage } from "./page-objects/ChatPage.js";
+import {
+	acceptedCard,
+	acceptJournalEntry,
+	pendingCard,
+} from "./proposal-cards.js";
+import { seedAcceptedProject, sqlite, sqlValue } from "./seed-proposal.js";
 import { FAUX_WORKER_CMD } from "./spawnCore.js";
 
 /**
@@ -53,7 +56,7 @@ test("existing Project: accept JE then reference the seeded Project", async ({
 
 	await chat.goto();
 	await chat.send(JOURNAL_TEXT);
-	await acceptJournalEntry(chat);
+	await acceptJournalEntry(chat, JOURNAL_TEXT);
 
 	// The follow-up: a reference to the existing Project.
 	const refCard = pendingCard(chat);
@@ -82,7 +85,7 @@ test("missing Project: accept JE creates the Project sourced from it, then refer
 
 	await chat.goto();
 	await chat.send(JOURNAL_TEXT);
-	await acceptJournalEntry(chat);
+	await acceptJournalEntry(chat, JOURNAL_TEXT);
 
 	// Search found no Project → a create_project proposal sourced from the JE.
 	const projectCard = pendingCard(chat);
@@ -175,37 +178,6 @@ test('category "Work": accept JE proposes no extraction (category stays plain te
 	expect(sqlite(dbPath, "SELECT COUNT(*) FROM entity_refs;").trim()).toBe("0");
 });
 
-/** Accept the anchor create_journal_entry proposal and wait for its accepted
- * state. The accepted card renders only its status copy (no body text), so pin
- * to the stable `data-proposal` run id captured while the card is still pending
- * — that id survives the pending → accepted transition unambiguously. */
-async function acceptJournalEntry(
-	chat: ChatPage,
-	bodyText: string = JOURNAL_TEXT,
-): Promise<void> {
-	const jeCard = chat.page
-		.locator('[data-proposal-status="pending"]')
-		.filter({ hasText: bodyText });
-	await expect(jeCard).toBeVisible({ timeout: 15_000 });
-	const runId = await jeCard.getAttribute("data-proposal");
-	expect(runId).not.toBeNull();
-	await jeCard.getByRole("button", { name: /add journal entry/i }).click();
-	await expect(chat.page.locator(`[data-proposal="${runId}"]`)).toContainText(
-		/added to journal/i,
-		{ timeout: 15_000 },
-	);
-}
-
-/** The newest pending proposal card — used for each follow-up after the first. */
-function pendingCard(chat: { page: Page }) {
-	return chat.page.locator('[data-proposal-status="pending"]').last();
-}
-
-/** The newest accepted proposal card — a card's status flips off "pending" once decided. */
-function acceptedCard(chat: { page: Page }) {
-	return chat.page.locator('[data-proposal-status="accepted"]').last();
-}
-
 /** Write the extraction scenario to the file the Worker reads (per test, before goto). */
 function writeScenario(scenario: {
 	journal_text: string;
@@ -217,63 +189,4 @@ function writeScenario(scenario: {
 	// ENOENT here. mkdirSync(recursive) is idempotent when it still exists.
 	mkdirSync(scenarioDir, { recursive: true });
 	writeFileSync(extractParamsFile, JSON.stringify(scenario));
-}
-
-/** Seed a single accepted Project with a known id and name (no Journal Entry —
- * the Worker proposes that). Mirrors person-extraction.spec.ts's person seed,
- * with the `status: "active"` that create_project stores. */
-function seedAcceptedProject(
-	dbPath: string,
-	projectId: string,
-	name: string,
-): void {
-	const now = Date.now();
-	const threadId = "01900000-0000-7000-8000-0000000005b0";
-	const runId = "01900000-0000-7000-8000-0000000005b1";
-	const userMessageId = "01900000-0000-7000-8000-0000000005b2";
-	const toolCallId = "tc_seed_project";
-	const proposalId = "01900000-0000-7000-8000-0000000005b3";
-	const payload = { name, status: "active" };
-	sqlite(
-		dbPath,
-		`
-		BEGIN IMMEDIATE;
-		INSERT INTO threads (id, title, created_at, last_activity_at)
-		VALUES (${sqlValue(threadId)}, 'Seed thread', ${now}, ${now});
-		INSERT INTO runs
-			(id, thread_id, workflow_name, workflow_version, provider, model, thinking_level, user_message_id, status, started_at, ended_at, terminal_reason)
-		VALUES
-			(${sqlValue(runId)}, ${sqlValue(threadId)}, 'default', '1.0.0', 'faux', 'fake-model', 'off', ${sqlValue(userMessageId)}, 'completed', ${now}, ${now}, 'completed');
-		INSERT INTO messages (id, thread_id, run_id, role, status, created_at, updated_at)
-		VALUES (${sqlValue(userMessageId)}, ${sqlValue(threadId)}, ${sqlValue(runId)}, 'user', 'completed', ${now}, ${now});
-		INSERT INTO message_parts (message_id, seq, type, text)
-		VALUES (${sqlValue(userMessageId)}, 0, 'text', ${sqlValue(name)});
-		INSERT INTO tool_calls (id, run_id, name, request_payload, status, result_payload, requested_at, resolved_at)
-		VALUES (${sqlValue(toolCallId)}, ${sqlValue(runId)}, 'propose_workspace_mutation', '{}', 'completed', '{}', ${now}, ${now});
-		INSERT INTO proposals (id, tool_call_id, mutation_kind, status, decided_by, decided_at, applied_at)
-		VALUES (${sqlValue(proposalId)}, ${sqlValue(toolCallId)}, 'create_project', 'accepted', 'user', ${now}, ${now});
-		INSERT INTO entities (id, type, schema_version, data, created_by, created_via_proposal_id, created_at, updated_at)
-		VALUES (${sqlValue(projectId)}, 'project', 1, ${jsonValue(payload)}, 'proposal', ${sqlValue(proposalId)}, ${now}, ${now});
-		INSERT INTO entity_revisions (entity_id, seq, data, proposal_id, created_at)
-		VALUES (${sqlValue(projectId)}, 1, ${jsonValue(payload)}, ${sqlValue(proposalId)}, ${now});
-		COMMIT;
-		`,
-	);
-}
-
-function sqlite(dbPath: string, input: string): string {
-	return execFileSync("sqlite3", [dbPath], {
-		input: `.timeout 5000
-PRAGMA foreign_keys = ON;
-${input}`,
-		encoding: "utf8",
-	});
-}
-
-function sqlValue(value: string): string {
-	return `'${value.replaceAll("'", "''")}'`;
-}
-
-function jsonValue(value: unknown): string {
-	return sqlValue(JSON.stringify(value));
 }

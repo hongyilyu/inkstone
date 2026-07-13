@@ -39,10 +39,9 @@ export function useThreadMutations() {
 	>({
 		mutationFn: async ({ threadId, title }) => {
 			const exit = await runtime.runPromiseExit(
-				Effect.gen(function* () {
-					const client = yield* WsClient;
-					return yield* client.threadRename(threadId, title);
-				}),
+				Effect.flatMap(WsClient, (client) =>
+					client.threadRename(threadId, title),
+				),
 			);
 			if (Exit.isSuccess(exit)) return exit.value;
 			throw Cause.squash(exit.cause);
@@ -53,10 +52,7 @@ export function useThreadMutations() {
 	const archive = useMutation<ThreadMutateResult, unknown, string>({
 		mutationFn: async (threadId) => {
 			const exit = await runtime.runPromiseExit(
-				Effect.gen(function* () {
-					const client = yield* WsClient;
-					return yield* client.threadArchive(threadId);
-				}),
+				Effect.flatMap(WsClient, (client) => client.threadArchive(threadId)),
 			);
 			if (Exit.isSuccess(exit)) return exit.value;
 			throw Cause.squash(exit.cause);
@@ -67,10 +63,7 @@ export function useThreadMutations() {
 	const unarchive = useMutation<ThreadMutateResult, unknown, string>({
 		mutationFn: async (threadId) => {
 			const exit = await runtime.runPromiseExit(
-				Effect.gen(function* () {
-					const client = yield* WsClient;
-					return yield* client.threadUnarchive(threadId);
-				}),
+				Effect.flatMap(WsClient, (client) => client.threadUnarchive(threadId)),
 			);
 			if (Exit.isSuccess(exit)) return exit.value;
 			throw Cause.squash(exit.cause);

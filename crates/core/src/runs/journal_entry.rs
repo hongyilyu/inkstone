@@ -95,51 +95,18 @@ pub(super) async fn handle(
 
 #[cfg(test)]
 mod tests {
+    use crate::db::test_support::{memory_pool, seed_entity};
     use serde_json::{Value, json};
     use sqlx::SqlitePool;
-    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
     use tokio::sync::mpsc;
 
     use crate::hub;
-
-    /// A migrated in-memory pool (mirrors the `db`/`message` test helpers) so the
-    /// `entities`/`runs` schema + CHECKs hold.
-    async fn memory_pool() -> SqlitePool {
-        let options = SqliteConnectOptions::new()
-            .filename(":memory:")
-            .foreign_keys(true);
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(options)
-            .await
-            .expect("open in-memory sqlite");
-        sqlx::migrate!("./migrations")
-            .run(&pool)
-            .await
-            .expect("run migrations");
-        pool
-    }
 
     async fn run_row_count(pool: &SqlitePool) -> i64 {
         sqlx::query_scalar("SELECT COUNT(*) FROM runs")
             .fetch_one(pool)
             .await
             .expect("count runs")
-    }
-
-    async fn seed_entity(pool: &SqlitePool, id: &str, entity_type: &str, data: &str) {
-        sqlx::query(
-            "INSERT INTO entities \
-             (id, type, schema_version, data, created_by, created_via_proposal_id, \
-              created_at, updated_at) \
-             VALUES (?, ?, 1, ?, 'user', NULL, 1, 1)",
-        )
-        .bind(id)
-        .bind(entity_type)
-        .bind(data)
-        .execute(pool)
-        .await
-        .expect("insert entity");
     }
 
     fn recv_json(rx: &mut mpsc::UnboundedReceiver<String>) -> Value {

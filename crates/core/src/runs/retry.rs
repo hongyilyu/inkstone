@@ -223,32 +223,15 @@ async fn prepare(
 
 #[cfg(test)]
 mod tests {
+    use crate::db::test_support::memory_pool;
     use serde_json::{Value, json};
     use sqlx::SqlitePool;
-    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
     use tokio::sync::mpsc;
     use uuid::Uuid;
 
     use crate::db;
     use crate::hub;
     use crate::workflow::default_workflow;
-
-    /// A migrated in-memory pool (mirrors the sibling handler test helpers).
-    async fn memory_pool() -> SqlitePool {
-        let options = SqliteConnectOptions::new()
-            .filename(":memory:")
-            .foreign_keys(true);
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(options)
-            .await
-            .expect("open in-memory sqlite");
-        sqlx::migrate!("./migrations")
-            .run(&pool)
-            .await
-            .expect("run migrations");
-        pool
-    }
 
     /// Seed a Thread + its first Run (status `running`) so the handler has a real,
     /// non-errored Run to reject. Returns the `run_id`. Loads the default Workflow

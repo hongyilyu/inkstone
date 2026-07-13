@@ -31,10 +31,9 @@ ADR-0018's inline Draft-07 dialect. It is **not** a new architectural decision.
 
 The two emitters speak slightly different Draft-07 dialects. `normalize.ts`
 reconciles them (each rule is commented with the quirk it cancels): strip
-`$schema` (Effect-only), inline `$ref` + drop `$defs` (Effect hoists `S.Int`;
-Rust inlines), strip `title` (Effect combinator noise), empty `required` ≡ absent
-(Rust omits, Effect emits `[]`), and deep key-sort (the two order keys
-differently). Effect's per-combinator `description` noise (e.g. `minLength(1)` →
+`$schema` (Effect-only), strip `title` (Effect combinator noise), empty
+`required` ≡ absent (Rust omits, Effect emits `[]`), and deep key-sort (the two
+order keys differently). Effect's per-combinator `description` noise (e.g. `minLength(1)` →
 "a string at least 1 character(s) long") is suppressed at the source in
 `packages/protocol/src/payloads.ts` so the one real `description` — the
 `LocalDateTime` format hint — survives untouched.

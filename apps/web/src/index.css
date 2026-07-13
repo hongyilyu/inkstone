@@ -36,9 +36,6 @@
 	--sidebar-foreground: #454554;
 	--sidebar-accent: #f8f8f7;
 	--chat-bg: #fdf7fd;
-	--chat-input-bg: hsla(270, 0%, 100%, 0.1);
-	--chat-input-gradient: #fbccff;
-	--chat-overlay: hsla(309, 63%, 92%, 0.72);
 	/* Running tool-call glyph + its lamplight halo. A bright brand magenta kept
 	   legible (≥3:1) on both the chat surface and the running-row tint — the
 	   default `--primary` flips to a dark oxblood in dark mode and fails there. */
@@ -70,9 +67,6 @@
 	--sidebar-foreground: #f4f4f5;
 	--sidebar-accent: #261922;
 	--chat-bg: #1f1a24;
-	--chat-input-bg: hsla(270, 10%, 20%, 0.4);
-	--chat-input-gradient: #432d48;
-	--chat-overlay: hsla(270, 12%, 16%, 0.71);
 	/* Lighter than the dark `--primary` oxblood so the running glyph + halo stay
 	   legible on the dark chat surface (≈5.4:1 / 4.7:1 on the running tint). */
 	--tool-glyph: #e9609c;
@@ -105,8 +99,6 @@
 	--color-sidebar-foreground: var(--sidebar-foreground);
 	--color-sidebar-accent: var(--sidebar-accent);
 	--color-chat-bg: var(--chat-bg);
-	--color-chat-input-bg: var(--chat-input-bg);
-	--color-chat-overlay: var(--chat-overlay);
 	--color-tool-glyph: var(--tool-glyph);
 }
 
@@ -184,17 +176,6 @@
 		transform: none;
 	}
 }
-@keyframes panel-slide {
-	from {
-		opacity: 0;
-		transform: translateX(10px);
-	}
-	to {
-		opacity: 1;
-		transform: none;
-	}
-}
-
 /* Tool-call activity motion (ChatColumn → ToolActivity). The running row's
    leading glyph carries a soft magenta "lamplight" halo (the system's north
    star) that breathes; the completion check pops in. Both are applied with
@@ -275,11 +256,10 @@
 
 /* Motion tokens (extract): one easing + the entrance/activity animations,
    exposed as Tailwind utilities (`ease-out-quint`, `animate-rise`,
-   `animate-panel`, `animate-tool-glow`, `animate-tool-pop`). */
+   `animate-tool-glow`, `animate-tool-pop`). */
 @theme {
 	--ease-out-quint: cubic-bezier(0.16, 1, 0.3, 1);
 	--animate-rise: rise 0.5s var(--ease-out-quint) both;
-	--animate-panel: panel-slide 0.32s var(--ease-out-quint) both;
 	--animate-tool-glow: tool-glow 1.8s ease-in-out infinite;
 	--animate-tool-pop: tool-pop 0.22s var(--ease-out-quint) both;
 }

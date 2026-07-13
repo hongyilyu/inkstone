@@ -461,57 +461,31 @@ function CapturedFrom({
 	if (!source || source.kind !== "thread") return null;
 
 	return (
-		<ProvenanceFrame>
-			<ProvenanceLink
-				icon={<MessageSquareText className="size-4 shrink-0" aria-hidden />}
-				title={source.threadTitle || "Untitled thread"}
-				date={entity.createdAt}
-				onClick={() => onOpenThread(source.threadId, source.messageId)}
-			/>
-		</ProvenanceFrame>
-	);
-}
-
-/** The hairline-topped wrapper that sets "Captured from" apart as Inspector metadata. */
-function ProvenanceFrame({ children }: { children: ReactNode }) {
-	return (
 		<div className="-mx-2 mt-auto flex flex-col gap-1.5 border-foreground/10 border-t pt-4">
 			<span className="px-2 font-medium text-muted-foreground text-xs">
 				Captured from
 			</span>
-			{children}
+			{/* Clickable provenance row — same affordance vocabulary as `RelatedRow`. */}
+			<button
+				type="button"
+				onClick={() => onOpenThread(source.threadId, source.messageId)}
+				className="flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-secondary/50 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+			>
+				<span className="shrink-0 text-muted-foreground">
+					<MessageSquareText className="size-4 shrink-0" aria-hidden />
+				</span>
+				<span className="min-w-0 flex-1 truncate text-sm">
+					<span className="font-medium text-primary">
+						{source.threadTitle || "Untitled thread"}
+					</span>
+					<span className="text-muted-foreground"> · {entity.createdAt}</span>
+				</span>
+				<ArrowUpRight
+					className="size-3.5 shrink-0 text-muted-foreground"
+					aria-hidden
+				/>
+			</button>
 		</div>
-	);
-}
-
-/** A clickable provenance row — same affordance vocabulary as `RelatedRow`. */
-function ProvenanceLink({
-	icon,
-	title,
-	date,
-	onClick,
-}: {
-	icon: ReactNode;
-	title: string;
-	date: string;
-	onClick: () => void;
-}) {
-	return (
-		<button
-			type="button"
-			onClick={onClick}
-			className="flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-secondary/50 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
-		>
-			<span className="shrink-0 text-muted-foreground">{icon}</span>
-			<span className="min-w-0 flex-1 truncate text-sm">
-				<span className="font-medium text-primary">{title}</span>
-				<span className="text-muted-foreground"> · {date}</span>
-			</span>
-			<ArrowUpRight
-				className="size-3.5 shrink-0 text-muted-foreground"
-				aria-hidden
-			/>
-		</button>
 	);
 }
 

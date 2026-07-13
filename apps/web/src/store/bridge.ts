@@ -24,7 +24,7 @@ import {
 import { taggedErrorMessage } from "../lib/taggedErrorMessage.js";
 import type { WsRuntime } from "../runtime.js";
 import {
-	appendUserMessage,
+	appendMessage,
 	applyEvent,
 	attachRun,
 	beginRunSubscription,
@@ -36,7 +36,6 @@ import {
 	nextMessageId,
 	resetMessageForRetry,
 	type Segment,
-	seedAssistantMessage,
 	setHydrationStatus,
 	setPendingProposal,
 	setProposalStatus,
@@ -141,7 +140,7 @@ function seedTurn(
 	// source; there is no flat `text` field) plus any attachment segments. The
 	// assistant opens with an empty timeline the live `text_delta`/`tool_call`
 	// builders then fill.
-	appendUserMessage(threadId, {
+	appendMessage(threadId, {
 		id: nextMessageId(),
 		role: "user",
 		status: "completed",
@@ -149,7 +148,7 @@ function seedTurn(
 		segments: [{ kind: "text", text }, ...attachmentSegments],
 	});
 	const assistantId = nextMessageId();
-	seedAssistantMessage(threadId, {
+	appendMessage(threadId, {
 		id: assistantId,
 		role: "assistant",
 		status: "streaming",
@@ -297,15 +296,9 @@ async function uploadFiles(
 		}
 		const dims = await imageDimensions(file);
 		const exit = await runtime.runPromiseExit(
-			Effect.gen(function* () {
-				const client = yield* WsClient;
-				return yield* client.mediaUpload(
-					bytesBase64,
-					file.type,
-					dims?.width,
-					dims?.height,
-				);
-			}),
+			Effect.flatMap(WsClient, (client) =>
+				client.mediaUpload(bytesBase64, file.type, dims?.width, dims?.height),
+			),
 		);
 		if (Exit.isFailure(exit)) {
 			return { ok: false, error: Cause.squash(exit.cause) };
@@ -456,10 +449,7 @@ export async function cancelRun(
 	runtime: WsRuntime,
 	runId: RunId,
 ): Promise<void> {
-	const program = Effect.gen(function* () {
-		const client = yield* WsClient;
-		return yield* client.cancelRun(runId);
-	});
+	const program = Effect.flatMap(WsClient, (client) => client.cancelRun(runId));
 
 	let outcome: "accepted" | "already_terminal" | "unknown_run";
 	try {
@@ -532,10 +522,7 @@ export async function retryRun(
 	threadId: string,
 	runId: RunId,
 ): Promise<SendResult> {
-	const program = Effect.gen(function* () {
-		const client = yield* WsClient;
-		return yield* client.retryRun(runId);
-	});
+	const program = Effect.flatMap(WsClient, (client) => client.retryRun(runId));
 
 	const exit = await runtime.runPromiseExit(program);
 	if (Exit.isFailure(exit)) {
@@ -654,10 +641,9 @@ async function settleDecidedProposal(
 		fallback();
 		return;
 	}
-	const program = Effect.gen(function* () {
-		const client = yield* WsClient;
-		return yield* client.threadGet(threadId);
-	});
+	const program = Effect.flatMap(WsClient, (client) =>
+		client.threadGet(threadId),
+	);
 	const exit = await runtime.runPromiseExit(program);
 	// Currency guard: while the refetch was in flight, a concurrent cancelRun may
 	// have cleared this Proposal, or the resumed Run may have re-parked on a NEW
@@ -712,16 +698,15 @@ export async function decideProposal(
 		decisionKeys.set(proposal.proposal_id, key);
 	}
 
-	const program = Effect.gen(function* () {
-		const client = yield* WsClient;
-		return yield* client.proposalDecide({
+	const program = Effect.flatMap(WsClient, (client) =>
+		client.proposalDecide({
 			proposal_id: proposal.proposal_id,
 			decision,
 			decision_idempotency_key: key,
 			...(decision === "edit" ? { edited_payload: editedPayload } : {}),
 			...(decisions !== undefined ? { decisions } : {}),
-		});
-	});
+		}),
+	);
 
 	const exit = await runtime.runPromiseExit(program);
 	if (Exit.isFailure(exit)) {

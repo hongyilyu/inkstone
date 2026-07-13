@@ -3,22 +3,7 @@
 
 import { Schema as S } from "effect";
 
-import {
-	observationEvidence,
-	observationRecordDraft,
-	observationUpdateParams,
-	recordObservations,
-} from "./payloads.js";
-
-export const ObservationRecordDraft = observationRecordDraft;
-
-export type ObservationRecordDraft = S.Schema.Type<
-	typeof ObservationRecordDraft
->;
-
-export const ObservationEvidence = observationEvidence;
-
-export type ObservationEvidence = S.Schema.Type<typeof ObservationEvidence>;
+import { observationUpdateParams, recordObservations } from "./payloads.js";
 
 export const ObservationRecordParams = recordObservations;
 

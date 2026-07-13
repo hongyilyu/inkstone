@@ -11,7 +11,7 @@ use futures_util::SinkExt;
 use tokio_tungstenite::tungstenite::Message;
 
 mod common;
-use common::{CoreHandle, Workspace, Ws, next_text, try_next_text};
+use common::{CoreHandle, next_text, rt, try_next_text, Workspace, Ws};
 
 /// Spawn Core wired to the stub login helper (no Worker — login never starts a
 /// Run). `login_error`, when set, makes the stub emit a sanitized error line
@@ -84,10 +84,7 @@ fn login_start_returns_authorize_url_then_persists() {
 
     let core = login_core(&workspace, &creds_dir, None);
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
         let mut ws = core.connect().await;
@@ -150,10 +147,7 @@ fn login_start_helper_error_surfaces_provider_login_failed() {
     // The stub helper emits a sanitized error line before any authorize URL.
     let core = login_core(&workspace, &creds_dir, Some("account is locked"));
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
         let mut ws = core.connect().await;
@@ -191,10 +185,7 @@ fn login_start_pushes_provider_connected_on_persist() {
 
     let core = login_core(&workspace, &creds_dir, None);
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
         let mut ws = core.connect().await;
@@ -237,10 +228,7 @@ fn login_start_no_credentials_pushes_nothing() {
     // OAuth flow never completes, so Core's drain task hits `Ok(None)`.
     let core = login_core_no_creds(&workspace, &creds_dir);
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
         let mut ws = core.connect().await;

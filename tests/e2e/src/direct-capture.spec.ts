@@ -1,8 +1,8 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { Page } from "@playwright/test";
 import { expect, test } from "./fixtures.js";
+import { acceptedCard, pendingCard } from "./proposal-cards.js";
 import { seedAcceptedPerson, sqlite, sqlValue } from "./seed-proposal.js";
 import { FAUX_PROPOSE_JOURNAL_FIXTURE, FAUX_WORKER_CMD } from "./spawnCore.js";
 
@@ -315,16 +315,6 @@ test.describe("Direct capture enrichment (faux capture mode)", () => {
 		).toBe("1");
 	});
 });
-
-/** The newest pending proposal card. */
-function pendingCard(chat: { page: Page }) {
-	return chat.page.locator('[data-proposal-status="pending"]').last();
-}
-
-/** The newest accepted proposal card. */
-function acceptedCard(chat: { page: Page }) {
-	return chat.page.locator('[data-proposal-status="accepted"]').last();
-}
 
 /** Write the capture scenario the Worker reads (per test, before goto). */
 function writeScenario(

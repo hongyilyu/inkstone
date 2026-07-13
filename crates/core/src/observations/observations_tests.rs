@@ -1,22 +1,6 @@
 use super::*;
+use crate::db::test_support::memory_pool;
 use serde_json::json;
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-
-async fn memory_pool() -> SqlitePool {
-    let options = SqliteConnectOptions::new()
-        .filename(":memory:")
-        .foreign_keys(true);
-    let pool = SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect_with(options)
-        .await
-        .expect("open in-memory sqlite");
-    sqlx::migrate!("./migrations")
-        .run(&pool)
-        .await
-        .expect("run migrations");
-    pool
-}
 
 fn bodyweight_at(occurred_at: &str, kg: Value) -> ObservationRecordInput {
     ObservationRecordInput {

@@ -13,10 +13,7 @@ export function useArchivedThreads(options?: { enabled?: boolean }) {
 		enabled: options?.enabled,
 		queryFn: () =>
 			runtime.runPromise(
-				Effect.gen(function* () {
-					const client = yield* WsClient;
-					return yield* client.threadListArchived();
-				}),
+				Effect.flatMap(WsClient, (client) => client.threadListArchived()),
 			),
 	});
 }

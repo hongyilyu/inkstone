@@ -12,13 +12,12 @@ import { Deferred, Effect, Queue, Stream } from "effect";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { awaitRun, resetBridge } from "@/store/bridge.js";
 import {
-	appendUserMessage,
+	appendMessage,
 	attachRun,
 	concatText,
 	getChatState,
 	getHydrationStatus,
 	resetChatStore,
-	seedAssistantMessage,
 	setPendingProposal,
 } from "@/store/chat.js";
 import { hydrateThread } from "@/store/hydrate.js";
@@ -704,14 +703,14 @@ describe("refresh-durable hydration", () => {
 		const hydrating = hydrateThread(runtime, "tC");
 
 		// A send lands during the window: seed the optimistic turn + attach a run.
-		appendUserMessage("tC", {
+		appendMessage("tC", {
 			id: "u1",
 			role: "user",
 			status: "completed",
 			run_id: "",
 			segments: [{ kind: "text", text: "live message" }],
 		});
-		seedAssistantMessage("tC", {
+		appendMessage("tC", {
 			id: "a1",
 			role: "assistant",
 			status: "streaming",
@@ -755,14 +754,14 @@ describe("refresh-durable hydration", () => {
 		const hydrating = hydrateThread(runtime, "tD");
 
 		// A send lands during the window: seed the optimistic turn + attach a run.
-		appendUserMessage("tD", {
+		appendMessage("tD", {
 			id: "u1",
 			role: "user",
 			status: "completed",
 			run_id: "",
 			segments: [{ kind: "text", text: "live message" }],
 		});
-		seedAssistantMessage("tD", {
+		appendMessage("tD", {
 			id: "a1",
 			role: "assistant",
 			status: "streaming",
@@ -840,7 +839,7 @@ describe("refresh-durable hydration", () => {
 		});
 
 		const hydrating = hydrateThread(runtime, "tRace");
-		appendUserMessage("tRace", {
+		appendMessage("tRace", {
 			id: "u1",
 			role: "user",
 			status: "completed",

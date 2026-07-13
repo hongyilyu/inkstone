@@ -11,12 +11,8 @@ const fieldVariants = cva("flex items-center gap-2", {
 			divider: "h-10 border-b border-input",
 			dialog: "gap-3 border-border border-b px-4",
 		},
-		tone: {
-			default: "",
-			sidebar: "text-sidebar-foreground",
-		},
 	},
-	defaultVariants: { variant: "box", tone: "default" },
+	defaultVariants: { variant: "box" },
 });
 
 type SearchFieldProps = Omit<
@@ -30,10 +26,9 @@ type SearchFieldProps = Omit<
 		wrapperClassName?: string;
 	};
 
-/** Leading-icon search field: wrapper chrome is a variant (box / divider / dialog); all input props forward to the underlying Input. `tone="sidebar"` swaps colour context. */
+/** Leading-icon search field: wrapper chrome is a variant (box / divider / dialog); all input props forward to the underlying Input. */
 export function SearchField({
 	variant,
-	tone,
 	onClear,
 	inputRef,
 	wrapperClassName,
@@ -41,25 +36,16 @@ export function SearchField({
 	value,
 	...props
 }: SearchFieldProps) {
-	const sidebar = tone === "sidebar";
 	const dialog = variant === "dialog";
 	return (
-		<div className={cn(fieldVariants({ variant, tone }), wrapperClassName)}>
-			<Search
-				className={cn(
-					"size-4 shrink-0",
-					sidebar ? "text-sidebar-foreground/60" : "text-muted-foreground",
-				)}
-				aria-hidden
-			/>
+		<div className={cn(fieldVariants({ variant }), wrapperClassName)}>
+			<Search className="size-4 shrink-0 text-muted-foreground" aria-hidden />
 			<Input
 				ref={inputRef}
 				value={value}
 				className={cn(
 					"min-w-0 flex-1",
 					dialog && "h-13 py-4 text-base",
-					sidebar &&
-						"text-sidebar-foreground placeholder:text-sidebar-foreground/50",
 					className,
 				)}
 				{...props}

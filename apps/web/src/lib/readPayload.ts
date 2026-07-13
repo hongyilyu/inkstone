@@ -3,8 +3,7 @@
 // missing keys, or wrong-typed raw model output. Each reader coerces one key off
 // an unknown record to a concrete type, degrading anything unexpected to a safe
 // default rather than throwing (Core still owns accept-time validation). The
-// single source for `proposalEdit`, `intentGraphReview`, and (re-exported) the
-// ProposalCard's `proposalPayload` helpers.
+// single source for `proposalEdit`, `intentGraphReview`, and the ProposalCard.
 
 /** Read `key` off `source` as a string, degrading anything else to "". */
 export function readString(source: unknown, key: string): string {
@@ -27,6 +26,15 @@ export function readObject(
 		}
 	}
 	return null;
+}
+
+/** Read `key` off `source` as the raw `unknown[]` (callers filter per-field); [] otherwise — a deliberately DIFFERENT contract from `readStringArray`'s pre-filtered `string[]`. */
+export function readArray(source: unknown, key: string): unknown[] {
+	if (source && typeof source === "object" && key in source) {
+		const value = (source as Record<string, unknown>)[key];
+		if (Array.isArray(value)) return value;
+	}
+	return [];
 }
 
 /** Read `key` off `source` as a `string[]`, dropping non-string entries; [] otherwise. */

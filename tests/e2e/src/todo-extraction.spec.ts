@@ -1,9 +1,12 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { Page } from "@playwright/test";
 import { expect, test } from "./fixtures.js";
-import type { ChatPage } from "./page-objects/ChatPage.js";
+import {
+	acceptedCard,
+	acceptJournalEntry,
+	pendingCard,
+} from "./proposal-cards.js";
 import {
 	seedAcceptedPerson,
 	seedAcceptedProject,
@@ -197,37 +200,6 @@ test.describe("Todo extraction boundary (prompt-boundary worker)", () => {
 		await expect(chat.proposalCard()).toHaveCount(0);
 	});
 });
-
-/** Accept the anchor create_journal_entry proposal and wait for its accepted
- * state. The accepted card renders only its status copy (no body text), so pin
- * to the stable `data-proposal` run id captured while the card is still pending
- * — that id survives the pending → accepted transition unambiguously. */
-async function acceptJournalEntry(
-	chat: ChatPage,
-	bodyText: string,
-): Promise<void> {
-	const jeCard = chat.page
-		.locator('[data-proposal-status="pending"]')
-		.filter({ hasText: bodyText });
-	await expect(jeCard).toBeVisible({ timeout: 15_000 });
-	const runId = await jeCard.getAttribute("data-proposal");
-	expect(runId).not.toBeNull();
-	await jeCard.getByRole("button", { name: /add journal entry/i }).click();
-	await expect(chat.page.locator(`[data-proposal="${runId}"]`)).toContainText(
-		/added to journal/i,
-		{ timeout: 15_000 },
-	);
-}
-
-/** The newest pending proposal card — used for the create_todo follow-up. */
-function pendingCard(chat: { page: Page }) {
-	return chat.page.locator('[data-proposal-status="pending"]').last();
-}
-
-/** The newest accepted proposal card — a card's status flips off "pending" once decided. */
-function acceptedCard(chat: { page: Page }) {
-	return chat.page.locator('[data-proposal-status="accepted"]').last();
-}
 
 /** Write the extraction scenario to the file the Worker reads (per test, before goto). */
 function writeScenario(scenario: {

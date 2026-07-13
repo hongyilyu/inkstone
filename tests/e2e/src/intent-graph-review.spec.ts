@@ -1,4 +1,3 @@
-import path from "node:path";
 import { expect, test } from "./fixtures.js";
 import {
 	seedAcceptedPerson,
@@ -7,6 +6,7 @@ import {
 	sqlite,
 	sqlValue,
 } from "./seed-proposal.js";
+import { dbPathFor } from "./seed.js";
 import { FAUX_PROPOSE_JOURNAL_FIXTURE, FAUX_WORKER_CMD } from "./spawnCore.js";
 
 // The seeded proposal is decided through real Core; accepting RESUMES the parked
@@ -71,10 +71,6 @@ const GRAPH = {
 		{ kind: "journal_ref", from: "@je", to: "@leadads" },
 	],
 };
-
-function dbPathFor(workspacePath: string): string {
-	return path.join(workspacePath, "db.sqlite");
-}
 
 function count(dbPath: string, sql: string): string {
 	return sqlite(dbPath, sql).trim();

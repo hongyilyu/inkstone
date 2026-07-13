@@ -8,92 +8,12 @@
 //! `INKSTONE_PROPOSE_PARAMS_FILE` supplies the raw `create_project` mutation the
 //! fixture proposes; on accept the run resumes to `completed`.
 
-use std::time::{Duration, Instant};
 
-use futures_util::SinkExt;
 use sqlx::Row;
 use sqlx::sqlite::SqlitePoolOptions;
-use tokio_tungstenite::tungstenite::Message;
 
 mod common;
-use common::{CoreHandle, Workspace, next_text};
-
-/// Open a fresh socket, send a single request, return the response body.
-async fn rpc(
-    core: &CoreHandle,
-    id: u64,
-    method: &str,
-    params: serde_json::Value,
-) -> serde_json::Value {
-    let mut ws = core.connect().await;
-    let req = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": id,
-        "method": method,
-        "params": params,
-    });
-    ws.send(Message::Text(req.to_string().into()))
-        .await
-        .expect("send request frame");
-    let body = next_text(&mut ws).await;
-    ws.close(None).await.ok();
-    serde_json::from_str(&body).unwrap_or_else(|e| panic!("response is JSON: {e} — body: {body}"))
-}
-
-/// Create a Run and poll run/subscribe until it parks; returns the run_id.
-async fn create_and_park(core: &CoreHandle) -> String {
-    let resp = rpc(
-        core,
-        1,
-        "thread/create",
-        serde_json::json!({ "prompt": "Start a new project outcome." }),
-    )
-    .await;
-    let run_id = resp["result"]["run_id"]
-        .as_str()
-        .unwrap_or_else(|| panic!("result.run_id is a string — body: {resp}"))
-        .to_string();
-
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        if Instant::now() > deadline {
-            panic!("timed out waiting for run to park");
-        }
-        let resp = rpc(
-            core,
-            2,
-            "run/subscribe",
-            serde_json::json!({ "run_id": run_id }),
-        )
-        .await;
-        if resp["result"]["status"].as_str() == Some("parked") {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(150)).await;
-    }
-    run_id
-}
-
-/// Poll run/subscribe until the Run reaches `completed`; panics on timeout.
-async fn await_completed(core: &CoreHandle, run_id: &str) {
-    let deadline = Instant::now() + Duration::from_secs(15);
-    loop {
-        if Instant::now() > deadline {
-            panic!("timed out waiting for run to complete");
-        }
-        let resp = rpc(
-            core,
-            9,
-            "run/subscribe",
-            serde_json::json!({ "run_id": run_id }),
-        )
-        .await;
-        if resp["result"]["status"].as_str() == Some("completed") {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(150)).await;
-    }
-}
+use common::{await_completed, create_and_park, rpc, rt, Workspace};
 
 /// Run a `create_project` proposal to acceptance under `payload`, returning the
 /// stored entity `data` JSON.
@@ -122,13 +42,10 @@ fn accept_create_project(payload: serde_json::Value) -> serde_json::Value {
         .env("INKSTONE_PROPOSE_PARAMS_FILE", &params_path)
         .spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let entity_id = rt.block_on(async {
-        let run_id = create_and_park(&core).await;
+        let run_id = create_and_park(&core, "Start a new project outcome.").await.0;
 
         let resp = rpc(
             &core,

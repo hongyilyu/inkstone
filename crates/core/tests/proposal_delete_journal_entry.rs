@@ -1,194 +1,12 @@
-use std::path::PathBuf;
-use std::time::{Duration, Instant};
-
-use futures_util::SinkExt;
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-use sqlx::{Executor, Row, SqlitePool};
-use tokio_tungstenite::tungstenite::Message;
+use sqlx::{Row, SqlitePool};
 use uuid::Uuid;
 
 mod common;
-use common::{CoreHandle, Workspace, next_text};
-
-async fn migrated_pool(workspace: &Workspace) -> SqlitePool {
-    let options = SqliteConnectOptions::new()
-        .filename(workspace.db_path())
-        .create_if_missing(true)
-        .foreign_keys(true);
-    let pool = SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect_with(options)
-        .await
-        .expect("open sqlite pool");
-    sqlx::migrate!("./migrations")
-        .run(&pool)
-        .await
-        .expect("run migrations");
-    pool
-}
-
-async fn seed_thread(pool: &SqlitePool, thread_id: Uuid, title: &str, now_ms: i64) {
-    sqlx::query(
-        "INSERT INTO threads (id, title, created_at, last_activity_at) VALUES (?1, ?2, ?3, ?3)",
-    )
-    .bind(thread_id.to_string())
-    .bind(title)
-    .bind(now_ms)
-    .execute(pool)
-    .await
-    .expect("insert thread");
-}
-
-async fn seed_accepted_journal_entry(
-    pool: &SqlitePool,
-    thread_id: Uuid,
-    occurred_at: &str,
-    body_text: &str,
-    created_at: i64,
-) -> Uuid {
-    seed_accepted_journal_entry_with_source_role(
-        pool,
-        thread_id,
-        occurred_at,
-        body_text,
-        created_at,
-        "user",
-    )
-    .await
-}
-
-async fn seed_accepted_journal_entry_with_source_role(
-    pool: &SqlitePool,
-    thread_id: Uuid,
-    occurred_at: &str,
-    body_text: &str,
-    created_at: i64,
-    source_role: &str,
-) -> Uuid {
-    let entity_id = Uuid::now_v7();
-    let run_id = Uuid::now_v7();
-    let user_message_id = Uuid::now_v7();
-    let assistant_message_id = Uuid::now_v7();
-    let tool_call_id = format!("tc_{entity_id}");
-    let proposal_id = Uuid::now_v7().to_string();
-    let source_id = Uuid::now_v7().to_string();
-    let payload = serde_json::json!({
-        "occurred_at": occurred_at,
-        "body": [{ "type": "text", "text": body_text }]
-    });
-    let payload_str = payload.to_string();
-
-    let mut tx = pool.begin().await.expect("begin seed tx");
-    tx.execute(sqlx::query(
-        "INSERT INTO runs \
-         (id, thread_id, workflow_name, workflow_version, provider, model, thinking_level, user_message_id, status, started_at, ended_at, terminal_reason) \
-         VALUES (?1, ?2, 'default', '1.0.0', 'faux', 'fake-model', 'off', ?3, 'completed', ?4, ?4, 'completed')",
-    )
-    .bind(run_id.to_string())
-    .bind(thread_id.to_string())
-    .bind(user_message_id.to_string())
-    .bind(created_at))
-    .await
-    .expect("insert run");
-    tx.execute(
-        sqlx::query(
-            "INSERT INTO messages (id, thread_id, run_id, role, status, created_at, updated_at) \
-             VALUES (?1, ?2, ?3, ?4, 'completed', ?5, ?5)",
-        )
-        .bind(user_message_id.to_string())
-        .bind(thread_id.to_string())
-        .bind(run_id.to_string())
-        .bind(source_role)
-        .bind(created_at),
-    )
-    .await
-    .expect("insert source message");
-    tx.execute(
-        sqlx::query(
-            "INSERT INTO messages (id, thread_id, run_id, role, status, created_at, updated_at) \
-             VALUES (?1, ?2, ?3, 'assistant', 'completed', ?4, ?4)",
-        )
-        .bind(assistant_message_id.to_string())
-        .bind(thread_id.to_string())
-        .bind(run_id.to_string())
-        .bind(created_at),
-    )
-    .await
-    .expect("insert assistant message");
-    tx.execute(
-        sqlx::query(
-            "INSERT INTO message_parts (message_id, seq, type, text) VALUES (?1, 0, 'text', ?2)",
-        )
-        .bind(user_message_id.to_string())
-        .bind(body_text),
-    )
-    .await
-    .expect("insert source text");
-    tx.execute(
-        sqlx::query(
-            "INSERT INTO message_parts (message_id, seq, type, text) VALUES (?1, 0, 'text', '')",
-        )
-        .bind(assistant_message_id.to_string()),
-    )
-    .await
-    .expect("insert assistant text");
-    tx.execute(sqlx::query(
-        "INSERT INTO tool_calls (id, run_id, name, request_payload, status, result_payload, requested_at, resolved_at) \
-         VALUES (?1, ?2, 'propose_workspace_mutation', ?3, 'completed', '{}', ?4, ?4)",
-    )
-    .bind(&tool_call_id)
-    .bind(run_id.to_string())
-    .bind(serde_json::json!({ "mutation_kind": "create_journal_entry", "payload": payload }).to_string())
-    .bind(created_at))
-    .await
-    .expect("insert tool call");
-    tx.execute(sqlx::query(
-        "INSERT INTO proposals (id, tool_call_id, mutation_kind, status, decided_by, decided_at, applied_at) \
-         VALUES (?1, ?2, 'create_journal_entry', 'accepted', 'user', ?3, ?3)",
-    )
-    .bind(&proposal_id)
-    .bind(&tool_call_id)
-    .bind(created_at))
-    .await
-    .expect("insert proposal");
-    tx.execute(sqlx::query(
-        "INSERT INTO entities (id, type, schema_version, data, created_by, created_via_proposal_id, created_at, updated_at) \
-         VALUES (?1, 'journal_entry', 1, ?2, 'proposal', ?3, ?4, ?4)",
-    )
-    .bind(entity_id.to_string())
-    .bind(&payload_str)
-    .bind(&proposal_id)
-    .bind(created_at))
-    .await
-    .expect("insert entity");
-    tx.execute(
-        sqlx::query(
-            "INSERT INTO entity_revisions (entity_id, seq, data, proposal_id, created_at) \
-             VALUES (?1, 1, ?2, ?3, ?4)",
-        )
-        .bind(entity_id.to_string())
-        .bind(&payload_str)
-        .bind(&proposal_id)
-        .bind(created_at),
-    )
-    .await
-    .expect("insert entity revision");
-    tx.execute(
-        sqlx::query(
-            "INSERT INTO entity_sources (id, entity_id, source_message_id, relation, created_at) \
-             VALUES (?1, ?2, ?3, 'created_from', ?4)",
-        )
-        .bind(&source_id)
-        .bind(entity_id.to_string())
-        .bind(user_message_id.to_string())
-        .bind(created_at),
-    )
-    .await
-    .expect("insert entity source");
-
-    tx.commit().await.expect("commit seed tx");
-    entity_id
-}
+use common::{
+    Workspace, await_completed, migrated_pool, open_readonly_pool, park_proposal,
+    proposal_id_of, rpc, rt, seed_accepted_journal_entry, seed_accepted_journal_entry_full,
+    seed_thread,
+};
 
 fn write_delete_params(path: &std::path::Path, entity_id: Uuid) {
     std::fs::write(
@@ -203,93 +21,6 @@ fn write_delete_params(path: &std::path::Path, entity_id: Uuid) {
         .to_string(),
     )
     .expect("write delete params");
-}
-
-async fn rpc(
-    core: &CoreHandle,
-    id: u64,
-    method: &str,
-    params: serde_json::Value,
-) -> serde_json::Value {
-    let mut ws = core.connect().await;
-    let req = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": id,
-        "method": method,
-        "params": params,
-    });
-    ws.send(Message::Text(req.to_string().into()))
-        .await
-        .expect("send request frame");
-    let body = next_text(&mut ws).await;
-    ws.close(None).await.ok();
-    serde_json::from_str(&body).unwrap_or_else(|e| panic!("response is JSON: {e} - body: {body}"))
-}
-
-async fn await_run_status(core: &CoreHandle, run_id: &str, status: &str) {
-    let deadline = Instant::now() + Duration::from_secs(15);
-    loop {
-        if Instant::now() > deadline {
-            panic!("timed out waiting for run status {status}");
-        }
-        let resp = rpc(
-            core,
-            90,
-            "run/subscribe",
-            serde_json::json!({ "run_id": run_id }),
-        )
-        .await;
-        if resp["result"]["status"].as_str() == Some(status) {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(150)).await;
-    }
-}
-
-async fn park_delete_proposal(
-    core: &CoreHandle,
-    thread_id: Uuid,
-    prompt: &str,
-) -> (String, String) {
-    let resp = rpc(
-        core,
-        1,
-        "run/post_message",
-        serde_json::json!({ "thread_id": thread_id, "prompt": prompt }),
-    )
-    .await;
-    let run_id = resp["result"]["run_id"]
-        .as_str()
-        .unwrap_or_else(|| panic!("result.run_id is a string - body: {resp}"))
-        .to_string();
-    await_run_status(core, &run_id, "parked").await;
-
-    let resp = rpc(
-        core,
-        3,
-        "proposal/get",
-        serde_json::json!({ "run_id": run_id }),
-    )
-    .await;
-    let proposal_id = resp["result"]["proposal_id"]
-        .as_str()
-        .unwrap_or_else(|| panic!("proposal_id is a string - body: {resp}"))
-        .to_string();
-    assert_eq!(
-        resp["result"]["mutation_kind"].as_str(),
-        Some("delete_journal_entry"),
-        "parked Proposal is a delete - body: {resp}"
-    );
-    (run_id, proposal_id)
-}
-
-async fn open_readonly_pool(db_path: PathBuf) -> SqlitePool {
-    let url = format!("sqlite://{}?mode=ro", db_path.display());
-    SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect(&url)
-        .await
-        .expect("connect to migrated DB")
 }
 
 async fn entity_exists(pool: &SqlitePool, entity_id: Uuid) -> bool {
@@ -323,10 +54,7 @@ fn same_thread_delete_accept_hard_deletes_entry_and_cascades() {
     let params_path = workspace.path().join("delete-params.json");
     let thread_id = Uuid::now_v7();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let entity_id = rt.block_on(async {
         let pool = migrated_pool(&workspace).await;
@@ -351,8 +79,14 @@ fn same_thread_delete_accept_hard_deletes_entry_and_cascades() {
         .spawn();
 
     let run_id = rt.block_on(async {
-        let (run_id, proposal_id) =
-            park_delete_proposal(&core, thread_id, "Delete that mistaken Journal Entry.").await;
+        let (run_id, proposal) = park_proposal(
+            &core,
+            thread_id,
+            "Delete that mistaken Journal Entry.",
+            Some("delete_journal_entry"),
+        )
+        .await;
+        let proposal_id = proposal_id_of(&proposal);
         let resp = rpc(
             &core,
             4,
@@ -374,7 +108,7 @@ fn same_thread_delete_accept_hard_deletes_entry_and_cascades() {
             Some(entity_id.to_string().as_str()),
             "delete accept returns the deleted entity id - body: {resp}"
         );
-        await_run_status(&core, &run_id, "completed").await;
+        await_completed(&core, &run_id).await;
         let replay = rpc(
             &core,
             5,
@@ -400,7 +134,7 @@ fn same_thread_delete_accept_hard_deletes_entry_and_cascades() {
     });
 
     rt.block_on(async {
-        let pool = open_readonly_pool(workspace.db_path().to_path_buf()).await;
+        let pool = open_readonly_pool(&workspace).await;
         assert!(
             !entity_exists(&pool, entity_id).await,
             "accepted delete removes the Journal Entry"
@@ -438,10 +172,7 @@ fn delete_reject_leaves_entry_unchanged() {
     let params_path = workspace.path().join("delete-params.json");
     let thread_id = Uuid::now_v7();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let entity_id = rt.block_on(async {
         let pool = migrated_pool(&workspace).await;
@@ -466,8 +197,14 @@ fn delete_reject_leaves_entry_unchanged() {
         .spawn();
 
     let run_id = rt.block_on(async {
-        let (run_id, proposal_id) =
-            park_delete_proposal(&core, thread_id, "Actually keep that Journal Entry.").await;
+        let (run_id, proposal) = park_proposal(
+            &core,
+            thread_id,
+            "Actually keep that Journal Entry.",
+            Some("delete_journal_entry"),
+        )
+        .await;
+        let proposal_id = proposal_id_of(&proposal);
         let resp = rpc(
             &core,
             5,
@@ -488,12 +225,12 @@ fn delete_reject_leaves_entry_unchanged() {
             resp["result"].get("entity_id").is_none(),
             "reject omits entity_id - body: {resp}"
         );
-        await_run_status(&core, &run_id, "completed").await;
+        await_completed(&core, &run_id).await;
         run_id
     });
 
     rt.block_on(async {
-        let pool = open_readonly_pool(workspace.db_path().to_path_buf()).await;
+        let pool = open_readonly_pool(&workspace).await;
         assert!(
             entity_exists(&pool, entity_id).await,
             "rejected delete leaves the Journal Entry in place"
@@ -531,10 +268,7 @@ fn delete_edit_is_invalid_and_leaves_proposal_pending() {
     let params_path = workspace.path().join("delete-params.json");
     let thread_id = Uuid::now_v7();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let entity_id = rt.block_on(async {
         let pool = migrated_pool(&workspace).await;
@@ -559,8 +293,14 @@ fn delete_edit_is_invalid_and_leaves_proposal_pending() {
         .spawn();
 
     let run_id = rt.block_on(async {
-        let (run_id, proposal_id) =
-            park_delete_proposal(&core, thread_id, "Edit that delete proposal.").await;
+        let (run_id, proposal) = park_proposal(
+            &core,
+            thread_id,
+            "Edit that delete proposal.",
+            Some("delete_journal_entry"),
+        )
+        .await;
+        let proposal_id = proposal_id_of(&proposal);
         let resp = rpc(
             &core,
             6,
@@ -601,7 +341,7 @@ fn delete_edit_is_invalid_and_leaves_proposal_pending() {
     });
 
     rt.block_on(async {
-        let pool = open_readonly_pool(workspace.db_path().to_path_buf()).await;
+        let pool = open_readonly_pool(&workspace).await;
         assert!(
             entity_exists(&pool, entity_id).await,
             "invalid delete edit leaves the Journal Entry in place"
@@ -636,10 +376,7 @@ fn cross_thread_delete_is_invalid_and_leaves_entry_unchanged() {
     let source_thread_id = Uuid::now_v7();
     let other_thread_id = Uuid::now_v7();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let entity_id = rt.block_on(async {
         let pool = migrated_pool(&workspace).await;
@@ -665,12 +402,14 @@ fn cross_thread_delete_is_invalid_and_leaves_entry_unchanged() {
         .spawn();
 
     let run_id = rt.block_on(async {
-        let (run_id, proposal_id) = park_delete_proposal(
+        let (run_id, proposal) = park_proposal(
             &core,
             other_thread_id,
             "Delete the earlier Journal Entry from the other thread.",
+            Some("delete_journal_entry"),
         )
         .await;
+        let proposal_id = proposal_id_of(&proposal);
         let resp = rpc(
             &core,
             8,
@@ -698,7 +437,7 @@ fn cross_thread_delete_is_invalid_and_leaves_entry_unchanged() {
     });
 
     rt.block_on(async {
-        let pool = open_readonly_pool(workspace.db_path().to_path_buf()).await;
+        let pool = open_readonly_pool(&workspace).await;
         assert!(
             entity_exists(&pool, entity_id).await,
             "cross-thread invalid delete leaves the Journal Entry in place"
@@ -732,18 +471,17 @@ fn non_user_created_from_delete_is_invalid_and_leaves_entry_unchanged() {
     let params_path = workspace.path().join("delete-params.json");
     let thread_id = Uuid::now_v7();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let entity_id = rt.block_on(async {
         let pool = migrated_pool(&workspace).await;
         seed_thread(&pool, thread_id, "Journal thread", 1).await;
-        let entity_id = seed_accepted_journal_entry_with_source_role(
+        let entity_id = seed_accepted_journal_entry_full(
             &pool,
             thread_id,
+            Uuid::now_v7(),
             "2026-06-10T10:30:00",
+            None,
             "Bought milk after daycare pickup.",
             2,
             "assistant",
@@ -761,8 +499,14 @@ fn non_user_created_from_delete_is_invalid_and_leaves_entry_unchanged() {
         .spawn();
 
     let run_id = rt.block_on(async {
-        let (run_id, proposal_id) =
-            park_delete_proposal(&core, thread_id, "Delete that earlier entry.").await;
+        let (run_id, proposal) = park_proposal(
+            &core,
+            thread_id,
+            "Delete that earlier entry.",
+            Some("delete_journal_entry"),
+        )
+        .await;
+        let proposal_id = proposal_id_of(&proposal);
         let resp = rpc(
             &core,
             9,
@@ -790,7 +534,7 @@ fn non_user_created_from_delete_is_invalid_and_leaves_entry_unchanged() {
     });
 
     rt.block_on(async {
-        let pool = open_readonly_pool(workspace.db_path().to_path_buf()).await;
+        let pool = open_readonly_pool(&workspace).await;
         assert!(
             entity_exists(&pool, entity_id).await,
             "non-user created_from invalid delete leaves the Journal Entry in place"

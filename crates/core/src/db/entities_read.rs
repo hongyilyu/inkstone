@@ -314,75 +314,35 @@ pub struct CurrentThreadJournalEntryRow {
     pub anchored_entities: Vec<String>,
 }
 
-/// One accepted Journal Entry for `proposal/get` review context. `data` is the
-/// current `entities.data` snapshot. Unlike the canonical [`EntityRow`] reads,
-/// this is a display-only review-context snapshot: a malformed `data` degrades to
-/// `Value::Null` rather than failing the read (see [`current_journal_entry_by_id`]).
-pub struct CurrentJournalEntryRow {
-    pub entity_id: String,
-    pub data: serde_json::Value,
-}
-
-/// Read one accepted Journal Entry by id. `None` when it does not exist or is
-/// not a journal entry.
-///
-/// Display-only review read: its sole caller is `proposal/get`'s
-/// `review_context_for_proposal` preview, which is designed to degrade gracefully
-/// when the current-entry snapshot is unparseable. So a malformed `data` falls
-/// back to `Value::Null` here rather than routing through [`parse_entity_data`] —
-/// deliberately NOT a canonical authoritative read. The loud parse-failure
-/// guarantee for this Journal Entry's data lives on the decide/apply path
-/// (`db::apply`, which parses the same snapshot and returns
-/// `ApplyError::InvalidMutation` → `-32602`), so corruption is rejected where it
-/// matters without breaking the optional review preview.
-pub async fn current_journal_entry_by_id(
-    pool: &SqlitePool,
-    entity_id: &str,
-) -> sqlx::Result<Option<CurrentJournalEntryRow>> {
-    let Some((entity_id, data)) = queries::current_journal_entry_by_id(pool, entity_id).await?
-    else {
-        return Ok(None);
-    };
-    Ok(Some(CurrentJournalEntryRow {
-        entity_id,
-        data: serde_json::from_str(&data).unwrap_or(serde_json::Value::Null),
-    }))
-}
-
-/// One accepted GTD Entity (Person/Project) for `proposal/get` review
-/// context (lamplit-desk-alignment). `data` is the current `entities.data`
-/// snapshot. Like [`CurrentJournalEntryRow`], this is a display-only review read:
-/// a malformed `data` degrades to `Value::Null` rather than failing the read. The
-/// loud parse-failure guarantee for an accepted update lives on the decide/apply
-/// path, so corruption is rejected where it matters without breaking the optional
-/// review preview.
+/// One accepted Entity snapshot for `proposal/get` review context. `data` is
+/// the current `entities.data` snapshot. Unlike the canonical [`EntityRow`]
+/// reads, this is a display-only review-context snapshot: a malformed `data`
+/// degrades to `Value::Null` rather than failing the read (see
+/// [`current_entity_review_data`]).
 pub struct CurrentEntityRow {
     pub entity_id: String,
     pub data: serde_json::Value,
 }
 
-/// Read one accepted Person by id. `None` when it does not exist or is not a
-/// person. Display-only review read (see [`current_journal_entry_by_id`]).
-pub async fn current_person_by_id(
+/// Read one accepted Entity of `entity_type` by id. `None` when it does not
+/// exist or is not of that type.
+///
+/// Display-only review read: its sole caller is `proposal/get`'s
+/// `review_context_for_proposal` preview, which is designed to degrade gracefully
+/// when the current-entity snapshot is unparseable. So a malformed `data` falls
+/// back to `Value::Null` here rather than routing through [`parse_entity_data`] —
+/// deliberately NOT a canonical authoritative read. The loud parse-failure
+/// guarantee for this Entity's data lives on the decide/apply path
+/// (`db::apply`, which parses the same snapshot and returns
+/// `ApplyError::InvalidMutation` → `-32602`), so corruption is rejected where it
+/// matters without breaking the optional review preview.
+pub async fn current_entity_review_data(
     pool: &SqlitePool,
     entity_id: &str,
+    entity_type: crate::mutation::EntityType,
 ) -> sqlx::Result<Option<CurrentEntityRow>> {
-    let Some(data) = queries::current_person_data(pool, entity_id).await? else {
-        return Ok(None);
-    };
-    Ok(Some(CurrentEntityRow {
-        entity_id: entity_id.to_string(),
-        data: serde_json::from_str(&data).unwrap_or(serde_json::Value::Null),
-    }))
-}
-
-/// Read one accepted Project by id. `None` when it does not exist or is not a
-/// project. Display-only review read (see [`current_journal_entry_by_id`]).
-pub async fn current_project_by_id(
-    pool: &SqlitePool,
-    entity_id: &str,
-) -> sqlx::Result<Option<CurrentEntityRow>> {
-    let Some(data) = queries::current_project_data(pool, entity_id).await? else {
+    let Some(data) = queries::current_entity_data(pool, entity_id, entity_type.as_str()).await?
+    else {
         return Ok(None);
     };
     Ok(Some(CurrentEntityRow {
@@ -509,43 +469,9 @@ pub async fn todos_by_person(
 
 #[cfg(test)]
 mod tests {
-    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+    use crate::db::test_support::{memory_pool, seed_entity, seed_source, seed_thread_message};
 
     use super::*;
-
-    /// A migrated in-memory pool so the `runs` CHECK constraints are in force.
-    async fn memory_pool() -> SqlitePool {
-        let options = SqliteConnectOptions::new()
-            .filename(":memory:")
-            .foreign_keys(true);
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(options)
-            .await
-            .expect("open in-memory sqlite");
-        sqlx::migrate!("./migrations")
-            .run(&pool)
-            .await
-            .expect("run migrations");
-        pool
-    }
-
-    /// Insert an Entity row directly with the given `type` + `data` JSON, so the
-    /// relationship-read tests can seed Todos/Persons/Projects without a Proposal.
-    async fn seed_entity(pool: &SqlitePool, id: &str, entity_type: &str, data: &str) {
-        sqlx::query(
-            "INSERT INTO entities \
-             (id, type, schema_version, data, created_by, created_via_proposal_id, \
-              created_at, updated_at) \
-             VALUES (?, ?, 1, ?, 'user', NULL, 1, 1)",
-        )
-        .bind(id)
-        .bind(entity_type)
-        .bind(data)
-        .execute(pool)
-        .await
-        .expect("insert entity");
-    }
 
     /// Insert one `todo_person_refs` row directly.
     async fn seed_ref(pool: &SqlitePool, todo_id: &str, person_id: &str, role: &str) {
@@ -670,78 +596,6 @@ mod tests {
             rows.iter().all(|r| r.person_refs.is_empty()),
             "non-Todo rows never carry person_refs"
         );
-    }
-
-    /// Seed a Thread + Run + user Message chain so a Message-sourced provenance
-    /// row resolves a real `thread_id`/`thread_title`. The `runs.user_message_id`
-    /// and `messages.run_id` FKs are circular but DEFERRABLE, so the whole chain
-    /// commits in one tx. Returns the seeded user-message id.
-    async fn seed_thread_message(
-        pool: &SqlitePool,
-        thread_id: &str,
-        thread_title: &str,
-        message_id: &str,
-    ) {
-        let mut tx = pool.begin().await.expect("begin");
-        sqlx::query(
-            "INSERT INTO threads (id, title, created_at, last_activity_at) VALUES (?, ?, 1, 1)",
-        )
-        .bind(thread_id)
-        .bind(thread_title)
-        .execute(&mut *tx)
-        .await
-        .expect("insert thread");
-        let run_id = format!("run-for-{message_id}");
-        sqlx::query(
-            "INSERT INTO runs \
-             (id, thread_id, workflow_name, workflow_version, provider, model, \
-              thinking_level, user_message_id, status, started_at) \
-             VALUES (?, ?, 'w', '1', 'p', 'm', 'off', ?, 'completed', 1)",
-        )
-        .bind(&run_id)
-        .bind(thread_id)
-        .bind(message_id)
-        .execute(&mut *tx)
-        .await
-        .expect("insert run");
-        sqlx::query(
-            "INSERT INTO messages (id, thread_id, run_id, role, status, created_at, updated_at) \
-             VALUES (?, ?, ?, 'user', 'completed', 1, 1)",
-        )
-        .bind(message_id)
-        .bind(thread_id)
-        .bind(&run_id)
-        .execute(&mut *tx)
-        .await
-        .expect("insert message");
-        tx.commit().await.expect("commit thread+message");
-    }
-
-    /// Seed one `entity_sources` row. Exactly one of `source_message_id` /
-    /// `source_entity_id` is set (the schema CHECK); pass the other as `None`.
-    async fn seed_source(
-        pool: &SqlitePool,
-        id: &str,
-        entity_id: &str,
-        source_message_id: Option<&str>,
-        source_entity_id: Option<&str>,
-        relation: &str,
-        created_at: i64,
-    ) {
-        sqlx::query(
-            "INSERT INTO entity_sources \
-             (id, entity_id, source_message_id, source_entity_id, relation, created_at) \
-             VALUES (?, ?, ?, ?, ?, ?)",
-        )
-        .bind(id)
-        .bind(entity_id)
-        .bind(source_message_id)
-        .bind(source_entity_id)
-        .bind(relation)
-        .bind(created_at)
-        .execute(pool)
-        .await
-        .expect("insert entity_source");
     }
 
     /// `list_by_type` attaches each Entity's origin provenance ("Captured from",

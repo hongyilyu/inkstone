@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { expect, test } from "./fixtures.js";
 import { jsonValue, sqlite, sqlValue } from "./seed-proposal.js";
+import { dbPathFor } from "./seed.js";
 import { FAUX_WORKER_CMD, PROPOSE_WORKER_CMD } from "./spawnCore.js";
 
 /**
@@ -74,91 +75,93 @@ const appendProposalParamsFile = path.join(
 	"append-proposal.json",
 );
 
-function dbPathFor(workspacePath: string): string {
-	return path.join(workspacePath, "db.sqlite");
-}
-
 function count(dbPath: string, sql: string): string {
 	return sqlite(dbPath, sql).trim();
 }
 
 /** Seed an ACCEPTED Journal Entry J in thread T, created_from a user Message in T
- * (the provenance the rescan RPC + the in-tx cross-thread guard both read). Its prose
- * names "Priya" as plain text — nothing chipped yet. */
-function seedAcceptedJournalEntry(dbPath: string): void {
+ * (the provenance the rescan RPC + the in-tx cross-thread guard both read). One
+ * SQL template for both scenarios — splice (prose names "Priya" as plain text)
+ * and append (prose does NOT name the person folded in later) — with distinct,
+ * explicit (never derived) ids: the thread ids cross UUID-typed wire params and
+ * URL assertions. */
+function seedAcceptedJE(
+	dbPath: string,
+	cfg: {
+		threadId: string;
+		runId: string;
+		userMsgId: string;
+		jeId: string;
+		proposalId: string;
+		toolCallId: string;
+		entitySourceId: string;
+		title: string;
+		prose: string;
+		occurredAt: string;
+	},
+): void {
 	const now = Date.now();
 	const payload = {
-		occurred_at: "2026-06-10T10:30:00",
-		body: [{ type: "text", text: JE_PROSE }],
+		occurred_at: cfg.occurredAt,
+		body: [{ type: "text", text: cfg.prose }],
 	};
 	sqlite(
 		dbPath,
 		`
 		BEGIN IMMEDIATE;
 		INSERT INTO threads (id, title, created_at, last_activity_at)
-		VALUES (${sqlValue(THREAD_ID)}, 'Roadmap sync', ${now}, ${now});
+		VALUES (${sqlValue(cfg.threadId)}, ${sqlValue(cfg.title)}, ${now}, ${now});
 		INSERT INTO runs
 			(id, thread_id, workflow_name, workflow_version, provider, model, thinking_level, user_message_id, status, started_at, ended_at, terminal_reason)
 		VALUES
-			(${sqlValue(RUN_ID)}, ${sqlValue(THREAD_ID)}, 'default', '1.0.0', 'faux', 'fake-model', 'off', ${sqlValue(USER_MSG_ID)}, 'completed', ${now}, ${now}, 'completed');
+			(${sqlValue(cfg.runId)}, ${sqlValue(cfg.threadId)}, 'default', '1.0.0', 'faux', 'fake-model', 'off', ${sqlValue(cfg.userMsgId)}, 'completed', ${now}, ${now}, 'completed');
 		INSERT INTO messages (id, thread_id, run_id, role, status, created_at, updated_at)
-		VALUES (${sqlValue(USER_MSG_ID)}, ${sqlValue(THREAD_ID)}, ${sqlValue(RUN_ID)}, 'user', 'completed', ${now}, ${now});
+		VALUES (${sqlValue(cfg.userMsgId)}, ${sqlValue(cfg.threadId)}, ${sqlValue(cfg.runId)}, 'user', 'completed', ${now}, ${now});
 		INSERT INTO message_parts (message_id, seq, type, text)
-		VALUES (${sqlValue(USER_MSG_ID)}, 0, 'text', ${sqlValue(JE_PROSE)});
+		VALUES (${sqlValue(cfg.userMsgId)}, 0, 'text', ${sqlValue(cfg.prose)});
 		INSERT INTO tool_calls (id, run_id, name, request_payload, status, result_payload, requested_at, resolved_at)
-		VALUES (${sqlValue(TOOL_CALL_ID)}, ${sqlValue(RUN_ID)}, 'propose_workspace_mutation', ${jsonValue({ mutation_kind: "create_journal_entry", payload })}, 'completed', '{}', ${now}, ${now});
+		VALUES (${sqlValue(cfg.toolCallId)}, ${sqlValue(cfg.runId)}, 'propose_workspace_mutation', ${jsonValue({ mutation_kind: "create_journal_entry", payload })}, 'completed', '{}', ${now}, ${now});
 		INSERT INTO proposals (id, tool_call_id, mutation_kind, status, decided_by, decided_at, applied_at)
-		VALUES (${sqlValue(PROPOSAL_ID)}, ${sqlValue(TOOL_CALL_ID)}, 'create_journal_entry', 'accepted', 'user', ${now}, ${now});
+		VALUES (${sqlValue(cfg.proposalId)}, ${sqlValue(cfg.toolCallId)}, 'create_journal_entry', 'accepted', 'user', ${now}, ${now});
 		INSERT INTO entities (id, type, schema_version, data, created_by, created_via_proposal_id, created_at, updated_at)
-		VALUES (${sqlValue(JE_ID)}, 'journal_entry', 1, ${jsonValue(payload)}, 'proposal', ${sqlValue(PROPOSAL_ID)}, ${now}, ${now});
+		VALUES (${sqlValue(cfg.jeId)}, 'journal_entry', 1, ${jsonValue(payload)}, 'proposal', ${sqlValue(cfg.proposalId)}, ${now}, ${now});
 		INSERT INTO entity_revisions (entity_id, seq, data, proposal_id, created_at)
-		VALUES (${sqlValue(JE_ID)}, 1, ${jsonValue(payload)}, ${sqlValue(PROPOSAL_ID)}, ${now});
+		VALUES (${sqlValue(cfg.jeId)}, 1, ${jsonValue(payload)}, ${sqlValue(cfg.proposalId)}, ${now});
 		INSERT INTO entity_sources (id, entity_id, source_message_id, relation, created_at)
-		VALUES ('es_je_rescan', ${sqlValue(JE_ID)}, ${sqlValue(USER_MSG_ID)}, 'created_from', ${now});
+		VALUES (${sqlValue(cfg.entitySourceId)}, ${sqlValue(cfg.jeId)}, ${sqlValue(cfg.userMsgId)}, 'created_from', ${now});
 		COMMIT;
 		`,
 	);
 }
 
-/** Seed an ACCEPTED Journal Entry J in thread T, identical in shape to
- * {@link seedAcceptedJournalEntry} but with prose that does NOT name the person
- * folded in later (APPEND_PERSON_NAME). Distinct ids so the two scenarios never
- * share a row. This is the precondition append mode exists for: the entry's own
- * prose carries no occurrence of the name, so Core cannot splice into it and must
- * APPEND a model-proposed clause carrying the chip. */
+function seedAcceptedJournalEntry(dbPath: string): void {
+	seedAcceptedJE(dbPath, {
+		threadId: THREAD_ID,
+		runId: RUN_ID,
+		userMsgId: USER_MSG_ID,
+		jeId: JE_ID,
+		proposalId: PROPOSAL_ID,
+		toolCallId: TOOL_CALL_ID,
+		entitySourceId: "es_je_rescan",
+		title: "Roadmap sync",
+		prose: JE_PROSE,
+		occurredAt: "2026-06-10T10:30:00",
+	});
+}
+
 function seedAcceptedJournalEntryForAppend(dbPath: string): void {
-	const now = Date.now();
-	const payload = {
-		occurred_at: "2026-06-12T09:00:00",
-		body: [{ type: "text", text: APPEND_JE_PROSE }],
-	};
-	sqlite(
-		dbPath,
-		`
-		BEGIN IMMEDIATE;
-		INSERT INTO threads (id, title, created_at, last_activity_at)
-		VALUES (${sqlValue(APPEND_THREAD_ID)}, 'Lead Ads sync', ${now}, ${now});
-		INSERT INTO runs
-			(id, thread_id, workflow_name, workflow_version, provider, model, thinking_level, user_message_id, status, started_at, ended_at, terminal_reason)
-		VALUES
-			(${sqlValue(APPEND_RUN_ID)}, ${sqlValue(APPEND_THREAD_ID)}, 'default', '1.0.0', 'faux', 'fake-model', 'off', ${sqlValue(APPEND_USER_MSG_ID)}, 'completed', ${now}, ${now}, 'completed');
-		INSERT INTO messages (id, thread_id, run_id, role, status, created_at, updated_at)
-		VALUES (${sqlValue(APPEND_USER_MSG_ID)}, ${sqlValue(APPEND_THREAD_ID)}, ${sqlValue(APPEND_RUN_ID)}, 'user', 'completed', ${now}, ${now});
-		INSERT INTO message_parts (message_id, seq, type, text)
-		VALUES (${sqlValue(APPEND_USER_MSG_ID)}, 0, 'text', ${sqlValue(APPEND_JE_PROSE)});
-		INSERT INTO tool_calls (id, run_id, name, request_payload, status, result_payload, requested_at, resolved_at)
-		VALUES (${sqlValue(APPEND_TOOL_CALL_ID)}, ${sqlValue(APPEND_RUN_ID)}, 'propose_workspace_mutation', ${jsonValue({ mutation_kind: "create_journal_entry", payload })}, 'completed', '{}', ${now}, ${now});
-		INSERT INTO proposals (id, tool_call_id, mutation_kind, status, decided_by, decided_at, applied_at)
-		VALUES (${sqlValue(APPEND_PROPOSAL_ID)}, ${sqlValue(APPEND_TOOL_CALL_ID)}, 'create_journal_entry', 'accepted', 'user', ${now}, ${now});
-		INSERT INTO entities (id, type, schema_version, data, created_by, created_via_proposal_id, created_at, updated_at)
-		VALUES (${sqlValue(APPEND_JE_ID)}, 'journal_entry', 1, ${jsonValue(payload)}, 'proposal', ${sqlValue(APPEND_PROPOSAL_ID)}, ${now}, ${now});
-		INSERT INTO entity_revisions (entity_id, seq, data, proposal_id, created_at)
-		VALUES (${sqlValue(APPEND_JE_ID)}, 1, ${jsonValue(payload)}, ${sqlValue(APPEND_PROPOSAL_ID)}, ${now});
-		INSERT INTO entity_sources (id, entity_id, source_message_id, relation, created_at)
-		VALUES ('es_je_append', ${sqlValue(APPEND_JE_ID)}, ${sqlValue(APPEND_USER_MSG_ID)}, 'created_from', ${now});
-		COMMIT;
-		`,
-	);
+	seedAcceptedJE(dbPath, {
+		threadId: APPEND_THREAD_ID,
+		runId: APPEND_RUN_ID,
+		userMsgId: APPEND_USER_MSG_ID,
+		jeId: APPEND_JE_ID,
+		proposalId: APPEND_PROPOSAL_ID,
+		toolCallId: APPEND_TOOL_CALL_ID,
+		entitySourceId: "es_je_append",
+		title: "Lead Ads sync",
+		prose: APPEND_JE_PROSE,
+		occurredAt: "2026-06-12T09:00:00",
+	});
 }
 
 // ── The full button → RPC → spawn → anchor-reuse apply flow ──────────────────

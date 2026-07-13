@@ -29,7 +29,7 @@ import {
 	renderProjectBody,
 	renderUpdateTodoBody,
 } from "./proposalBody.js";
-import { objectField, textField } from "./proposalPayload.js";
+import { readObject, readString } from "@/lib/readPayload";
 
 // The mutation kinds the Worker proposes (ADR-0025). Media and direct
 // entity-edits are user-CRUD-only (ADR-0033/0059) — never proposed — so the card
@@ -163,7 +163,7 @@ export const PROPOSAL_VIEWS: Record<ProposalKind, ProposalView> = {
 	create_person: {
 		glyph: KIND_META.person.icon,
 		acceptGlyph: KIND_META.person.icon,
-		summary: (payload) => textField(payload, "name") || "New Person",
+		summary: (payload) => readString(payload, "name") || "New Person",
 		reviewCopy: "Inkstone wants to add a Person.",
 		acceptedCopy: "Added Person.",
 		rejectedCopy: "Dismissed.",
@@ -178,7 +178,7 @@ export const PROPOSAL_VIEWS: Record<ProposalKind, ProposalView> = {
 	create_project: {
 		glyph: KIND_META.project.icon,
 		acceptGlyph: KIND_META.project.icon,
-		summary: (payload) => textField(payload, "name") || "New Project",
+		summary: (payload) => readString(payload, "name") || "New Project",
 		reviewCopy: "Inkstone wants to add a Project.",
 		acceptedCopy: "Added Project.",
 		rejectedCopy: "Dismissed.",
@@ -194,7 +194,7 @@ export const PROPOSAL_VIEWS: Record<ProposalKind, ProposalView> = {
 		glyph: KIND_META.todo.icon,
 		acceptGlyph: KIND_META.todo.icon,
 		summary: (payload) =>
-			textField(objectField(payload, "todo"), "title") || "New Todo",
+			readString(readObject(payload, "todo"), "title") || "New Todo",
 		reviewCopy: "Inkstone wants to add a Todo.",
 		acceptedCopy: "Added Todo.",
 		rejectedCopy: "Dismissed.",
@@ -224,7 +224,7 @@ export const PROPOSAL_VIEWS: Record<ProposalKind, ProposalView> = {
 	update_person: {
 		glyph: KIND_META.person.icon,
 		acceptGlyph: KIND_META.person.icon,
-		summary: (payload) => textField(payload, "name") || "Update Person",
+		summary: (payload) => readString(payload, "name") || "Update Person",
 		reviewCopy: "Inkstone wants to update a Person.",
 		acceptedCopy: "Updated Person.",
 		rejectedCopy: "Kept current Person.",
@@ -242,7 +242,7 @@ export const PROPOSAL_VIEWS: Record<ProposalKind, ProposalView> = {
 	update_project: {
 		glyph: KIND_META.project.icon,
 		acceptGlyph: KIND_META.project.icon,
-		summary: (payload) => textField(payload, "name") || "Update Project",
+		summary: (payload) => readString(payload, "name") || "Update Project",
 		reviewCopy: "Inkstone wants to update a Project.",
 		acceptedCopy: "Updated Project.",
 		rejectedCopy: "Kept current Project.",

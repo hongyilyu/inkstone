@@ -19,7 +19,7 @@ use futures_util::SinkExt;
 use tokio_tungstenite::tungstenite::Message;
 
 mod common;
-use common::{Workspace, next_text, read_jsonl_lines};
+use common::{next_text, read_jsonl_lines, rt, Workspace};
 
 /// A worker that writes a malformed (non-NDJSON) stdout line trips Core's
 /// `child.rs` "unknown line" arm; the resulting `worker.unknown_line` WARN lands
@@ -37,10 +37,7 @@ fn worker_unknown_line_carries_run_id() {
         .env("INKSTONE_LOG_DIR", &log_dir)
         .spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let run_id = rt.block_on(async {
         let mut ws = core.connect().await;
@@ -145,10 +142,7 @@ fn worker_child_receives_default_worker_log_path() {
         .env("INKSTONE_TEST_LOGPATH_SINK", &sink_path)
         .spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
         let mut ws = core.connect().await;

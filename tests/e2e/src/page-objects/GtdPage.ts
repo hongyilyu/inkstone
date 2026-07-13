@@ -7,11 +7,11 @@ export class GtdPage {
 		private readonly baseUrl: string,
 	) {}
 
-	/** Navigate to a GTD view via its OLD URL (`/library/inbox|waiting|review`) —
-	 * these redirect to `/library/gtd?filt=…` per ADR-0054, and specs drive the
-	 * old URLs deliberately to keep that redirect behavior pinned. */
+	/** Navigate to a GTD view (`/library/gtd?filt=inbox|waiting|review`). */
 	async gotoView(view: "inbox" | "waiting" | "review"): Promise<void> {
-		await this.page.goto(new URL(`/library/${view}`, this.baseUrl).href);
+		await this.page.goto(
+			new URL(`/library/gtd?filt=${view}`, this.baseUrl).href,
+		);
 	}
 
 	/** Navigate to a Todo's detail projection (`/library/todos?id=<id>`). */

@@ -59,10 +59,7 @@ export function useEntityBacklinks(entityId: string, kind: LibraryItemKind) {
 		enabled: targetsBacklinks(kind),
 		queryFn: async () => {
 			const result = await runtime.runPromise(
-				Effect.gen(function* () {
-					const client = yield* WsClient;
-					return yield* client.getBacklinks(entityId);
-				}),
+				Effect.flatMap(WsClient, (client) => client.getBacklinks(entityId)),
 			);
 			return assembleBacklinks(result);
 		},

@@ -12,109 +12,12 @@
 //! `create_todo` carrying that Project id, and create a Todo on a SECOND run
 //! against the SAME Core (and DB).
 
-use std::time::{Duration, Instant};
 
-use futures_util::SinkExt;
 use sqlx::Row;
 use sqlx::sqlite::SqlitePoolOptions;
-use tokio_tungstenite::tungstenite::Message;
 
 mod common;
-use common::{CoreHandle, Workspace, next_text};
-
-/// Open a fresh socket, send a single request, return the response body.
-async fn rpc(
-    core: &CoreHandle,
-    id: u64,
-    method: &str,
-    params: serde_json::Value,
-) -> serde_json::Value {
-    let mut ws = core.connect().await;
-    let req = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": id,
-        "method": method,
-        "params": params,
-    });
-    ws.send(Message::Text(req.to_string().into()))
-        .await
-        .expect("send request frame");
-    let body = next_text(&mut ws).await;
-    ws.close(None).await.ok();
-    serde_json::from_str(&body).unwrap_or_else(|e| panic!("response is JSON: {e} — body: {body}"))
-}
-
-/// Create a Run with `prompt` and poll run/subscribe until it parks; returns the
-/// run_id. `id` keeps the JSON-RPC request ids distinct across multiple Runs on
-/// one Core.
-async fn create_and_park(core: &CoreHandle, id: u64, prompt: &str) -> String {
-    let resp = rpc(
-        core,
-        id,
-        "thread/create",
-        serde_json::json!({ "prompt": prompt }),
-    )
-    .await;
-    let run_id = resp["result"]["run_id"]
-        .as_str()
-        .unwrap_or_else(|| panic!("result.run_id is a string — body: {resp}"))
-        .to_string();
-
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        if Instant::now() > deadline {
-            panic!("timed out waiting for run to park");
-        }
-        let resp = rpc(
-            core,
-            id + 1,
-            "run/subscribe",
-            serde_json::json!({ "run_id": run_id }),
-        )
-        .await;
-        if resp["result"]["status"].as_str() == Some("parked") {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(150)).await;
-    }
-    run_id
-}
-
-/// Poll run/subscribe until the Run reaches `completed`; panics on timeout.
-async fn await_completed(core: &CoreHandle, run_id: &str) {
-    let deadline = Instant::now() + Duration::from_secs(15);
-    loop {
-        if Instant::now() > deadline {
-            panic!("timed out waiting for run to complete");
-        }
-        let resp = rpc(
-            core,
-            99,
-            "run/subscribe",
-            serde_json::json!({ "run_id": run_id }),
-        )
-        .await;
-        if resp["result"]["status"].as_str() == Some("completed") {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(150)).await;
-    }
-}
-
-/// Read a Run's pending proposal_id.
-async fn proposal_id_for(core: &CoreHandle, id: u64, run_id: &str) -> String {
-    let resp = rpc(
-        core,
-        id,
-        "proposal/get",
-        serde_json::json!({ "run_id": run_id }),
-    )
-    .await;
-    resp["result"]["proposal_id"]
-        .as_str()
-        .unwrap_or_else(|| panic!("proposal_id is a string — body: {resp}"))
-        .to_string()
-}
+use common::{await_completed, create_and_park, proposal_id_for, rpc, rt, Workspace};
 
 /// Write the raw `propose_workspace_mutation` params the fixture re-reads on its
 /// next spawn.
@@ -151,15 +54,12 @@ fn accept_create_todo_links_project_and_defaults_status() {
         .env("INKSTONE_PROPOSE_PARAMS_FILE", &params_path)
         .spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let (todo_run_id, project_id, todo_entity_id) = rt.block_on(async {
         // --- Run 1: create_project ---
-        let project_run = create_and_park(&core, 1, "Start the API v2 migration.").await;
-        let project_proposal = proposal_id_for(&core, 3, &project_run).await;
+        let project_run = create_and_park(&core, "Start the API v2 migration.").await.0;
+        let project_proposal = proposal_id_for(&core, &project_run).await;
         let resp = rpc(
             &core,
             4,
@@ -196,8 +96,8 @@ fn accept_create_todo_links_project_and_defaults_status() {
         );
 
         // --- Run 2: create_todo on the SAME Core/DB ---
-        let todo_run = create_and_park(&core, 10, "I need to ship the migration.").await;
-        let todo_proposal = proposal_id_for(&core, 13, &todo_run).await;
+        let todo_run = create_and_park(&core, "I need to ship the migration.").await.0;
+        let todo_proposal = proposal_id_for(&core, &todo_run).await;
         let resp = rpc(
             &core,
             14,
@@ -324,14 +224,11 @@ fn accept_create_todo_defaults_status_active() {
         .env("INKSTONE_PROPOSE_PARAMS_FILE", &params_path)
         .spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let entity_id = rt.block_on(async {
-        let run_id = create_and_park(&core, 1, "I need to buy milk.").await;
-        let proposal_id = proposal_id_for(&core, 3, &run_id).await;
+        let run_id = create_and_park(&core, "I need to buy milk.").await.0;
+        let proposal_id = proposal_id_for(&core, &run_id).await;
         let resp = rpc(
             &core,
             4,
@@ -416,14 +313,11 @@ fn accept_create_todo_persists_recurrence_rule() {
         .env("INKSTONE_PROPOSE_PARAMS_FILE", &params_path)
         .spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let entity_id = rt.block_on(async {
-        let run_id = create_and_park(&core, 1, "Review my projects every week.").await;
-        let proposal_id = proposal_id_for(&core, 3, &run_id).await;
+        let run_id = create_and_park(&core, "Review my projects every week.").await.0;
+        let proposal_id = proposal_id_for(&core, &run_id).await;
         let resp = rpc(
             &core,
             4,
@@ -514,14 +408,11 @@ fn create_todo_with_bad_project_id_is_rejected() {
         .env("INKSTONE_PROPOSE_PARAMS_FILE", &params_path)
         .spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let run_id = rt.block_on(async {
-        let run_id = create_and_park(&core, 1, "Track something against a missing project.").await;
-        let proposal_id = proposal_id_for(&core, 3, &run_id).await;
+        let run_id = create_and_park(&core, "Track something against a missing project.").await.0;
+        let proposal_id = proposal_id_for(&core, &run_id).await;
         let resp = rpc(
             &core,
             4,

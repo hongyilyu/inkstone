@@ -15,7 +15,7 @@ import {
 } from "@inkstone/ui-sdk";
 import { makeCoreRuntime } from "@test/test-utils/renderWithCore";
 import { Effect, Queue, Stream } from "effect";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	decideProposal,
 	resetBridge,
@@ -29,7 +29,7 @@ import {
 	getChatState,
 	nextMessageId,
 	resetChatStore,
-	seedAssistantMessage,
+	appendMessage,
 } from "@/store/chat.js";
 
 const JOURNAL_ENTRY = {
@@ -98,15 +98,6 @@ beforeEach(() => {
 	resetBridge();
 });
 
-/** Poll the store until `predicate` holds (the stream fiber is async). */
-async function waitFor(predicate: () => boolean): Promise<void> {
-	for (let i = 0; i < 200; i++) {
-		if (predicate()) return;
-		await new Promise((r) => setTimeout(r, 5));
-	}
-	throw new Error("waitFor timed out");
-}
-
 describe("proposal stream + decide", () => {
 	it("a proposal/pending notification fetches and attaches the pending proposal", async () => {
 		const proposalQueue = Effect.runSync(
@@ -120,7 +111,7 @@ describe("proposal stream + decide", () => {
 			run_id: "run-1",
 			proposal_id: "prop-1",
 		});
-		await waitFor(() => getChatState().proposals["run-1"] !== undefined);
+		await vi.waitUntil(() => getChatState().proposals["run-1"] !== undefined);
 
 		const proposal = getChatState().proposals["run-1"];
 		expect(proposal?.status).toBe("pending");
@@ -157,7 +148,7 @@ describe("proposal stream + decide", () => {
 			run_id: "run-1",
 			proposal_id: "prop-1",
 		});
-		await waitFor(() => getChatState().proposals["run-1"] !== undefined);
+		await vi.waitUntil(() => getChatState().proposals["run-1"] !== undefined);
 
 		expect(getChatState().proposals["run-1"]?.review_context).toEqual(
 			JOURNAL_ENTRY_REVIEW_CONTEXT,
@@ -184,7 +175,7 @@ describe("proposal stream + decide", () => {
 			proposal_id: "prop-1",
 			status: "accepted",
 		});
-		await waitFor(
+		await vi.waitUntil(
 			() => getChatState().proposals["run-1"]?.status === "accepted",
 		);
 
@@ -206,7 +197,7 @@ describe("proposal stream + decide", () => {
 			run_id: "run-1",
 			proposal_id: "prop-1",
 		});
-		await waitFor(() => getChatState().proposals["run-1"] !== undefined);
+		await vi.waitUntil(() => getChatState().proposals["run-1"] !== undefined);
 
 		await decideProposal(runtime, "run-1", "accept");
 
@@ -235,7 +226,7 @@ describe("proposal stream + decide", () => {
 			run_id: "run-1",
 			proposal_id: "prop-1",
 		});
-		await waitFor(() => getChatState().proposals["run-1"] !== undefined);
+		await vi.waitUntil(() => getChatState().proposals["run-1"] !== undefined);
 
 		await decideProposal(runtime, "run-1", "edit", { observations: [] });
 
@@ -280,7 +271,7 @@ describe("proposal stream + decide", () => {
 
 		// Seed run-1's turn + parked stream so the retry's success path can resume it.
 		const assistantId = nextMessageId();
-		seedAssistantMessage("thread-1", {
+		appendMessage("thread-1", {
 			id: assistantId,
 			role: "assistant",
 			status: "streaming",
@@ -296,7 +287,7 @@ describe("proposal stream + decide", () => {
 			run_id: "run-1",
 			proposal_id: "prop-run-1",
 		});
-		await waitFor(() => getChatState().proposals["run-1"] !== undefined);
+		await vi.waitUntil(() => getChatState().proposals["run-1"] !== undefined);
 
 		// First decide fails (lost response) → error state with Try again.
 		await decideProposal(runtime, "run-1", "accept");
@@ -321,7 +312,7 @@ describe("proposal stream + decide", () => {
 			run_id: "run-2",
 			proposal_id: "prop-run-2",
 		});
-		await waitFor(() => getChatState().proposals["run-2"] !== undefined);
+		await vi.waitUntil(() => getChatState().proposals["run-2"] !== undefined);
 		await decideProposal(runtime, "run-2", "accept");
 
 		expect(captured).toHaveLength(3);
@@ -379,7 +370,7 @@ describe("proposal stream + decide", () => {
 
 		// Seed run-1's turn + parked stream so settlement can resume it.
 		const assistantId = nextMessageId();
-		seedAssistantMessage("thread-1", {
+		appendMessage("thread-1", {
 			id: assistantId,
 			role: "assistant",
 			status: "streaming",
@@ -388,7 +379,7 @@ describe("proposal stream + decide", () => {
 		});
 		attachRun("thread-1", assistantId, "run-1");
 		startRunStream(runtime, "thread-1", "run-1");
-		await waitFor(() => subscribeCount === 1);
+		await vi.waitUntil(() => subscribeCount === 1);
 
 		startProposalStream(runtime);
 		Queue.unsafeOffer(proposalQueue, {
@@ -396,7 +387,7 @@ describe("proposal stream + decide", () => {
 			run_id: "run-1",
 			proposal_id: "prop-1",
 		});
-		await waitFor(() => getChatState().proposals["run-1"] !== undefined);
+		await vi.waitUntil(() => getChatState().proposals["run-1"] !== undefined);
 
 		await decideProposal(runtime, "run-1", "accept");
 
@@ -406,7 +397,7 @@ describe("proposal stream + decide", () => {
 			entity_id: "e-1",
 		});
 		// The resume tail was re-subscribed, mirroring the success path.
-		await waitFor(() => subscribeCount === 2);
+		await vi.waitUntil(() => subscribeCount === 2);
 
 		await runtime.dispose();
 	});
@@ -453,7 +444,7 @@ describe("proposal stream + decide", () => {
 		});
 
 		const assistantId = nextMessageId();
-		seedAssistantMessage("thread-1", {
+		appendMessage("thread-1", {
 			id: assistantId,
 			role: "assistant",
 			status: "streaming",
@@ -469,7 +460,7 @@ describe("proposal stream + decide", () => {
 			run_id: "run-1",
 			proposal_id: "prop-1",
 		});
-		await waitFor(() => getChatState().proposals["run-1"] !== undefined);
+		await vi.waitUntil(() => getChatState().proposals["run-1"] !== undefined);
 
 		await decideProposal(runtime, "run-1", "accept");
 
@@ -520,7 +511,7 @@ describe("proposal stream + decide", () => {
 		});
 
 		const assistantId = nextMessageId();
-		seedAssistantMessage("thread-1", {
+		appendMessage("thread-1", {
 			id: assistantId,
 			role: "assistant",
 			status: "streaming",
@@ -536,7 +527,7 @@ describe("proposal stream + decide", () => {
 			run_id: "run-1",
 			proposal_id: "prop-1",
 		});
-		await waitFor(() => getChatState().proposals["run-1"] !== undefined);
+		await vi.waitUntil(() => getChatState().proposals["run-1"] !== undefined);
 
 		await decideProposal(runtime, "run-1", "accept");
 
@@ -572,7 +563,7 @@ describe("proposal stream + decide", () => {
 		});
 
 		const assistantId = nextMessageId();
-		seedAssistantMessage("thread-1", {
+		appendMessage("thread-1", {
 			id: assistantId,
 			role: "assistant",
 			status: "streaming",
@@ -581,7 +572,7 @@ describe("proposal stream + decide", () => {
 		});
 		attachRun("thread-1", assistantId, "run-1");
 		startRunStream(runtime, "thread-1", "run-1");
-		await waitFor(() => subscribeCount === 1);
+		await vi.waitUntil(() => subscribeCount === 1);
 
 		startProposalStream(runtime);
 		Queue.unsafeOffer(proposalQueue, {
@@ -589,7 +580,7 @@ describe("proposal stream + decide", () => {
 			run_id: "run-1",
 			proposal_id: "prop-1",
 		});
-		await waitFor(() => getChatState().proposals["run-1"] !== undefined);
+		await vi.waitUntil(() => getChatState().proposals["run-1"] !== undefined);
 
 		await decideProposal(runtime, "run-1", "accept");
 
@@ -639,7 +630,7 @@ describe("proposal stream + decide", () => {
 		});
 
 		const assistantId = nextMessageId();
-		seedAssistantMessage("thread-1", {
+		appendMessage("thread-1", {
 			id: assistantId,
 			role: "assistant",
 			status: "streaming",
@@ -655,7 +646,7 @@ describe("proposal stream + decide", () => {
 			run_id: "run-1",
 			proposal_id: "prop-1",
 		});
-		await waitFor(() => getChatState().proposals["run-1"] !== undefined);
+		await vi.waitUntil(() => getChatState().proposals["run-1"] !== undefined);
 
 		await decideProposal(runtime, "run-1", "accept");
 
@@ -712,7 +703,7 @@ describe("proposal stream + decide", () => {
 		});
 
 		const assistantId = nextMessageId();
-		seedAssistantMessage("thread-1", {
+		appendMessage("thread-1", {
 			id: assistantId,
 			role: "assistant",
 			status: "streaming",
@@ -721,7 +712,7 @@ describe("proposal stream + decide", () => {
 		});
 		attachRun("thread-1", assistantId, "run-1");
 		startRunStream(runtime, "thread-1", "run-1");
-		await waitFor(() => subscribeCount === 1);
+		await vi.waitUntil(() => subscribeCount === 1);
 
 		startProposalStream(runtime);
 		Queue.unsafeOffer(proposalQueue, {
@@ -729,7 +720,7 @@ describe("proposal stream + decide", () => {
 			run_id: "run-1",
 			proposal_id: "prop-1",
 		});
-		await waitFor(() => getChatState().proposals["run-1"] !== undefined);
+		await vi.waitUntil(() => getChatState().proposals["run-1"] !== undefined);
 
 		await decideProposal(runtime, "run-1", "accept");
 
@@ -767,7 +758,7 @@ describe("proposal stream + decide", () => {
 			run_id: "run-1",
 			proposal_id: "prop-1",
 		});
-		await waitFor(() => getChatState().proposals["run-1"] !== undefined);
+		await vi.waitUntil(() => getChatState().proposals["run-1"] !== undefined);
 
 		// Second observes the optimistic `deciding` status from the first and short-circuits.
 		const first = decideProposal(runtime, "run-1", "accept");
@@ -796,7 +787,7 @@ describe("proposal stream + decide", () => {
 
 		// Seed run-1's turn + start the original parked stream (no terminal event → stale fiber, M2).
 		const assistantId = nextMessageId();
-		seedAssistantMessage("thread-1", {
+		appendMessage("thread-1", {
 			id: assistantId,
 			role: "assistant",
 			status: "streaming",
@@ -805,7 +796,7 @@ describe("proposal stream + decide", () => {
 		});
 		attachRun("thread-1", assistantId, "run-1");
 		startRunStream(runtime, "thread-1", "run-1");
-		await waitFor(() => subscribeCount === 1);
+		await vi.waitUntil(() => subscribeCount === 1);
 
 		startProposalStream(runtime);
 		Queue.unsafeOffer(proposalQueue, {
@@ -813,11 +804,11 @@ describe("proposal stream + decide", () => {
 			run_id: "run-1",
 			proposal_id: "prop-1",
 		});
-		await waitFor(() => getChatState().proposals["run-1"] !== undefined);
+		await vi.waitUntil(() => getChatState().proposals["run-1"] !== undefined);
 
 		await decideProposal(runtime, "run-1", "accept");
 		// Decide re-subscribed exactly once more (original fiber interrupted, not abandoned).
-		await waitFor(() => subscribeCount === 2);
+		await vi.waitUntil(() => subscribeCount === 2);
 
 		// Single-consumer resume tail: deltas concatenate cleanly; two consumers would split them.
 		Queue.unsafeOffer(runQueue, { kind: "text_delta", delta: "Done" });
@@ -825,7 +816,7 @@ describe("proposal stream + decide", () => {
 		Queue.unsafeOffer(runQueue, { kind: "text_delta", delta: "added it." });
 		Queue.unsafeOffer(runQueue, { kind: "done" });
 
-		await waitFor(() => {
+		await vi.waitUntil(() => {
 			const msg = getChatState().threads["thread-1"]?.messages.find(
 				(m) => m.run_id === "run-1",
 			);
@@ -853,7 +844,7 @@ describe("proposal stream + decide", () => {
 		});
 
 		const assistantId = nextMessageId();
-		seedAssistantMessage("thread-1", {
+		appendMessage("thread-1", {
 			id: assistantId,
 			role: "assistant",
 			status: "streaming",
@@ -868,7 +859,7 @@ describe("proposal stream + decide", () => {
 			kind: "text_delta",
 			delta: "Let me check the other thread. ",
 		});
-		await waitFor(() => {
+		await vi.waitUntil(() => {
 			const msg = getChatState().threads["thread-1"]?.messages.find(
 				(m) => m.run_id === "run-1",
 			);
@@ -884,7 +875,7 @@ describe("proposal stream + decide", () => {
 			run_id: "run-1",
 			proposal_id: "prop-1",
 		});
-		await waitFor(() => getChatState().proposals["run-1"] !== undefined);
+		await vi.waitUntil(() => getChatState().proposals["run-1"] !== undefined);
 
 		await decideProposal(runtime, "run-1", "accept");
 
@@ -899,7 +890,7 @@ describe("proposal stream + decide", () => {
 		});
 		Queue.unsafeOffer(resumeQueue, { kind: "done" });
 
-		await waitFor(() => {
+		await vi.waitUntil(() => {
 			const msg = getChatState().threads["thread-1"]?.messages.find(
 				(m) => m.run_id === "run-1",
 			);
@@ -929,7 +920,7 @@ describe("proposal stream + decide", () => {
 		});
 
 		const assistantId = nextMessageId();
-		seedAssistantMessage("thread-1", {
+		appendMessage("thread-1", {
 			id: assistantId,
 			role: "assistant",
 			status: "streaming",
@@ -944,7 +935,7 @@ describe("proposal stream + decide", () => {
 			kind: "text_delta",
 			delta: "Let me check the other thread. ",
 		});
-		await waitFor(() => {
+		await vi.waitUntil(() => {
 			const msg = getChatState().threads["thread-1"]?.messages.find(
 				(m) => m.run_id === "run-1",
 			);
@@ -959,7 +950,7 @@ describe("proposal stream + decide", () => {
 			run_id: "run-1",
 			proposal_id: "prop-1",
 		});
-		await waitFor(() => getChatState().proposals["run-1"] !== undefined);
+		await vi.waitUntil(() => getChatState().proposals["run-1"] !== undefined);
 
 		await decideProposal(runtime, "run-1", "accept");
 
@@ -976,7 +967,7 @@ describe("proposal stream + decide", () => {
 		});
 		Queue.unsafeOffer(resumeQueue, { kind: "done" });
 
-		await waitFor(() => {
+		await vi.waitUntil(() => {
 			const msg = getChatState().threads["thread-1"]?.messages.find(
 				(m) => m.run_id === "run-1",
 			);

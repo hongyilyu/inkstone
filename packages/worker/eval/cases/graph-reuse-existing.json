@@ -25,8 +25,7 @@
 				"name": "Lead Ads",
 				"existing_id": "0190d3c1-0000-7000-8000-0000000000c2"
 			}
-		],
-		"links": [{ "kind": "journal_ref" }, { "kind": "journal_ref" }]
+		]
 	},
 	"holdout": true
 }

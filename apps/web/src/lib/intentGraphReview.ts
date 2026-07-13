@@ -120,21 +120,6 @@ export function setStage(
 	return { ...buffer, [node.handle]: stage };
 }
 
-/** Stage EVERY acceptable node `accept` (an UNPICKED ambiguous node stays
- * `reject`) — the "Accept all" affordance. A picked ambiguous node is acceptable
- * (its candidate is chosen), so it is swept into `accept`; unpicked ambiguous
- * nodes are explicitly rejected so the commit vector is total and unambiguous. */
-export function acceptAll(
-	plan: readonly ResolvedNode[],
-	repoints: RepointBuffer = {},
-): StagingBuffer {
-	const next: Record<string, NodeStage> = {};
-	for (const node of plan) {
-		next[node.handle] = isAcceptable(node, repoints) ? "accept" : "reject";
-	}
-	return next;
-}
-
 /** Stage EVERY node `reject` — the "Reject all" affordance. */
 export function rejectAll(plan: readonly ResolvedNode[]): StagingBuffer {
 	const next: Record<string, NodeStage> = {};
@@ -142,28 +127,6 @@ export function rejectAll(plan: readonly ResolvedNode[]): StagingBuffer {
 		next[node.handle] = "reject";
 	}
 	return next;
-}
-
-/** Whether every node has an explicit accepted choice (no node left `reject`).
- * Used to label the commit button (full accept vs partial). `repoints` is consulted
- * so a PICKED ambiguous node (default `accept`) counts as accepted. */
-export function allAccepted(
-	plan: readonly ResolvedNode[],
-	buffer: StagingBuffer,
-	repoints: RepointBuffer = {},
-): boolean {
-	return plan.every((node) => stageFor(buffer, node, repoints) === "accept");
-}
-
-/** Whether every node is staged `reject` — the commit is effectively a reject-all
- * (Core declines the whole graph; nothing is written). `repoints` is consulted so a
- * PICKED ambiguous node (default `accept`) is correctly NOT counted as rejected. */
-export function allRejected(
-	plan: readonly ResolvedNode[],
-	buffer: StagingBuffer,
-	repoints: RepointBuffer = {},
-): boolean {
-	return plan.every((node) => stageFor(buffer, node, repoints) === "reject");
 }
 
 /**

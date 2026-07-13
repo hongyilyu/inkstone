@@ -20,7 +20,7 @@ use sqlx::sqlite::SqlitePoolOptions;
 use tokio_tungstenite::tungstenite::Message;
 
 mod common;
-use common::{CoreHandle, Workspace, next_text};
+use common::{CoreHandle, next_text, rt, Workspace};
 
 /// Create a Thread, subscribe, drain to `done`; return (run_id, assembled text,
 /// tool_call `(name, status)` boundaries in arrival order).
@@ -91,10 +91,7 @@ fn load_skill_round_trips_the_seeded_skill_body_through_dispatch() {
         .env("INKSTONE_TOOLWORKER_SKILL_NAME", "weekly-review")
         .spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let run_id = rt.block_on(async {
         let (run_id, text, tools) = run_and_collect(&core).await;
@@ -168,10 +165,7 @@ fn unknown_skill_name_returns_error_outcome_without_failing_the_run() {
         .env("INKSTONE_TOOLWORKER_SKILL_NAME", "does-not-exist")
         .spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
         let (_run_id, text, tools) = run_and_collect(&core).await;

@@ -18,8 +18,6 @@ const twMerge = extendTailwindMerge({
 						"sidebar",
 						"sidebar-accent",
 						"chat-bg",
-						"chat-input-bg",
-						"chat-overlay",
 					],
 				},
 			],

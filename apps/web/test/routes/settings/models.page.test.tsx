@@ -126,6 +126,35 @@ function makeOverrides(opts: {
 	};
 }
 
+// The four stub stanzas every inline-override test declares identically: a
+// succeeding login start, a bare single-provider catalog, and default (unset)
+// settings. providerStatus is deliberately ABSENT — tests stub it per-site,
+// and the status-fetch-FAILURE test relies on stubWsClient's loud Effect.die
+// default for the un-stubbed verb. Members are plain arrows (never vi.fn())
+// so call counts can't leak across tests.
+const BASE_OVERRIDES: Partial<WsClientService> = {
+	providerLoginStart: () =>
+		Effect.succeed({ authorize_url: "https://auth.example/x" }),
+	modelCatalog: () =>
+		Effect.succeed({
+			providers: [{ id: "openai-codex", label: "OpenAI", models: [] }],
+		}),
+	settingsGet: () =>
+		Effect.succeed({
+			provider: "openai-codex",
+			model: null,
+			effort: "off",
+			enabled_models: [],
+		}),
+	settingsSet: () =>
+		Effect.succeed({
+			provider: "openai-codex",
+			model: null,
+			effort: "off",
+			enabled_models: [],
+		}),
+};
+
 function renderPage(overrides: Partial<WsClientService>) {
 	const router = createRouter({
 		routeTree,
@@ -199,28 +228,7 @@ describe("Models settings page (ADR-0024)", () => {
 		// provider/status REJECTS (the factory default `Effect.die` for an un-stubbed
 		// verb) — runPromise rejects, hitting refreshConnected's .catch. The error
 		// value is irrelevant (the catch ignores it).
-		const overrides: Partial<WsClientService> = {
-			providerLoginStart: () =>
-				Effect.succeed({ authorize_url: "https://auth.example/x" }),
-			modelCatalog: () =>
-				Effect.succeed({
-					providers: [{ id: "openai-codex", label: "OpenAI", models: [] }],
-				}),
-			settingsGet: () =>
-				Effect.succeed({
-					provider: "openai-codex",
-					model: null,
-					effort: "off",
-					enabled_models: [],
-				}),
-			settingsSet: () =>
-				Effect.succeed({
-					provider: "openai-codex",
-					model: null,
-					effort: "off",
-					enabled_models: [],
-				}),
-		};
+		const overrides: Partial<WsClientService> = { ...BASE_OVERRIDES };
 		await renderPage(overrides);
 
 		// The row settles to an honest "Not connected" — never permanent "Checking…".
@@ -270,27 +278,8 @@ describe("Models settings page (ADR-0024)", () => {
 					}),
 		);
 		const overrides: Partial<WsClientService> = {
+			...BASE_OVERRIDES,
 			providerStatus,
-			providerLoginStart: () =>
-				Effect.succeed({ authorize_url: "https://auth.example/x" }),
-			modelCatalog: () =>
-				Effect.succeed({
-					providers: [{ id: "openai-codex", label: "OpenAI", models: [] }],
-				}),
-			settingsGet: () =>
-				Effect.succeed({
-					provider: "openai-codex",
-					model: null,
-					effort: "off",
-					enabled_models: [],
-				}),
-			settingsSet: () =>
-				Effect.succeed({
-					provider: "openai-codex",
-					model: null,
-					effort: "off",
-					enabled_models: [],
-				}),
 		};
 		await renderPage(overrides);
 
@@ -337,27 +326,8 @@ describe("Models settings page (ADR-0024)", () => {
 					}),
 		);
 		const overrides: Partial<WsClientService> = {
+			...BASE_OVERRIDES,
 			providerStatus,
-			providerLoginStart: () =>
-				Effect.succeed({ authorize_url: "https://auth.example/x" }),
-			modelCatalog: () =>
-				Effect.succeed({
-					providers: [{ id: "openai-codex", label: "OpenAI", models: [] }],
-				}),
-			settingsGet: () =>
-				Effect.succeed({
-					provider: "openai-codex",
-					model: null,
-					effort: "off",
-					enabled_models: [],
-				}),
-			settingsSet: () =>
-				Effect.succeed({
-					provider: "openai-codex",
-					model: null,
-					effort: "off",
-					enabled_models: [],
-				}),
 		};
 		await renderPage(overrides);
 
@@ -426,6 +396,7 @@ describe("Models settings page (ADR-0024)", () => {
 			),
 		);
 		const overrides: Partial<WsClientService> = {
+			...BASE_OVERRIDES,
 			providerStatus: () =>
 				Effect.succeed({
 					providers: [
@@ -436,10 +407,7 @@ describe("Models settings page (ADR-0024)", () => {
 						},
 					],
 				}),
-			modelCatalog: () =>
-				Effect.succeed({
-					providers: [{ id: "openai-codex", label: "OpenAI", models: [] }],
-				}),
+			// Persisted effort starts "low" — backs the rollback-target assertion.
 			settingsGet: () =>
 				Effect.succeed({
 					provider: "openai-codex",
@@ -649,6 +617,7 @@ describe("Models settings page (ADR-0024)", () => {
 			),
 		);
 		const overrides: Partial<WsClientService> = {
+			...BASE_OVERRIDES,
 			providerStatus: () =>
 				Effect.succeed({
 					providers: [
@@ -662,13 +631,6 @@ describe("Models settings page (ADR-0024)", () => {
 			modelCatalog: () =>
 				Effect.succeed({
 					providers: [{ id: "openai-codex", label: "OpenAI", models }],
-				}),
-			settingsGet: () =>
-				Effect.succeed({
-					provider: "openai-codex",
-					model: null,
-					effort: "off",
-					enabled_models: [],
 				}),
 			settingsSet,
 		};
@@ -883,9 +845,8 @@ describe("Models settings — key-configurable provider (ADR-0062)", () => {
 			}),
 		);
 		const overrides: Partial<WsClientService> = {
+			...BASE_OVERRIDES,
 			providerStatus,
-			providerLoginStart: () =>
-				Effect.succeed({ authorize_url: "https://auth.example/x" }),
 			providerConfigure,
 			modelCatalog: () =>
 				Effect.succeed({
@@ -893,20 +854,6 @@ describe("Models settings — key-configurable provider (ADR-0062)", () => {
 						{ id: "openai-codex", label: "OpenAI", models: [] },
 						{ id: "openrouter", label: "OpenRouter", models: [] },
 					],
-				}),
-			settingsGet: () =>
-				Effect.succeed({
-					provider: "openai-codex",
-					model: null,
-					effort: "off",
-					enabled_models: [],
-				}),
-			settingsSet: () =>
-				Effect.succeed({
-					provider: "openai-codex",
-					model: null,
-					effort: "off",
-					enabled_models: [],
 				}),
 		};
 		await renderPage(overrides);
@@ -966,6 +913,7 @@ describe("Models settings — key-configurable provider (ADR-0062)", () => {
 	it("surfaces a provider/configure error without crashing", async () => {
 		const user = userEvent.setup();
 		const overrides: Partial<WsClientService> = {
+			...BASE_OVERRIDES,
 			providerStatus: () =>
 				Effect.succeed({
 					providers: [
@@ -991,20 +939,6 @@ describe("Models settings — key-configurable provider (ADR-0062)", () => {
 						{ id: "openai-codex", label: "OpenAI", models: [] },
 						{ id: "openrouter", label: "OpenRouter", models: [] },
 					],
-				}),
-			settingsGet: () =>
-				Effect.succeed({
-					provider: "openai-codex",
-					model: null,
-					effort: "off",
-					enabled_models: [],
-				}),
-			settingsSet: () =>
-				Effect.succeed({
-					provider: "openai-codex",
-					model: null,
-					effort: "off",
-					enabled_models: [],
 				}),
 		};
 		await renderPage(overrides);
@@ -1039,6 +973,7 @@ describe("Models settings — provider liveness Test (ADR-0062)", () => {
 			Effect.succeed(verdict),
 		);
 		const overrides: Partial<WsClientService> = {
+			...BASE_OVERRIDES,
 			providerStatus: () =>
 				Effect.succeed({
 					providers: [
@@ -1054,8 +989,6 @@ describe("Models settings — provider liveness Test (ADR-0062)", () => {
 						},
 					],
 				}),
-			providerLoginStart: () =>
-				Effect.succeed({ authorize_url: "https://auth.example/x" }),
 			providerTest,
 			modelCatalog: () =>
 				Effect.succeed({
@@ -1063,20 +996,6 @@ describe("Models settings — provider liveness Test (ADR-0062)", () => {
 						{ id: "openai-codex", label: "OpenAI", models: [] },
 						{ id: "openrouter", label: "OpenRouter", models: orModels },
 					],
-				}),
-			settingsGet: () =>
-				Effect.succeed({
-					provider: "openai-codex",
-					model: null,
-					effort: "off",
-					enabled_models: [],
-				}),
-			settingsSet: () =>
-				Effect.succeed({
-					provider: "openai-codex",
-					model: null,
-					effort: "off",
-					enabled_models: [],
 				}),
 		};
 		return {
@@ -1148,29 +1067,7 @@ function makeFlippingOverrides(): Partial<WsClientService> {
 			],
 		});
 	});
-	return {
-		providerStatus,
-		providerLoginStart: () =>
-			Effect.succeed({ authorize_url: "https://auth.example/x" }),
-		modelCatalog: () =>
-			Effect.succeed({
-				providers: [{ id: "openai-codex", label: "OpenAI", models: [] }],
-			}),
-		settingsGet: () =>
-			Effect.succeed({
-				provider: "openai-codex",
-				model: null,
-				effort: "off",
-				enabled_models: [],
-			}),
-		settingsSet: () =>
-			Effect.succeed({
-				provider: "openai-codex",
-				model: null,
-				effort: "off",
-				enabled_models: [],
-			}),
-	};
+	return { ...BASE_OVERRIDES, providerStatus };
 }
 
 describe("Models settings page — provider/connected live push (ADR-0049)", () => {
@@ -1315,27 +1212,8 @@ describe("Models settings page — provider/connected live push (ADR-0049)", () 
 				],
 			};
 			const overrides: Partial<WsClientService> = {
+				...BASE_OVERRIDES,
 				providerStatus: () => Effect.succeed(twoProviderStatus),
-				providerLoginStart: () =>
-					Effect.succeed({ authorize_url: "https://auth.example/x" }),
-				modelCatalog: () =>
-					Effect.succeed({
-						providers: [{ id: "openai-codex", label: "OpenAI", models: [] }],
-					}),
-				settingsGet: () =>
-					Effect.succeed({
-						provider: "openai-codex",
-						model: null,
-						effort: "off",
-						enabled_models: [],
-					}),
-				settingsSet: () =>
-					Effect.succeed({
-						provider: "openai-codex",
-						model: null,
-						effort: "off",
-						enabled_models: [],
-					}),
 			};
 			const client = makeQueryClient();
 			await renderPageWithClient(overrides, client);

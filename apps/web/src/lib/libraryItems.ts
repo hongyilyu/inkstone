@@ -336,20 +336,6 @@ export const MEDIA_STATE_LABEL = Object.fromEntries(
 	MEDIA_STATES.map((o) => [o.value, o.label]),
 ) as Record<MediaState, string>;
 
-export function libraryItemKindCounts(
-	all: LibraryItem[],
-): Record<LibraryItemKind, number> {
-	const counts: Record<LibraryItemKind, number> = {
-		journal_entry: 0,
-		person: 0,
-		project: 0,
-		todo: 0,
-		media: 0,
-	};
-	for (const e of all) counts[e.kind] += 1;
-	return counts;
-}
-
 /** All Todos in `all` (used by the derivations below). */
 function allTodos(all: LibraryItem[]): Todo[] {
 	return all.filter((e): e is Todo => e.kind === "todo");

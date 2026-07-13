@@ -169,26 +169,9 @@ pub async fn execute(pool: &SqlitePool, params: Value) -> Result<AgentToolResult
 
 #[cfg(test)]
 mod tests {
+    use crate::db::test_support::memory_pool;
     use super::*;
     use serde_json::json;
-    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-
-    /// A migrated in-memory pool, mirroring the db submodules' `memory_pool` helpers.
-    async fn memory_pool() -> SqlitePool {
-        let options = SqliteConnectOptions::new()
-            .filename(":memory:")
-            .foreign_keys(true);
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(options)
-            .await
-            .expect("open in-memory sqlite");
-        sqlx::migrate!("./migrations")
-            .run(&pool)
-            .await
-            .expect("run migrations");
-        pool
-    }
 
     /// Seed one accepted entity (`created_by='user'`, no proposal) of `type`.
     async fn seed_entity(pool: &SqlitePool, id: &str, r#type: &str, data: &str) {

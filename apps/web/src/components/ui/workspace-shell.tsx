@@ -1,6 +1,7 @@
+import { PanelRightClose, PanelRightOpen } from "lucide-react";
 import { type ReactNode, useLayoutEffect, useRef, useState } from "react";
 import { chatCardPath } from "../ChatCardRecess.js";
-import { TopRightControls } from "../TopRightControls.js";
+import { Button } from "./button.js";
 
 export interface WorkspaceShellProps {
 	/** Left rail (16rem fixed). Supplies its own landmark. */
@@ -104,11 +105,24 @@ export function WorkspaceShell({
 					</svg>
 					{hasRail && (
 						<div className="absolute top-1.5 right-3 z-10">
-							<TopRightControls
-								railCollapsed={railCollapsed}
-								onToggleRail={toggleRail}
-								label={railLabel}
-							/>
+							<div className="flex items-center rounded-lg bg-secondary/55 p-0.5">
+								<Button
+									variant="icon"
+									size="icon"
+									className="text-foreground hover:bg-foreground/10 hover:text-foreground"
+									aria-label={
+										railCollapsed ? `Open ${railLabel}` : `Close ${railLabel}`
+									}
+									aria-pressed={railCollapsed}
+									onClick={toggleRail}
+								>
+									{railCollapsed ? (
+										<PanelRightOpen className="h-3.5 w-3.5" aria-hidden />
+									) : (
+										<PanelRightClose className="h-3.5 w-3.5" aria-hidden />
+									)}
+								</Button>
+							</div>
 						</div>
 					)}
 				</div>

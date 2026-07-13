@@ -374,35 +374,16 @@ where
 
 #[cfg(test)]
 mod tests {
+    use crate::db::test_support::memory_pool;
     use std::sync::{Arc, Mutex};
 
     use sqlx::SqlitePool;
-    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
     use uuid::Uuid;
 
     use super::{PersistStep, SpawnManifest, StartRunError, StartRunParams, start_run};
     use crate::db;
     use crate::hub;
     use crate::workflow::default_workflow;
-
-    /// A migrated in-memory tier-2 pool, `max_connections(1)` so the single
-    /// `:memory:` database persists across calls — same shape as `cancel.rs`'s
-    /// test pool.
-    async fn memory_pool() -> SqlitePool {
-        let options = SqliteConnectOptions::new()
-            .filename(":memory:")
-            .foreign_keys(true);
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(options)
-            .await
-            .expect("open in-memory sqlite");
-        sqlx::migrate!("./migrations")
-            .run(&pool)
-            .await
-            .expect("run migrations");
-        pool
-    }
 
     /// A panic-safe credentials-dir fixture (shared
     /// [`crate::credentials::test_credentials_dir`]), mirroring

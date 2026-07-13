@@ -8,7 +8,7 @@ use futures_util::SinkExt;
 use tokio_tungstenite::tungstenite::Message;
 
 mod common;
-use common::{Workspace, Ws, next_text};
+use common::{next_text, rt, Workspace, Ws};
 
 /// Send `provider/status` and return the `openai-codex` connected flag.
 async fn codex_connected(ws: &mut Ws, id: u64) -> bool {
@@ -37,10 +37,7 @@ fn provider_status_reflects_credential_presence() {
         .env("INKSTONE_CREDENTIALS_DIR", &creds_dir)
         .spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
         let mut ws = core.connect().await;

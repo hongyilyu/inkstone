@@ -247,9 +247,8 @@ fn spawn_tail_forwarder(
 
 #[cfg(test)]
 mod tests {
+    use crate::db::test_support::memory_pool;
     use std::sync::{Arc, Mutex};
-
-    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
     use tokio::sync::mpsc;
     use tracing::field::{Field, Visit};
     use tracing::Level;
@@ -313,24 +312,6 @@ mod tests {
                 run_id: grab.run_id,
             });
         }
-    }
-
-    /// A migrated in-memory tier-2 pool (so `runs` CHECK constraints are in
-    /// force).
-    async fn memory_pool() -> SqlitePool {
-        let options = SqliteConnectOptions::new()
-            .filename(":memory:")
-            .foreign_keys(true);
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(options)
-            .await
-            .expect("open in-memory sqlite");
-        sqlx::migrate!("./migrations")
-            .run(&pool)
-            .await
-            .expect("run migrations");
-        pool
     }
 
     /// Seed a Thread + Run, then commit a `running -> cancelled` transition so

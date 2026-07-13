@@ -4,7 +4,7 @@ import { Effect, Queue, Stream } from "effect";
 import { beforeEach, describe, expect, it } from "vitest";
 import { awaitRun, resetBridge, send } from "@/store/bridge.js";
 import {
-	appendUserMessage,
+	appendMessage,
 	applyEvent,
 	attachRun,
 	beginRunSubscription,
@@ -14,7 +14,6 @@ import {
 	getRunThreadId,
 	isRunParked,
 	resetChatStore,
-	seedAssistantMessage,
 	setPendingProposal,
 	setProposalStatus,
 } from "@/store/chat.js";
@@ -35,14 +34,14 @@ function makeStubRuntime(queue: Queue.Queue<RunEventValue>, runId: RunId) {
 
 /** Seed a streaming assistant turn bound to `runId` (without forking a stream). */
 function seedTurn(runId: RunId): void {
-	appendUserMessage("t1", {
+	appendMessage("t1", {
 		id: "u1",
 		role: "user",
 		status: "completed",
 		segments: [{ kind: "text", text: "hi" }],
 		run_id: "",
 	});
-	seedAssistantMessage("t1", {
+	appendMessage("t1", {
 		id: "a1",
 		role: "assistant",
 		status: "streaming",

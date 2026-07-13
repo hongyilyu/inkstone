@@ -168,26 +168,8 @@ fn render_result_content(payload: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use crate::db::test_support::memory_pool;
     use super::*;
-    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-
-    /// A migrated in-memory pool with `max_connections(1)` so the single
-    /// `:memory:` database persists across calls.
-    async fn memory_pool() -> SqlitePool {
-        let options = SqliteConnectOptions::new()
-            .filename(":memory:")
-            .foreign_keys(true);
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(options)
-            .await
-            .expect("open in-memory sqlite");
-        sqlx::migrate!("./migrations")
-            .run(&pool)
-            .await
-            .expect("run migrations");
-        pool
-    }
 
     /// Seed a Thread + a parked Run + its user Message (no parts, no steps —
     /// each test lays its own timeline). `user_message_id`'s FK is DEFERRABLE,

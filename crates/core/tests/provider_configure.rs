@@ -8,7 +8,7 @@ use futures_util::SinkExt;
 use tokio_tungstenite::tungstenite::Message;
 
 mod common;
-use common::{Workspace, Ws, next_text};
+use common::{next_text, rt, Workspace, Ws};
 
 /// Send `provider/status` and return its `providers` array.
 async fn status_providers(ws: &mut Ws, id: u64) -> Vec<serde_json::Value> {
@@ -70,10 +70,7 @@ fn provider_configure_stores_api_key_and_status_lists_both() {
         .env("INKSTONE_CREDENTIALS_DIR", &creds_dir)
         .spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
         let mut ws = core.connect().await;
@@ -200,10 +197,7 @@ fn provider_configure_rejects_empty_api_key() {
         .env("INKSTONE_CREDENTIALS_DIR", &creds_dir)
         .spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
         let mut ws = core.connect().await;
@@ -266,10 +260,7 @@ fn provider_configure_trims_the_api_key() {
         .env("INKSTONE_CREDENTIALS_DIR", &creds_dir)
         .spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
         let mut ws = core.connect().await;

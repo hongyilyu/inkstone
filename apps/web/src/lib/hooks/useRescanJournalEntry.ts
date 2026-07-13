@@ -21,10 +21,7 @@ export function useRescanJournalEntry() {
 	return useMutation<JournalEntryRescanResult, unknown, string>({
 		mutationFn: async (jeId) => {
 			const exit = await runtime.runPromiseExit(
-				Effect.gen(function* () {
-					const client = yield* WsClient;
-					return yield* client.rescanJournalEntry(jeId);
-				}),
+				Effect.flatMap(WsClient, (client) => client.rescanJournalEntry(jeId)),
 			);
 			if (Exit.isSuccess(exit)) return exit.value;
 			throw Cause.squash(exit.cause);

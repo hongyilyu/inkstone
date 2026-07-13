@@ -44,10 +44,7 @@ export function useRecurrenceNextDates(
 			if (params === null)
 				throw new Error("unreachable: query gated on params");
 			const result = await runtime.runPromise(
-				Effect.gen(function* () {
-					const client = yield* WsClient;
-					return yield* client.recurrencePreview(params);
-				}),
+				Effect.flatMap(WsClient, (client) => client.recurrencePreview(params)),
 			);
 			return {
 				ended: result.ended,

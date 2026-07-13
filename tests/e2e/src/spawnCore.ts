@@ -122,10 +122,6 @@ export const FAUX_PROPOSE_JOURNAL_FIXTURE = path.join(
 );
 
 export interface SpawnCoreOptions {
-	/** Bind port. Default 0 → OS-assigned ephemeral (avoids cross-test collisions). */
-	readonly port?: number;
-	/** Serve the SPA from this dir. Default the built `apps/web/dist`. */
-	readonly webDir?: string;
 	/** Worker command. Default the gate fixture; set to undefined to use Core's default. */
 	readonly workerCmd?: string;
 	/** Hermetic sibling-binary mode (ADR-0041 step 2): run Core from an isolated
@@ -144,7 +140,6 @@ export interface SpawnCoreOptions {
 	};
 	/** Gate-fixture chunk count: `chunks` > 1 splits `echo: <prompt>` into deltas and pauses after chunk 1 until the gate file exists. */
 	readonly chunks?: number;
-	readonly gatePath?: string;
 	/**
 	 * Whether the Workspace boots with a provider already connected (ADR-0023):
 	 * seeds a credential file so `provider/status` reports Connected and the chat
@@ -168,8 +163,6 @@ export interface SpawnCoreOptions {
 	readonly fauxToolCall?: boolean;
 	/** Drive the faux provider to call the ambient `load_skill` tool by this name (`INKSTONE_FAUX_LOAD_SKILL`, ADR-0036), exercising Skills activation end-to-end. */
 	readonly fauxLoadSkill?: string;
-	/** Skills directory (`INKSTONE_SKILLS_DIR`, ADR-0036). Defaulted into the Workspace tempdir so boot's seed_if_absent stays hermetic and tests can pre-seed it. */
-	readonly skillsDir?: string;
 	/** Higher-level faux interpreter mode: `propose` (Journal Entry mutations, ADR-0025), `extract` (Person/Project/Todo extraction from an accepted Journal Entry), or `capture` (direct GTD capture sourced from the user Message — no Journal Entry). Drives the park -> decide -> resume loop. */
 	readonly faux?: "propose" | "extract" | "capture";
 	/** Direct propose-worker fixture knob. Emits params loaded from this JSON file. */
@@ -184,10 +177,6 @@ export interface SpawnCoreOptions {
 	readonly extractParamsFile?: string;
 	/** Faux direct-capture scenario (`INKSTONE_FAUX_CAPTURE_PARAMS`): `{ intent, todo?, project?, person?, enrich? }` JSON file the capture mode reads. */
 	readonly captureParamsFile?: string;
-	/** Optional JSONL path where Worker proxy writes model tool-call params. */
-	readonly workerToolCallLogPath?: string;
-	/** Milliseconds to wait for the listening line before failing. Default 30s. */
-	readonly startupTimeoutMs?: number;
 }
 
 export interface SpawnedCore {
@@ -276,13 +265,11 @@ export async function spawnCore(
 	const logDir = path.join(workspaceDir, "logs");
 
 	const chunks = opts.chunks ?? 1;
-	const gatePath =
-		opts.gatePath ?? (chunks > 1 ? path.join(workspaceDir, "gate") : undefined);
+	const gatePath = chunks > 1 ? path.join(workspaceDir, "gate") : undefined;
 
-	// Default the skills dir (ADR-0036) into the tempdir so boot's seed_if_absent
-	// writes the bundled skills there (hermetic — never the dev/CI OS data dir),
-	// and a test can pre-seed it. Per-opt override still wins below.
-	const skillsDir = opts.skillsDir ?? path.join(workspaceDir, "skills");
+	// Pin the skills dir (ADR-0036) into the tempdir so boot's seed_if_absent
+	// writes the bundled skills there (hermetic — never the dev/CI OS data dir).
+	const skillsDir = path.join(workspaceDir, "skills");
 
 	// Pin the Credential Store (ADR-0023) into the tempdir so seeding/connection
 	// state stays hermetic (never the dev/CI OS data dir).
@@ -294,8 +281,9 @@ export async function spawnCore(
 		// Pin the media root (ADR-0058) into the tempdir so `media/upload` bytes
 		// land hermetically — never in the dev/CI OS data dir.
 		INKSTONE_MEDIA_DIR: path.join(workspaceDir, "media"),
-		INKSTONE_PORT: String(opts.port ?? 0),
-		INKSTONE_WEB_DIR: opts.webDir ?? WEB_DIST,
+		// Ephemeral OS-assigned port (avoids cross-test collisions).
+		INKSTONE_PORT: "0",
+		INKSTONE_WEB_DIR: WEB_DIST,
 		INKSTONE_LOG_DIR: logDir,
 		INKSTONE_SKILLS_DIR: skillsDir,
 		INKSTONE_CREDENTIALS_DIR: credentialsDir,
@@ -352,7 +340,6 @@ export async function spawnCore(
 		"INKSTONE_FAUX_CAPTURE_PARAMS",
 		"INKSTONE_FAUX_ECHO_HISTORY",
 		"INKSTONE_PROPOSE_PARAMS_FILE",
-		"INKSTONE_WORKER_TOOL_CALL_LOG",
 	]) {
 		delete env[key];
 	}
@@ -415,9 +402,6 @@ export async function spawnCore(
 			if (gatePath) env.INKSTONE_FIXTURE_GATE = gatePath;
 			if (opts.proposalParamsFile !== undefined) {
 				env.INKSTONE_PROPOSE_PARAMS_FILE = opts.proposalParamsFile;
-			}
-			if (opts.workerToolCallLogPath !== undefined) {
-				env.INKSTONE_WORKER_TOOL_CALL_LOG = opts.workerToolCallLogPath;
 			}
 		}
 	}
@@ -528,7 +512,7 @@ export async function spawnCore(
 
 	let url: string;
 	try {
-		url = await awaitListening(child, opts.startupTimeoutMs ?? 30_000);
+		url = await awaitListening(child, 30_000);
 	} catch (err) {
 		try {
 			if (child.pid !== undefined) process.kill(-child.pid, "SIGKILL");

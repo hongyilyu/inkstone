@@ -4,7 +4,7 @@ import { dbPathFor, seedEntities } from "./seed.js";
 /**
  * Full-system proof of the #232 Scheduled view (a throwaway stopgap, superseded
  * by the shared Forecast/calendar view in #236): seed an active Todo deferred to
- * a future date plus a plain active Todo, then drive the real `/library/scheduled`
+ * a future date plus a plain active Todo, then drive the real `/library/gtd?filt=scheduled`
  * route to assert only the deferred Todo lists there.
  *
  * The Inbox assertion is the load-bearing part: the deferred Todo must STILL
@@ -39,7 +39,7 @@ test("Scheduled lists future-deferred todos and they still appear in Inbox (over
 	]);
 
 	// ── Scheduled: only the future-deferred todo ────────────────────────────
-	await page.goto(`${core.url}/library/scheduled`);
+	await page.goto(`${core.url}/library/gtd?filt=scheduled`);
 	const scheduled = page.getByRole("region", { name: /scheduled/i });
 	await expect(scheduled.getByText("Renew passport")).toBeVisible({
 		timeout: 15_000,
@@ -49,7 +49,7 @@ test("Scheduled lists future-deferred todos and they still appear in Inbox (over
 
 	// ── Inbox overlap: the deferred todo is STILL in Inbox (no removal) ──────
 	// This is the key behavioral guarantee of the #232 scope decision.
-	await page.goto(`${core.url}/library/inbox`);
+	await page.goto(`${core.url}/library/gtd?filt=inbox`);
 	const inbox = page.getByRole("region", { name: /inbox/i });
 	await expect(inbox.getByText("Renew passport")).toBeVisible({
 		timeout: 15_000,

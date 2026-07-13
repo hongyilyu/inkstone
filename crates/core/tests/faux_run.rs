@@ -11,7 +11,7 @@ use futures_util::SinkExt;
 use tokio_tungstenite::tungstenite::Message;
 
 mod common;
-use common::{Workspace, next_text};
+use common::{next_text, rt, Workspace};
 
 /// Write a faux workflow so the interpreter takes the offline faux path.
 fn write_faux_workflow(dir: &Path) {
@@ -46,10 +46,7 @@ fn faux_completion_streams_through_core() {
         .env("INKSTONE_FAUX_RESPONSE", faux_response)
         .spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let assembled = rt.block_on(async {
         let mut ws = core.connect().await;

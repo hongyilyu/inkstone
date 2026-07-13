@@ -1,70 +1,15 @@
 //! `entity/list` returns accepted Entities of the requested type newest-first
 //! and filters out other types.
 
-use std::time::{Duration, Instant};
 
-use futures_util::SinkExt;
-use tokio_tungstenite::tungstenite::Message;
 
 mod common;
-use common::{CoreHandle, Workspace, next_text};
-
-async fn rpc(
-    core: &CoreHandle,
-    id: u64,
-    method: &str,
-    params: serde_json::Value,
-) -> serde_json::Value {
-    let mut ws = core.connect().await;
-    let req = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": id,
-        "method": method,
-        "params": params,
-    });
-    ws.send(Message::Text(req.to_string().into()))
-        .await
-        .expect("send request frame");
-    let body = next_text(&mut ws).await;
-    ws.close(None).await.ok();
-    serde_json::from_str(&body).unwrap_or_else(|e| panic!("response is JSON: {e} - body: {body}"))
-}
-
-async fn create_and_park(core: &CoreHandle) -> String {
-    let resp = rpc(
-        core,
-        1,
-        "thread/create",
-        serde_json::json!({ "prompt": "I bought milk after daycare pickup and felt relieved." }),
-    )
-    .await;
-    let run_id = resp["result"]["run_id"]
-        .as_str()
-        .unwrap_or_else(|| panic!("result.run_id is a string - body: {resp}"))
-        .to_string();
-
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        if Instant::now() > deadline {
-            panic!("timed out waiting for run to park");
-        }
-        let resp = rpc(
-            core,
-            2,
-            "run/subscribe",
-            serde_json::json!({ "run_id": run_id }),
-        )
-        .await;
-        if resp["result"]["status"].as_str() == Some("parked") {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(150)).await;
-    }
-    run_id
-}
+use common::{CoreHandle, create_and_park, rpc, rt, Workspace};
 
 async fn park_and_accept(core: &CoreHandle, idempotency_key: &str, body_text: &str) -> String {
-    let run_id = create_and_park(core).await;
+    let run_id = create_and_park(core, "I bought milk after daycare pickup and felt relieved.")
+        .await
+        .0;
 
     let resp = rpc(
         core,
@@ -104,10 +49,7 @@ fn list_journal_entries_returns_accepted() {
     let workspace = Workspace::new();
     let core = workspace.core().worker_fixture("propose-worker.ts").spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
         let first_entity_id = park_and_accept(&core, "k1", "First journal entry.").await;

@@ -21,21 +21,6 @@ type Json = unknown;
 const isObject = (value: Json): value is Record<string, Json> =>
 	typeof value === "object" && value !== null && !Array.isArray(value);
 
-/** Resolve `{ "$ref": "#/$defs/X", ...siblings }` to the referenced node merged
- * with its siblings, against the document's `$defs` block. */
-const resolveRef = (
-	node: Record<string, Json>,
-	defs: Record<string, Json>,
-): Record<string, Json> => {
-	const ref = node.$ref;
-	if (typeof ref !== "string") return node;
-	const name = ref.replace(/^#\/\$defs\//, "");
-	const target = defs[name];
-	const resolved = isObject(target) ? target : {};
-	const { $ref: _drop, ...siblings } = node;
-	return { ...resolved, ...siblings };
-};
-
 /** Schema-map keywords: their VALUE is a map of arbitrary names → subschemas
  * (`properties.title` is a field literally named "title", NOT a `title`
  * annotation). The per-node keyword rewrites in `walk1` (which delete keys like
@@ -50,16 +35,11 @@ const SCHEMA_MAP_KEYS = new Set([
 	"dependentSchemas",
 ]);
 
-/** The recursive walk. `defs` carries the top-level `$defs` block (if any) so
- * nested `$ref`s resolve against it; the block itself is dropped at the root.
- * `inSchemaMap` is true when `value` is the VALUE of a schema-map keyword (a
- * `name → subschema` map), so the keyword rewrites are skipped for it. */
-const walk = (
-	value: Json,
-	defs: Record<string, Json>,
-	inSchemaMap = false,
-): Json => {
-	if (Array.isArray(value)) return value.map((item) => walk(item, defs));
+/** The recursive walk. `inSchemaMap` is true when `value` is the VALUE of a
+ * schema-map keyword (a `name → subschema` map), so the keyword rewrites are
+ * skipped for it. */
+const walk = (value: Json, inSchemaMap = false): Json => {
+	if (Array.isArray(value)) return value.map((item) => walk(item));
 	if (!isObject(value)) return value;
 
 	// Inside a schema map (e.g. the object under `properties`), the keys are
@@ -68,19 +48,12 @@ const walk = (
 	if (inSchemaMap) {
 		const mapped: Record<string, Json> = {};
 		for (const [key, child] of Object.entries(value)) {
-			mapped[key] = walk(child, defs);
+			mapped[key] = walk(child);
 		}
 		return sortKeys(mapped);
 	}
 
-	// Rule 2 — inline `$ref` + drop `$defs`. Effect hoists `S.Int` to
-	// `#/$defs/Int`; Rust inlines every schema (ADR-0018: Anthropic rejects
-	// `$ref`). The `schemas.ts` builders avoid the hoist (plain `S.Number`), so
-	// this is a safety net that keeps the normalizer correct if a future schema
-	// reintroduces a `$ref`.
-	const node = walk1(
-		value.$ref !== undefined ? resolveRef(value, defs) : value,
-	);
+	const node = walk1(value);
 
 	// Rule 8b — unwrap a single-element `oneOf`. After rule 8a (`anyOf → oneOf`)
 	// both dialects key the journal body union as `oneOf`. A union of ONE member
@@ -101,12 +74,12 @@ const walk = (
 		only.length === 1 &&
 		Object.keys(node).length === 1
 	) {
-		return walk(only[0], defs);
+		return walk(only[0]);
 	}
 
 	const out: Record<string, Json> = {};
 	for (const [key, child] of Object.entries(node)) {
-		out[key] = walk(child, defs, SCHEMA_MAP_KEYS.has(key));
+		out[key] = walk(child, SCHEMA_MAP_KEYS.has(key));
 	}
 	return sortKeys(out);
 };
@@ -135,10 +108,6 @@ const walk1 = (node: Record<string, Json>): Record<string, Json> => {
 	if (out.$id === "/schemas/unknown" || out.$id === "/schemas/never") {
 		delete out.$id;
 	}
-
-	// Rule 2 (cont.) — drop the top-level `$defs` block once its members have
-	// been inlined.
-	delete out.$defs;
 
 	// Rule 5 — empty `required` ≡ absent. Rust omits `required` when no field is
 	// required; Effect emits `required:[]`. Delete the empty array so both read
@@ -191,7 +160,4 @@ const sortKeys = (node: Record<string, Json>): Record<string, Json> => {
 };
 
 /** Normalize a Draft-07 schema (from either dialect) to the common form. */
-export const normalize = (schema: Json): Json => {
-	const defs = isObject(schema) && isObject(schema.$defs) ? schema.$defs : {};
-	return walk(schema, defs);
-};
+export const normalize = (schema: Json): Json => walk(schema);

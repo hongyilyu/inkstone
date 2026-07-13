@@ -27,12 +27,6 @@
 				"existing_id": "0190d3c1-0000-7000-8000-0000000000b2"
 			},
 			{ "type": "todo", "title": "Send Eve the onboarding doc" }
-		],
-		"links": [
-			{ "kind": "journal_ref" },
-			{ "kind": "journal_ref" },
-			{ "kind": "journal_ref" },
-			{ "kind": "todo_person" }
 		]
 	}
 }

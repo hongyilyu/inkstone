@@ -3,7 +3,7 @@ use sqlx::SqlitePool;
 use uuid::Uuid;
 
 use crate::db;
-use crate::field_spec::{Field, FieldSpec, ObjErr, PayloadSpec};
+use crate::field_spec::{Field, FieldSpec, PayloadSpec};
 use crate::localtime::parse_local_datetime;
 use crate::mutation::{OBSERVATION_RELATIONS, ObservationRelation};
 
@@ -139,17 +139,15 @@ pub(crate) async fn update_observation(
 }
 
 pub(crate) fn record_observations_payload_spec() -> PayloadSpec {
-    let journal_evidence = PayloadSpec::nested(
+    let journal_evidence = PayloadSpec::payload(
         "observation evidence",
-        ObjErr::Object,
         vec![
             Field::required("journal_entry_id", FieldSpec::Uuid { schema_regex: true }),
             Field::optional("message_id", FieldSpec::Never),
         ],
     );
-    let message_evidence = PayloadSpec::nested(
+    let message_evidence = PayloadSpec::payload(
         "observation evidence",
-        ObjErr::Object,
         vec![
             Field::required("message_id", FieldSpec::Uuid { schema_regex: true }),
             Field::optional("journal_entry_id", FieldSpec::Never),
@@ -197,9 +195,8 @@ pub(crate) fn observation_update_payload_spec() -> PayloadSpec {
             Field::required("observation_id", FieldSpec::Uuid { schema_regex: true }),
             Field::required(
                 "observation",
-                FieldSpec::Object(PayloadSpec::nested(
+                FieldSpec::Object(PayloadSpec::payload(
                     "observation",
-                    ObjErr::JsonObject,
                     vec![
                         Field::datetime("occurred_at").require(),
                         Field::datetime("ended_at"),
@@ -546,11 +543,7 @@ fn bodyweight_schema() -> ObservationSchema {
             "bodyweight values",
             vec![Field::required(
                 "kg",
-                FieldSpec::Number {
-                    min: Some(0.0),
-                    max: None,
-                    integer: false,
-                },
+                FieldSpec::Number { min: Some(0.0) },
             )],
         ),
     }
@@ -575,11 +568,7 @@ fn habit_checkin_schema() -> ObservationSchema {
                 ),
                 Field::optional(
                     "quantity",
-                    FieldSpec::Number {
-                        min: None,
-                        max: None,
-                        integer: false,
-                    },
+                    FieldSpec::Number { min: None },
                 ),
             ],
         ),
@@ -597,35 +586,19 @@ fn nutrition_intake_schema() -> ObservationSchema {
             vec![
                 Field::required(
                     "kcal",
-                    FieldSpec::Number {
-                        min: Some(0.0),
-                        max: None,
-                        integer: false,
-                    },
+                    FieldSpec::Number { min: Some(0.0) },
                 ),
                 Field::optional(
                     "protein_g",
-                    FieldSpec::Number {
-                        min: Some(0.0),
-                        max: None,
-                        integer: false,
-                    },
+                    FieldSpec::Number { min: Some(0.0) },
                 ),
                 Field::optional(
                     "carbs_g",
-                    FieldSpec::Number {
-                        min: Some(0.0),
-                        max: None,
-                        integer: false,
-                    },
+                    FieldSpec::Number { min: Some(0.0) },
                 ),
                 Field::optional(
                     "fat_g",
-                    FieldSpec::Number {
-                        min: Some(0.0),
-                        max: None,
-                        integer: false,
-                    },
+                    FieldSpec::Number { min: Some(0.0) },
                 ),
                 Field::optional("label", FieldSpec::string()),
             ],
@@ -645,9 +618,8 @@ pub(crate) fn record_observation_payload_variants() -> Vec<PayloadSpec> {
 }
 
 fn record_observation_payload_variant(schema: ObservationSchema) -> PayloadSpec {
-    PayloadSpec::nested(
+    PayloadSpec::payload(
         "observation",
-        crate::field_spec::ObjErr::JsonObject,
         vec![
             Field::required(
                 "schema_key",

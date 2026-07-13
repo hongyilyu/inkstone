@@ -1,3 +1,4 @@
+import { Check } from "lucide-react";
 import type { FormEvent, ReactNode } from "react";
 import { Button } from "@/components/ui/button.js";
 import { Input } from "@/components/ui/input.js";
@@ -85,6 +86,44 @@ export function EntityEditorFrame({
 				</div>
 			</footer>
 		</form>
+	);
+}
+
+/** The "Save changes" / "Cancel" footer shared by the ProposalCard edit forms
+ * (journal, GTD, observation). Each form supplies only its own save-disabled
+ * condition; both buttons are disabled while submitting. */
+export function EditFormFooter({
+	submitting,
+	saveDisabled,
+	onCancel,
+}: {
+	submitting: boolean;
+	saveDisabled: boolean;
+	onCancel: () => void;
+}) {
+	return (
+		<footer className="flex items-center gap-2 pt-1">
+			<Button
+				type="submit"
+				variant="primary"
+				size="row"
+				className="gap-1.5 px-3.5 py-2"
+				disabled={submitting || saveDisabled}
+			>
+				<Check className="size-4" aria-hidden />
+				Save changes
+			</Button>
+			<Button
+				type="button"
+				variant="ghost"
+				size="sm"
+				className="ml-auto py-1.5 text-sm"
+				disabled={submitting}
+				onClick={onCancel}
+			>
+				Cancel
+			</Button>
+		</footer>
 	);
 }
 

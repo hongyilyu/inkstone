@@ -23,10 +23,9 @@ import {
 } from "@/lib/connectionFailureCopy";
 import { resetBridge } from "@/store/bridge";
 import {
-	appendUserMessage,
+	appendMessage,
 	getChatState,
 	resetChatStore,
-	seedAssistantMessage,
 	setPendingProposal,
 } from "@/store/chat";
 
@@ -250,7 +249,7 @@ describe("ChatColumn", () => {
 			events: [],
 			providerConnected: false,
 		});
-		seedAssistantMessage("threadA", {
+		appendMessage("threadA", {
 			id: "a-gated",
 			role: "assistant",
 			status: "completed",
@@ -277,7 +276,7 @@ describe("ChatColumn", () => {
 		// Same focused-thread setup but default-CONNECTED: no in-thread hint, and
 		// Send works as usual (slice 3 gate is satisfied).
 		const overrides = makeStubOverrides({ runId: "run-connected", events: [] });
-		seedAssistantMessage("threadA", {
+		appendMessage("threadA", {
 			id: "a-connected",
 			role: "assistant",
 			status: "completed",
@@ -481,7 +480,7 @@ describe("ChatColumn", () => {
 
 	it("renders a user message's attachment segments as inline /media images below the text", async () => {
 		const overrides = makeStubOverrides({ runId: "run-att", events: [] });
-		appendUserMessage("threadA", {
+		appendMessage("threadA", {
 			id: "u-att",
 			role: "user",
 			status: "completed",
@@ -526,7 +525,7 @@ describe("ChatColumn", () => {
 
 	it("shows a typing indicator for a streaming assistant message with no text", async () => {
 		const overrides = makeStubOverrides({ runId: "run-3", events: [] });
-		seedAssistantMessage("threadA", {
+		appendMessage("threadA", {
 			id: "a1",
 			role: "assistant",
 			status: "streaming",
@@ -541,7 +540,7 @@ describe("ChatColumn", () => {
 
 	it("hides the typing indicator once streamed text arrives", async () => {
 		const overrides = makeStubOverrides({ runId: "run-4", events: [] });
-		seedAssistantMessage("threadA", {
+		appendMessage("threadA", {
 			id: "a2",
 			role: "assistant",
 			status: "streaming",
@@ -559,7 +558,7 @@ describe("ChatColumn", () => {
 		// KEEPS status "streaming" (only a terminal event flips it). The run is idle,
 		// waiting on the user's decision — the "Assistant is typing" dots must not show.
 		const overrides = makeStubOverrides({ runId: "run-parked", events: [] });
-		seedAssistantMessage("threadA", {
+		appendMessage("threadA", {
 			id: "a-parked",
 			role: "assistant",
 			status: "streaming",
@@ -599,7 +598,7 @@ describe("ChatColumn", () => {
 		});
 
 		const overrides = makeStubOverrides({ runId: "run-6", events: [] });
-		seedAssistantMessage("threadA", {
+		appendMessage("threadA", {
 			id: "a4",
 			role: "assistant",
 			status: "completed",
@@ -620,7 +619,7 @@ describe("ChatColumn", () => {
 
 	it("renders a decided proposal's Applied indicator ABOVE the copy button", async () => {
 		const overrides = makeStubOverrides({ runId: "run-applied", events: [] });
-		seedAssistantMessage("threadA", {
+		appendMessage("threadA", {
 			id: "a-applied",
 			role: "assistant",
 			status: "completed",
@@ -653,7 +652,7 @@ describe("ChatColumn", () => {
 		const overrides = makeStubOverrides({ runId: "run-order", events: [] });
 		// A turn whose timeline is tool_call → proposal → text. The hardcoded bubble
 		// always put text before the proposal; segment-ordered render must honor this.
-		seedAssistantMessage("threadA", {
+		appendMessage("threadA", {
 			id: "a-order",
 			role: "assistant",
 			status: "completed",
@@ -695,7 +694,7 @@ describe("ChatColumn", () => {
 
 	it("shows no copy button on a streaming assistant message", async () => {
 		const overrides = makeStubOverrides({ runId: "run-7", events: [] });
-		seedAssistantMessage("threadA", {
+		appendMessage("threadA", {
 			id: "a5",
 			role: "assistant",
 			status: "streaming",
@@ -710,7 +709,7 @@ describe("ChatColumn", () => {
 
 	it("shows no copy button on an empty completed assistant message", async () => {
 		const overrides = makeStubOverrides({ runId: "run-8", events: [] });
-		seedAssistantMessage("threadA", {
+		appendMessage("threadA", {
 			id: "a6",
 			role: "assistant",
 			status: "completed",
@@ -725,7 +724,7 @@ describe("ChatColumn", () => {
 
 	it("shows no typing indicator on a completed (empty) assistant message", async () => {
 		const overrides = makeStubOverrides({ runId: "run-5", events: [] });
-		seedAssistantMessage("threadA", {
+		appendMessage("threadA", {
 			id: "a3",
 			role: "assistant",
 			status: "completed",
@@ -740,7 +739,7 @@ describe("ChatColumn", () => {
 
 	it("renders a running tool call with its label and suppresses the typing dots", async () => {
 		const overrides = makeStubOverrides({ runId: "run-tc1", events: [] });
-		seedAssistantMessage("threadA", {
+		appendMessage("threadA", {
 			id: "a7",
 			role: "assistant",
 			status: "streaming",
@@ -765,7 +764,7 @@ describe("ChatColumn", () => {
 
 	it("renders a completed tool call in its settled past-tense state", async () => {
 		const overrides = makeStubOverrides({ runId: "run-tc2", events: [] });
-		seedAssistantMessage("threadA", {
+		appendMessage("threadA", {
 			id: "a8",
 			role: "assistant",
 			status: "completed",
@@ -788,7 +787,7 @@ describe("ChatColumn", () => {
 
 	it("surfaces an errored tool call with a failed indication", async () => {
 		const overrides = makeStubOverrides({ runId: "run-tc3", events: [] });
-		seedAssistantMessage("threadA", {
+		appendMessage("threadA", {
 			id: "a9",
 			role: "assistant",
 			status: "streaming",
@@ -810,7 +809,7 @@ describe("ChatColumn", () => {
 
 	it("falls back to a humanized label for an unregistered tool", async () => {
 		const overrides = makeStubOverrides({ runId: "run-tc4", events: [] });
-		seedAssistantMessage("threadA", {
+		appendMessage("threadA", {
 			id: "a10",
 			role: "assistant",
 			status: "streaming",
@@ -830,7 +829,7 @@ describe("ChatColumn", () => {
 
 	it("renders a search_entities row with its display arg (ADR-0043)", async () => {
 		const overrides = makeStubOverrides({ runId: "run-tc5", events: [] });
-		seedAssistantMessage("threadA", {
+		appendMessage("threadA", {
 			id: "a11",
 			role: "assistant",
 			status: "completed",
@@ -897,14 +896,14 @@ describe("ChatColumn", () => {
 		const scrollIntoView = vi.fn();
 		Element.prototype.scrollIntoView = scrollIntoView;
 		const overrides = makeStubOverrides({ runId: "run-jump", events: [] });
-		appendUserMessage("threadA", {
+		appendMessage("threadA", {
 			id: "u-top",
 			role: "user",
 			status: "completed",
 			segments: [{ kind: "text", text: "first message" }],
 			run_id: "",
 		});
-		seedAssistantMessage("threadA", {
+		appendMessage("threadA", {
 			id: "a-deep",
 			role: "assistant",
 			status: "completed",
@@ -950,14 +949,14 @@ describe("ChatColumn", () => {
 		const scrollIntoView = vi.fn();
 		Element.prototype.scrollIntoView = scrollIntoView;
 		const overrides = makeStubOverrides({ runId: "run-once", events: [] });
-		appendUserMessage("threadA", {
+		appendMessage("threadA", {
 			id: "u-top",
 			role: "user",
 			status: "completed",
 			segments: [{ kind: "text", text: "first" }],
 			run_id: "",
 		});
-		seedAssistantMessage("threadA", {
+		appendMessage("threadA", {
 			id: "a-anchor",
 			role: "assistant",
 			status: "completed",
@@ -976,7 +975,7 @@ describe("ChatColumn", () => {
 		// the list (a new array ref), re-running the anchor effect while the async
 		// strip may still be in flight. The anchor is still present in the list.
 		await act(async () => {
-			appendUserMessage("threadA", {
+			appendMessage("threadA", {
 				id: "u-later",
 				role: "user",
 				status: "completed",
@@ -995,7 +994,7 @@ describe("ChatColumn", () => {
 		const scrollIntoView = vi.fn();
 		Element.prototype.scrollIntoView = scrollIntoView;
 		const overrides = makeStubOverrides({ runId: "run-noanchor", events: [] });
-		seedAssistantMessage("threadA", {
+		appendMessage("threadA", {
 			id: "a-plain",
 			role: "assistant",
 			status: "completed",
@@ -1015,7 +1014,7 @@ describe("ChatColumn", () => {
 		vi.useFakeTimers();
 		try {
 			const overrides = makeStubOverrides({ runId: "run-fade", events: [] });
-			seedAssistantMessage("threadA", {
+			appendMessage("threadA", {
 				id: "a-fade",
 				role: "assistant",
 				status: "completed",
@@ -1058,14 +1057,14 @@ describe("ChatColumn", () => {
 		try {
 			const overrides = makeStubOverrides({ runId: "run-cold", events: [] });
 			// A multi-message thread already present (simulates post-hydration).
-			appendUserMessage("threadA", {
+			appendMessage("threadA", {
 				id: "u-early",
 				role: "user",
 				status: "completed",
 				segments: [{ kind: "text", text: "first" }],
 				run_id: "",
 			});
-			seedAssistantMessage("threadA", {
+			appendMessage("threadA", {
 				id: "a-late",
 				role: "assistant",
 				status: "completed",
@@ -1102,14 +1101,14 @@ describe("ChatColumn", () => {
 				runId: "run-anchor-wins",
 				events: [],
 			});
-			appendUserMessage("threadA", {
+			appendMessage("threadA", {
 				id: "u-early",
 				role: "user",
 				status: "completed",
 				segments: [{ kind: "text", text: "first" }],
 				run_id: "",
 			});
-			seedAssistantMessage("threadA", {
+			appendMessage("threadA", {
 				id: "a-target",
 				role: "assistant",
 				status: "completed",
@@ -1227,14 +1226,14 @@ describe("ChatColumn", () => {
 				events: [],
 			});
 			// The thread is present (warm), but none of its ids is "ghost-id".
-			appendUserMessage("threadA", {
+			appendMessage("threadA", {
 				id: "u-early",
 				role: "user",
 				status: "completed",
 				segments: [{ kind: "text", text: "first" }],
 				run_id: "",
 			});
-			seedAssistantMessage("threadA", {
+			appendMessage("threadA", {
 				id: "a-real",
 				role: "assistant",
 				status: "completed",
@@ -1264,7 +1263,7 @@ describe("ChatColumn", () => {
 
 	it("renders a streaming reasoning segment as a collapsed 'Thinking…' disclosure with the trace hidden", async () => {
 		const overrides = makeStubOverrides({ runId: "run-r1", events: [] });
-		seedAssistantMessage("threadA", {
+		appendMessage("threadA", {
 			id: "a-reason",
 			role: "assistant",
 			status: "streaming",
@@ -1284,7 +1283,7 @@ describe("ChatColumn", () => {
 	it("expands the reasoning disclosure on click to reveal the trace", async () => {
 		const user = userEvent.setup();
 		const overrides = makeStubOverrides({ runId: "run-r2", events: [] });
-		seedAssistantMessage("threadA", {
+		appendMessage("threadA", {
 			id: "a-reason2",
 			role: "assistant",
 			status: "streaming",
@@ -1305,7 +1304,7 @@ describe("ChatColumn", () => {
 
 	it("labels a sealed reasoning segment 'Thought for Ns' when durationMs >= 1000", async () => {
 		const overrides = makeStubOverrides({ runId: "run-r3", events: [] });
-		seedAssistantMessage("threadA", {
+		appendMessage("threadA", {
 			id: "a-reason3",
 			role: "assistant",
 			status: "completed",
@@ -1325,7 +1324,7 @@ describe("ChatColumn", () => {
 
 	it("labels a sealed reasoning segment bare 'Thought' when durationMs is undefined or sub-second", async () => {
 		const overrides = makeStubOverrides({ runId: "run-r4", events: [] });
-		seedAssistantMessage("threadA", {
+		appendMessage("threadA", {
 			id: "a-reason4",
 			role: "assistant",
 			status: "completed",
@@ -1347,7 +1346,7 @@ describe("ChatColumn", () => {
 
 	it("suppresses the typing indicator while ONLY a reasoning segment is streaming", async () => {
 		const overrides = makeStubOverrides({ runId: "run-r5", events: [] });
-		seedAssistantMessage("threadA", {
+		appendMessage("threadA", {
 			id: "a-reason5",
 			role: "assistant",
 			status: "streaming",
@@ -1367,7 +1366,7 @@ describe("ChatColumn", () => {
 
 	it("shows 'Thought for Ns' (not 'Thinking…') for a SEALED reasoning block while the reply still streams", async () => {
 		const overrides = makeStubOverrides({ runId: "run-r6", events: [] });
-		seedAssistantMessage("threadA", {
+		appendMessage("threadA", {
 			id: "a-reason6",
 			role: "assistant",
 			// Turn is still streaming (the reply text is arriving)…
@@ -1400,14 +1399,14 @@ describe("ChatColumn", () => {
 			events: [{ kind: "text_delta", delta: "recovered" }, { kind: "done" }],
 			retryRun: retrySpy,
 		});
-		appendUserMessage("threadA", {
+		appendMessage("threadA", {
 			id: "u1",
 			role: "user",
 			status: "completed",
 			segments: [{ kind: "text", text: "do it" }],
 			run_id: "",
 		});
-		seedAssistantMessage("threadA", {
+		appendMessage("threadA", {
 			id: "a-fail",
 			role: "assistant",
 			status: "incomplete",
@@ -1447,14 +1446,14 @@ describe("ChatColumn", () => {
 			events: [{ kind: "text_delta", delta: "resent reply" }, { kind: "done" }],
 			retryRun: retrySpy,
 		});
-		appendUserMessage("threadA", {
+		appendMessage("threadA", {
 			id: "u1",
 			role: "user",
 			status: "completed",
 			segments: [{ kind: "text", text: "do it" }],
 			run_id: "",
 		});
-		seedAssistantMessage("threadA", {
+		appendMessage("threadA", {
 			id: "a-nosend",
 			role: "assistant",
 			status: "incomplete",

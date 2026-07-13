@@ -9,10 +9,7 @@ import type { WsRuntime } from "../runtime.js";
 export async function fetchSettings(
 	runtime: WsRuntime,
 ): Promise<SettingsResult> {
-	const program = Effect.gen(function* () {
-		const client = yield* WsClient;
-		return yield* client.settingsGet();
-	});
+	const program = Effect.flatMap(WsClient, (client) => client.settingsGet());
 	return runtime.runPromise(program);
 }
 
@@ -25,10 +22,9 @@ export async function saveSettings(
 		readonly enabled_models?: readonly string[];
 	},
 ): Promise<SettingsResult> {
-	const program = Effect.gen(function* () {
-		const client = yield* WsClient;
-		return yield* client.settingsSet(params);
-	});
+	const program = Effect.flatMap(WsClient, (client) =>
+		client.settingsSet(params),
+	);
 	return runtime.runPromise(program);
 }
 
@@ -36,9 +32,6 @@ export async function saveSettings(
 export async function fetchCatalog(
 	runtime: WsRuntime,
 ): Promise<ModelCatalogResult> {
-	const program = Effect.gen(function* () {
-		const client = yield* WsClient;
-		return yield* client.modelCatalog();
-	});
+	const program = Effect.flatMap(WsClient, (client) => client.modelCatalog());
 	return runtime.runPromise(program);
 }

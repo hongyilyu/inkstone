@@ -1,11 +1,9 @@
 import type {
-	EntityBacklinksResult,
 	EntityMutateParams,
 	EntityMutateResult,
 	EntityRow,
 } from "@inkstone/protocol";
 import {
-	type RunEventValue,
 	stubWsClient,
 	WsClient,
 	type WsClientService,
@@ -51,10 +49,6 @@ export function makeQueryClient(): QueryClient {
 export interface CoreRuntimeOptions {
 	/** `entity/list` seed rows, keyed by entity type; unlisted types serve `[]`. */
 	entities?: Readonly<Record<string, ReadonlyArray<EntityRow>>>;
-	/** `entity/backlinks` seed; defaults to both sets empty. */
-	backlinks?: EntityBacklinksResult;
-	/** `run/subscribe` seed events; defaults to an empty (quiescent) stream. */
-	runEvents?: ReadonlyArray<RunEventValue>;
 	/** Explicit member stubs — spread LAST, so a caller override always wins. */
 	overrides?: Partial<WsClientService>;
 }
@@ -80,17 +74,16 @@ export interface TestRouter {
 
 /**
  * Build a stubbed {@link WsRuntime}: `listEntities` serves the seeded rows by
- * type (empty for unlisted types), `getBacklinks` serves the seeded sets (both
- * empty by default), `subscribeRun` streams the seeded events (none by default).
- * Every other verb keeps stubWsClient's loud `Effect.die` default.
+ * type (empty for unlisted types), `getBacklinks` serves empty sets, and
+ * `subscribeRun` streams nothing. Every other verb keeps stubWsClient's loud
+ * `Effect.die` default.
  */
 export function makeCoreRuntime(opts: CoreRuntimeOptions = {}): WsRuntime {
 	const stub = stubWsClient({
 		listEntities: (type) =>
 			Effect.succeed({ entities: opts.entities?.[type] ?? [] }),
-		getBacklinks: () =>
-			Effect.succeed(opts.backlinks ?? { mentioned_in: [], linked_todos: [] }),
-		subscribeRun: () => Stream.fromIterable(opts.runEvents ?? []),
+		getBacklinks: () => Effect.succeed({ mentioned_in: [], linked_todos: [] }),
+		subscribeRun: () => Stream.empty,
 		...opts.overrides,
 	});
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
@@ -157,13 +150,10 @@ export async function renderWithCore(
 > {
 	if (
 		opts.wsConfig !== undefined &&
-		(opts.entities !== undefined ||
-			opts.backlinks !== undefined ||
-			opts.runEvents !== undefined ||
-			opts.overrides !== undefined)
+		(opts.entities !== undefined || opts.overrides !== undefined)
 	) {
 		throw new Error(
-			"renderWithCore: wsConfig mode uses the real WsClientLive — entities/backlinks/runEvents/overrides are not applied; pass one or the other",
+			"renderWithCore: wsConfig mode uses the real WsClientLive — entities/overrides are not applied; pass one or the other",
 		);
 	}
 	const runtime =

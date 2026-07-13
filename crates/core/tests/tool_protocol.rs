@@ -14,7 +14,7 @@ use sqlx::sqlite::SqlitePoolOptions;
 use tokio_tungstenite::tungstenite::Message;
 
 mod common;
-use common::{CoreHandle, Workspace, next_text};
+use common::{CoreHandle, next_text, rt, Workspace};
 
 /// Create a Thread, subscribe, drain to `done`; return (thread_id, run_id, text
 /// deltas, tool_call `(name, status)` boundaries in arrival order). tsx boots
@@ -93,10 +93,7 @@ fn read_thread_returns_another_threads_messages() {
         .env("INKSTONE_TOOLWORKER_THREAD_ID_FILE", &id_file)
         .spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let run_b = rt.block_on(async {
         // Thread A's own read_thread call fails (id-file absent) — we just need
@@ -180,10 +177,7 @@ fn search_entities_dispatches_to_its_own_handler() {
         .env("INKSTONE_TOOLWORKER_TOOL", "search_entities")
         .spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let run = rt.block_on(async {
         // No entities exist, so the search succeeds with an empty result set —
@@ -240,10 +234,7 @@ fn unknown_thread_id_returns_error_outcome() {
     // error outcome and the Run must still complete cleanly.
     let core = workspace.core().worker_fixture("tool-worker.ts").spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
         let (_thread, _run, text, tools) = run_and_collect(&core, "hi").await;
@@ -275,10 +266,7 @@ fn off_allowlist_tool_returns_error_outcome() {
         .env("INKSTONE_TOOLWORKER_TOOL", "nonexistent")
         .spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
         let (_thread, _run, text, tools) = run_and_collect(&core, "hi").await;

@@ -11,7 +11,6 @@
 //!                                                       high|xhigh
 //!   model:<workflow_name>             per-WF   (none)   a model id in the catalog workflow_prefs.model
 //!   enabled_models                    global   (none)   JSON array of catalog ids settings.value
-//!   review_anchor_utc_offset_minutes  global   0        a signed integer         settings.value
 
 use sqlx::SqlitePool;
 
@@ -23,11 +22,6 @@ const EFFORT_KEY: &str = "effort";
 /// the user curates a set; callers default `None` to the empty "uncurated = all
 /// enabled" sentinel (`[]`), never the materialized catalog.
 const ENABLED_MODELS_KEY: &str = "enabled_models";
-
-/// The minutes east of UTC for the Workspace review anchor (ADR-0031). Seeds the
-/// local wall clock used to compute a new active Project's default
-/// `next_review_at`; defaults to 0 (local == UTC) when unset or unparseable.
-pub(crate) const REVIEW_ANCHOR_UTC_OFFSET_KEY: &str = "review_anchor_utc_offset_minutes";
 
 /// The global effort default when neither a setting nor a Workflow supplies one.
 pub const DEFAULT_EFFORT: &str = "off";

@@ -171,7 +171,10 @@ const JOURNAL_INTAKE_TOOLS: WorkerManifest["workflow"]["tools"] = [
 	},
 ];
 
-function journalIntakeManifest(prompt: string): WorkerManifest {
+function journalIntakeManifest(
+	prompt: string,
+	overrides: Partial<WorkerManifest> = {},
+): WorkerManifest {
 	return fauxManifest({
 		prompt,
 		workflow: {
@@ -183,6 +186,7 @@ function journalIntakeManifest(prompt: string): WorkerManifest {
 			thinking_level: "off",
 			tools: JOURNAL_INTAKE_TOOLS,
 		},
+		...overrides,
 	});
 }
 
@@ -267,13 +271,20 @@ const searchResult = (
 	results: Array<{ id: string; type: string; label: string }>,
 ): ManifestMessage => resumeToolResult(tool_call_id, { results });
 
-// A live (in-process) search_entities tool result for runChat's `results` map —
-// the bare inner `{results}` JSON the InMemoryTransport returns for a call id.
+// Live (in-process) tool results for runChat's `results` map — the bare inner
+// content the InMemoryTransport returns for a call id (NOT the resume-transcript
+// Core envelope resumeToolResult builds above; never merge the two shapes).
+const okText = (text: string): ToolCallResponse => ({
+	ok: { content: [{ type: "text", text }] },
+});
+
+const okJson = (payload: unknown): ToolCallResponse =>
+	okText(JSON.stringify(payload));
+
+// A live search_entities tool result: the bare inner `{results}` JSON.
 const searchResultResponse = (
 	results: Array<{ id: string; type: string; label: string }>,
-): ToolCallResponse => ({
-	ok: { content: [{ type: "text", text: JSON.stringify({ results }) }] },
-});
+): ToolCallResponse => okJson({ results });
 
 const readEntriesResult = (
 	tool_call_id: string,
@@ -283,6 +294,25 @@ const readEntriesResult = (
 		body?: Array<{ type: string; text: string }>;
 	}>,
 ): ManifestMessage => resumeToolResult(tool_call_id, { entries });
+
+// A single-text-body journal entry as read_current_thread_journal_entries
+// returns it (multi-element bodies stay inline at their call sites).
+const jeEntry = (id: string, occurredAt: string, text: string) => ({
+	entity_id: id,
+	occurred_at: occurredAt,
+	body: [{ type: "text", text }],
+});
+
+// Reassemble text_delta events (as faux_run.rs does); faux/streamSimple chunk
+// boundaries aren't fixed, so per-delta asserts flake.
+const deltaText = (events: RunEvent[]): string =>
+	events
+		.filter(
+			(e): e is { kind: "text_delta"; delta: string } =>
+				e.kind === "text_delta",
+		)
+		.map((e) => e.delta)
+		.join("");
 
 // Drive the interpreter with the faux entry's deps through an InMemoryTransport (ADR-0027), returning captured Run Events.
 // `fauxDepsFor` registers a fresh faux provider per call (unique random `api`), so cases don't contaminate each other.
@@ -305,12 +335,7 @@ describe("faux-worker dep-builder (test-only entry)", () => {
 
 		const { events } = await runChat(fauxManifest());
 
-		// Reassemble deltas (as faux_run.rs does); faux/streamSimple chunk boundaries aren't fixed, so per-delta asserts flake.
-		const text = events
-			.filter((e) => e.kind === "text_delta")
-			.map((e) => (e as { delta: string }).delta)
-			.join("");
-		expect(text).toBe("scripted faux reply");
+		expect(deltaText(events)).toBe("scripted faux reply");
 		expect(events.at(-1)).toEqual({ kind: "done" });
 	});
 
@@ -353,8 +378,7 @@ describe("faux-worker propose mode — scenario playback (INKSTONE_FAUX_PROPOSE_
 
 		expect(() =>
 			fauxDepsFor(
-				fauxManifest({
-					prompt: "",
+				journalIntakeManifest("", {
 					mode: "resume",
 					messages: [
 						{ role: "user", text: "I bought milk after daycare pickup." },
@@ -364,15 +388,6 @@ describe("faux-worker propose mode — scenario playback (INKSTONE_FAUX_PROPOSE_
 							"Accepted. Created Journal Entry (entity_id=entry-1).",
 						),
 					],
-					workflow: {
-						name: "default",
-						version: "1.0.0",
-						provider: "faux",
-						model: "faux-1",
-						system_prompt: "You run the journal entry intake loop.",
-						thinking_level: "off",
-						tools: JOURNAL_INTAKE_TOOLS,
-					},
 				}),
 			),
 		).toThrow(/INKSTONE_FAUX_PROPOSE_PARAMS/);
@@ -388,36 +403,16 @@ describe("faux-worker propose mode — scenario playback (INKSTONE_FAUX_PROPOSE_
 		const { events, requests } = await runChat(
 			journalIntakeManifest("complete gibberish zzz"),
 			{
-				tc_read_current_0: {
-					ok: {
-						content: [
-							{
-								type: "text",
-								text: JSON.stringify({
-									entries: [
-										{
-											entity_id: "entry-1",
-											occurred_at: "2026-06-10T10:30:00",
-											body: [
-												{
-													type: "text",
-													text: "Bought milk after daycare pickup.",
-												},
-											],
-										},
-									],
-								}),
-							},
-						],
-					},
-				},
-				tc_update_0: {
-					ok: {
-						content: [
-							{ type: "text", text: "Accepted. Updated Journal Entry." },
-						],
-					},
-				},
+				tc_read_current_0: okJson({
+					entries: [
+						jeEntry(
+							"entry-1",
+							"2026-06-10T10:30:00",
+							"Bought milk after daycare pickup.",
+						),
+					],
+				}),
+				tc_update_0: okText("Accepted. Updated Journal Entry."),
 			},
 		);
 
@@ -448,15 +443,7 @@ describe("faux-worker propose mode — scenario playback (INKSTONE_FAUX_PROPOSE_
 			},
 		]);
 		expect(events.at(-1)).toEqual({ kind: "done" });
-		expect(
-			events
-				.filter(
-					(e): e is { kind: "text_delta"; delta: string } =>
-						e.kind === "text_delta",
-				)
-				.map((e) => e.delta)
-				.join(""),
-		).toContain("Done — updated it.");
+		expect(deltaText(events)).toContain("Done — updated it.");
 	});
 
 	it("plays a create Turn from the scenario: one proposal built from the Turn, no read", async () => {
@@ -475,13 +462,7 @@ describe("faux-worker propose mode — scenario playback (INKSTONE_FAUX_PROPOSE_
 		const { events, requests } = await runChat(
 			journalIntakeManifest("complete gibberish zzz"),
 			{
-				tc_create_0: {
-					ok: {
-						content: [
-							{ type: "text", text: "Accepted. Created Journal Entry." },
-						],
-					},
-				},
+				tc_create_0: okText("Accepted. Created Journal Entry."),
 			},
 		);
 
@@ -505,15 +486,7 @@ describe("faux-worker propose mode — scenario playback (INKSTONE_FAUX_PROPOSE_
 			},
 		]);
 		expect(events.at(-1)).toEqual({ kind: "done" });
-		expect(
-			events
-				.filter(
-					(e): e is { kind: "text_delta"; delta: string } =>
-						e.kind === "text_delta",
-				)
-				.map((e) => e.delta)
-				.join(""),
-		).toContain("Done — added it.");
+		expect(deltaText(events)).toContain("Done — added it.");
 	});
 
 	it("plays a delete Turn from the scenario: read then delete_journal_entry from the live entry", async () => {
@@ -522,36 +495,16 @@ describe("faux-worker propose mode — scenario playback (INKSTONE_FAUX_PROPOSE_
 		const { events, requests } = await runChat(
 			journalIntakeManifest("complete gibberish zzz"),
 			{
-				tc_read_current_0: {
-					ok: {
-						content: [
-							{
-								type: "text",
-								text: JSON.stringify({
-									entries: [
-										{
-											entity_id: "entry-1",
-											occurred_at: "2026-06-10T10:30:00",
-											body: [
-												{
-													type: "text",
-													text: "Bought milk after daycare pickup.",
-												},
-											],
-										},
-									],
-								}),
-							},
-						],
-					},
-				},
-				tc_delete_0: {
-					ok: {
-						content: [
-							{ type: "text", text: "Accepted. Deleted Journal Entry." },
-						],
-					},
-				},
+				tc_read_current_0: okJson({
+					entries: [
+						jeEntry(
+							"entry-1",
+							"2026-06-10T10:30:00",
+							"Bought milk after daycare pickup.",
+						),
+					],
+				}),
+				tc_delete_0: okText("Accepted. Deleted Journal Entry."),
 			},
 		);
 
@@ -572,15 +525,7 @@ describe("faux-worker propose mode — scenario playback (INKSTONE_FAUX_PROPOSE_
 			},
 		]);
 		expect(events.at(-1)).toEqual({ kind: "done" });
-		expect(
-			events
-				.filter(
-					(e): e is { kind: "text_delta"; delta: string } =>
-						e.kind === "text_delta",
-				)
-				.map((e) => e.delta)
-				.join(""),
-		).toContain("Done — deleted it.");
+		expect(deltaText(events)).toContain("Done — deleted it.");
 	});
 
 	it("plays the Turn at the manifest position: one prior user message selects turns[1]", async () => {
@@ -596,53 +541,23 @@ describe("faux-worker propose mode — scenario playback (INKSTONE_FAUX_PROPOSE_
 		});
 
 		const { requests } = await runChat(
-			fauxManifest({
-				prompt: "complete gibberish zzz",
+			journalIntakeManifest("complete gibberish zzz", {
 				messages: [
 					{ role: "user", text: "Bought milk." },
 					{ role: "assistant", text: "Done — added it." },
 				],
-				workflow: {
-					name: "default",
-					version: "1.0.0",
-					provider: "faux",
-					model: "faux-1",
-					system_prompt: "You run the journal entry intake loop.",
-					thinking_level: "off",
-					tools: JOURNAL_INTAKE_TOOLS,
-				},
 			}),
 			{
-				tc_read_current_1: {
-					ok: {
-						content: [
-							{
-								type: "text",
-								text: JSON.stringify({
-									entries: [
-										{
-											entity_id: "entry-1",
-											occurred_at: "2026-06-10T10:30:00",
-											body: [
-												{
-													type: "text",
-													text: "Bought milk after daycare pickup.",
-												},
-											],
-										},
-									],
-								}),
-							},
-						],
-					},
-				},
-				tc_delete_1: {
-					ok: {
-						content: [
-							{ type: "text", text: "Accepted. Deleted Journal Entry." },
-						],
-					},
-				},
+				tc_read_current_1: okJson({
+					entries: [
+						jeEntry(
+							"entry-1",
+							"2026-06-10T10:30:00",
+							"Bought milk after daycare pickup.",
+						),
+					],
+				}),
+				tc_delete_1: okText("Accepted. Deleted Journal Entry."),
 			},
 		);
 
@@ -777,36 +692,16 @@ describe("faux-worker propose mode — scenario playback (INKSTONE_FAUX_PROPOSE_
 		const { requests } = await runChat(
 			journalIntakeManifest("complete gibberish zzz"),
 			{
-				tc_read_current_0: {
-					ok: {
-						content: [
-							{
-								type: "text",
-								text: JSON.stringify({
-									entries: [
-										{
-											entity_id: "entry-1",
-											occurred_at: "2026-06-10T10:30:00",
-											body: [
-												{
-													type: "text",
-													text: "Bought milk after daycare pickup.",
-												},
-											],
-										},
-									],
-								}),
-							},
-						],
-					},
-				},
-				tc_update_0: {
-					ok: {
-						content: [
-							{ type: "text", text: "Accepted. Updated Journal Entry." },
-						],
-					},
-				},
+				tc_read_current_0: okJson({
+					entries: [
+						jeEntry(
+							"entry-1",
+							"2026-06-10T10:30:00",
+							"Bought milk after daycare pickup.",
+						),
+					],
+				}),
+				tc_update_0: okText("Accepted. Updated Journal Entry."),
 			},
 		);
 
@@ -830,36 +725,16 @@ describe("faux-worker propose mode — scenario playback (INKSTONE_FAUX_PROPOSE_
 		const { requests } = await runChat(
 			journalIntakeManifest("complete gibberish zzz"),
 			{
-				tc_read_current_0: {
-					ok: {
-						content: [
-							{
-								type: "text",
-								text: JSON.stringify({
-									entries: [
-										{
-											entity_id: "entry-1",
-											occurred_at: "2026-06-10T10:30:00",
-											body: [
-												{
-													type: "text",
-													text: "Bought milk after daycare pickup.",
-												},
-											],
-										},
-									],
-								}),
-							},
-						],
-					},
-				},
-				tc_update_0: {
-					ok: {
-						content: [
-							{ type: "text", text: "Accepted. Updated Journal Entry." },
-						],
-					},
-				},
+				tc_read_current_0: okJson({
+					entries: [
+						jeEntry(
+							"entry-1",
+							"2026-06-10T10:30:00",
+							"Bought milk after daycare pickup.",
+						),
+					],
+				}),
+				tc_update_0: okText("Accepted. Updated Journal Entry."),
 			},
 		);
 
@@ -883,26 +758,16 @@ describe("faux-worker propose mode — scenario playback (INKSTONE_FAUX_PROPOSE_
 		const { events, requests } = await runChat(
 			journalIntakeManifest("complete gibberish zzz"),
 			{
-				tc_read_current_0: {
-					ok: {
-						content: [{ type: "text", text: JSON.stringify({ entries: [] }) }],
-					},
-				},
+				tc_read_current_0: okJson({ entries: [] }),
 			},
 		);
 
 		expect(requests.map((r) => r.name)).toEqual([
 			"read_current_thread_journal_entries",
 		]);
-		expect(
-			events
-				.filter(
-					(e): e is { kind: "text_delta"; delta: string } =>
-						e.kind === "text_delta",
-				)
-				.map((e) => e.delta)
-				.join(""),
-		).toContain("I couldn't find that Journal Entry in this thread.");
+		expect(deltaText(events)).toContain(
+			"I couldn't find that Journal Entry in this thread.",
+		);
 		expect(events.at(-1)).toEqual({ kind: "done" });
 	});
 
@@ -918,8 +783,7 @@ describe("faux-worker propose mode — scenario playback (INKSTONE_FAUX_PROPOSE_
 		});
 
 		const { events, requests } = await runChat(
-			fauxManifest({
-				prompt: "",
+			journalIntakeManifest("", {
 				mode: "resume",
 				messages: [
 					{ role: "user", text: "complete gibberish zzz" },
@@ -929,29 +793,12 @@ describe("faux-worker propose mode — scenario playback (INKSTONE_FAUX_PROPOSE_
 						"Accepted. Updated Journal Entry (entity_id=entry-1).",
 					),
 				],
-				workflow: {
-					name: "default",
-					version: "1.0.0",
-					provider: "faux",
-					model: "faux-1",
-					system_prompt: "You run the journal entry intake loop.",
-					thinking_level: "off",
-					tools: JOURNAL_INTAKE_TOOLS,
-				},
 			}),
 		);
 
 		// The resume branch confirms — the scenario's create turn is NOT played.
 		expect(requests).toEqual([]);
-		expect(
-			events
-				.filter(
-					(e): e is { kind: "text_delta"; delta: string } =>
-						e.kind === "text_delta",
-				)
-				.map((e) => e.delta)
-				.join(""),
-		).toContain("Done — updated it.");
+		expect(deltaText(events)).toContain("Done — updated it.");
 		expect(events.at(-1)).toEqual({ kind: "done" });
 	});
 });
@@ -964,11 +811,7 @@ describe("faux-worker extraction mode (INKSTONE_FAUX_EXTRACT)", () => {
 		});
 
 		const { requests } = await runChat(extractManifest(), {
-			tc_extract_journal: {
-				ok: {
-					content: [{ type: "text", text: "Accepted. Created Journal Entry." }],
-				},
-			},
+			tc_extract_journal: okText("Accepted. Created Journal Entry."),
 		});
 
 		const proposals = proposalsIn(requests);
@@ -993,41 +836,17 @@ describe("faux-worker extraction mode (INKSTONE_FAUX_EXTRACT)", () => {
 				),
 			]),
 			{
-				tc_extract_read: {
-					ok: {
-						content: [
-							{
-								type: "text",
-								text: JSON.stringify({
-									entries: [
-										{
-											entity_id: "je-1",
-											occurred_at: "2026-06-10T10:30:00",
-											body: [
-												{
-													type: "text",
-													text: "I had coffee with Alice this morning.",
-												},
-											],
-										},
-									],
-								}),
-							},
-						],
-					},
-				},
-				tc_extract_search_initial: {
-					ok: {
-						content: [{ type: "text", text: JSON.stringify({ results: [] }) }],
-					},
-				},
-				tc_extract_person: {
-					ok: {
-						content: [
-							{ type: "text", text: "Accepted. Created Person (name=Alice)." },
-						],
-					},
-				},
+				tc_extract_read: okJson({
+					entries: [
+						jeEntry(
+							"je-1",
+							"2026-06-10T10:30:00",
+							"I had coffee with Alice this morning.",
+						),
+					],
+				}),
+				tc_extract_search_initial: searchResultResponse([]),
+				tc_extract_person: okText("Accepted. Created Person (name=Alice)."),
 			},
 		);
 
@@ -1066,18 +885,8 @@ describe("faux-worker extraction mode (INKSTONE_FAUX_EXTRACT)", () => {
 				),
 			]),
 			{
-				tc_extract_search_initial: {
-					ok: {
-						content: [{ type: "text", text: JSON.stringify({ results: [] }) }],
-					},
-				},
-				tc_extract_person: {
-					ok: {
-						content: [
-							{ type: "text", text: "Accepted. Created Person (name=Alice)." },
-						],
-					},
-				},
+				tc_extract_search_initial: searchResultResponse([]),
+				tc_extract_person: okText("Accepted. Created Person (name=Alice)."),
 			},
 		);
 
@@ -1112,51 +921,21 @@ describe("faux-worker extraction mode (INKSTONE_FAUX_EXTRACT)", () => {
 				),
 			]),
 			{
-				tc_extract_read: {
-					ok: {
-						content: [
-							{
-								type: "text",
-								text: JSON.stringify({
-									entries: [
-										{
-											entity_id: "je-1",
-											occurred_at: "2026-06-10T10:30:00",
-											body: [
-												{
-													type: "text",
-													text: "I had coffee with Alice this morning.",
-												},
-											],
-										},
-									],
-								}),
-							},
-						],
-					},
-				},
-				tc_extract_search_initial: {
-					ok: {
-						content: [
-							{
-								type: "text",
-								text: JSON.stringify({
-									results: [{ id: "alice-1", type: "person", label: "Alice" }],
-								}),
-							},
-						],
-					},
-				},
-				tc_extract_reference: {
-					ok: {
-						content: [
-							{
-								type: "text",
-								text: "Accepted. Referenced Entity (source_entity_id=je-1, target_entity_id=alice-1, body=Met .).",
-							},
-						],
-					},
-				},
+				tc_extract_read: okJson({
+					entries: [
+						jeEntry(
+							"je-1",
+							"2026-06-10T10:30:00",
+							"I had coffee with Alice this morning.",
+						),
+					],
+				}),
+				tc_extract_search_initial: searchResultResponse([
+					{ id: "alice-1", type: "person", label: "Alice" },
+				]),
+				tc_extract_reference: okText(
+					"Accepted. Referenced Entity (source_entity_id=je-1, target_entity_id=alice-1, body=Met .).",
+				),
 			},
 		);
 
@@ -1210,30 +989,12 @@ describe("faux-worker extraction mode (INKSTONE_FAUX_EXTRACT)", () => {
 				),
 			]),
 			{
-				tc_extract_search_recheck: {
-					ok: {
-						content: [
-							{
-								type: "text",
-								text: JSON.stringify({
-									results: [
-										{ id: "alice-new", type: "person", label: "Alice" },
-									],
-								}),
-							},
-						],
-					},
-				},
-				tc_extract_reference: {
-					ok: {
-						content: [
-							{
-								type: "text",
-								text: "Accepted. Referenced Entity (source_entity_id=je-1, target_entity_id=alice-new, body=Met .).",
-							},
-						],
-					},
-				},
+				tc_extract_search_recheck: searchResultResponse([
+					{ id: "alice-new", type: "person", label: "Alice" },
+				]),
+				tc_extract_reference: okText(
+					"Accepted. Referenced Entity (source_entity_id=je-1, target_entity_id=alice-new, body=Met .).",
+				),
 			},
 		);
 
@@ -1276,14 +1037,7 @@ describe("faux-worker extraction mode (INKSTONE_FAUX_EXTRACT)", () => {
 		);
 
 		expect(requests).toEqual([]);
-		const text = events
-			.filter(
-				(e): e is { kind: "text_delta"; delta: string } =>
-					e.kind === "text_delta",
-			)
-			.map((e) => e.delta)
-			.join("");
-		expect(text).toContain("Done — extracted Alice.");
+		expect(deltaText(events)).toContain("Done — extracted Alice.");
 		expect(events.at(-1)).toEqual({ kind: "done" });
 	});
 
@@ -1307,14 +1061,7 @@ describe("faux-worker extraction mode (INKSTONE_FAUX_EXTRACT)", () => {
 		);
 
 		expect(requests).toEqual([]);
-		const text = events
-			.filter(
-				(e): e is { kind: "text_delta"; delta: string } =>
-					e.kind === "text_delta",
-			)
-			.map((e) => e.delta)
-			.join("");
-		expect(text).toContain("Dismissed.");
+		expect(deltaText(events)).toContain("Dismissed.");
 		expect(events.at(-1)).toEqual({ kind: "done" });
 	});
 
@@ -1338,41 +1085,17 @@ describe("faux-worker extraction mode (INKSTONE_FAUX_EXTRACT)", () => {
 				),
 			]),
 			{
-				tc_extract_read: {
-					ok: {
-						content: [
-							{
-								type: "text",
-								text: JSON.stringify({
-									entries: [
-										{
-											entity_id: "je-1",
-											occurred_at: "2026-06-10T10:30:00",
-											body: [
-												{
-													type: "text",
-													text: "I had coffee with Alice this morning.",
-												},
-											],
-										},
-									],
-								}),
-							},
-						],
-					},
-				},
-				tc_extract_search_initial: {
-					ok: {
-						content: [{ type: "text", text: JSON.stringify({ results: [] }) }],
-					},
-				},
-				tc_extract_person: {
-					ok: {
-						content: [
-							{ type: "text", text: "Accepted. Created Person (name=Alice)." },
-						],
-					},
-				},
+				tc_extract_read: okJson({
+					entries: [
+						jeEntry(
+							"je-1",
+							"2026-06-10T10:30:00",
+							"I had coffee with Alice this morning.",
+						),
+					],
+				}),
+				tc_extract_search_initial: searchResultResponse([]),
+				tc_extract_person: okText("Accepted. Created Person (name=Alice)."),
 			},
 		);
 		const firstSearchId = afterJournal.requests.find(
@@ -1407,30 +1130,12 @@ describe("faux-worker extraction mode (INKSTONE_FAUX_EXTRACT)", () => {
 				),
 			]),
 			{
-				tc_extract_search_recheck: {
-					ok: {
-						content: [
-							{
-								type: "text",
-								text: JSON.stringify({
-									results: [
-										{ id: "alice-new", type: "person", label: "Alice" },
-									],
-								}),
-							},
-						],
-					},
-				},
-				tc_extract_reference: {
-					ok: {
-						content: [
-							{
-								type: "text",
-								text: "Accepted. Referenced Entity (source_entity_id=je-1, target_entity_id=alice-new, body=Met .).",
-							},
-						],
-					},
-				},
+				tc_extract_search_recheck: searchResultResponse([
+					{ id: "alice-new", type: "person", label: "Alice" },
+				]),
+				tc_extract_reference: okText(
+					"Accepted. Referenced Entity (source_entity_id=je-1, target_entity_id=alice-new, body=Met .).",
+				),
 			},
 		);
 		const secondSearchId = afterCreate.requests.find(
@@ -1467,11 +1172,7 @@ describe("faux-worker extraction mode — Project target", () => {
 		});
 
 		const { requests } = await runChat(extractManifest(), {
-			tc_extract_journal: {
-				ok: {
-					content: [{ type: "text", text: "Accepted. Created Journal Entry." }],
-				},
-			},
+			tc_extract_journal: okText("Accepted. Created Journal Entry."),
 		});
 
 		const proposals = proposalsIn(requests);
@@ -1496,44 +1197,19 @@ describe("faux-worker extraction mode — Project target", () => {
 				),
 			]),
 			{
-				tc_extract_read: {
-					ok: {
-						content: [
-							{
-								type: "text",
-								text: JSON.stringify({
-									entries: [
-										{
-											entity_id: "je-1",
-											occurred_at: "2026-06-10T10:30:00",
-											body: [
-												{
-													type: "text",
-													text: "Kicked off the API v2 migration today.",
-												},
-											],
-										},
-									],
-								}),
-							},
-						],
-					},
-				},
-				tc_extract_search_initial: {
-					ok: {
-						content: [{ type: "text", text: JSON.stringify({ results: [] }) }],
-					},
-				},
-				tc_extract_project: {
-					ok: {
-						content: [
-							{
-								type: "text",
-								text: "Accepted. Created Project (name=Ship API v2 migration).",
-							},
-						],
-					},
-				},
+				tc_extract_read: okJson({
+					entries: [
+						jeEntry(
+							"je-1",
+							"2026-06-10T10:30:00",
+							"Kicked off the API v2 migration today.",
+						),
+					],
+				}),
+				tc_extract_search_initial: searchResultResponse([]),
+				tc_extract_project: okText(
+					"Accepted. Created Project (name=Ship API v2 migration).",
+				),
 			},
 		);
 
@@ -1574,57 +1250,25 @@ describe("faux-worker extraction mode — Project target", () => {
 				),
 			]),
 			{
-				tc_extract_read: {
-					ok: {
-						content: [
-							{
-								type: "text",
-								text: JSON.stringify({
-									entries: [
-										{
-											entity_id: "je-1",
-											occurred_at: "2026-06-10T10:30:00",
-											body: [
-												{
-													type: "text",
-													text: "Kicked off the API v2 migration today.",
-												},
-											],
-										},
-									],
-								}),
-							},
-						],
+				tc_extract_read: okJson({
+					entries: [
+						jeEntry(
+							"je-1",
+							"2026-06-10T10:30:00",
+							"Kicked off the API v2 migration today.",
+						),
+					],
+				}),
+				tc_extract_search_initial: searchResultResponse([
+					{
+						id: "proj-1",
+						type: "project",
+						label: "Ship API v2 migration",
 					},
-				},
-				tc_extract_search_initial: {
-					ok: {
-						content: [
-							{
-								type: "text",
-								text: JSON.stringify({
-									results: [
-										{
-											id: "proj-1",
-											type: "project",
-											label: "Ship API v2 migration",
-										},
-									],
-								}),
-							},
-						],
-					},
-				},
-				tc_extract_reference: {
-					ok: {
-						content: [
-							{
-								type: "text",
-								text: "Accepted. Referenced Entity (source_entity_id=je-1, target_entity_id=proj-1, body=Met .).",
-							},
-						],
-					},
-				},
+				]),
+				tc_extract_reference: okText(
+					"Accepted. Referenced Entity (source_entity_id=je-1, target_entity_id=proj-1, body=Met .).",
+				),
 			},
 		);
 
@@ -1680,34 +1324,16 @@ describe("faux-worker extraction mode — Project target", () => {
 				),
 			]),
 			{
-				tc_extract_search_recheck: {
-					ok: {
-						content: [
-							{
-								type: "text",
-								text: JSON.stringify({
-									results: [
-										{
-											id: "proj-new",
-											type: "project",
-											label: "Ship API v2 migration",
-										},
-									],
-								}),
-							},
-						],
+				tc_extract_search_recheck: searchResultResponse([
+					{
+						id: "proj-new",
+						type: "project",
+						label: "Ship API v2 migration",
 					},
-				},
-				tc_extract_reference: {
-					ok: {
-						content: [
-							{
-								type: "text",
-								text: "Accepted. Referenced Entity (source_entity_id=je-1, target_entity_id=proj-new, body=Met .).",
-							},
-						],
-					},
-				},
+				]),
+				tc_extract_reference: okText(
+					"Accepted. Referenced Entity (source_entity_id=je-1, target_entity_id=proj-new, body=Met .).",
+				),
 			},
 		);
 
@@ -1753,14 +1379,7 @@ describe("faux-worker extraction mode — Project target", () => {
 		);
 
 		expect(requests).toEqual([]);
-		const text = events
-			.filter(
-				(e): e is { kind: "text_delta"; delta: string } =>
-					e.kind === "text_delta",
-			)
-			.map((e) => e.delta)
-			.join("");
-		expect(text).toContain("Done — added it.");
+		expect(deltaText(events)).toContain("Done — added it.");
 		expect(events.at(-1)).toEqual({ kind: "done" });
 	});
 });
@@ -1777,11 +1396,7 @@ describe("faux-worker extraction mode — Todo target", () => {
 		});
 
 		const { requests } = await runChat(extractManifest(), {
-			tc_extract_journal: {
-				ok: {
-					content: [{ type: "text", text: "Accepted. Created Journal Entry." }],
-				},
-			},
+			tc_extract_journal: okText("Accepted. Created Journal Entry."),
 		});
 
 		const proposals = proposalsIn(requests);
@@ -1812,62 +1427,22 @@ describe("faux-worker extraction mode — Todo target", () => {
 				),
 			]),
 			{
-				tc_extract_read: {
-					ok: {
-						content: [
-							{
-								type: "text",
-								text: JSON.stringify({
-									entries: [
-										{
-											entity_id: "je-1",
-											occurred_at: "2026-06-10T10:30:00",
-											body: [
-												{
-													type: "text",
-													text: "I need to email Alice about Project Y.",
-												},
-											],
-										},
-									],
-								}),
-							},
-						],
-					},
-				},
-				tc_extract_search_person: {
-					ok: {
-						content: [
-							{
-								type: "text",
-								text: JSON.stringify({
-									results: [{ id: "alice-1", type: "person", label: "Alice" }],
-								}),
-							},
-						],
-					},
-				},
-				tc_extract_search_project: {
-					ok: {
-						content: [
-							{
-								type: "text",
-								text: JSON.stringify({
-									results: [
-										{ id: "proj-1", type: "project", label: "Project Y" },
-									],
-								}),
-							},
-						],
-					},
-				},
-				tc_extract_todo: {
-					ok: {
-						content: [
-							{ type: "text", text: "Accepted. Created Todo (title=…)." },
-						],
-					},
-				},
+				tc_extract_read: okJson({
+					entries: [
+						jeEntry(
+							"je-1",
+							"2026-06-10T10:30:00",
+							"I need to email Alice about Project Y.",
+						),
+					],
+				}),
+				tc_extract_search_person: searchResultResponse([
+					{ id: "alice-1", type: "person", label: "Alice" },
+				]),
+				tc_extract_search_project: searchResultResponse([
+					{ id: "proj-1", type: "project", label: "Project Y" },
+				]),
+				tc_extract_todo: okText("Accepted. Created Todo (title=…)."),
 			},
 		);
 
@@ -1923,55 +1498,20 @@ describe("faux-worker extraction mode — Todo target", () => {
 				),
 			]),
 			{
-				tc_extract_read: {
-					ok: {
-						content: [
-							{
-								type: "text",
-								text: JSON.stringify({
-									entries: [
-										{
-											entity_id: "je-1",
-											occurred_at: "2026-06-10T10:30:00",
-											body: [
-												{
-													type: "text",
-													text: "I need to email Alice about Project Y.",
-												},
-											],
-										},
-									],
-								}),
-							},
-						],
-					},
-				},
-				tc_extract_search_person: {
-					ok: {
-						content: [{ type: "text", text: JSON.stringify({ results: [] }) }],
-					},
-				},
-				tc_extract_search_project: {
-					ok: {
-						content: [
-							{
-								type: "text",
-								text: JSON.stringify({
-									results: [
-										{ id: "proj-1", type: "project", label: "Project Y" },
-									],
-								}),
-							},
-						],
-					},
-				},
-				tc_extract_todo: {
-					ok: {
-						content: [
-							{ type: "text", text: "Accepted. Created Todo (title=…)." },
-						],
-					},
-				},
+				tc_extract_read: okJson({
+					entries: [
+						jeEntry(
+							"je-1",
+							"2026-06-10T10:30:00",
+							"I need to email Alice about Project Y.",
+						),
+					],
+				}),
+				tc_extract_search_person: searchResultResponse([]),
+				tc_extract_search_project: searchResultResponse([
+					{ id: "proj-1", type: "project", label: "Project Y" },
+				]),
+				tc_extract_todo: okText("Accepted. Created Todo (title=…)."),
 			},
 		);
 
@@ -2011,53 +1551,20 @@ describe("faux-worker extraction mode — Todo target", () => {
 				),
 			]),
 			{
-				tc_extract_read: {
-					ok: {
-						content: [
-							{
-								type: "text",
-								text: JSON.stringify({
-									entries: [
-										{
-											entity_id: "je-1",
-											occurred_at: "2026-06-10T10:30:00",
-											body: [
-												{
-													type: "text",
-													text: "I need to email Alice about Project Y.",
-												},
-											],
-										},
-									],
-								}),
-							},
-						],
-					},
-				},
-				tc_extract_search_person: {
-					ok: {
-						content: [
-							{
-								type: "text",
-								text: JSON.stringify({
-									results: [{ id: "alice-1", type: "person", label: "Alice" }],
-								}),
-							},
-						],
-					},
-				},
-				tc_extract_search_project: {
-					ok: {
-						content: [{ type: "text", text: JSON.stringify({ results: [] }) }],
-					},
-				},
-				tc_extract_todo: {
-					ok: {
-						content: [
-							{ type: "text", text: "Accepted. Created Todo (title=…)." },
-						],
-					},
-				},
+				tc_extract_read: okJson({
+					entries: [
+						jeEntry(
+							"je-1",
+							"2026-06-10T10:30:00",
+							"I need to email Alice about Project Y.",
+						),
+					],
+				}),
+				tc_extract_search_person: searchResultResponse([
+					{ id: "alice-1", type: "person", label: "Alice" },
+				]),
+				tc_extract_search_project: searchResultResponse([]),
+				tc_extract_todo: okText("Accepted. Created Todo (title=…)."),
 			},
 		);
 
@@ -2097,43 +1604,15 @@ describe("faux-worker extraction mode — Todo target", () => {
 				),
 			]),
 			{
-				tc_extract_read: {
-					ok: {
-						content: [
-							{
-								type: "text",
-								text: JSON.stringify({
-									entries: [
-										{
-											entity_id: "je-1",
-											occurred_at: "2026-06-10T10:30:00",
-											body: [{ type: "text", text: "Wait for Bob to send Z." }],
-										},
-									],
-								}),
-							},
-						],
-					},
-				},
-				tc_extract_search_person: {
-					ok: {
-						content: [
-							{
-								type: "text",
-								text: JSON.stringify({
-									results: [{ id: "bob-1", type: "person", label: "Bob" }],
-								}),
-							},
-						],
-					},
-				},
-				tc_extract_todo: {
-					ok: {
-						content: [
-							{ type: "text", text: "Accepted. Created Todo (title=…)." },
-						],
-					},
-				},
+				tc_extract_read: okJson({
+					entries: [
+						jeEntry("je-1", "2026-06-10T10:30:00", "Wait for Bob to send Z."),
+					],
+				}),
+				tc_extract_search_person: searchResultResponse([
+					{ id: "bob-1", type: "person", label: "Bob" },
+				]),
+				tc_extract_todo: okText("Accepted. Created Todo (title=…)."),
 			},
 		);
 
@@ -2167,16 +1646,7 @@ describe("faux-worker direct capture mode (INKSTONE_FAUX_CAPTURE)", () => {
 		const { events, requests } = await runChat(
 			captureManifest({ prompt: "Remind me to buy milk." }),
 			{
-				tc_capture: {
-					ok: {
-						content: [
-							{
-								type: "text",
-								text: "Accepted. Created Todo (title=Buy milk).",
-							},
-						],
-					},
-				},
+				tc_capture: okText("Accepted. Created Todo (title=Buy milk)."),
 			},
 		);
 
@@ -2213,9 +1683,7 @@ describe("faux-worker direct capture mode (INKSTONE_FAUX_CAPTURE)", () => {
 		const { requests } = await runChat(
 			captureManifest({ prompt: "Todo: renew passport, due 2026-07-15." }),
 			{
-				tc_capture: {
-					ok: { content: [{ type: "text", text: "Accepted. Created Todo." }] },
-				},
+				tc_capture: okText("Accepted. Created Todo."),
 			},
 		);
 
@@ -2246,11 +1714,7 @@ describe("faux-worker direct capture mode (INKSTONE_FAUX_CAPTURE)", () => {
 		const { requests } = await runChat(
 			captureManifest({ prompt: "Start a project for API v2 migration." }),
 			{
-				tc_capture: {
-					ok: {
-						content: [{ type: "text", text: "Accepted. Created Project." }],
-					},
-				},
+				tc_capture: okText("Accepted. Created Project."),
 			},
 		);
 
@@ -2279,11 +1743,7 @@ describe("faux-worker direct capture mode (INKSTONE_FAUX_CAPTURE)", () => {
 		const { requests } = await runChat(
 			captureManifest({ prompt: "Remember Alice is the daycare coordinator." }),
 			{
-				tc_capture: {
-					ok: {
-						content: [{ type: "text", text: "Accepted. Created Person." }],
-					},
-				},
+				tc_capture: okText("Accepted. Created Person."),
 			},
 		);
 
@@ -2309,11 +1769,7 @@ describe("faux-worker direct capture mode (INKSTONE_FAUX_CAPTURE)", () => {
 		const { requests } = await runChat(
 			captureManifest({ prompt: "Add Priya (aka P, Priyanka)." }),
 			{
-				tc_capture: {
-					ok: {
-						content: [{ type: "text", text: "Accepted. Created Person." }],
-					},
-				},
+				tc_capture: okText("Accepted. Created Person."),
 			},
 		);
 
@@ -2355,31 +1811,28 @@ describe("faux-worker direct capture mode (INKSTONE_FAUX_CAPTURE)", () => {
 		// The park→decide→resume cycle ends in a plain confirmation: no further
 		// proposal, run completes.
 		expect(requests).toEqual([]);
-		const text = events
-			.filter(
-				(e): e is { kind: "text_delta"; delta: string } =>
-					e.kind === "text_delta",
-			)
-			.map((e) => e.delta)
-			.join("");
-		expect(text).toContain("Done");
+		expect(deltaText(events)).toContain("Done");
 		expect(events.at(-1)).toEqual({ kind: "done" });
 	});
 });
+
+// A resume transcript where the direct create_todo was already accepted. The
+// user-text prefix never routes (capture mode keys on the scenario file and
+// tool_result decisions, not prose), so one shape serves every enrichment case.
+const todoAcceptedTranscript = (title: string): ManifestMessage[] => [
+	{ role: "user", text: `Remind me to ${title}.` },
+	assistantCall("tc_capture", "propose_workspace_mutation"),
+	decisionResult(
+		"tc_capture",
+		`Accepted. Created Todo (title=${title}, status=active).`,
+	),
+];
 
 describe("faux-worker direct capture enrichment — existing entities (INKSTONE_FAUX_CAPTURE)", () => {
 	// After a direct create_todo is accepted, the worker recovers the new Todo's
 	// id by search (Core's create_todo Decision carries title+status, not the id —
 	// crates/core/src/entities.rs:155), then links an EXISTING accepted
 	// Person/Project via one update_todo per resume cycle.
-	const todoAcceptedTranscript = (title: string): ManifestMessage[] => [
-		{ role: "user", text: `Remind me to ${title}.` },
-		assistantCall("tc_capture", "propose_workspace_mutation"),
-		decisionResult(
-			"tc_capture",
-			`Accepted. Created Todo (title=${title}, status=active).`,
-		),
-	];
 
 	it("existing Project found: recovers todo id then proposes ONE update_todo with project_id", async () => {
 		withCaptureScenario({
@@ -2399,16 +1852,9 @@ describe("faux-worker direct capture enrichment — existing entities (INKSTONE_
 				tc_cap_search_project: searchResultResponse([
 					{ id: "proj-1", type: "project", label: "Project Y" },
 				]),
-				tc_cap_update_project: {
-					ok: {
-						content: [
-							{
-								type: "text",
-								text: "Accepted. Updated Todo (todo_id=todo-1).",
-							},
-						],
-					},
-				},
+				tc_cap_update_project: okText(
+					"Accepted. Updated Todo (todo_id=todo-1).",
+				),
 			},
 		);
 
@@ -2442,16 +1888,9 @@ describe("faux-worker direct capture enrichment — existing entities (INKSTONE_
 				tc_cap_search_person: searchResultResponse([
 					{ id: "alice-1", type: "person", label: "Alice" },
 				]),
-				tc_cap_update_person: {
-					ok: {
-						content: [
-							{
-								type: "text",
-								text: "Accepted. Updated Todo (todo_id=todo-1).",
-							},
-						],
-					},
-				},
+				tc_cap_update_person: okText(
+					"Accepted. Updated Todo (todo_id=todo-1).",
+				),
 			},
 		);
 
@@ -2493,16 +1932,9 @@ describe("faux-worker direct capture enrichment — existing entities (INKSTONE_
 				tc_cap_search_person: searchResultResponse([
 					{ id: "bob-1", type: "person", label: "Bob" },
 				]),
-				tc_cap_update_person: {
-					ok: {
-						content: [
-							{
-								type: "text",
-								text: "Accepted. Updated Todo (todo_id=todo-1).",
-							},
-						],
-					},
-				},
+				tc_cap_update_person: okText(
+					"Accepted. Updated Todo (todo_id=todo-1).",
+				),
 			},
 		);
 
@@ -2580,16 +2012,9 @@ describe("faux-worker direct capture enrichment — existing entities (INKSTONE_
 				tc_cap_search_person: searchResultResponse([
 					{ id: "alice-1", type: "person", label: "Alice" },
 				]),
-				tc_cap_update_person: {
-					ok: {
-						content: [
-							{
-								type: "text",
-								text: "Accepted. Updated Todo (todo_id=todo-1).",
-							},
-						],
-					},
-				},
+				tc_cap_update_person: okText(
+					"Accepted. Updated Todo (todo_id=todo-1).",
+				),
 			},
 		);
 
@@ -2612,15 +2037,6 @@ describe("faux-worker direct capture enrichment — existing entities (INKSTONE_
 });
 
 describe("faux-worker direct capture enrichment — missing entities (INKSTONE_FAUX_CAPTURE)", () => {
-	const todoAcceptedTranscript = (title: string): ManifestMessage[] => [
-		{ role: "user", text: `Follow up with ${title}.` },
-		assistantCall("tc_capture", "propose_workspace_mutation"),
-		decisionResult(
-			"tc_capture",
-			`Accepted. Created Todo (title=${title}, status=active).`,
-		),
-	];
-
 	it("missing Person: empty search -> proposes create_person sourced from the Message (no JE)", async () => {
 		withCaptureScenario({
 			intent: "todo",
@@ -2636,16 +2052,9 @@ describe("faux-worker direct capture enrichment — missing entities (INKSTONE_F
 				]),
 				// The person does NOT exist yet.
 				tc_cap_search_person: searchResultResponse([]),
-				tc_cap_create_person: {
-					ok: {
-						content: [
-							{
-								type: "text",
-								text: "Accepted. Created Person (name=NewPerson).",
-							},
-						],
-					},
-				},
+				tc_cap_create_person: okText(
+					"Accepted. Created Person (name=NewPerson).",
+				),
 			},
 		);
 
@@ -2695,16 +2104,9 @@ describe("faux-worker direct capture enrichment — missing entities (INKSTONE_F
 				tc_cap_research_person: searchResultResponse([
 					{ id: "newperson-1", type: "person", label: "NewPerson" },
 				]),
-				tc_cap_update_person: {
-					ok: {
-						content: [
-							{
-								type: "text",
-								text: "Accepted. Updated Todo (todo_id=todo-1).",
-							},
-						],
-					},
-				},
+				tc_cap_update_person: okText(
+					"Accepted. Updated Todo (todo_id=todo-1).",
+				),
 			},
 		);
 
@@ -2772,16 +2174,9 @@ describe("faux-worker direct capture enrichment — missing entities (INKSTONE_F
 					},
 				]),
 				tc_cap_search_project: searchResultResponse([]),
-				tc_cap_create_project: {
-					ok: {
-						content: [
-							{
-								type: "text",
-								text: "Accepted. Created Project (name=Plan Lisbon trip, status=active).",
-							},
-						],
-					},
-				},
+				tc_cap_create_project: okText(
+					"Accepted. Created Project (name=Plan Lisbon trip, status=active).",
+				),
 			},
 		);
 
@@ -2833,16 +2228,9 @@ describe("faux-worker direct capture enrichment — missing entities (INKSTONE_F
 				tc_cap_research_project: searchResultResponse([
 					{ id: "lisbon-1", type: "project", label: "Plan Lisbon trip" },
 				]),
-				tc_cap_update_project: {
-					ok: {
-						content: [
-							{
-								type: "text",
-								text: "Accepted. Updated Todo (todo_id=todo-1).",
-							},
-						],
-					},
-				},
+				tc_cap_update_project: okText(
+					"Accepted. Updated Todo (todo_id=todo-1).",
+				),
 			},
 		);
 

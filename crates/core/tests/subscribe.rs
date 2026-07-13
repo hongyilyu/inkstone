@@ -10,7 +10,7 @@ use futures_util::SinkExt;
 use tokio_tungstenite::tungstenite::Message;
 
 mod common;
-use common::{Workspace, next_text};
+use common::{next_text, rt, Workspace};
 
 #[test]
 fn subscribe_malformed_run_id_is_invalid_params() {
@@ -22,10 +22,7 @@ fn subscribe_malformed_run_id_is_invalid_params() {
         .env("INKSTONE_FIXTURE_GATE", workspace.path().join("gate"))
         .spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
         let mut ws = core.connect().await;
@@ -64,10 +61,7 @@ fn subscribe_snapshot_then_tail() {
         .env("INKSTONE_FIXTURE_GATE", &gate_path)
         .spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
         let mut ws = core.connect().await;
@@ -206,10 +200,7 @@ fn late_subscribe_after_terminal_still_gets_done() {
         .env("INKSTONE_FIXTURE_GATE", &gate_path)
         .spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
         // A: post + first subscribe, drained to done.

@@ -1,4 +1,5 @@
 import { expect, test } from "./fixtures.js";
+import { CommandPalette } from "./page-objects/CommandPalette.js";
 import { FAUX_WORKER_CMD } from "./spawnCore.js";
 
 /**
@@ -75,14 +76,15 @@ test("⌘K message hit deep-links to the exact message, highlights it, then stri
 	await expect(chat.userBubbles()).toHaveCount(0);
 
 	// Find the message by an interior substring of its body and activate the hit.
-	await chat.openCommandPalette();
-	await chat.searchCommandPalette(NEEDLE);
-	const messageHits = chat.commandPaletteGroupOptions("Messages");
+	const palette = new CommandPalette(chat.page);
+	await palette.openWithKeyboard();
+	await palette.search(NEEDLE);
+	const messageHits = palette.groupOptions("Messages");
 	await expect(messageHits).toHaveCount(1);
 	await messageHits.first().click();
 
 	// The palette closes and we land on the thread's route, anchored to the message.
-	await expect(chat.commandPalette()).toBeHidden();
+	await expect(palette.dialog()).toBeHidden();
 	await expect.poll(() => chat.pathname()).toMatch(/^\/thread\//);
 
 	const target = chat.userBubble("zylophant vet appointment");

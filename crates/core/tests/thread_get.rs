@@ -6,30 +6,8 @@
 
 use std::time::{Duration, Instant};
 
-use futures_util::SinkExt;
-use tokio_tungstenite::tungstenite::Message;
-
 mod common;
-use common::{Workspace, Ws, next_text};
-
-/// Read frames until one whose `id` matches `want_id`, skipping interleaved
-/// `run/event` notifications.
-async fn read_response_with_id(ws: &mut Ws, want_id: i64) -> serde_json::Value {
-    loop {
-        let body = next_text(ws).await;
-        let v: serde_json::Value = serde_json::from_str(&body)
-            .unwrap_or_else(|e| panic!("frame is JSON: {e} — body: {body}"));
-        if v["id"] == serde_json::json!(want_id) {
-            return v;
-        }
-    }
-}
-
-async fn send(ws: &mut Ws, frame: String) {
-    ws.send(Message::Text(frame.into()))
-        .await
-        .expect("send frame");
-}
+use common::{Workspace, next_text, read_response_with_id, rt, send};
 
 /// The concatenated text of a Message's `text` segments (ADR-0045): `MessageView`
 /// no longer carries a flat `text` field, so a test reads the reply text from the
@@ -53,10 +31,7 @@ fn thread_get_completed_run_returns_full_text() {
 
     let core = workspace.core().worker_fixture("slow-worker.ts").spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
         let mut ws = core.connect().await;
@@ -204,10 +179,7 @@ fn thread_get_midstream_run_returns_streaming_partial() {
         .env("INKSTONE_FIXTURE_GATE", &gate_path)
         .spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
         // Connection A: create + subscribe (held mid-stream on the gate).

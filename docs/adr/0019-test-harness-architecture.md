@@ -55,6 +55,8 @@ The faux script selection above (`INKSTONE_FAUX_*` env branches) originally live
 
 This ADR governs *full-system* end-to-end tests — those that exercise Core + Worker + UI together. Tests against a Web Client running on **mock data only** (no Core, no Worker, no protocol traffic) live next to the Client they test, currently `apps/web`, under that package's `e2e/` directory and its own `test:e2e` script. Such tests are useful for catching layout / component-composition regressions that jsdom Vitest can't see; they are not full-system tests and the `tests/` harness, the `INKSTONE_WEB_DIR` SPA-from-disk override, the faux Worker provider, and the spawned-Core fixture all do not apply. When the Web Client is wired to real Core (the future re-wiring feature), full-system tests of those flows belong in `tests/` per the rest of this ADR; the `apps/web` mock-driven e2e suite stays as the no-network smoke surface.
 
+_As-built (removed):_ the re-wiring shipped — the Web Client reads live from Core, and its Library preview mock was deleted (a7ccf84). That killed this section's premise: the `apps/web/e2e/` suite's mock data no longer existed, the specs failed against the live app, and no CI lane or script invoked them. Per the re-wiring clause above, the mock-driven suite (`apps/web/e2e/`, its `playwright.config.ts`, `test:e2e` scripts, and `@playwright/test` devDep) was removed; full-system coverage of those flows lives in `tests/e2e`.
+
 ## What this does not decide
 
 - **CI integration.** Local-first test runs are the bar; GitHub Actions or similar is a follow-up.
@@ -93,7 +95,7 @@ When wire-level tests become useful (e.g., for protocol contract tests independe
 - **Programmatic fixtures (TS function returning provider response from `(turn, history)`).** Maximum flexibility, but fixtures become code — harder to author, review, diff, and rotate.
 - **Mock provider always shipped, runtime env-var gated.** Simpler one-config build, but production bundle carries test-only code reachable by setting one env var. Build-mode exclusion is one extra conditional for an unambiguous shipping story.
 - **Always rebuild Core for FE changes (no SPA-from-disk override).** Honors "production-style serving" most strictly, but pays a Rust compile cost on every FE-only iteration. The debug-only `INKSTONE_WEB_DIR` override serves files from disk — a strict subset of what `rust-embed` does in prod, no new attack surface.
-- **Mock-driven UI tests in `tests/` instead of `apps/web/e2e/`.** Considered. Mock-driven tests don't need a spawned Core, a mock Worker, or fixtures; placing them in `tests/` would require either gutting the spawned-Core fixture for them (forks the harness shape) or paying the spawn cost for tests that ignore it (waste). Co-locating with the Client they test keeps the Client's regression surface inside the Client's `pnpm install` boundary and avoids cross-package script gymnastics.
+- **Mock-driven UI tests in `tests/` instead of `apps/web/e2e/`.** Considered. Mock-driven tests don't need a spawned Core, a mock Worker, or fixtures; placing them in `tests/` would require either gutting the spawned-Core fixture for them (forks the harness shape) or paying the spawn cost for tests that ignore it (waste). Co-locating with the Client they test keeps the Client's regression surface inside the Client's `pnpm install` boundary and avoids cross-package script gymnastics. _(As-built: moot — the mock-driven suite was removed once the Client went live-only; see the Scope section's as-built note.)_
 
 ## Related
 

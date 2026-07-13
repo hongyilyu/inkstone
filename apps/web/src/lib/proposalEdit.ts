@@ -23,8 +23,8 @@ import { readObject, readString, readStringArray } from "@/lib/readPayload";
 // is structurally wrong for editing a payload the user is about to create.
 //
 // The proposed payload is `unknown` — raw model output that may be null, missing
-// fields, or wrong-typed — so every read degrades like the card's own
-// `textField`/`objectField` helpers and never throws.
+// fields, or wrong-typed — so every read degrades like the shared
+// `readString`/`readObject` helpers and never throws.
 
 // ---------------------------------------------------------------------------
 // GTD edit-variant resolver — the SINGLE source of GTD-editability. The card's

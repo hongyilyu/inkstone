@@ -3,7 +3,6 @@
 	"world": [],
 	"expected": {
 		"kind": "apply_intent_graph",
-		"entities": [{ "type": "person", "name": "Dana" }],
-		"links": [{ "kind": "journal_ref" }]
+		"entities": [{ "type": "person", "name": "Dana" }]
 	}
 }

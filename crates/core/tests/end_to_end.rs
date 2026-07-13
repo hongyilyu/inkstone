@@ -2,7 +2,7 @@ use futures_util::SinkExt;
 use tokio_tungstenite::tungstenite::Message;
 
 mod common;
-use common::{Workspace, next_text};
+use common::{next_text, rt, Workspace};
 
 #[test]
 fn end_to_end_post_message_streams_text_delta_then_done() {
@@ -13,10 +13,7 @@ fn end_to_end_post_message_streams_text_delta_then_done() {
     // stand-in (ADR-0019). Real providers are manual smoke.
     let core = workspace.core().worker_fixture("slow-worker.ts").spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let outcome = rt.block_on(async {
         let mut ws = core.connect().await;

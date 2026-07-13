@@ -15,10 +15,12 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
 use std::time::{Duration, Instant};
 
-use assert_cmd::cargo::CommandCargoExt;
-use futures_util::StreamExt;
+use futures_util::{SinkExt, StreamExt};
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use sqlx::{Executor, Row, SqlitePool};
 use tempfile::TempDir;
 use tokio_tungstenite::tungstenite::Message;
+use uuid::Uuid;
 
 /// Core's default listening port. Tests bind ephemeral; this exists so
 /// `ephemeral_port.rs` can name the value it must NOT be.
@@ -136,19 +138,12 @@ impl Workspace {
     }
 }
 
-impl Default for Workspace {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 /// Configures and spawns one Core process. Always binds ephemeral and runs with
 /// `current_dir` = repo root (so Core's default relative worker command resolves).
 pub struct CoreBuilder<'a> {
     ws: &'a Workspace,
     worker_cmd: Option<String>,
     envs: Vec<(OsString, OsString)>,
-    listen_timeout: Duration,
     seed_provider_credentials: bool,
 }
 
@@ -158,7 +153,6 @@ impl<'a> CoreBuilder<'a> {
             ws,
             worker_cmd: None,
             envs: Vec::new(),
-            listen_timeout: DEFAULT_TIMEOUT,
             // Default: seed connected credentials for every provider a Run can
             // route to so the run-creation provider gate (ADR-0062) passes. A test
             // that asserts the DISCONNECTED state
@@ -206,17 +200,11 @@ impl<'a> CoreBuilder<'a> {
         self
     }
 
-    /// Override the boot announce-poll budget (default 10s).
-    pub fn listen_timeout(mut self, d: Duration) -> Self {
-        self.listen_timeout = d;
-        self
-    }
-
     /// Spawn Core and block until it announces `INKSTONE_LISTENING`, or return
     /// the boot failure. Used by tests that assert Core *fails* to boot;
     /// everything else calls [`Self::spawn`].
     pub fn try_spawn(self) -> Result<CoreHandle, SpawnError> {
-        let mut cmd = std::process::Command::cargo_bin("core").expect("core binary exists");
+        let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_core"));
         cmd.current_dir(repo_root())
             .env("INKSTONE_PORT", "0")
             .env("INKSTONE_DB_PATH", self.ws.db_path())
@@ -297,8 +285,8 @@ impl<'a> CoreBuilder<'a> {
         let stdout = child.stdout.take().expect("piped stdout");
 
         // Read Core's stdout on a dedicated thread that forwards each line over
-        // a channel. This keeps `try_spawn` synchronous while making
-        // `listen_timeout` enforceable even when Core stays alive but SILENT (a
+        // a channel. This keeps `try_spawn` synchronous while making the listen
+        // deadline enforceable even when Core stays alive but SILENT (a
         // blocking `read_line` would never observe the deadline, hanging CI).
         // The thread ends on the announce line, EOF, or a dropped receiver, so
         // it never outlives Core.
@@ -322,7 +310,7 @@ impl<'a> CoreBuilder<'a> {
             }
         });
 
-        let deadline = Instant::now() + self.listen_timeout;
+        let deadline = Instant::now() + DEFAULT_TIMEOUT;
         let http_url = loop {
             let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
                 let _ = child.kill();
@@ -406,11 +394,6 @@ impl CoreHandle {
         &self.http_url
     }
 
-    /// The `ws://127.0.0.1:<port>/ws` URL.
-    pub fn ws_url(&self) -> &str {
-        &self.ws_url
-    }
-
     /// The resolved listening port parsed from the announced URL.
     pub fn port(&self) -> u16 {
         self.http_url
@@ -468,4 +451,442 @@ pub async fn try_next_text(ws: &mut Ws, timeout: Duration) -> Option<String> {
         // Timed out — the bounded window elapsed with no frame.
         Err(_) => None,
     }
+}
+
+/// The current-thread Tokio runtime every test drives via `block_on`. A shared
+/// fn (not `#[tokio::test]`) because tests kill Core and call
+/// `reqwest::blocking` between `block_on` sections, so the explicit runtime
+/// handle must stay.
+pub fn rt() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime builds")
+}
+
+/// Open a fresh socket, send a single request, return the parsed response.
+pub async fn rpc(
+    core: &CoreHandle,
+    id: u64,
+    method: &str,
+    params: serde_json::Value,
+) -> serde_json::Value {
+    let mut ws = core.connect().await;
+    let req = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "method": method,
+        "params": params,
+    });
+    ws.send(Message::Text(req.to_string().into()))
+        .await
+        .expect("send request frame");
+    let body = next_text(&mut ws).await;
+    ws.close(None).await.ok();
+    serde_json::from_str(&body).unwrap_or_else(|e| panic!("response is JSON: {e} — body: {body}"))
+}
+
+/// Send one text frame.
+pub async fn send(ws: &mut Ws, frame: String) {
+    ws.send(Message::Text(frame.into()))
+        .await
+        .expect("send frame");
+}
+
+/// Read frames until one whose `id` matches `want_id`, skipping interleaved
+/// `run/event` notifications.
+pub async fn read_response_with_id(ws: &mut Ws, want_id: i64) -> serde_json::Value {
+    loop {
+        let body = next_text(ws).await;
+        let v: serde_json::Value = serde_json::from_str(&body)
+            .unwrap_or_else(|e| panic!("frame is JSON: {e} — body: {body}"));
+        if v["id"] == serde_json::json!(want_id) {
+            return v;
+        }
+    }
+}
+
+/// Poll `run/subscribe` until the Run reports `want`; panics after `timeout`
+/// (a hang guard, never asserted on).
+pub async fn await_status(core: &CoreHandle, run_id: &str, want: &str, timeout: Duration) {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if Instant::now() > deadline {
+            panic!("timed out waiting for run to reach {want}");
+        }
+        let resp = rpc(
+            core,
+            2,
+            "run/subscribe",
+            serde_json::json!({ "run_id": run_id }),
+        )
+        .await;
+        if resp["result"]["status"].as_str() == Some(want) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(150)).await;
+    }
+}
+
+/// Poll run/subscribe until the Run parks; panics on timeout.
+pub async fn await_parked(core: &CoreHandle, run_id: &str) {
+    await_status(core, run_id, "parked", Duration::from_secs(10)).await;
+}
+
+/// Poll run/subscribe until the Run reaches `completed`; panics on timeout.
+pub async fn await_completed(core: &CoreHandle, run_id: &str) {
+    await_status(core, run_id, "completed", Duration::from_secs(15)).await;
+}
+
+/// `thread/create` with `prompt`, then poll run/subscribe until the Run parks.
+/// Returns `(run_id, thread_id)`.
+pub async fn create_and_park(core: &CoreHandle, prompt: &str) -> (String, String) {
+    let resp = rpc(
+        core,
+        1,
+        "thread/create",
+        serde_json::json!({ "prompt": prompt }),
+    )
+    .await;
+    let run_id = resp["result"]["run_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("result.run_id is a string — body: {resp}"))
+        .to_string();
+    let thread_id = resp["result"]["thread_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("result.thread_id is a string — body: {resp}"))
+        .to_string();
+    await_parked(core, &run_id).await;
+    (run_id, thread_id)
+}
+
+/// Extract `result.proposal_id` from a `proposal/get` response.
+pub fn proposal_id_of(resp: &serde_json::Value) -> String {
+    resp["result"]["proposal_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("proposal_id is a string — body: {resp}"))
+        .to_string()
+}
+
+/// Read a Run's pending proposal_id via `proposal/get`.
+pub async fn proposal_id_for(core: &CoreHandle, run_id: &str) -> String {
+    let resp = rpc(
+        core,
+        3,
+        "proposal/get",
+        serde_json::json!({ "run_id": run_id }),
+    )
+    .await;
+    proposal_id_of(&resp)
+}
+
+/// `run/post_message` on an existing thread, poll until the Run parks, and
+/// return `(run_id, proposal/get response)`. When `expected_kind` is set,
+/// asserts the parked Proposal's mutation_kind.
+pub async fn park_proposal(
+    core: &CoreHandle,
+    thread_id: Uuid,
+    prompt: &str,
+    expected_kind: Option<&str>,
+) -> (String, serde_json::Value) {
+    let resp = rpc(
+        core,
+        1,
+        "run/post_message",
+        serde_json::json!({ "thread_id": thread_id, "prompt": prompt }),
+    )
+    .await;
+    let run_id = resp["result"]["run_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("result.run_id is a string — body: {resp}"))
+        .to_string();
+    await_parked(core, &run_id).await;
+
+    let proposal = rpc(
+        core,
+        3,
+        "proposal/get",
+        serde_json::json!({ "run_id": run_id }),
+    )
+    .await;
+    if let Some(kind) = expected_kind {
+        assert_eq!(
+            proposal["result"]["mutation_kind"].as_str(),
+            Some(kind),
+            "parked Proposal mutation_kind — body: {proposal}"
+        );
+    }
+    (run_id, proposal)
+}
+
+/// `proposal/decide{accept}` under `key`, returning the response.
+pub async fn decide_accept(core: &CoreHandle, proposal_id: &str, key: &str) -> serde_json::Value {
+    rpc(
+        core,
+        4,
+        "proposal/decide",
+        serde_json::json!({
+            "proposal_id": proposal_id,
+            "decision": "accept",
+            "decision_idempotency_key": key,
+        }),
+    )
+    .await
+}
+
+/// Open a migrated read-write pool against the Workspace DB so a test can seed
+/// rows directly before Core spawns.
+pub async fn migrated_pool(workspace: &Workspace) -> SqlitePool {
+    let options = SqliteConnectOptions::new()
+        .filename(workspace.db_path())
+        .create_if_missing(true)
+        .foreign_keys(true);
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await
+        .expect("open sqlite pool");
+    sqlx::migrate!("./migrations")
+        .run(&pool)
+        .await
+        .expect("run migrations");
+    pool
+}
+
+/// Open a read-only pool against the Workspace DB (valid after Core is killed).
+pub async fn open_readonly_pool(workspace: &Workspace) -> SqlitePool {
+    let url = format!("sqlite://{}?mode=ro", workspace.db_path().display());
+    SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect(&url)
+        .await
+        .expect("connect to migrated DB")
+}
+
+pub async fn seed_thread(pool: &SqlitePool, thread_id: Uuid, title: &str, now_ms: i64) {
+    sqlx::query(
+        "INSERT INTO threads (id, title, created_at, last_activity_at) VALUES (?1, ?2, ?3, ?3)",
+    )
+    .bind(thread_id.to_string())
+    .bind(title)
+    .bind(now_ms)
+    .execute(pool)
+    .await
+    .expect("insert thread");
+}
+
+/// [`seed_accepted_journal_entry_full`] with a fresh entity id, no `ended_at`,
+/// and a `user`-authored source Message.
+pub async fn seed_accepted_journal_entry(
+    pool: &SqlitePool,
+    thread_id: Uuid,
+    occurred_at: &str,
+    body_text: &str,
+    created_at: i64,
+) -> Uuid {
+    seed_accepted_journal_entry_full(
+        pool,
+        thread_id,
+        Uuid::now_v7(),
+        occurred_at,
+        None,
+        body_text,
+        created_at,
+        "user",
+    )
+    .await
+}
+
+/// Seed the full row set of a completed Run whose accepted
+/// `create_journal_entry` Proposal produced `entity_id`: run, source +
+/// assistant Messages, tool_call, proposal, entity, revision, and entity
+/// source. `source_role` is the source Message's role (`"user"` normally;
+/// `"assistant"` for the non-user-created_from rejection tests).
+pub async fn seed_accepted_journal_entry_full(
+    pool: &SqlitePool,
+    thread_id: Uuid,
+    entity_id: Uuid,
+    occurred_at: &str,
+    ended_at: Option<&str>,
+    body_text: &str,
+    created_at: i64,
+    source_role: &str,
+) -> Uuid {
+    let run_id = Uuid::now_v7();
+    let user_message_id = Uuid::now_v7();
+    let assistant_message_id = Uuid::now_v7();
+    let tool_call_id = format!("tc_{entity_id}");
+    let proposal_id = Uuid::now_v7().to_string();
+    let source_id = Uuid::now_v7().to_string();
+    let mut payload = serde_json::json!({
+        "occurred_at": occurred_at,
+        "body": [{ "type": "text", "text": body_text }]
+    });
+    if let Some(ended_at) = ended_at {
+        payload["ended_at"] = serde_json::json!(ended_at);
+    }
+    let payload_str = payload.to_string();
+
+    let mut tx = pool.begin().await.expect("begin seed tx");
+    tx.execute(sqlx::query(
+        "INSERT INTO runs \
+         (id, thread_id, workflow_name, workflow_version, provider, model, thinking_level, user_message_id, status, started_at, ended_at, terminal_reason) \
+         VALUES (?1, ?2, 'default', '1.0.0', 'faux', 'fake-model', 'off', ?3, 'completed', ?4, ?4, 'completed')",
+    )
+    .bind(run_id.to_string())
+    .bind(thread_id.to_string())
+    .bind(user_message_id.to_string())
+    .bind(created_at))
+    .await
+    .expect("insert run");
+    tx.execute(
+        sqlx::query(
+            "INSERT INTO messages (id, thread_id, run_id, role, status, created_at, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, 'completed', ?5, ?5)",
+        )
+        .bind(user_message_id.to_string())
+        .bind(thread_id.to_string())
+        .bind(run_id.to_string())
+        .bind(source_role)
+        .bind(created_at),
+    )
+    .await
+    .expect("insert source message");
+    tx.execute(
+        sqlx::query(
+            "INSERT INTO messages (id, thread_id, run_id, role, status, created_at, updated_at) \
+             VALUES (?1, ?2, ?3, 'assistant', 'completed', ?4, ?4)",
+        )
+        .bind(assistant_message_id.to_string())
+        .bind(thread_id.to_string())
+        .bind(run_id.to_string())
+        .bind(created_at),
+    )
+    .await
+    .expect("insert assistant message");
+    tx.execute(
+        sqlx::query(
+            "INSERT INTO message_parts (message_id, seq, type, text) VALUES (?1, 0, 'text', ?2)",
+        )
+        .bind(user_message_id.to_string())
+        .bind(body_text),
+    )
+    .await
+    .expect("insert source text");
+    tx.execute(
+        sqlx::query(
+            "INSERT INTO message_parts (message_id, seq, type, text) VALUES (?1, 0, 'text', '')",
+        )
+        .bind(assistant_message_id.to_string()),
+    )
+    .await
+    .expect("insert assistant text");
+    tx.execute(sqlx::query(
+        "INSERT INTO tool_calls (id, run_id, name, request_payload, status, result_payload, requested_at, resolved_at) \
+         VALUES (?1, ?2, 'propose_workspace_mutation', ?3, 'completed', '{}', ?4, ?4)",
+    )
+    .bind(&tool_call_id)
+    .bind(run_id.to_string())
+    .bind(serde_json::json!({ "mutation_kind": "create_journal_entry", "payload": payload }).to_string())
+    .bind(created_at))
+    .await
+    .expect("insert tool call");
+    tx.execute(sqlx::query(
+        "INSERT INTO proposals (id, tool_call_id, mutation_kind, status, decided_by, decided_at, applied_at) \
+         VALUES (?1, ?2, 'create_journal_entry', 'accepted', 'user', ?3, ?3)",
+    )
+    .bind(&proposal_id)
+    .bind(&tool_call_id)
+    .bind(created_at))
+    .await
+    .expect("insert proposal");
+    tx.execute(sqlx::query(
+        "INSERT INTO entities (id, type, schema_version, data, created_by, created_via_proposal_id, created_at, updated_at) \
+         VALUES (?1, 'journal_entry', 1, ?2, 'proposal', ?3, ?4, ?4)",
+    )
+    .bind(entity_id.to_string())
+    .bind(&payload_str)
+    .bind(&proposal_id)
+    .bind(created_at))
+    .await
+    .expect("insert entity");
+    tx.execute(
+        sqlx::query(
+            "INSERT INTO entity_revisions (entity_id, seq, data, proposal_id, created_at) \
+             VALUES (?1, 1, ?2, ?3, ?4)",
+        )
+        .bind(entity_id.to_string())
+        .bind(&payload_str)
+        .bind(&proposal_id)
+        .bind(created_at),
+    )
+    .await
+    .expect("insert entity revision");
+    tx.execute(
+        sqlx::query(
+            "INSERT INTO entity_sources (id, entity_id, source_message_id, relation, created_at) \
+             VALUES (?1, ?2, ?3, 'created_from', ?4)",
+        )
+        .bind(&source_id)
+        .bind(entity_id.to_string())
+        .bind(user_message_id.to_string())
+        .bind(created_at),
+    )
+    .await
+    .expect("insert entity source");
+
+    tx.commit().await.expect("commit seed tx");
+    entity_id
+}
+
+/// The current `entities.data` JSON for `entity_id`.
+pub async fn entity_data(pool: &SqlitePool, entity_id: &str) -> serde_json::Value {
+    let data: String = sqlx::query_scalar("SELECT data FROM entities WHERE id = ?1")
+        .bind(entity_id)
+        .fetch_one(pool)
+        .await
+        .expect("entity row exists");
+    serde_json::from_str(&data).expect("entity data is JSON")
+}
+
+/// The highest `entity_revisions.seq` for `entity_id`.
+pub async fn max_revision_seq(pool: &SqlitePool, entity_id: &str) -> i64 {
+    sqlx::query_scalar("SELECT MAX(seq) FROM entity_revisions WHERE entity_id = ?1")
+        .bind(entity_id)
+        .fetch_one(pool)
+        .await
+        .expect("max revision seq")
+}
+
+/// How many `updated_from` Entity Sources link `entity_id` to `run_id`'s user
+/// Message.
+pub async fn updated_from_count_for_run(
+    pool: &SqlitePool,
+    entity_id: &str,
+    run_id: &str,
+) -> i64 {
+    sqlx::query_scalar(
+        "SELECT COUNT(*) FROM entity_sources es \
+         JOIN runs r ON r.user_message_id = es.source_message_id \
+         WHERE es.entity_id = ?1 AND r.id = ?2 AND es.relation = 'updated_from'",
+    )
+    .bind(entity_id)
+    .bind(run_id)
+    .fetch_one(pool)
+    .await
+    .expect("count updated_from sources")
+}
+
+/// The `(proposal.status, tool_call.status)` pair for `run_id`'s proposal.
+pub async fn proposal_and_tool_status_for_run(pool: &SqlitePool, run_id: &str) -> (String, String) {
+    let row = sqlx::query(
+        "SELECT p.status, tc.status AS tool_status \
+         FROM proposals p JOIN tool_calls tc ON tc.id = p.tool_call_id \
+         WHERE tc.run_id = ?1",
+    )
+    .bind(run_id)
+    .fetch_one(pool)
+    .await
+    .expect("proposal row exists");
+    (row.get("status"), row.get("tool_status"))
 }

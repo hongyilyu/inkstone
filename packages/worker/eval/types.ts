@@ -42,7 +42,7 @@ export type ExpectedKind =
 	| "none";
 
 /** The expected proposal for a fixture. Only the fields relevant to `kind` are
- * populated — `apply_intent_graph` uses `entities`/`links`, `record_observations`
+ * populated — `apply_intent_graph` uses `entities`, `record_observations`
  * uses `observations`, single-entity `create_*` uses `fields`.
  *
  * INVARIANT — expected fixtures must be FIELD-EXHAUSTIVE. List every field a
@@ -65,11 +65,6 @@ export interface ExpectedProposal {
 	/** For `record_observations`: the observation rows, each with `schema_key` +
 	 * values. */
 	observations?: Array<Record<string, unknown> & { schema_key: string }>;
-	/** For `apply_intent_graph`: the links (todo_project / todo_person /
-	 * journal_ref). NOT scored in v1: the scorer extracts only entity + observation
-	 * pools; link-edge scoring is deferred. These rows are the forward fixture
-	 * contract for that scorer, not graded today. */
-	links?: Array<Record<string, unknown> & { kind: string }>;
 	/** For single-entity `create_*`: the entity fields directly. */
 	fields?: Record<string, unknown>;
 }

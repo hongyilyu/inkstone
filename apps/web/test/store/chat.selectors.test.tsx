@@ -1,7 +1,7 @@
 import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
-	appendUserMessage,
+	appendMessage,
 	concatText,
 	resetChatStore,
 	setHydrationStatus,
@@ -18,7 +18,7 @@ beforeEach(() => {
 describe("chat selectors — reference stability", () => {
 	it("keeps a stable messages reference across an unrelated focus change", () => {
 		act(() => {
-			appendUserMessage("threadA", {
+			appendMessage("threadA", {
 				id: "m1",
 				role: "user",
 				status: "completed",
@@ -42,7 +42,7 @@ describe("chat selectors — reference stability", () => {
 
 	it("keeps a stable messages reference when a DIFFERENT thread mutates", () => {
 		act(() => {
-			appendUserMessage("threadA", {
+			appendMessage("threadA", {
 				id: "m1",
 				role: "user",
 				status: "completed",
@@ -56,7 +56,7 @@ describe("chat selectors — reference stability", () => {
 
 		// Append to an unrelated thread; threadA's slice is untouched.
 		act(() => {
-			appendUserMessage("threadB", {
+			appendMessage("threadB", {
 				id: "m2",
 				role: "user",
 				status: "completed",
@@ -76,7 +76,7 @@ describe("chat selectors — reference stability", () => {
 
 		// Mutate an unrelated thread; the empty selector must keep its stable [] reference.
 		act(() => {
-			appendUserMessage("other", {
+			appendMessage("other", {
 				id: "m1",
 				role: "user",
 				status: "completed",

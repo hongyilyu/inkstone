@@ -41,7 +41,7 @@ test("complete an active Inbox todo inline → Core persists update_todo and the
 		},
 	]);
 
-	await page.goto(`${core.url}/library/inbox`);
+	await page.goto(`${core.url}/library/gtd?filt=inbox`);
 	const inbox = page.getByRole("region", { name: /inbox/i });
 	await expect(inbox.getByText("Mail the contract")).toBeVisible({
 		timeout: 15_000,
@@ -86,7 +86,7 @@ test("quick-defer an active Inbox todo to Tomorrow → Core persists defer_at = 
 		},
 	]);
 
-	await page.goto(`${core.url}/library/inbox`);
+	await page.goto(`${core.url}/library/gtd?filt=inbox`);
 	const inbox = page.getByRole("region", { name: /inbox/i });
 	await expect(inbox.getByText("Renew the lease")).toBeVisible({
 		timeout: 15_000,

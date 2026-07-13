@@ -14,13 +14,12 @@ import {
 	retryRun,
 } from "@/store/bridge.js";
 import {
-	appendUserMessage,
+	appendMessage,
 	concatText,
 	getChatState,
 	getRun,
 	resetChatStore,
 	resetMessageForRetry,
-	seedAssistantMessage,
 } from "@/store/chat.js";
 
 // Slice 2 of run/retry (ADR-0028 retry amendment, #230): the Web Retry button
@@ -53,14 +52,14 @@ function makeStubRuntime(
 /** Seed a thread with one completed user message + one errored assistant message
  * bound to `runId` (the errored bubble): status `incomplete` + an `error` set. */
 function seedErroredTurn(runId: RunId): void {
-	appendUserMessage("t1", {
+	appendMessage("t1", {
 		id: "u1",
 		role: "user",
 		status: "completed",
 		segments: [{ kind: "text", text: "do it" }],
 		run_id: "",
 	});
-	seedAssistantMessage("t1", {
+	appendMessage("t1", {
 		id: "a1",
 		role: "assistant",
 		status: "incomplete",
@@ -77,14 +76,14 @@ beforeEach(() => {
 
 describe("resetMessageForRetry — flips an errored bubble back to streaming", () => {
 	it("incomplete + error → streaming, error cleared", () => {
-		appendUserMessage("t1", {
+		appendMessage("t1", {
 			id: "u1",
 			role: "user",
 			status: "completed",
 			segments: [{ kind: "text", text: "do it" }],
 			run_id: "",
 		});
-		seedAssistantMessage("t1", {
+		appendMessage("t1", {
 			id: "a1",
 			role: "assistant",
 			status: "incomplete",
@@ -108,14 +107,14 @@ describe("resetMessageForRetry — flips an errored bubble back to streaming", (
 		// tool_call/proposal segments — the cumulative-text SET only replaces TEXT
 		// segments, so a reset that filtered to text (instead of clearing all) would
 		// leak the failed attempt's tool/proposal rows into the re-driven timeline.
-		appendUserMessage("t1", {
+		appendMessage("t1", {
 			id: "u1",
 			role: "user",
 			status: "completed",
 			segments: [{ kind: "text", text: "do it" }],
 			run_id: "",
 		});
-		seedAssistantMessage("t1", {
+		appendMessage("t1", {
 			id: "a1",
 			role: "assistant",
 			status: "incomplete",
@@ -140,14 +139,14 @@ describe("resetMessageForRetry — flips an errored bubble back to streaming", (
 	});
 
 	it("also clears a `cancelled` flag if one was set", () => {
-		appendUserMessage("t1", {
+		appendMessage("t1", {
 			id: "u1",
 			role: "user",
 			status: "completed",
 			segments: [{ kind: "text", text: "do it" }],
 			run_id: "",
 		});
-		seedAssistantMessage("t1", {
+		appendMessage("t1", {
 			id: "a1",
 			role: "assistant",
 			status: "incomplete",

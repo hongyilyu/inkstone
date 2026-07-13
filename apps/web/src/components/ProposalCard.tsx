@@ -34,6 +34,7 @@ import {
 import type { PendingProposal } from "@/store/chat";
 import { IntentGraphReviewCard } from "./IntentGraphReviewCard.js";
 import {
+	EditFormFooter,
 	EditorField,
 	EditorInput,
 	EditorSelect,
@@ -41,7 +42,7 @@ import {
 } from "./library/EntityEditor.js";
 import { ObservationEditForm } from "./ProposalCardObservations.js";
 import { journalBody, journalBodyHasEntityRef } from "./proposalBody.js";
-import { textField } from "./proposalPayload.js";
+import { readString } from "@/lib/readPayload";
 import {
 	DecidedLibraryLink,
 	type DecideHandler,
@@ -150,10 +151,10 @@ function SingleEntityProposalCard({
 	}, [libraryItems]);
 	const { status, payload, rationale, mutation_kind } = proposal;
 	const proposalErrorMessage = proposal.error_message;
-	const occurredAt = textField(payload, "occurred_at");
-	const endedAt = textField(payload, "ended_at");
+	const occurredAt = readString(payload, "occurred_at");
+	const endedAt = readString(payload, "ended_at");
 	const bodyText = journalBody(payload);
-	const entityId = textField(payload, "entity_id");
+	const entityId = readString(payload, "entity_id");
 	const currentJournalEntry = proposal.review_context?.current_journal_entry;
 	const bodyHasEntityRef =
 		journalBodyHasEntityRef(payload) ||
@@ -357,28 +358,11 @@ function SingleEntityProposalCard({
 								Fix before saving: {editIssue}.
 							</p>
 						) : null}
-						<footer className="flex items-center gap-2 pt-1">
-							<Button
-								type="submit"
-								variant="primary"
-								size="row"
-								className="gap-1.5 px-3.5 py-2"
-								disabled={submitting || editIssue !== null}
-							>
-								<Check className="size-4" aria-hidden />
-								Save changes
-							</Button>
-							<Button
-								type="button"
-								variant="ghost"
-								size="sm"
-								className="ml-auto py-1.5 text-sm"
-								disabled={submitting}
-								onClick={() => setEditing(false)}
-							>
-								Cancel
-							</Button>
-						</footer>
+						<EditFormFooter
+							submitting={submitting}
+							saveDisabled={editIssue !== null}
+							onCancel={() => setEditing(false)}
+						/>
 					</form>
 				) : view.editPolicy === "readonly" ? null : (
 					assertNever(view.editPolicy)
@@ -833,28 +817,11 @@ function GtdEditForm({
 					) : null}
 				</>
 			)}
-			<footer className="flex items-center gap-2 pt-1">
-				<Button
-					type="submit"
-					variant="primary"
-					size="row"
-					className="gap-1.5 px-3.5 py-2"
-					disabled={submitting || requiredEmpty}
-				>
-					<Check className="size-4" aria-hidden />
-					Save changes
-				</Button>
-				<Button
-					type="button"
-					variant="ghost"
-					size="sm"
-					className="ml-auto py-1.5 text-sm"
-					disabled={submitting}
-					onClick={onCancel}
-				>
-					Cancel
-				</Button>
-			</footer>
+			<EditFormFooter
+				submitting={submitting}
+				saveDisabled={requiredEmpty}
+				onCancel={onCancel}
+			/>
 		</form>
 	);
 }

@@ -40,4 +40,16 @@ export class CommandPalette {
 	option(name: string | RegExp) {
 		return this.page.getByRole("option", { name });
 	}
+
+	/** The result-option buttons under the palette group labelled `label` (e.g. "Messages"). */
+	groupOptions(label: string) {
+		// Each group renders as a wrapper <div> with a label child then its option
+		// buttons. Anchor on the label element, step to its wrapper parent, and
+		// scope options there so a hit is attributable to its group (Messages vs
+		// Threads vs a Library kind) — not just "some option somewhere".
+		return this.dialog()
+			.getByText(label, { exact: true })
+			.locator("xpath=..")
+			.getByRole("option");
+	}
 }

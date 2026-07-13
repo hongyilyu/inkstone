@@ -43,31 +43,13 @@ pub(super) async fn handle_search(
 
 #[cfg(test)]
 mod tests {
+    use crate::db::test_support::memory_pool;
     use serde_json::{Value, json};
     use sqlx::SqlitePool;
-    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
     use tokio::sync::mpsc;
     use uuid::Uuid;
 
     use crate::workflow::Workflow;
-
-    /// A migrated in-memory pool (mirrors the `db` test helpers) so the
-    /// `runs`/`messages` CHECKs hold.
-    async fn memory_pool() -> SqlitePool {
-        let options = SqliteConnectOptions::new()
-            .filename(":memory:")
-            .foreign_keys(true);
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(options)
-            .await
-            .expect("open in-memory sqlite");
-        sqlx::migrate!("./migrations")
-            .run(&pool)
-            .await
-            .expect("run migrations");
-        pool
-    }
 
     fn fixture_workflow() -> Workflow {
         Workflow {

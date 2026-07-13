@@ -1,8 +1,8 @@
-import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { expect, test } from "./fixtures.js";
+import { jsonValue, sqlite, sqlValue } from "./seed-proposal.js";
 import { PROPOSE_WORKER_CMD } from "./spawnCore.js";
 
 const proposalDir = mkdtempSync(path.join(tmpdir(), "inkstone-ref-proposal-"));
@@ -156,21 +156,4 @@ function seedAcceptedJournalEntryAndPerson(dbPath: string): void {
 		COMMIT;
 		`,
 	);
-}
-
-function sqlite(dbPath: string, input: string): string {
-	return execFileSync("sqlite3", [dbPath], {
-		input: `.timeout 5000
-PRAGMA foreign_keys = ON;
-${input}`,
-		encoding: "utf8",
-	});
-}
-
-function sqlValue(value: string): string {
-	return `'${value.replaceAll("'", "''")}'`;
-}
-
-function jsonValue(value: unknown): string {
-	return sqlValue(JSON.stringify(value));
 }

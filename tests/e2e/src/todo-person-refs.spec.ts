@@ -50,7 +50,7 @@ test("add a related person to a Todo via the rail editor → persists and the To
 	await expect(collection.getByText(title)).toBeVisible({ timeout: 15_000 });
 
 	// Before: a title-only active Todo with no person ref is in Inbox.
-	await page.goto(`${core.url}/library/inbox`);
+	await page.goto(`${core.url}/library/gtd?filt=inbox`);
 	const inboxBefore = page.getByRole("region", { name: /inbox/i });
 	await expect(inboxBefore.getByText(title)).toBeVisible({ timeout: 15_000 });
 
@@ -89,7 +89,7 @@ test("add a related person to a Todo via the rail editor → persists and the To
 	).toBeVisible({ timeout: 15_000 });
 
 	// (b) The Todo is no longer in Inbox: adding a person ref left Inbox.
-	await page.goto(`${core.url}/library/inbox`);
+	await page.goto(`${core.url}/library/gtd?filt=inbox`);
 	const inboxAfter = page.getByRole("region", { name: /inbox/i });
 	await expect(inboxAfter.getByText(title)).toHaveCount(0, { timeout: 15_000 });
 

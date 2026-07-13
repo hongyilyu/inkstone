@@ -120,6 +120,97 @@ const deleteProposalWithContext: PendingProposal & {
 	},
 };
 
+// GTD fixtures shared by each kind's describe below AND the cross-kind
+// it.each tables (module scope so the tables can reference them).
+const createPerson: PendingProposal = {
+	proposal_id: "prop-person",
+	run_id: "run-person",
+	mutation_kind: "create_person",
+	payload: {
+		name: "Alice Carter",
+		note: "Met at the conference.",
+		aliases: ["Ali", "AC"],
+	},
+	rationale: "the user mentioned a new person",
+	status: "pending",
+};
+
+const createProject: PendingProposal = {
+	proposal_id: "prop-project",
+	run_id: "run-project",
+	mutation_kind: "create_project",
+	payload: {
+		name: "Ship API v2 migration",
+		outcome: "All clients on v2 by Q3.",
+		status: "active",
+	},
+	rationale: "the user described an outcome-shaped project",
+	status: "pending",
+};
+
+const createTodo: PendingProposal = {
+	proposal_id: "prop-todo",
+	run_id: "run-todo",
+	mutation_kind: "create_todo",
+	payload: {
+		todo: {
+			title: "Email Alice about Project Y",
+			note: "Send the migration plan.",
+			project_id: "proj-1",
+		},
+		person_refs: [
+			{ person_id: "alice-1", role: "related" },
+			{ person_id: "bob-1", role: "waiting_on" },
+		],
+		source_journal_entry_id: "je-7",
+	},
+	rationale: "the user named an explicit obligation",
+	status: "pending",
+};
+
+const updateTodo: PendingProposal = {
+	proposal_id: "prop-update-todo",
+	run_id: "run-update-todo",
+	mutation_kind: "update_todo",
+	payload: {
+		todo_id: "todo-7",
+		todo: { status: "completed", title: "Email Alice (done)" },
+		set_person_refs: [{ person_id: "dave-1", role: "related" }],
+		add_person_refs: [{ person_id: "carol-1", role: "waiting_on" }],
+		remove_person_ids: ["bob-1"],
+	},
+	rationale: "the user marked the todo done",
+	status: "pending",
+};
+
+const updatePerson: PendingProposal = {
+	proposal_id: "prop-update-person",
+	run_id: "run-update-person",
+	mutation_kind: "update_person",
+	payload: {
+		entity_id: "person-7",
+		name: "Alice Carter",
+		note: "Now leads the daycare committee.",
+		aliases: ["Ali", "AC"],
+	},
+	rationale: "the user corrected Alice's note",
+	status: "pending",
+};
+
+const updateProject: PendingProposal = {
+	proposal_id: "prop-update-project",
+	run_id: "run-update-project",
+	mutation_kind: "update_project",
+	payload: {
+		entity_id: "project-7",
+		name: "Ship API v2",
+		outcome: "All clients on v2 by Q3.",
+		status: "active",
+	},
+	rationale: "the user re-scoped the project",
+	status: "pending",
+};
+
 describe("ProposalCard", () => {
 	afterEach(cleanup);
 
@@ -138,18 +229,30 @@ describe("ProposalCard", () => {
 		).toBeInTheDocument();
 	});
 
-	it("calls onDecide('accept') when Add Journal Entry is clicked", () => {
+	// The decide contract is identical across mutation kinds — only the button
+	// labels differ. One table: clicking the kind's accept verb emits
+	// onDecide('accept'); its reject verb emits onDecide('reject').
+	it.each([
+		["create_journal_entry", base, /add journal entry/i, /dismiss/i],
+		[
+			"delete_journal_entry",
+			deleteProposalWithContext,
+			/delete journal entry/i,
+			/keep journal entry/i,
+		],
+		["create_person", createPerson, /add person/i, /dismiss/i],
+		["create_project", createProject, /add project/i, /dismiss/i],
+		["create_todo", createTodo, /add todo/i, /dismiss/i],
+		["update_todo", updateTodo, /update todo/i, /keep current todo/i],
+	] as const)("%s: accept/reject buttons call onDecide", (_kind, proposal, acceptName, rejectName) => {
 		const onDecide = vi.fn();
-		render(<ProposalCard proposal={base} onDecide={onDecide} />);
-		fireEvent.click(screen.getByRole("button", { name: /add journal entry/i }));
+		render(<ProposalCard proposal={proposal} onDecide={onDecide} />);
+		fireEvent.click(screen.getByRole("button", { name: acceptName }));
 		expect(onDecide).toHaveBeenCalledWith("accept");
-	});
-
-	it("calls onDecide('reject') when Dismiss is clicked", () => {
-		const onDecide = vi.fn();
-		render(<ProposalCard proposal={base} onDecide={onDecide} />);
-		fireEvent.click(screen.getByRole("button", { name: /dismiss/i }));
-		expect(onDecide).toHaveBeenCalledWith("reject");
+		cleanup();
+		render(<ProposalCard proposal={proposal} onDecide={onDecide} />);
+		fireEvent.click(screen.getByRole("button", { name: rejectName }));
+		expect(onDecide).toHaveBeenLastCalledWith("reject");
 	});
 
 	it("disables the actions while deciding", () => {
@@ -382,6 +485,26 @@ describe("ProposalCard", () => {
 		).toBeDisabled();
 	});
 
+	// Every GTD editor gates Save on its one required field — same skeleton per
+	// kind, only the fixture and field label differ. One table locks all six.
+	it.each([
+		["create_person", createPerson, /name/i],
+		["create_project", createProject, /name/i],
+		["create_todo", createTodo, /title/i],
+		["update_todo", updateTodo, /title/i],
+		["update_person", updatePerson, /name/i],
+		["update_project", updateProject, /name/i],
+	] as const)("%s: disables Save when the required field is blanked", (_kind, proposal, fieldName) => {
+		render(<ProposalCard proposal={proposal} onDecide={() => {}} />);
+		fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+		fireEvent.change(screen.getByRole("textbox", { name: fieldName }), {
+			target: { value: "" },
+		});
+		expect(
+			screen.getByRole("button", { name: /save changes/i }),
+		).toBeDisabled();
+	});
+
 	it("renders delete-specific copy and actions without Edit", () => {
 		render(
 			<ProposalCard proposal={deleteProposalWithContext} onDecide={() => {}} />,
@@ -425,25 +548,6 @@ describe("ProposalCard", () => {
 		expect(
 			screen.queryByRole("button", { name: /edit/i }),
 		).not.toBeInTheDocument();
-	});
-
-	it("calls onDecide for delete proposal accept and reject actions", () => {
-		const onDecide = vi.fn();
-		render(
-			<ProposalCard proposal={deleteProposalWithContext} onDecide={onDecide} />,
-		);
-		fireEvent.click(
-			screen.getByRole("button", { name: /delete journal entry/i }),
-		);
-		expect(onDecide).toHaveBeenCalledWith("accept");
-		cleanup();
-		render(
-			<ProposalCard proposal={deleteProposalWithContext} onDecide={onDecide} />,
-		);
-		fireEvent.click(
-			screen.getByRole("button", { name: /keep journal entry/i }),
-		);
-		expect(onDecide).toHaveBeenCalledWith("reject");
 	});
 
 	it("collapses accepted and rejected delete proposals to delete-specific copy", () => {
@@ -695,19 +799,6 @@ describe("ProposalCard", () => {
 	});
 
 	describe("create_person", () => {
-		const createPerson: PendingProposal = {
-			proposal_id: "prop-person",
-			run_id: "run-person",
-			mutation_kind: "create_person",
-			payload: {
-				name: "Alice Carter",
-				note: "Met at the conference.",
-				aliases: ["Ali", "AC"],
-			},
-			rationale: "the user mentioned a new person",
-			status: "pending",
-		};
-
 		it("renders a Person proposal with its name and detail fields", () => {
 			render(<ProposalCard proposal={createPerson} onDecide={() => {}} />);
 			expect(
@@ -723,20 +814,6 @@ describe("ProposalCard", () => {
 			expect(
 				screen.getByRole("button", { name: /^edit$/i }),
 			).toBeInTheDocument();
-		});
-
-		it("calls onDecide('accept') when Add Person is clicked", () => {
-			const onDecide = vi.fn();
-			render(<ProposalCard proposal={createPerson} onDecide={onDecide} />);
-			fireEvent.click(screen.getByRole("button", { name: /add person/i }));
-			expect(onDecide).toHaveBeenCalledWith("accept");
-		});
-
-		it("calls onDecide('reject') when Dismiss is clicked", () => {
-			const onDecide = vi.fn();
-			render(<ProposalCard proposal={createPerson} onDecide={onDecide} />);
-			fireEvent.click(screen.getByRole("button", { name: /dismiss/i }));
-			expect(onDecide).toHaveBeenCalledWith("reject");
 		});
 
 		it("opening Edit pre-fills Name/Note/Aliases from the proposed person", () => {
@@ -794,33 +871,9 @@ describe("ProposalCard", () => {
 			const [, payload] = onDecide.mock.calls[0];
 			expect("note" in payload).toBe(false);
 		});
-
-		it("disables Save when Name is blanked", () => {
-			render(<ProposalCard proposal={createPerson} onDecide={() => {}} />);
-			fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
-			fireEvent.change(screen.getByRole("textbox", { name: /name/i }), {
-				target: { value: "" },
-			});
-			expect(
-				screen.getByRole("button", { name: /save changes/i }),
-			).toBeDisabled();
-		});
 	});
 
 	describe("create_project", () => {
-		const createProject: PendingProposal = {
-			proposal_id: "prop-project",
-			run_id: "run-project",
-			mutation_kind: "create_project",
-			payload: {
-				name: "Ship API v2 migration",
-				outcome: "All clients on v2 by Q3.",
-				status: "active",
-			},
-			rationale: "the user described an outcome-shaped project",
-			status: "pending",
-		};
-
 		it("renders a Project proposal with its name and detail fields", () => {
 			render(<ProposalCard proposal={createProject} onDecide={() => {}} />);
 			expect(
@@ -836,20 +889,6 @@ describe("ProposalCard", () => {
 			expect(
 				screen.getByRole("button", { name: /^edit$/i }),
 			).toBeInTheDocument();
-		});
-
-		it("calls onDecide('accept') when Add Project is clicked", () => {
-			const onDecide = vi.fn();
-			render(<ProposalCard proposal={createProject} onDecide={onDecide} />);
-			fireEvent.click(screen.getByRole("button", { name: /add project/i }));
-			expect(onDecide).toHaveBeenCalledWith("accept");
-		});
-
-		it("calls onDecide('reject') when Dismiss is clicked", () => {
-			const onDecide = vi.fn();
-			render(<ProposalCard proposal={createProject} onDecide={onDecide} />);
-			fireEvent.click(screen.getByRole("button", { name: /dismiss/i }));
-			expect(onDecide).toHaveBeenCalledWith("reject");
 		});
 
 		it("opening Edit pre-fills Name/Outcome/Note/Status from the proposed project", () => {
@@ -910,40 +949,9 @@ describe("ProposalCard", () => {
 			expect("completed_at" in payload).toBe(false);
 			expect("dropped_at" in payload).toBe(false);
 		});
-
-		it("disables Save when Name is blanked", () => {
-			render(<ProposalCard proposal={createProject} onDecide={() => {}} />);
-			fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
-			fireEvent.change(screen.getByRole("textbox", { name: /name/i }), {
-				target: { value: "" },
-			});
-			expect(
-				screen.getByRole("button", { name: /save changes/i }),
-			).toBeDisabled();
-		});
 	});
 
 	describe("create_todo", () => {
-		const createTodo: PendingProposal = {
-			proposal_id: "prop-todo",
-			run_id: "run-todo",
-			mutation_kind: "create_todo",
-			payload: {
-				todo: {
-					title: "Email Alice about Project Y",
-					note: "Send the migration plan.",
-					project_id: "proj-1",
-				},
-				person_refs: [
-					{ person_id: "alice-1", role: "related" },
-					{ person_id: "bob-1", role: "waiting_on" },
-				],
-				source_journal_entry_id: "je-7",
-			},
-			rationale: "the user named an explicit obligation",
-			status: "pending",
-		};
-
 		it("renders a Todo proposal with its title, project link, and person refs", () => {
 			render(<ProposalCard proposal={createTodo} onDecide={() => {}} />);
 			expect(
@@ -957,27 +965,6 @@ describe("ProposalCard", () => {
 			expect(screen.getByText(/Related: alice-1/)).toBeInTheDocument();
 			expect(screen.getByText(/Waiting on: bob-1/)).toBeInTheDocument();
 			// create_todo now offers inline Edit at the gate (slice 1).
-			expect(
-				screen.getByRole("button", { name: /^edit$/i }),
-			).toBeInTheDocument();
-		});
-
-		it("calls onDecide('accept') when Add Todo is clicked", () => {
-			const onDecide = vi.fn();
-			render(<ProposalCard proposal={createTodo} onDecide={onDecide} />);
-			fireEvent.click(screen.getByRole("button", { name: /add todo/i }));
-			expect(onDecide).toHaveBeenCalledWith("accept");
-		});
-
-		it("calls onDecide('reject') when Dismiss is clicked", () => {
-			const onDecide = vi.fn();
-			render(<ProposalCard proposal={createTodo} onDecide={onDecide} />);
-			fireEvent.click(screen.getByRole("button", { name: /dismiss/i }));
-			expect(onDecide).toHaveBeenCalledWith("reject");
-		});
-
-		it("offers an Edit affordance for the create_todo proposal", () => {
-			render(<ProposalCard proposal={createTodo} onDecide={() => {}} />);
 			expect(
 				screen.getByRole("button", { name: /^edit$/i }),
 			).toBeInTheDocument();
@@ -1038,35 +1025,9 @@ describe("ProposalCard", () => {
 			);
 			expect("dropped_at" in payload.todo).toBe(false);
 		});
-
-		it("disables Save when Title is blanked", () => {
-			render(<ProposalCard proposal={createTodo} onDecide={() => {}} />);
-			fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
-			fireEvent.change(screen.getByRole("textbox", { name: /title/i }), {
-				target: { value: "" },
-			});
-			expect(
-				screen.getByRole("button", { name: /save changes/i }),
-			).toBeDisabled();
-		});
 	});
 
 	describe("update_todo", () => {
-		const updateTodo: PendingProposal = {
-			proposal_id: "prop-update-todo",
-			run_id: "run-update-todo",
-			mutation_kind: "update_todo",
-			payload: {
-				todo_id: "todo-7",
-				todo: { status: "completed", title: "Email Alice (done)" },
-				set_person_refs: [{ person_id: "dave-1", role: "related" }],
-				add_person_refs: [{ person_id: "carol-1", role: "waiting_on" }],
-				remove_person_ids: ["bob-1"],
-			},
-			rationale: "the user marked the todo done",
-			status: "pending",
-		};
-
 		it("renders an update Todo proposal summarizing the supplied changes", () => {
 			render(<ProposalCard proposal={updateTodo} onDecide={() => {}} />);
 			expect(
@@ -1088,22 +1049,6 @@ describe("ProposalCard", () => {
 			expect(
 				screen.getByRole("button", { name: /^edit$/i }),
 			).toBeInTheDocument();
-		});
-
-		it("calls onDecide('accept') when Update Todo is clicked", () => {
-			const onDecide = vi.fn();
-			render(<ProposalCard proposal={updateTodo} onDecide={onDecide} />);
-			fireEvent.click(screen.getByRole("button", { name: /update todo/i }));
-			expect(onDecide).toHaveBeenCalledWith("accept");
-		});
-
-		it("calls onDecide('reject') when Keep current Todo is clicked", () => {
-			const onDecide = vi.fn();
-			render(<ProposalCard proposal={updateTodo} onDecide={onDecide} />);
-			fireEvent.click(
-				screen.getByRole("button", { name: /keep current todo/i }),
-			);
-			expect(onDecide).toHaveBeenCalledWith("reject");
 		});
 
 		it("editing Title then Save emits the partial preserving todo_id and all ref lists", () => {
@@ -1194,34 +1139,9 @@ describe("ProposalCard", () => {
 				screen.queryByRole("combobox", { name: /status/i }),
 			).not.toBeInTheDocument();
 		});
-
-		it("disables Save when a proposed Title is blanked", () => {
-			render(<ProposalCard proposal={updateTodo} onDecide={() => {}} />);
-			fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
-			fireEvent.change(screen.getByRole("textbox", { name: /title/i }), {
-				target: { value: "" },
-			});
-			expect(
-				screen.getByRole("button", { name: /save changes/i }),
-			).toBeDisabled();
-		});
 	});
 
 	describe("update_person", () => {
-		const updatePerson: PendingProposal = {
-			proposal_id: "prop-update-person",
-			run_id: "run-update-person",
-			mutation_kind: "update_person",
-			payload: {
-				entity_id: "person-7",
-				name: "Alice Carter",
-				note: "Now leads the daycare committee.",
-				aliases: ["Ali", "AC"],
-			},
-			rationale: "the user corrected Alice's note",
-			status: "pending",
-		};
-
 		it("renders an update Person proposal with its review copy, Update label, and detail — not the journal fallback", () => {
 			render(<ProposalCard proposal={updatePerson} onDecide={() => {}} />);
 			expect(
@@ -1322,34 +1242,9 @@ describe("ProposalCard", () => {
 			expect("note" in payload).toBe(false);
 			expect(payload.entity_id).toBe("person-7");
 		});
-
-		it("disables Save when Name is blanked", () => {
-			render(<ProposalCard proposal={updatePerson} onDecide={() => {}} />);
-			fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
-			fireEvent.change(screen.getByRole("textbox", { name: /name/i }), {
-				target: { value: "" },
-			});
-			expect(
-				screen.getByRole("button", { name: /save changes/i }),
-			).toBeDisabled();
-		});
 	});
 
 	describe("update_project", () => {
-		const updateProject: PendingProposal = {
-			proposal_id: "prop-update-project",
-			run_id: "run-update-project",
-			mutation_kind: "update_project",
-			payload: {
-				entity_id: "project-7",
-				name: "Ship API v2",
-				outcome: "All clients on v2 by Q3.",
-				status: "active",
-			},
-			rationale: "the user re-scoped the project",
-			status: "pending",
-		};
-
 		it("renders an update Project proposal with its review copy, Update label, and detail — not the journal fallback", () => {
 			render(<ProposalCard proposal={updateProject} onDecide={() => {}} />);
 			expect(
@@ -1443,17 +1338,6 @@ describe("ProposalCard", () => {
 			// entity_id + the review cadence ride untouched under full replace.
 			expect(payload.entity_id).toBe("project-7");
 			expect(payload.review_every).toEqual({ interval: 1, unit: "week" });
-		});
-
-		it("disables Save when Name is blanked", () => {
-			render(<ProposalCard proposal={updateProject} onDecide={() => {}} />);
-			fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
-			fireEvent.change(screen.getByRole("textbox", { name: /name/i }), {
-				target: { value: "" },
-			});
-			expect(
-				screen.getByRole("button", { name: /save changes/i }),
-			).toBeDisabled();
 		});
 	});
 
@@ -2709,7 +2593,9 @@ describe("ProposalCard", () => {
 	// not leave a bare "Dismissed." that reads as if the entity were discarded. CREATE
 	// kinds keep "Dismissed." — nothing existed to keep.
 	describe("update-reject copy reassures the current entity was kept", () => {
-		const updateTodo: PendingProposal = {
+		// Minimal update payloads (distinct from the module-scope full fixtures):
+		// the copy under test depends only on the mutation_kind.
+		const minimalUpdateTodo: PendingProposal = {
 			proposal_id: "prop-reject-update-todo",
 			run_id: "run-reject-update-todo",
 			mutation_kind: "update_todo",
@@ -2717,7 +2603,7 @@ describe("ProposalCard", () => {
 			rationale: null,
 			status: "pending",
 		};
-		const updatePerson: PendingProposal = {
+		const minimalUpdatePerson: PendingProposal = {
 			proposal_id: "prop-reject-update-person",
 			run_id: "run-reject-update-person",
 			mutation_kind: "update_person",
@@ -2725,7 +2611,7 @@ describe("ProposalCard", () => {
 			rationale: null,
 			status: "pending",
 		};
-		const updateProject: PendingProposal = {
+		const minimalUpdateProject: PendingProposal = {
 			proposal_id: "prop-reject-update-project",
 			run_id: "run-reject-update-project",
 			mutation_kind: "update_project",
@@ -2737,7 +2623,7 @@ describe("ProposalCard", () => {
 		it("update_todo rejected reads 'Kept current Todo.'", () => {
 			render(
 				<ProposalCard
-					proposal={{ ...updateTodo, status: "rejected" }}
+					proposal={{ ...minimalUpdateTodo, status: "rejected" }}
 					onDecide={() => {}}
 				/>,
 			);
@@ -2747,7 +2633,7 @@ describe("ProposalCard", () => {
 		it("update_person rejected reads 'Kept current Person.'", () => {
 			render(
 				<ProposalCard
-					proposal={{ ...updatePerson, status: "rejected" }}
+					proposal={{ ...minimalUpdatePerson, status: "rejected" }}
 					onDecide={() => {}}
 				/>,
 			);
@@ -2757,7 +2643,7 @@ describe("ProposalCard", () => {
 		it("update_project rejected reads 'Kept current Project.'", () => {
 			render(
 				<ProposalCard
-					proposal={{ ...updateProject, status: "rejected" }}
+					proposal={{ ...minimalUpdateProject, status: "rejected" }}
 					onDecide={() => {}}
 				/>,
 			);
@@ -2784,7 +2670,7 @@ describe("ProposalCard", () => {
 		// The pending reject button must offer the reassuring "Keep current …" verb,
 		// not a bare "Dismiss".
 		it("update_todo pending offers a 'Keep current Todo' reject button", () => {
-			render(<ProposalCard proposal={updateTodo} onDecide={() => {}} />);
+			render(<ProposalCard proposal={minimalUpdateTodo} onDecide={() => {}} />);
 			expect(
 				screen.getByRole("button", { name: /keep current todo/i }),
 			).toBeInTheDocument();

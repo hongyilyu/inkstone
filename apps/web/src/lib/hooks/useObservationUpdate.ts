@@ -30,10 +30,9 @@ export function useObservationUpdate() {
 		{
 			mutationFn: async (params) => {
 				const exit = await runtime.runPromiseExit(
-					Effect.gen(function* () {
-						const client = yield* WsClient;
-						return yield* client.observationUpdate(params);
-					}),
+					Effect.flatMap(WsClient, (client) =>
+						client.observationUpdate(params),
+					),
 				);
 				if (Exit.isSuccess(exit)) return exit.value;
 				throw Cause.squash(exit.cause);

@@ -1,9 +1,6 @@
 import type { ResolvedNode } from "@inkstone/protocol";
 import { describe, expect, it } from "vitest";
 import {
-	acceptAll,
-	allAccepted,
-	allRejected,
 	appendedClauses,
 	buildDecisions,
 	buildEditedFields,
@@ -159,38 +156,10 @@ describe("setStage respects the ambiguous accept-block (#181)", () => {
 	});
 });
 
-describe("acceptAll / rejectAll", () => {
-	it("acceptAll accepts every acceptable node and rejects an UNPICKED ambiguous", () => {
-		const buffer = acceptAll(PLAN);
-		expect(buffer["@rodeo"]).toBe("accept");
-		expect(buffer["@leadads"]).toBe("accept");
-		expect(buffer["@morris"]).toBe("reject");
-	});
-
-	it("acceptAll accepts a PICKED ambiguous node", () => {
-		const buffer = acceptAll(PLAN, { "@morris": "m1" });
-		expect(buffer["@morris"]).toBe("accept");
-		expect(buffer["@rodeo"]).toBe("accept");
-	});
-
+describe("rejectAll", () => {
 	it("rejectAll rejects every node", () => {
 		const buffer = rejectAll(PLAN);
 		expect(Object.values(buffer)).toEqual(["reject", "reject", "reject"]);
-	});
-});
-
-describe("allAccepted / allRejected", () => {
-	it("a plan with an ambiguous node is never all-accepted by default", () => {
-		expect(allAccepted(PLAN, {})).toBe(false);
-	});
-
-	it("acceptAll on an ambiguous-free plan is all-accepted", () => {
-		const plan = [createTodo, reuseProject];
-		expect(allAccepted(plan, acceptAll(plan))).toBe(true);
-	});
-
-	it("rejectAll is all-rejected", () => {
-		expect(allRejected(PLAN, rejectAll(PLAN))).toBe(true);
 	});
 });
 
@@ -485,7 +454,7 @@ describe("downgradeNotices", () => {
 
 	it("no notice when both endpoints are accepted", () => {
 		const plan = [createTodo, reuseProject];
-		expect(downgradeNotices(plan, links, acceptAll(plan))).toEqual([]);
+		expect(downgradeNotices(plan, links, {})).toEqual([]);
 	});
 
 	// A Todo linked to an AMBIGUOUS person/project target: once the user picks a

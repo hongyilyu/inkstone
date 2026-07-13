@@ -6,9 +6,9 @@ No mock data, no in-process stubs — the only substitution is the LLM, which is
 stood in for by the deterministic slow-worker gate fixture (there is no real
 LLM in the echo-era product yet).
 
-> This is distinct from `apps/web/e2e`, which is a **mock-only** smoke suite
-> (static `vite preview`, no Core, no WebSocket). If a test needs Core + Worker
-> + UI together, it lives here.
+> This is the repo's only Playwright suite (the old `apps/web/e2e` mock-only
+> smoke suite was removed once the Web Client went live-only). If a test needs
+> Core + Worker + UI together, it lives here.
 
 ## Run it
 
