@@ -343,27 +343,10 @@ pub async fn apply_user_mutation(
 
 #[cfg(test)]
 mod tests {
-    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+    use crate::db::test_support::{memory_pool, seed_entity, seed_source, seed_thread_message};
 
     use super::*;
     use crate::db::mark_run_running;
-
-    /// A migrated in-memory pool so the `runs` CHECK constraints are in force.
-    async fn memory_pool() -> SqlitePool {
-        let options = SqliteConnectOptions::new()
-            .filename(":memory:")
-            .foreign_keys(true);
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(options)
-            .await
-            .expect("open in-memory sqlite");
-        sqlx::migrate!("./migrations")
-            .run(&pool)
-            .await
-            .expect("run migrations");
-        pool
-    }
 
     /// Insert a Thread + a bare Run row in `status` directly (no Worker), to
     /// hand-craft `running`/`parked` Runs for the tests.
@@ -552,10 +535,7 @@ mod tests {
                 .fetch_one(&pool)
                 .await
                 .expect("entity schema_version");
-        assert_eq!(
-            stored_schema_version,
-            crate::mutation::JOURNAL_ENTRY_SCHEMA_VERSION
-        );
+        assert_eq!(stored_schema_version, 1);
         assert_eq!(
             run_event_count(&pool, &run_id.to_string(), "proposal_decided").await,
             1
@@ -618,7 +598,7 @@ mod tests {
              VALUES (?, 'person', ?, ?, 'user', NULL, ?, ?)",
         )
         .bind(&person_id)
-        .bind(crate::mutation::PERSON_SCHEMA_VERSION)
+        .bind(1_i64)
         .bind(r#"{"name":"Alice"}"#)
         .bind(1_i64)
         .bind(1_i64)
@@ -830,95 +810,6 @@ mod tests {
             1,
             "lost reject wrote no duplicate event"
         );
-    }
-
-    /// Insert an Entity row directly with the given `type` + `data` JSON, so the
-    /// relationship-read tests can seed Todos/Persons/Projects without a Proposal.
-    async fn seed_entity(pool: &SqlitePool, id: &str, entity_type: &str, data: &str) {
-        sqlx::query(
-            "INSERT INTO entities \
-             (id, type, schema_version, data, created_by, created_via_proposal_id, \
-              created_at, updated_at) \
-             VALUES (?, ?, 1, ?, 'user', NULL, 1, 1)",
-        )
-        .bind(id)
-        .bind(entity_type)
-        .bind(data)
-        .execute(pool)
-        .await
-        .expect("insert entity");
-    }
-
-    /// Seed a Thread + Run + user Message chain so a Message-sourced provenance
-    /// row resolves a real `thread_id`/`thread_title`. The `runs.user_message_id`
-    /// and `messages.run_id` FKs are circular but DEFERRABLE, so the whole chain
-    /// commits in one tx. Returns the seeded user-message id.
-    async fn seed_thread_message(
-        pool: &SqlitePool,
-        thread_id: &str,
-        thread_title: &str,
-        message_id: &str,
-    ) {
-        let mut tx = pool.begin().await.expect("begin");
-        sqlx::query(
-            "INSERT INTO threads (id, title, created_at, last_activity_at) VALUES (?, ?, 1, 1)",
-        )
-        .bind(thread_id)
-        .bind(thread_title)
-        .execute(&mut *tx)
-        .await
-        .expect("insert thread");
-        let run_id = format!("run-for-{message_id}");
-        sqlx::query(
-            "INSERT INTO runs \
-             (id, thread_id, workflow_name, workflow_version, provider, model, \
-              thinking_level, user_message_id, status, started_at) \
-             VALUES (?, ?, 'w', '1', 'p', 'm', 'off', ?, 'completed', 1)",
-        )
-        .bind(&run_id)
-        .bind(thread_id)
-        .bind(message_id)
-        .execute(&mut *tx)
-        .await
-        .expect("insert run");
-        sqlx::query(
-            "INSERT INTO messages (id, thread_id, run_id, role, status, created_at, updated_at) \
-             VALUES (?, ?, ?, 'user', 'completed', 1, 1)",
-        )
-        .bind(message_id)
-        .bind(thread_id)
-        .bind(&run_id)
-        .execute(&mut *tx)
-        .await
-        .expect("insert message");
-        tx.commit().await.expect("commit thread+message");
-    }
-
-    /// Seed one `entity_sources` row. Exactly one of `source_message_id` /
-    /// `source_entity_id` is set (the schema CHECK); pass the other as `None`.
-    async fn seed_source(
-        pool: &SqlitePool,
-        id: &str,
-        entity_id: &str,
-        source_message_id: Option<&str>,
-        source_entity_id: Option<&str>,
-        relation: &str,
-        created_at: i64,
-    ) {
-        sqlx::query(
-            "INSERT INTO entity_sources \
-             (id, entity_id, source_message_id, source_entity_id, relation, created_at) \
-             VALUES (?, ?, ?, ?, ?, ?)",
-        )
-        .bind(id)
-        .bind(entity_id)
-        .bind(source_message_id)
-        .bind(source_entity_id)
-        .bind(relation)
-        .bind(created_at)
-        .execute(pool)
-        .await
-        .expect("insert entity_source");
     }
 
     /// `journal_entry_origin_thread_id` resolves the Thread a Journal Entry was

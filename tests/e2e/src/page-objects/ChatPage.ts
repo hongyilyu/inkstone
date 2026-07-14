@@ -149,32 +149,4 @@ export class ChatPage {
 	search(): string {
 		return new URL(this.page.url()).search.replace(/^\?/, "");
 	}
-
-	/** The ⌘K command palette dialog. */
-	commandPalette() {
-		return this.page.getByRole("dialog", { name: "Search" });
-	}
-
-	/** Open the palette via ⌘K / Ctrl+K and wait for its search box (the handler accepts metaKey OR ctrlKey, so Meta+k works on every platform). */
-	async openCommandPalette(): Promise<void> {
-		await this.page.keyboard.press("Meta+k");
-		await expect(this.commandPalette().getByRole("combobox")).toBeVisible();
-	}
-
-	/** Type `query` into the open palette's search box. */
-	async searchCommandPalette(query: string): Promise<void> {
-		await this.commandPalette().getByRole("combobox").fill(query);
-	}
-
-	/** The result-option buttons under the palette group labelled `label` (e.g. "Messages"). */
-	commandPaletteGroupOptions(label: string) {
-		// Each group renders as a wrapper <div> with a label child then its option
-		// buttons. Anchor on the label element, step to its wrapper parent, and
-		// scope options there so a hit is attributable to its group (Messages vs
-		// Threads vs a Library kind) — not just "some option somewhere".
-		return this.commandPalette()
-			.getByText(label, { exact: true })
-			.locator("xpath=..")
-			.getByRole("option");
-	}
 }

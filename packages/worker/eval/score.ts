@@ -4,6 +4,7 @@
 // it real model output. The schema gate decodes the predicted payload against
 // the matching `@inkstone/protocol` schema; an invalid payload scores zero.
 
+import { isDeepStrictEqual } from "node:util";
 import { schemas } from "@inkstone/protocol";
 import { Either, Schema as S } from "effect";
 import type {
@@ -274,23 +275,7 @@ function fieldEquals(a: unknown, b: unknown): boolean {
 	if (typeof a === "string" && typeof b === "string") {
 		return normalize(a) === normalize(b);
 	}
-	return deepEqual(a, b);
-}
-
-function deepEqual(a: unknown, b: unknown): boolean {
-	if (a === b) return true;
-	if (typeof a !== typeof b) return false;
-	if (Array.isArray(a) && Array.isArray(b)) {
-		if (a.length !== b.length) return false;
-		return a.every((x, i) => deepEqual(x, b[i]));
-	}
-	if (isRecord(a) && isRecord(b)) {
-		const ak = Object.keys(a);
-		const bk = Object.keys(b);
-		if (ak.length !== bk.length) return false;
-		return ak.every((k) => deepEqual(a[k], b[k]));
-	}
-	return false;
+	return isDeepStrictEqual(a, b);
 }
 
 /** The scored fields of an entity record — everything it specifies EXCEPT the

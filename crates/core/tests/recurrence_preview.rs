@@ -10,7 +10,7 @@ use futures_util::SinkExt;
 use tokio_tungstenite::tungstenite::Message;
 
 mod common;
-use common::{Workspace, Ws, next_text};
+use common::{next_text, rt, Workspace, Ws};
 
 /// Read until the `id:want_id` response frame (guards stray notifications).
 async fn read_response(ws: &mut Ws, want_id: i64) -> serde_json::Value {
@@ -44,10 +44,7 @@ fn recurrence_preview_returns_the_next_occurrence_for_a_continuing_series() {
     let workspace = Workspace::new();
     let core = workspace.core().worker_fixture("slow-worker.ts").spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
         let mut ws = core.connect().await;
@@ -92,10 +89,7 @@ fn recurrence_preview_reports_ended_when_after_count_is_one() {
     let workspace = Workspace::new();
     let core = workspace.core().worker_fixture("slow-worker.ts").spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
         let mut ws = core.connect().await;
@@ -139,10 +133,7 @@ fn recurrence_preview_reports_ended_past_the_until_bound() {
     let workspace = Workspace::new();
     let core = workspace.core().worker_fixture("slow-worker.ts").spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
         let mut ws = core.connect().await;
@@ -182,10 +173,7 @@ fn recurrence_preview_treats_a_malformed_draft_rule_as_ended_not_an_error() {
     let workspace = Workspace::new();
     let core = workspace.core().worker_fixture("slow-worker.ts").spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
         let mut ws = core.connect().await;

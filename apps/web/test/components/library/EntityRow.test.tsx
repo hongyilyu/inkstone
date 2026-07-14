@@ -47,19 +47,6 @@ function renderTodoRow(
 afterEach(cleanup);
 
 describe("TodoRow", () => {
-	it("shows status read-only — no done toggle (editing is deferred)", () => {
-		render(
-			<ul>
-				<TodoRow todo={todo("todo_schedule_alice")} onSelect={() => {}} />
-			</ul>,
-		);
-		// The old "Mark done" toggle is gone; an active todo carries an Active mark.
-		expect(
-			screen.queryByRole("button", { name: /mark .* done/i }),
-		).not.toBeInTheDocument();
-		expect(screen.getByLabelText("Active")).toBeInTheDocument();
-	});
-
 	it("marks a completed todo without offering a toggle", () => {
 		render(
 			<ul>
@@ -84,10 +71,8 @@ describe("TodoRow", () => {
 	it("opens detail when the row is clicked", async () => {
 		const user = userEvent.setup();
 		const onSelect = vi.fn();
-		render(
-			<ul>
-				<TodoRow todo={todo("todo_schedule_alice")} onSelect={onSelect} />
-			</ul>,
+		renderTodoRow(
+			<TodoRow todo={todo("todo_schedule_alice")} onSelect={onSelect} />,
 		);
 
 		await user.click(
@@ -103,11 +88,7 @@ describe("TodoRow", () => {
 			...todo("todo_dentist"),
 			dueAt: "2000-01-01T09:00:00",
 		};
-		render(
-			<ul>
-				<TodoRow todo={overdue} onSelect={() => {}} />
-			</ul>,
-		);
+		renderTodoRow(<TodoRow todo={overdue} onSelect={() => {}} />);
 		// Overdue keeps the date so multiple overdue rows stay distinguishable.
 		expect(screen.getByText("Overdue · 2000-01-01")).toBeInTheDocument();
 	});
@@ -117,11 +98,7 @@ describe("TodoRow", () => {
 			...todo("todo_schedule_alice"),
 			dueAt: "2999-01-02T17:00:00",
 		};
-		render(
-			<ul>
-				<TodoRow todo={future} onSelect={() => {}} />
-			</ul>,
-		);
+		renderTodoRow(<TodoRow todo={future} onSelect={() => {}} />);
 		expect(screen.getByText("2999-01-02")).toBeInTheDocument();
 		expect(screen.queryByText(/Overdue/)).not.toBeInTheDocument();
 	});
@@ -132,20 +109,14 @@ describe("TodoRow", () => {
 			...todo("todo_schedule_alice"),
 			deferAt: "2999-01-05T00:00:00",
 		};
-		render(
-			<ul>
-				<TodoRow todo={deferred} onSelect={() => {}} />
-			</ul>,
-		);
+		renderTodoRow(<TodoRow todo={deferred} onSelect={() => {}} />);
 		// Chip shows the YYYY-MM-DD day slice, matching DueChip's format.
 		expect(screen.getByText("Available 2999-01-05")).toBeInTheDocument();
 	});
 
 	it("shows no Available chip when the todo is not deferred", () => {
-		render(
-			<ul>
-				<TodoRow todo={todo("todo_schedule_alice")} onSelect={() => {}} />
-			</ul>,
+		renderTodoRow(
+			<TodoRow todo={todo("todo_schedule_alice")} onSelect={() => {}} />,
 		);
 		expect(screen.queryByText(/^Available /)).not.toBeInTheDocument();
 	});
@@ -156,43 +127,20 @@ describe("TodoRow", () => {
 			deferAt: "2999-01-05T00:00:00",
 			dueAt: "2999-01-09T17:00:00",
 		};
-		render(
-			<ul>
-				<TodoRow todo={both} onSelect={() => {}} />
-			</ul>,
-		);
+		renderTodoRow(<TodoRow todo={both} onSelect={() => {}} />);
 		expect(screen.getByText("2999-01-09")).toBeInTheDocument();
 		expect(screen.getByText("Available 2999-01-05")).toBeInTheDocument();
 	});
 
-	// (c) Read-only pin: with NO `onComplete`, an active row exposes no complete
-	// button — the default contract stays read-only (the older assertions above
-	// pin the same default; this one keys off the new aria-label string).
-	it("exposes no complete button when onComplete is absent", () => {
-		render(
-			<ul>
-				<TodoRow todo={todo("todo_schedule_alice")} onSelect={() => {}} />
-			</ul>,
-		);
-		expect(
-			screen.queryByRole("button", { name: /mark todo complete/i }),
-		).not.toBeInTheDocument();
-		expect(screen.getByLabelText("Active")).toBeInTheDocument();
-	});
-
-	// (a) With `onComplete` on an active row, the status circle becomes a
-	// "Mark todo complete" button; clicking it fires one `update_todo` mutate
-	// carrying status=completed and a non-empty completed_at.
+	// (a) On an active row the status circle is a "Mark todo complete" button;
+	// clicking it fires one `update_todo` mutate carrying status=completed and a
+	// non-empty completed_at.
 	it("completes an active todo inline via its status circle (update_todo)", async () => {
 		const entityMutate = vi.fn<EntityMutate>(() =>
 			Effect.succeed({ entity_id: "todo_schedule_alice" }),
 		);
 		renderTodoRow(
-			<TodoRow
-				todo={todo("todo_schedule_alice")}
-				onSelect={() => {}}
-				onComplete={() => {}}
-			/>,
+			<TodoRow todo={todo("todo_schedule_alice")} onSelect={() => {}} />,
 			entityMutate,
 		);
 
@@ -217,11 +165,7 @@ describe("TodoRow", () => {
 	// name to "Completed". Dropping `|| mutation.isSuccess` fails this.
 	it("optimistically flips the circle to Completed after a successful click", async () => {
 		renderTodoRow(
-			<TodoRow
-				todo={todo("todo_schedule_alice")}
-				onSelect={() => {}}
-				onComplete={() => {}}
-			/>,
+			<TodoRow todo={todo("todo_schedule_alice")} onSelect={() => {}} />,
 			() => Effect.succeed({ entity_id: "todo_schedule_alice" }),
 		);
 
@@ -234,30 +178,19 @@ describe("TodoRow", () => {
 		).toBeInTheDocument();
 	});
 
-	// (d) Active-gate: a resolved row (completed/dropped) rendered WITH
-	// `onComplete` is still read-only — only active rows get the interactive
-	// circle.
-	it("stays read-only for a completed todo even with onComplete", () => {
-		renderTodoRow(
-			<TodoRow
-				todo={todo("todo_cutover")}
-				onSelect={() => {}}
-				onComplete={() => {}}
-			/>,
-		);
+	// (d) Active-gate: a resolved row (completed/dropped) is read-only — only
+	// active rows get the interactive circle.
+	it("stays read-only for a completed todo", () => {
+		renderTodoRow(<TodoRow todo={todo("todo_cutover")} onSelect={() => {}} />);
 		expect(screen.getByLabelText("Completed")).toBeInTheDocument();
 		expect(
 			screen.queryByRole("button", { name: /mark todo complete/i }),
 		).not.toBeInTheDocument();
 	});
 
-	it("stays read-only for a dropped todo even with onComplete", () => {
+	it("stays read-only for a dropped todo", () => {
 		renderTodoRow(
-			<TodoRow
-				todo={todo("todo_old_vendor")}
-				onSelect={() => {}}
-				onComplete={() => {}}
-			/>,
+			<TodoRow todo={todo("todo_old_vendor")} onSelect={() => {}} />,
 		);
 		expect(screen.getByLabelText("Dropped")).toBeInTheDocument();
 		expect(
@@ -266,21 +199,17 @@ describe("TodoRow", () => {
 	});
 
 	// Slice-2: quick-defer menu. The defer trigger is gated exactly like the
-	// complete circle — present only on an active row that opted in.
+	// complete circle — present only on an active row.
 	describe("quick-defer", () => {
 		// A fixed clock makes the Tomorrow/Next-week assertions exact.
 		const fixedNow = new Date("2026-06-25T10:00:00");
 
 		afterEach(() => vi.useRealTimers());
 
-		// (a) Active row + onQuickDefer exposes a "Defer todo" trigger.
-		it("shows a defer trigger on an active todo that opted in", () => {
+		// (a) An active row exposes a "Defer todo" trigger.
+		it("shows a defer trigger on an active todo", () => {
 			renderTodoRow(
-				<TodoRow
-					todo={todo("todo_schedule_alice")}
-					onSelect={() => {}}
-					onQuickDefer={() => {}}
-				/>,
+				<TodoRow todo={todo("todo_schedule_alice")} onSelect={() => {}} />,
 			);
 			expect(
 				screen.getByRole("button", { name: /defer todo/i }),
@@ -295,11 +224,7 @@ describe("TodoRow", () => {
 				Effect.succeed({ entity_id: "todo_schedule_alice" }),
 			);
 			renderTodoRow(
-				<TodoRow
-					todo={todo("todo_schedule_alice")}
-					onSelect={() => {}}
-					onQuickDefer={() => {}}
-				/>,
+				<TodoRow todo={todo("todo_schedule_alice")} onSelect={() => {}} />,
 				entityMutate,
 			);
 
@@ -331,10 +256,7 @@ describe("TodoRow", () => {
 			const entityMutate = vi.fn<EntityMutate>(() =>
 				Effect.succeed({ entity_id: ref.id }),
 			);
-			renderTodoRow(
-				<TodoRow todo={ref} onSelect={() => {}} onQuickDefer={() => {}} />,
-				entityMutate,
-			);
+			renderTodoRow(<TodoRow todo={ref} onSelect={() => {}} />, entityMutate);
 
 			const user = userEvent.setup();
 			await user.click(screen.getByRole("button", { name: /defer todo/i }));
@@ -365,10 +287,7 @@ describe("TodoRow", () => {
 			const entityMutate = vi.fn<EntityMutate>(() =>
 				Effect.succeed({ entity_id: ref.id }),
 			);
-			renderTodoRow(
-				<TodoRow todo={ref} onSelect={() => {}} onQuickDefer={() => {}} />,
-				entityMutate,
-			);
+			renderTodoRow(<TodoRow todo={ref} onSelect={() => {}} />, entityMutate);
 
 			const user = userEvent.setup();
 			await user.click(screen.getByRole("button", { name: /defer todo/i }));
@@ -389,11 +308,7 @@ describe("TodoRow", () => {
 				Effect.succeed({ entity_id: "todo_schedule_alice" }),
 			);
 			renderTodoRow(
-				<TodoRow
-					todo={todo("todo_schedule_alice")}
-					onSelect={() => {}}
-					onQuickDefer={() => {}}
-				/>,
+				<TodoRow todo={todo("todo_schedule_alice")} onSelect={() => {}} />,
 				entityMutate,
 			);
 
@@ -410,26 +325,10 @@ describe("TodoRow", () => {
 			expect(payload.todo.defer_at).toBe("2026-07-15T00:00:00");
 		});
 
-		// (d) Active-gate + opt-in pins: no trigger without onQuickDefer; no
-		// trigger on a resolved row even with onQuickDefer.
-		it("shows no defer trigger when onQuickDefer is absent", () => {
-			render(
-				<ul>
-					<TodoRow todo={todo("todo_schedule_alice")} onSelect={() => {}} />
-				</ul>,
-			);
-			expect(
-				screen.queryByRole("button", { name: /defer todo/i }),
-			).not.toBeInTheDocument();
-		});
-
-		it("shows no defer trigger on a completed row even with onQuickDefer", () => {
+		// (d) Active-gate pin: no trigger on a resolved row.
+		it("shows no defer trigger on a completed row", () => {
 			renderTodoRow(
-				<TodoRow
-					todo={todo("todo_cutover")}
-					onSelect={() => {}}
-					onQuickDefer={() => {}}
-				/>,
+				<TodoRow todo={todo("todo_cutover")} onSelect={() => {}} />,
 			);
 			expect(
 				screen.queryByRole("button", { name: /defer todo/i }),

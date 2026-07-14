@@ -312,28 +312,21 @@ function QuickDeferMenu({ todo }: { todo: Todo }) {
 }
 
 /**
- * Todo row: the status mark plus the open affordance. When `onComplete` is wired
- * AND the todo is active, the status mark is an interactive complete circle
- * (user-initiated direct write, ADR-0033/0034); otherwise it's the read-only
- * glyph — resolved rows and rows with no inline action stay read-only.
+ * Todo row: the status mark plus the open affordance. On an active todo the
+ * status mark is an interactive complete circle and the row carries the
+ * quick-defer menu (user-initiated direct writes, ADR-0033/0034); resolved rows
+ * stay read-only.
  */
 export function TodoRow({
 	todo,
 	allItems = [],
 	selected,
 	onSelect,
-	onComplete,
-	onQuickDefer,
 }: {
 	todo: Todo;
 	allItems?: LibraryItem[];
 	selected?: boolean;
 	onSelect: (id: string) => void;
-	/** Opt the row into the inline-complete circle. Absent → read-only glyph. */
-	onComplete?: (id: string) => void;
-	/** Opt the row into the quick-defer menu (active rows only). The row's own
-	 * hook does the write — this marker just turns the control on. */
-	onQuickDefer?: (id: string) => void;
 }) {
 	const resolved = todo.status !== "active";
 	const overdue = todoIsOverdue(todo);
@@ -343,7 +336,7 @@ export function TodoRow({
 	return (
 		<li className="group flex items-stretch gap-1">
 			<span className="flex w-9 shrink-0 items-center justify-center">
-				{onComplete && todo.status === "active" ? (
+				{todo.status === "active" ? (
 					<CompleteCircle todo={todo} />
 				) : (
 					<TodoStatusGlyph todo={todo} />
@@ -379,7 +372,7 @@ export function TodoRow({
 				) : null}
 				{todo.deferAt ? <DeferChip defer={todo.deferAt.slice(0, 10)} /> : null}
 			</button>
-			{onQuickDefer && todo.status === "active" ? (
+			{todo.status === "active" ? (
 				<span className="flex shrink-0 items-center">
 					<QuickDeferMenu todo={todo} />
 				</span>

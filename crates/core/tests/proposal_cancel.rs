@@ -3,7 +3,7 @@
 //! `proposal/decide{accept}` then returns `proposal_not_pending` and creates no
 //! entity. Driven by `fixtures/propose-worker.ts`, which proposes and parks.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use futures_util::SinkExt;
 use sqlx::Row;
@@ -11,77 +11,19 @@ use sqlx::sqlite::SqlitePoolOptions;
 use tokio_tungstenite::tungstenite::Message;
 
 mod common;
-use common::{CoreHandle, Workspace, next_text};
-
-/// Open a fresh socket, send one request, return the parsed response.
-async fn rpc(
-    core: &CoreHandle,
-    id: u64,
-    method: &str,
-    params: serde_json::Value,
-) -> serde_json::Value {
-    let mut ws = core.connect().await;
-    let req = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": id,
-        "method": method,
-        "params": params,
-    });
-    ws.send(Message::Text(req.to_string().into()))
-        .await
-        .expect("send request frame");
-    let body = next_text(&mut ws).await;
-    ws.close(None).await.ok();
-    serde_json::from_str(&body).unwrap_or_else(|e| panic!("response is JSON: {e} — body: {body}"))
-}
-
-/// Drive a Run to a park: thread/create, then poll run/subscribe until
-/// status=parked.
-async fn create_and_park(core: &CoreHandle) -> String {
-    let resp = rpc(
-        core,
-        1,
-        "thread/create",
-        serde_json::json!({ "prompt": "I bought milk after daycare pickup and felt relieved." }),
-    )
-    .await;
-    let run_id = resp["result"]["run_id"]
-        .as_str()
-        .unwrap_or_else(|| panic!("result.run_id is a string — body: {resp}"))
-        .to_string();
-
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        if Instant::now() > deadline {
-            panic!("timed out waiting for run to park");
-        }
-        let resp = rpc(
-            core,
-            2,
-            "run/subscribe",
-            serde_json::json!({ "run_id": run_id }),
-        )
-        .await;
-        if resp["result"]["status"].as_str() == Some("parked") {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(150)).await;
-    }
-    run_id
-}
+use common::{create_and_park, next_text, rpc, rt, Workspace};
 
 #[test]
 fn cancel_parked_run() {
     let workspace = Workspace::new();
     let core = workspace.core().worker_fixture("propose-worker.ts").spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let run_id = rt.block_on(async {
-        let run_id = create_and_park(&core).await;
+        let run_id = create_and_park(&core, "I bought milk after daycare pickup and felt relieved.")
+            .await
+            .0;
 
         // Learn the proposal_id for the post-cancel decide attempt.
         let resp = rpc(
@@ -228,13 +170,12 @@ fn cancel_during_resume_pre_spawn_prevents_continuation() {
         .env("INKSTONE_WORKER_PRE_SPAWN_DELAY_MS", "750")
         .spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let run_id = rt.block_on(async {
-        let run_id = create_and_park(&core).await;
+        let run_id = create_and_park(&core, "I bought milk after daycare pickup and felt relieved.")
+            .await
+            .0;
 
         let resp = rpc(
             &core,

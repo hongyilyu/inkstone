@@ -188,9 +188,10 @@ async fn review_context_for_proposal(
             if !allowed {
                 return Ok(None);
             }
-            let Some(row) = db::current_journal_entry_by_id(pool, entity_id)
-                .await
-                .map_err(|e| HandlerError::Internal(e.into()))?
+            let Some(row) =
+                db::current_entity_review_data(pool, entity_id, EntityType::JournalEntry)
+                    .await
+                    .map_err(|e| HandlerError::Internal(e.into()))?
             else {
                 return Ok(None);
             };
@@ -204,7 +205,7 @@ async fn review_context_for_proposal(
             }
         }
         EntityType::Person => {
-            let Some(row) = db::current_person_by_id(pool, entity_id)
+            let Some(row) = db::current_entity_review_data(pool, entity_id, EntityType::Person)
                 .await
                 .map_err(|e| HandlerError::Internal(e.into()))?
             else {
@@ -220,7 +221,7 @@ async fn review_context_for_proposal(
             }
         }
         EntityType::Project => {
-            let Some(row) = db::current_project_by_id(pool, entity_id)
+            let Some(row) = db::current_entity_review_data(pool, entity_id, EntityType::Project)
                 .await
                 .map_err(|e| HandlerError::Internal(e.into()))?
             else {

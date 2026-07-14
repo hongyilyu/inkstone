@@ -741,31 +741,13 @@ async fn run_is_parked(pool: &SqlitePool, run_id: Uuid) -> Result<bool, DecideEr
 
 #[cfg(test)]
 mod tests {
+    use crate::db::test_support::memory_pool;
     use super::{DecideError, DecideOutcome, apply};
     use crate::db;
     use sqlx::SqlitePool;
-    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use uuid::Uuid;
-
-    /// A migrated in-memory pool with `max_connections(1)` so the single
-    /// `:memory:` database persists across calls.
-    async fn memory_pool() -> SqlitePool {
-        let options = SqliteConnectOptions::new()
-            .filename(":memory:")
-            .foreign_keys(true);
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(options)
-            .await
-            .expect("open in-memory sqlite");
-        sqlx::migrate!("./migrations")
-            .run(&pool)
-            .await
-            .expect("run migrations");
-        pool
-    }
 
     /// Seed a parked Run + assistant Message + a pending Journal Entry Proposal.
     /// Returns `(run_id, proposal_id)`. The `awaiting_tool_call_id` waitpoint is

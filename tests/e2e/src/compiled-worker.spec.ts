@@ -1,3 +1,4 @@
+import { driveEchoRun } from "./driveRun.js";
 import { expect, test } from "./fixtures.js";
 import { WORKER_FIXTURE_BIN } from "./spawnCore.js";
 
@@ -25,86 +26,7 @@ test("Core auto-detects + spawns a sibling worker binary and streams a Run", asy
 }) => {
 	await page.goto(core.url);
 
-	const result = await page.evaluate(async (baseUrl) => {
-		type Frame = {
-			id?: number;
-			result?: { run_id?: string; status?: string };
-			method?: string;
-			params?: { event?: { kind?: string; delta?: string } };
-		};
-
-		const wsUrl = `${baseUrl.replace(/^http:/, "ws:").replace(/\/$/, "")}/ws`;
-
-		return await new Promise<{ readonly text: string; readonly done: boolean }>(
-			(resolve, reject) => {
-				const ws = new WebSocket(wsUrl);
-				let runId = "";
-				let text = "";
-				let done = false;
-				let settled = false;
-
-				const timeout = setTimeout(() => {
-					if (settled) return;
-					settled = true;
-					ws.close();
-					reject(new Error("timed out before the Run reached done"));
-				}, 15_000);
-
-				const send = (id: number, method: string, params: unknown) => {
-					ws.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }));
-				};
-
-				ws.addEventListener("open", () => {
-					send(1, "thread/create", { prompt: "hello" });
-				});
-
-				ws.addEventListener("error", () => {
-					if (settled) return;
-					settled = true;
-					clearTimeout(timeout);
-					reject(new Error("websocket error"));
-				});
-
-				ws.addEventListener("message", (message) => {
-					try {
-						const frame = JSON.parse(String(message.data)) as Frame;
-
-						if (frame.id === 1) {
-							runId = frame.result?.run_id ?? "";
-							if (runId.length === 0) {
-								throw new Error("thread/create returned no run_id");
-							}
-							send(2, "run/subscribe", { run_id: runId });
-							return;
-						}
-
-						if (frame.method !== "run/event") return;
-						const event = frame.params?.event;
-						if (event?.kind === "text_delta") {
-							text += event.delta ?? "";
-							return;
-						}
-						if (event?.kind === "error") {
-							throw new Error(`Run emitted error event: ${message.data}`);
-						}
-						if (event?.kind === "done") {
-							done = true;
-							settled = true;
-							clearTimeout(timeout);
-							ws.close();
-							resolve({ text, done });
-						}
-					} catch (error) {
-						if (settled) return;
-						settled = true;
-						clearTimeout(timeout);
-						ws.close();
-						reject(error instanceof Error ? error : new Error(String(error)));
-					}
-				});
-			},
-		);
-	}, core.url);
+	const result = await driveEchoRun(page, core.url, "hello");
 
 	// The reassembled stream is the fixture's `echo: <prompt>` — only producible
 	// if Core auto-detected the sibling binary and drove it to completion.

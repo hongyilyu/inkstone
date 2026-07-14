@@ -4,31 +4,10 @@
 //! nothing.
 
 use futures_util::SinkExt;
-use sqlx::SqlitePool;
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use tokio_tungstenite::tungstenite::Message;
 
 mod common;
-use common::{Workspace, Ws, next_text};
-
-/// Open a migrated pool against the Workspace DB so a test can seed a setting
-/// row directly before Core spawns (mirrors `current_thread_journal_entries`).
-async fn migrated_pool(workspace: &Workspace) -> SqlitePool {
-    let options = SqliteConnectOptions::new()
-        .filename(workspace.db_path())
-        .create_if_missing(true)
-        .foreign_keys(true);
-    let pool = SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect_with(options)
-        .await
-        .expect("open sqlite pool");
-    sqlx::migrate!("./migrations")
-        .run(&pool)
-        .await
-        .expect("run migrations");
-    pool
-}
+use common::{Workspace, Ws, migrated_pool, next_text, rt};
 
 async fn request(ws: &mut Ws, id: u64, method: &str, params: serde_json::Value) -> serde_json::Value {
     let req = serde_json::json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
@@ -44,10 +23,7 @@ fn settings_get_set_round_trips_and_validates() {
     let workspace = Workspace::new();
     let core = workspace.core().spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
         let mut ws = core.connect().await;
@@ -125,10 +101,7 @@ fn settings_get_enabled_models_defaults_to_uncurated_empty() {
     let workspace = Workspace::new();
     let core = workspace.core().spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
         let mut ws = core.connect().await;
@@ -150,10 +123,7 @@ fn settings_get_enabled_models_returns_stored_set() {
     // wire write path lands in slice 2), `settings/get` returns exactly it.
     let workspace = Workspace::new();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
         // Seed the KV row before Core spawns: a JSON-encoded one-element array.
@@ -190,10 +160,7 @@ fn settings_set_enabled_models_persists_and_enforces_default_membership() {
     let workspace = Workspace::new();
     let core = workspace.core().spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
         let mut ws = core.connect().await;
@@ -303,10 +270,7 @@ fn settings_set_malformed_params_rejected() {
     let workspace = Workspace::new();
     let core = workspace.core().spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
         let mut ws = core.connect().await;

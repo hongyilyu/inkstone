@@ -9,7 +9,7 @@ import { Effect, Queue, Stream } from "effect";
 import { beforeEach, describe, expect, it } from "vitest";
 import { awaitRun, resetBridge, send } from "@/store/bridge.js";
 import {
-	appendUserMessage,
+	appendMessage,
 	applyEvent,
 	attachRun,
 	beginRunSubscription,
@@ -19,7 +19,6 @@ import {
 	prependHistory,
 	resetChatStore,
 	type Segment,
-	seedAssistantMessage,
 	setPendingProposal,
 } from "@/store/chat.js";
 
@@ -394,8 +393,8 @@ describe("prependHistory", () => {
 	});
 
 	it("folds fetched history in front of the live turn, skipping runs already present", () => {
-		appendUserMessage("t1", live("u-live", "live", "live msg"));
-		seedAssistantMessage("t1", {
+		appendMessage("t1", live("u-live", "live", "live msg"));
+		appendMessage("t1", {
 			id: "a-live",
 			role: "assistant",
 			status: "streaming",
@@ -424,7 +423,7 @@ describe("prependHistory", () => {
 		prependHistory("missing", [live("x", "r", "x")]);
 		expect(getChatState().threads.missing).toBeUndefined();
 
-		appendUserMessage("t2", live("u", "r", "u"));
+		appendMessage("t2", live("u", "r", "u"));
 		prependHistory("t2", [live("dup", "r", "dup")]);
 		expect(getChatState().threads.t2?.messages.map((m) => m.id)).toEqual(["u"]);
 	});
@@ -434,7 +433,7 @@ describe("segment timeline (ADR-0045)", () => {
 	/** Seed a live assistant turn bound to `runId`, snapshot armed (the live-send shape). */
 	function seedRun(threadId: string, runId: string): void {
 		const id = "a-seg";
-		seedAssistantMessage(threadId, {
+		appendMessage(threadId, {
 			id,
 			role: "assistant",
 			status: "streaming",

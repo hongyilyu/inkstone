@@ -8,17 +8,14 @@ use sqlx::sqlite::SqlitePoolOptions;
 use tokio_tungstenite::tungstenite::Message;
 
 mod common;
-use common::{Workspace, next_text};
+use common::{next_text, rt, Workspace};
 
 #[test]
 fn post_message_writes_initial_rows() {
     let workspace = Workspace::new();
     let core = workspace.core().worker_fixture("slow-worker.ts").spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let run_id = rt.block_on(async {
         let mut ws = core.connect().await;

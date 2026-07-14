@@ -23,7 +23,7 @@ use sqlx::sqlite::SqlitePoolOptions;
 use tokio_tungstenite::tungstenite::Message;
 
 mod common;
-use common::{Workspace, Ws, next_text};
+use common::{next_text, rt, Workspace, Ws};
 
 /// Start a Run via `thread/create` on `ws` and return the minted `run_id`.
 async fn post_message(ws: &mut Ws, id: u32) -> String {
@@ -131,10 +131,7 @@ fn dropped_connection_does_not_kill_run() {
         .env("INKSTONE_FIXTURE_GATE", &gate_path)
         .spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let run_id = rt.block_on(async {
         // A: post + subscribe, then DROP mid-run.
@@ -239,10 +236,7 @@ fn exactly_once_subscribe_during_inflight_persist() {
         .env("INKSTONE_FIXTURE_GATE", &gate_path)
         .spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
         let mut ws = core.connect().await;

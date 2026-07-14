@@ -14,39 +14,14 @@ use sqlx::sqlite::SqlitePoolOptions;
 use tokio_tungstenite::tungstenite::Message;
 
 mod common;
-use common::{CoreHandle, Workspace, next_text};
-
-/// Open a fresh socket, send a single request, return the response body.
-async fn rpc(
-    core: &CoreHandle,
-    id: u64,
-    method: &str,
-    params: serde_json::Value,
-) -> serde_json::Value {
-    let mut ws = core.connect().await;
-    let req = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": id,
-        "method": method,
-        "params": params,
-    });
-    ws.send(Message::Text(req.to_string().into()))
-        .await
-        .expect("send request frame");
-    let body = next_text(&mut ws).await;
-    ws.close(None).await.ok();
-    serde_json::from_str(&body).unwrap_or_else(|e| panic!("response is JSON: {e} — body: {body}"))
-}
+use common::{await_parked, next_text, rpc, rt, Workspace};
 
 #[test]
 fn parks_on_propose_workspace_mutation() {
     let workspace = Workspace::new();
     let core = workspace.core().worker_fixture("propose-worker.ts").spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let run_id = rt.block_on(async {
         let resp = rpc(
@@ -61,24 +36,7 @@ fn parks_on_propose_workspace_mutation() {
             .unwrap_or_else(|| panic!("result.run_id is a string — body: {resp}"))
             .to_string();
 
-        // Poll run/subscribe until the Run reports status:"parked".
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            if Instant::now() > deadline {
-                panic!("timed out waiting for run to park");
-            }
-            let resp = rpc(
-                &core,
-                2,
-                "run/subscribe",
-                serde_json::json!({ "run_id": run_id }),
-            )
-            .await;
-            if resp["result"]["status"].as_str() == Some("parked") {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(150)).await;
-        }
+        await_parked(&core, &run_id).await;
 
         // Assert NO done/error event arrives — the park is not terminal.
         let mut ws = core.connect().await;
@@ -219,10 +177,7 @@ fn parked_run_emits_no_false_done_to_attached_subscriber() {
         .env("INKSTONE_PROPOSE_DELAY_MS", "1500")
         .spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
         let resp = rpc(
@@ -316,10 +271,7 @@ fn attached_subscriber_gets_proposal_pending_on_park() {
         .env("INKSTONE_PROPOSE_DELAY_MS", "1500")
         .spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
         let resp = rpc(

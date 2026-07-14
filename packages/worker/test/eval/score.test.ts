@@ -41,11 +41,6 @@ const perfectExpected: ExpectedProposal = {
 		{ type: "project", name: "Lead Ads" },
 		{ type: "todo", title: "Figure out the Rodeo side" },
 	],
-	links: [
-		{ kind: "todo_project" },
-		{ kind: "todo_person" },
-		{ kind: "journal_ref" },
-	],
 };
 
 describe("scoreProposal — apply_intent_graph alignment", () => {

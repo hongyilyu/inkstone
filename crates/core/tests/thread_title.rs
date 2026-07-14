@@ -17,7 +17,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::Message;
 
 mod common;
-use common::{Workspace, fixture_cmd, next_text};
+use common::{fixture_cmd, next_text, rt, Workspace};
 
 /// Write a non-expired `openai-codex` credential into `dir` so Core's token gate
 /// resolves `Ok(Some(_))`. Mirrors `credentials::StoredCredential`'s on-disk
@@ -179,10 +179,7 @@ fn generated_title_overwrites_placeholder() {
         )
         .spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
         let mut ws = core.connect().await;
@@ -228,10 +225,7 @@ fn whitespace_output_keeps_placeholder() {
         .env("INKSTONE_TITLE_FIXTURE_EMPTY", "1")
         .spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
         let mut ws = core.connect().await;
@@ -277,10 +271,7 @@ fn timeout_keeps_placeholder() {
         .env("INKSTONE_TITLE_TIMEOUT_MS", "200")
         .spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
         let mut ws = core.connect().await;
@@ -327,10 +318,7 @@ fn no_credential_rejects_thread_create() {
         .env("INKSTONE_CREDENTIALS_DIR", &creds_dir)
         .spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
         let mut ws = core.connect().await;
@@ -410,10 +398,7 @@ fn generated_title_pushes_notification() {
         )
         .spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
         let mut ws = core.connect().await;
@@ -462,10 +447,7 @@ fn empty_generation_pushes_no_notification() {
         .env("INKSTONE_TITLE_FIXTURE_EMPTY", "1")
         .spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
         let mut ws = core.connect().await;

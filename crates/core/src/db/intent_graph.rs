@@ -819,7 +819,7 @@ async fn weave_and_mint_journal_entry(
 ///    Thread (`journal_entry_target_is_valid`, in-tx). A re-scan re-anchoring a JE
 ///    from a DIFFERENT thread is refused (`InvalidMutation`) — this is what keeps the
 ///    v1 re-scan same-thread (the cross-thread surface is a later concern).
-/// 2. Read the existing JE's STORED body via `current_journal_entry_by_id` (the JE
+/// 2. Read the existing JE's STORED body via `current_entity_data` (the JE
 ///    vanished under the parked Proposal → `TargetMissing`).
 /// 3. For each surviving `journal_ref` link (`from == @je`, `to` not rejected and
 ///    resolved): require EXACTLY ONE of `match_text` / `append_text` (both-set or
@@ -854,7 +854,7 @@ async fn anchor_reuse_journal_entry(
 
     // 2. Read the existing JE's stored body. A vanished JE (deleted under the parked
     //    Proposal) is TargetMissing, not an opaque fault.
-    let (_, current_data) = queries::current_journal_entry_by_id(&mut **tx, existing_id)
+    let current_data = queries::current_entity_data(&mut **tx, existing_id, "journal_entry")
         .await?
         .ok_or(ApplyError::TargetMissing)?;
     let mut data: serde_json::Value = serde_json::from_str(&current_data).map_err(|e| {
@@ -1796,26 +1796,8 @@ fn resolve_entity_node(node: &serde_json::Value) -> Result<EntityNode, ApplyErro
 
 #[cfg(test)]
 mod tests {
+    use crate::db::test_support::memory_pool;
     use super::*;
-    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-
-    /// A migrated in-memory pool with `max_connections(1)` (matches the resolver's
-    /// race-free read assumption).
-    async fn memory_pool() -> sqlx::SqlitePool {
-        let options = SqliteConnectOptions::new()
-            .filename(":memory:")
-            .foreign_keys(true);
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(options)
-            .await
-            .expect("open in-memory sqlite");
-        sqlx::migrate!("./migrations")
-            .run(&pool)
-            .await
-            .expect("run migrations");
-        pool
-    }
 
     /// Insert one accepted Entity (created_by='user', no Proposal anchor) of
     /// `entity_type` with label `label` — the accepted set the plan reads.

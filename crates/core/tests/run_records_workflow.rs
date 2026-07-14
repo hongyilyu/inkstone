@@ -9,7 +9,7 @@ use sqlx::sqlite::SqlitePoolOptions;
 use tokio_tungstenite::tungstenite::Message;
 
 mod common;
-use common::{Workspace, next_text};
+use common::{next_text, rt, Workspace};
 
 #[test]
 fn run_row_records_workflow_provider_and_model() {
@@ -18,10 +18,7 @@ fn run_row_records_workflow_provider_and_model() {
     // provider/model.
     let core = workspace.core().worker_fixture("slow-worker.ts").spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let run_id = rt.block_on(async {
         let mut ws = core.connect().await;

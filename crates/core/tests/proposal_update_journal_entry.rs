@@ -1,194 +1,15 @@
-use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::path::Path;
 
-use futures_util::SinkExt;
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::{Executor, Row, SqlitePool};
-use tokio_tungstenite::tungstenite::Message;
 use uuid::Uuid;
 
 mod common;
-use common::{CoreHandle, Workspace, next_text};
-
-async fn migrated_pool(workspace: &Workspace) -> SqlitePool {
-    let options = SqliteConnectOptions::new()
-        .filename(workspace.db_path())
-        .create_if_missing(true)
-        .foreign_keys(true);
-    let pool = SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect_with(options)
-        .await
-        .expect("open sqlite pool");
-    sqlx::migrate!("./migrations")
-        .run(&pool)
-        .await
-        .expect("run migrations");
-    pool
-}
-
-async fn seed_thread(pool: &SqlitePool, thread_id: Uuid, title: &str, now_ms: i64) {
-    sqlx::query(
-        "INSERT INTO threads (id, title, created_at, last_activity_at) VALUES (?1, ?2, ?3, ?3)",
-    )
-    .bind(thread_id.to_string())
-    .bind(title)
-    .bind(now_ms)
-    .execute(pool)
-    .await
-    .expect("insert thread");
-}
-
-async fn seed_accepted_journal_entry(
-    pool: &SqlitePool,
-    thread_id: Uuid,
-    occurred_at: &str,
-    body_text: &str,
-    created_at: i64,
-) -> Uuid {
-    seed_accepted_journal_entry_with_source_role(
-        pool,
-        thread_id,
-        occurred_at,
-        body_text,
-        created_at,
-        "user",
-    )
-    .await
-}
-
-async fn seed_accepted_journal_entry_with_source_role(
-    pool: &SqlitePool,
-    thread_id: Uuid,
-    occurred_at: &str,
-    body_text: &str,
-    created_at: i64,
-    source_role: &str,
-) -> Uuid {
-    let entity_id = Uuid::now_v7();
-    let run_id = Uuid::now_v7();
-    let user_message_id = Uuid::now_v7();
-    let assistant_message_id = Uuid::now_v7();
-    let tool_call_id = format!("tc_{entity_id}");
-    let proposal_id = Uuid::now_v7().to_string();
-    let source_id = Uuid::now_v7().to_string();
-    let payload = serde_json::json!({
-        "occurred_at": occurred_at,
-        "body": [{ "type": "text", "text": body_text }]
-    });
-    let payload_str = payload.to_string();
-
-    let mut tx = pool.begin().await.expect("begin seed tx");
-    tx.execute(sqlx::query(
-        "INSERT INTO runs \
-         (id, thread_id, workflow_name, workflow_version, provider, model, thinking_level, user_message_id, status, started_at, ended_at, terminal_reason) \
-         VALUES (?1, ?2, 'default', '1.0.0', 'faux', 'fake-model', 'off', ?3, 'completed', ?4, ?4, 'completed')",
-    )
-    .bind(run_id.to_string())
-    .bind(thread_id.to_string())
-    .bind(user_message_id.to_string())
-    .bind(created_at))
-    .await
-    .expect("insert run");
-    tx.execute(
-        sqlx::query(
-            "INSERT INTO messages (id, thread_id, run_id, role, status, created_at, updated_at) \
-             VALUES (?1, ?2, ?3, ?4, 'completed', ?5, ?5)",
-        )
-        .bind(user_message_id.to_string())
-        .bind(thread_id.to_string())
-        .bind(run_id.to_string())
-        .bind(source_role)
-        .bind(created_at),
-    )
-    .await
-    .expect("insert user message");
-    tx.execute(
-        sqlx::query(
-            "INSERT INTO messages (id, thread_id, run_id, role, status, created_at, updated_at) \
-             VALUES (?1, ?2, ?3, 'assistant', 'completed', ?4, ?4)",
-        )
-        .bind(assistant_message_id.to_string())
-        .bind(thread_id.to_string())
-        .bind(run_id.to_string())
-        .bind(created_at),
-    )
-    .await
-    .expect("insert assistant message");
-    tx.execute(
-        sqlx::query(
-            "INSERT INTO message_parts (message_id, seq, type, text) VALUES (?1, 0, 'text', ?2)",
-        )
-        .bind(user_message_id.to_string())
-        .bind(body_text),
-    )
-    .await
-    .expect("insert user text");
-    tx.execute(
-        sqlx::query(
-            "INSERT INTO message_parts (message_id, seq, type, text) VALUES (?1, 0, 'text', '')",
-        )
-        .bind(assistant_message_id.to_string()),
-    )
-    .await
-    .expect("insert assistant text");
-    tx.execute(sqlx::query(
-        "INSERT INTO tool_calls (id, run_id, name, request_payload, status, result_payload, requested_at, resolved_at) \
-         VALUES (?1, ?2, 'propose_workspace_mutation', ?3, 'completed', '{}', ?4, ?4)",
-    )
-    .bind(&tool_call_id)
-    .bind(run_id.to_string())
-    .bind(serde_json::json!({ "mutation_kind": "create_journal_entry", "payload": payload }).to_string())
-    .bind(created_at))
-    .await
-    .expect("insert tool call");
-    tx.execute(sqlx::query(
-        "INSERT INTO proposals (id, tool_call_id, mutation_kind, status, decided_by, decided_at, applied_at) \
-         VALUES (?1, ?2, 'create_journal_entry', 'accepted', 'user', ?3, ?3)",
-    )
-    .bind(&proposal_id)
-    .bind(&tool_call_id)
-    .bind(created_at))
-    .await
-    .expect("insert proposal");
-    tx.execute(sqlx::query(
-        "INSERT INTO entities (id, type, schema_version, data, created_by, created_via_proposal_id, created_at, updated_at) \
-         VALUES (?1, 'journal_entry', 1, ?2, 'proposal', ?3, ?4, ?4)",
-    )
-    .bind(entity_id.to_string())
-    .bind(&payload_str)
-    .bind(&proposal_id)
-    .bind(created_at))
-    .await
-    .expect("insert entity");
-    tx.execute(
-        sqlx::query(
-            "INSERT INTO entity_revisions (entity_id, seq, data, proposal_id, created_at) \
-             VALUES (?1, 1, ?2, ?3, ?4)",
-        )
-        .bind(entity_id.to_string())
-        .bind(&payload_str)
-        .bind(&proposal_id)
-        .bind(created_at),
-    )
-    .await
-    .expect("insert entity revision");
-    tx.execute(
-        sqlx::query(
-            "INSERT INTO entity_sources (id, entity_id, source_message_id, relation, created_at) \
-             VALUES (?1, ?2, ?3, 'created_from', ?4)",
-        )
-        .bind(&source_id)
-        .bind(entity_id.to_string())
-        .bind(user_message_id.to_string())
-        .bind(created_at),
-    )
-    .await
-    .expect("insert entity source");
-
-    tx.commit().await.expect("commit seed tx");
-    entity_id
-}
+use common::{
+    Workspace, await_completed, entity_data, max_revision_seq, migrated_pool,
+    open_readonly_pool, park_proposal, proposal_and_tool_status_for_run, proposal_id_of, rpc,
+    rt, seed_accepted_journal_entry, seed_accepted_journal_entry_full, seed_thread,
+    updated_from_count_for_run,
+};
 
 fn write_update_params(path: &Path, entity_id: Uuid, body_text: &str) {
     write_update_params_body(
@@ -343,154 +164,6 @@ fn write_reference_params(path: &Path, source_entity_id: Uuid, target_entity_id:
     .expect("write reference params");
 }
 
-async fn rpc(
-    core: &CoreHandle,
-    id: u64,
-    method: &str,
-    params: serde_json::Value,
-) -> serde_json::Value {
-    let mut ws = core.connect().await;
-    let req = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": id,
-        "method": method,
-        "params": params,
-    });
-    ws.send(Message::Text(req.to_string().into()))
-        .await
-        .expect("send request frame");
-    let body = next_text(&mut ws).await;
-    ws.close(None).await.ok();
-    serde_json::from_str(&body).unwrap_or_else(|e| panic!("response is JSON: {e} - body: {body}"))
-}
-
-async fn await_parked(core: &CoreHandle, run_id: &str) {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        if Instant::now() > deadline {
-            panic!("timed out waiting for run to park");
-        }
-        let resp = rpc(
-            core,
-            2,
-            "run/subscribe",
-            serde_json::json!({ "run_id": run_id }),
-        )
-        .await;
-        if resp["result"]["status"].as_str() == Some("parked") {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(150)).await;
-    }
-}
-
-async fn await_completed(core: &CoreHandle, run_id: &str) {
-    let deadline = Instant::now() + Duration::from_secs(15);
-    loop {
-        if Instant::now() > deadline {
-            panic!("timed out waiting for run to complete");
-        }
-        let resp = rpc(
-            core,
-            9,
-            "run/subscribe",
-            serde_json::json!({ "run_id": run_id }),
-        )
-        .await;
-        if resp["result"]["status"].as_str() == Some("completed") {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(150)).await;
-    }
-}
-
-async fn park_update_proposal(
-    core: &CoreHandle,
-    thread_id: Uuid,
-    prompt: &str,
-) -> (String, String) {
-    let resp = rpc(
-        core,
-        1,
-        "run/post_message",
-        serde_json::json!({ "thread_id": thread_id, "prompt": prompt }),
-    )
-    .await;
-    let run_id = resp["result"]["run_id"]
-        .as_str()
-        .unwrap_or_else(|| panic!("result.run_id is a string - body: {resp}"))
-        .to_string();
-    await_parked(core, &run_id).await;
-
-    let resp = rpc(
-        core,
-        3,
-        "proposal/get",
-        serde_json::json!({ "run_id": run_id }),
-    )
-    .await;
-    let proposal_id = resp["result"]["proposal_id"]
-        .as_str()
-        .unwrap_or_else(|| panic!("proposal_id is a string - body: {resp}"))
-        .to_string();
-    assert_eq!(
-        resp["result"]["mutation_kind"].as_str(),
-        Some("update_journal_entry"),
-        "parked Proposal is an update - body: {resp}"
-    );
-    (run_id, proposal_id)
-}
-
-async fn park_reference_proposal(
-    core: &CoreHandle,
-    thread_id: Uuid,
-    prompt: &str,
-) -> (String, String) {
-    let resp = rpc(
-        core,
-        21,
-        "run/post_message",
-        serde_json::json!({ "thread_id": thread_id, "prompt": prompt }),
-    )
-    .await;
-    let run_id = resp["result"]["run_id"]
-        .as_str()
-        .unwrap_or_else(|| panic!("result.run_id is a string - body: {resp}"))
-        .to_string();
-    await_parked(core, &run_id).await;
-
-    let resp = rpc(
-        core,
-        22,
-        "proposal/get",
-        serde_json::json!({ "run_id": run_id }),
-    )
-    .await;
-    let proposal_id = resp["result"]["proposal_id"]
-        .as_str()
-        .unwrap_or_else(|| panic!("proposal_id is a string - body: {resp}"))
-        .to_string();
-    assert_eq!(
-        resp["result"]["mutation_kind"].as_str(),
-        Some("reference_existing_entity_from_journal_entry"),
-        "parked Proposal references an existing Entity - body: {resp}"
-    );
-    (run_id, proposal_id)
-}
-
-async fn open_readonly_pool(db_path: PathBuf) -> SqlitePool {
-    let url = format!("sqlite://{}?mode=ro", db_path.display());
-    SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect(&url)
-        .await
-        .expect("connect to migrated DB")
-}
-
-async fn entity_data(pool: &SqlitePool, entity_id: Uuid) -> serde_json::Value {
-    serde_json::from_str(&raw_entity_data(pool, entity_id).await).expect("entity data is JSON")
-}
-
 async fn raw_entity_data(pool: &SqlitePool, entity_id: Uuid) -> String {
     let data: String = sqlx::query_scalar("SELECT data FROM entities WHERE id = ?1")
         .bind(entity_id.to_string())
@@ -498,14 +171,6 @@ async fn raw_entity_data(pool: &SqlitePool, entity_id: Uuid) -> String {
         .await
         .expect("entity row exists");
     data
-}
-
-async fn max_revision_seq(pool: &SqlitePool, entity_id: Uuid) -> i64 {
-    sqlx::query_scalar("SELECT MAX(seq) FROM entity_revisions WHERE entity_id = ?1")
-        .bind(entity_id.to_string())
-        .fetch_one(pool)
-        .await
-        .expect("max revision seq")
 }
 
 async fn revision_text(pool: &SqlitePool, entity_id: Uuid, seq: i64) -> String {
@@ -533,19 +198,6 @@ async fn revision_data(pool: &SqlitePool, entity_id: Uuid, seq: i64) -> serde_js
     serde_json::from_str(&data).expect("revision data JSON")
 }
 
-async fn updated_from_count_for_run(pool: &SqlitePool, entity_id: Uuid, run_id: &str) -> i64 {
-    sqlx::query_scalar(
-        "SELECT COUNT(*) FROM entity_sources es \
-         JOIN runs r ON r.user_message_id = es.source_message_id \
-         WHERE es.entity_id = ?1 AND r.id = ?2 AND es.relation = 'updated_from'",
-    )
-    .bind(entity_id.to_string())
-    .bind(run_id)
-    .fetch_one(pool)
-    .await
-    .expect("count updated_from sources")
-}
-
 async fn entity_ref_count(
     pool: &SqlitePool,
     source_entity_id: Uuid,
@@ -569,29 +221,13 @@ async fn target_entity_source_count(pool: &SqlitePool, target_entity_id: Uuid) -
         .expect("count target entity sources")
 }
 
-async fn proposal_and_tool_status_for_run(pool: &SqlitePool, run_id: &str) -> (String, String) {
-    let row = sqlx::query(
-        "SELECT p.status, tc.status AS tool_status \
-         FROM proposals p JOIN tool_calls tc ON tc.id = p.tool_call_id \
-         WHERE tc.run_id = ?1",
-    )
-    .bind(run_id)
-    .fetch_one(pool)
-    .await
-    .expect("proposal row exists");
-    (row.get("status"), row.get("tool_status"))
-}
-
 #[test]
 fn same_thread_update_accept_and_edit_replace_payload() {
     let workspace = Workspace::new();
     let params_path = workspace.path().join("update-params.json");
     let thread_id = Uuid::now_v7();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let entity_id = rt.block_on(async {
         let pool = migrated_pool(&workspace).await;
@@ -620,12 +256,14 @@ fn same_thread_update_accept_and_edit_replace_payload() {
         .spawn();
 
     let (first_run_id, second_run_id) = rt.block_on(async {
-        let (run_id, proposal_id) = park_update_proposal(
+        let (run_id, proposal) = park_proposal(
             &core,
             thread_id,
             "Actually, that entry should mention bread too.",
+            Some("update_journal_entry"),
         )
         .await;
+        let proposal_id = proposal_id_of(&proposal);
         let resp = rpc(
             &core,
             4,
@@ -650,8 +288,14 @@ fn same_thread_update_accept_and_edit_replace_payload() {
         await_completed(&core, &run_id).await;
 
         write_update_params(&params_path, entity_id, "This worker payload should be replaced.");
-        let (edit_run_id, edit_proposal_id) =
-            park_update_proposal(&core, thread_id, "Make that correction more precise.").await;
+        let (edit_run_id, proposal) = park_proposal(
+            &core,
+            thread_id,
+            "Make that correction more precise.",
+            Some("update_journal_entry"),
+        )
+        .await;
+        let edit_proposal_id = proposal_id_of(&proposal);
         let resp = rpc(
             &core,
             5,
@@ -683,9 +327,9 @@ fn same_thread_update_accept_and_edit_replace_payload() {
     });
 
     rt.block_on(async {
-        let pool = open_readonly_pool(workspace.db_path().to_path_buf()).await;
+        let pool = open_readonly_pool(&workspace).await;
 
-        let data = entity_data(&pool, entity_id).await;
+        let data = entity_data(&pool, &entity_id.to_string()).await;
         assert_eq!(
             data["body"][0]["text"].as_str(),
             Some("Bought oat milk and bread after daycare pickup."),
@@ -696,7 +340,7 @@ fn same_thread_update_accept_and_edit_replace_payload() {
             "entity current data does not persist the update target id"
         );
         assert_eq!(
-            max_revision_seq(&pool, entity_id).await,
+            max_revision_seq(&pool, &entity_id.to_string()).await,
             3,
             "accept adds seq 2 and edit adds seq 3"
         );
@@ -725,12 +369,12 @@ fn same_thread_update_accept_and_edit_replace_payload() {
             "edited update appends the edited full payload"
         );
         assert_eq!(
-            updated_from_count_for_run(&pool, entity_id, &first_run_id).await,
+            updated_from_count_for_run(&pool, &entity_id.to_string(), &first_run_id).await,
             1,
             "accepted update sources from the current user Message"
         );
         assert_eq!(
-            updated_from_count_for_run(&pool, entity_id, &second_run_id).await,
+            updated_from_count_for_run(&pool, &entity_id.to_string(), &second_run_id).await,
             1,
             "edited update sources from the current user Message"
         );
@@ -766,10 +410,7 @@ fn edit_update_preserves_target_entity_id_when_payload_omits_it() {
     let params_path = workspace.path().join("update-params.json");
     let thread_id = Uuid::now_v7();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let entity_id = rt.block_on(async {
         let pool = migrated_pool(&workspace).await;
@@ -798,8 +439,14 @@ fn edit_update_preserves_target_entity_id_when_payload_omits_it() {
         .spawn();
 
     let run_id = rt.block_on(async {
-        let (run_id, proposal_id) =
-            park_update_proposal(&core, thread_id, "Tighten that earlier entry.").await;
+        let (run_id, proposal) = park_proposal(
+            &core,
+            thread_id,
+            "Tighten that earlier entry.",
+            Some("update_journal_entry"),
+        )
+        .await;
+        let proposal_id = proposal_id_of(&proposal);
 
         let proposal = rpc(
             &core,
@@ -844,16 +491,16 @@ fn edit_update_preserves_target_entity_id_when_payload_omits_it() {
     });
 
     rt.block_on(async {
-        let pool = open_readonly_pool(workspace.db_path().to_path_buf()).await;
+        let pool = open_readonly_pool(&workspace).await;
 
-        let data = entity_data(&pool, entity_id).await;
+        let data = entity_data(&pool, &entity_id.to_string()).await;
         assert_eq!(
             data["body"][0]["text"].as_str(),
             Some("Bought oat milk after daycare pickup."),
             "entity current data uses the edited payload"
         );
         assert_eq!(
-            max_revision_seq(&pool, entity_id).await,
+            max_revision_seq(&pool, &entity_id.to_string()).await,
             2,
             "edit appends exactly one new revision"
         );
@@ -892,10 +539,7 @@ fn edit_update_rejects_retargeting_to_another_entry() {
     let params_path = workspace.path().join("update-params.json");
     let thread_id = Uuid::now_v7();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let (target_entity_id, other_entity_id) = rt.block_on(async {
         let pool = migrated_pool(&workspace).await;
@@ -932,8 +576,14 @@ fn edit_update_rejects_retargeting_to_another_entry() {
         .spawn();
 
     let run_id = rt.block_on(async {
-        let (run_id, proposal_id) =
-            park_update_proposal(&core, thread_id, "Tighten that earlier entry.").await;
+        let (run_id, proposal) = park_proposal(
+            &core,
+            thread_id,
+            "Tighten that earlier entry.",
+            Some("update_journal_entry"),
+        )
+        .await;
+        let proposal_id = proposal_id_of(&proposal);
 
         let resp = rpc(
             &core,
@@ -967,25 +617,25 @@ fn edit_update_rejects_retargeting_to_another_entry() {
     });
 
     rt.block_on(async {
-        let pool = open_readonly_pool(workspace.db_path().to_path_buf()).await;
+        let pool = open_readonly_pool(&workspace).await;
 
         assert_eq!(
-            entity_data(&pool, target_entity_id).await["body"][0]["text"].as_str(),
+            entity_data(&pool, &target_entity_id.to_string()).await["body"][0]["text"].as_str(),
             Some("Bought milk after daycare pickup."),
             "invalid retarget leaves original target unchanged"
         );
         assert_eq!(
-            entity_data(&pool, other_entity_id).await["body"][0]["text"].as_str(),
+            entity_data(&pool, &other_entity_id.to_string()).await["body"][0]["text"].as_str(),
             Some("Picked up bread after work."),
             "invalid retarget leaves edited target unchanged"
         );
         assert_eq!(
-            max_revision_seq(&pool, target_entity_id).await,
+            max_revision_seq(&pool, &target_entity_id.to_string()).await,
             1,
             "invalid retarget writes no target revision"
         );
         assert_eq!(
-            max_revision_seq(&pool, other_entity_id).await,
+            max_revision_seq(&pool, &other_entity_id.to_string()).await,
             1,
             "invalid retarget writes no other-entry revision"
         );
@@ -1018,10 +668,7 @@ fn update_accepts_mixed_body_when_ref_belongs_to_target_entry() {
     let params_path = workspace.path().join("update-params.json");
     let thread_id = Uuid::now_v7();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let (entity_id, ref_id) = rt.block_on(async {
         let pool = migrated_pool(&workspace).await;
@@ -1063,8 +710,14 @@ fn update_accepts_mixed_body_when_ref_belongs_to_target_entry() {
         .spawn();
 
     let run_id = rt.block_on(async {
-        let (run_id, proposal_id) =
-            park_update_proposal(&core, thread_id, "Link Alice in the earlier entry.").await;
+        let (run_id, proposal) = park_proposal(
+            &core,
+            thread_id,
+            "Link Alice in the earlier entry.",
+            Some("update_journal_entry"),
+        )
+        .await;
+        let proposal_id = proposal_id_of(&proposal);
         let resp = rpc(
             &core,
             11,
@@ -1091,9 +744,9 @@ fn update_accepts_mixed_body_when_ref_belongs_to_target_entry() {
     });
 
     rt.block_on(async {
-        let pool = open_readonly_pool(workspace.db_path().to_path_buf()).await;
+        let pool = open_readonly_pool(&workspace).await;
 
-        let data = entity_data(&pool, entity_id).await;
+        let data = entity_data(&pool, &entity_id.to_string()).await;
         assert_eq!(
             data["body"][0]["text"].as_str(),
             Some("Met "),
@@ -1114,12 +767,12 @@ fn update_accepts_mixed_body_when_ref_belongs_to_target_entry() {
             "entity current data does not persist the update target id"
         );
         assert_eq!(
-            max_revision_seq(&pool, entity_id).await,
+            max_revision_seq(&pool, &entity_id.to_string()).await,
             2,
             "mixed update appends exactly one revision"
         );
         assert_eq!(
-            updated_from_count_for_run(&pool, entity_id, &run_id).await,
+            updated_from_count_for_run(&pool, &entity_id.to_string(), &run_id).await,
             1,
             "mixed update still sources from the current user Message"
         );
@@ -1132,10 +785,7 @@ fn update_rejects_entity_ref_that_does_not_exist() {
     let params_path = workspace.path().join("update-params.json");
     let thread_id = Uuid::now_v7();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let entity_id = rt.block_on(async {
         let pool = migrated_pool(&workspace).await;
@@ -1167,8 +817,14 @@ fn update_rejects_entity_ref_that_does_not_exist() {
         .spawn();
 
     let invalid_run_id = rt.block_on(async {
-        let (run_id, proposal_id) =
-            park_update_proposal(&core, thread_id, "Link Alice in the earlier entry.").await;
+        let (run_id, proposal) = park_proposal(
+            &core,
+            thread_id,
+            "Link Alice in the earlier entry.",
+            Some("update_journal_entry"),
+        )
+        .await;
+        let proposal_id = proposal_id_of(&proposal);
         let resp = rpc(
             &core,
             12,
@@ -1196,19 +852,19 @@ fn update_rejects_entity_ref_that_does_not_exist() {
     });
 
     rt.block_on(async {
-        let pool = open_readonly_pool(workspace.db_path().to_path_buf()).await;
+        let pool = open_readonly_pool(&workspace).await;
         assert_eq!(
-            entity_data(&pool, entity_id).await["body"][0]["text"].as_str(),
+            entity_data(&pool, &entity_id.to_string()).await["body"][0]["text"].as_str(),
             Some("Met Alice at school."),
             "invalid ref update leaves entity unchanged"
         );
         assert_eq!(
-            max_revision_seq(&pool, entity_id).await,
+            max_revision_seq(&pool, &entity_id.to_string()).await,
             1,
             "invalid ref update writes no new revision"
         );
         assert_eq!(
-            updated_from_count_for_run(&pool, entity_id, &invalid_run_id).await,
+            updated_from_count_for_run(&pool, &entity_id.to_string(), &invalid_run_id).await,
             0,
             "invalid ref update writes no updated_from source"
         );
@@ -1231,10 +887,7 @@ fn update_rejects_entity_ref_that_belongs_to_another_entry() {
     let params_path = workspace.path().join("update-params.json");
     let thread_id = Uuid::now_v7();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let (entity_id, other_ref_id) = rt.block_on(async {
         let pool = migrated_pool(&workspace).await;
@@ -1283,8 +936,14 @@ fn update_rejects_entity_ref_that_belongs_to_another_entry() {
         .spawn();
 
     let invalid_run_id = rt.block_on(async {
-        let (run_id, proposal_id) =
-            park_update_proposal(&core, thread_id, "Link Alice in the earlier entry.").await;
+        let (run_id, proposal) = park_proposal(
+            &core,
+            thread_id,
+            "Link Alice in the earlier entry.",
+            Some("update_journal_entry"),
+        )
+        .await;
+        let proposal_id = proposal_id_of(&proposal);
         let resp = rpc(
             &core,
             13,
@@ -1312,19 +971,19 @@ fn update_rejects_entity_ref_that_belongs_to_another_entry() {
     });
 
     rt.block_on(async {
-        let pool = open_readonly_pool(workspace.db_path().to_path_buf()).await;
+        let pool = open_readonly_pool(&workspace).await;
         assert_eq!(
-            entity_data(&pool, entity_id).await["body"][0]["text"].as_str(),
+            entity_data(&pool, &entity_id.to_string()).await["body"][0]["text"].as_str(),
             Some("Met Alice at school."),
             "wrong-source ref update leaves entity unchanged"
         );
         assert_eq!(
-            max_revision_seq(&pool, entity_id).await,
+            max_revision_seq(&pool, &entity_id.to_string()).await,
             1,
             "wrong-source ref update writes no new revision"
         );
         assert_eq!(
-            updated_from_count_for_run(&pool, entity_id, &invalid_run_id).await,
+            updated_from_count_for_run(&pool, &entity_id.to_string(), &invalid_run_id).await,
             0,
             "wrong-source ref update writes no updated_from source"
         );
@@ -1347,10 +1006,7 @@ fn reference_existing_entity_accept_creates_ref_and_updates_journal_entry() {
     let params_path = workspace.path().join("reference-params.json");
     let thread_id = Uuid::now_v7();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let (source_entity_id, target_entity_id) = rt.block_on(async {
         let pool = migrated_pool(&workspace).await;
@@ -1383,8 +1039,14 @@ fn reference_existing_entity_accept_creates_ref_and_updates_journal_entry() {
         .spawn();
 
     let run_id = rt.block_on(async {
-        let (run_id, proposal_id) =
-            park_reference_proposal(&core, thread_id, "Link Ada in that entry.").await;
+        let (run_id, proposal) = park_proposal(
+            &core,
+            thread_id,
+            "Link Ada in that entry.",
+            Some("reference_existing_entity_from_journal_entry"),
+        )
+        .await;
+        let proposal_id = proposal_id_of(&proposal);
         let resp = rpc(
             &core,
             23,
@@ -1436,7 +1098,7 @@ fn reference_existing_entity_accept_creates_ref_and_updates_journal_entry() {
     });
 
     rt.block_on(async {
-        let pool = open_readonly_pool(workspace.db_path().to_path_buf()).await;
+        let pool = open_readonly_pool(&workspace).await;
 
         assert_eq!(
             entity_ref_count(&pool, source_entity_id, target_entity_id).await,
@@ -1460,7 +1122,7 @@ fn reference_existing_entity_accept_creates_ref_and_updates_journal_entry() {
             "EntityRef stores the render fallback"
         );
 
-        let data = entity_data(&pool, source_entity_id).await;
+        let data = entity_data(&pool, &source_entity_id.to_string()).await;
         assert_eq!(
             data["occurred_at"].as_str(),
             Some("2026-06-10T10:30:00"),
@@ -1471,12 +1133,12 @@ fn reference_existing_entity_accept_creates_ref_and_updates_journal_entry() {
         assert_eq!(data["body"][1]["ref_id"].as_str(), Some(ref_id.as_str()));
         assert_eq!(data["body"][2]["text"].as_str(), Some(" at school."));
         assert_eq!(
-            max_revision_seq(&pool, source_entity_id).await,
+            max_revision_seq(&pool, &source_entity_id.to_string()).await,
             2,
             "reference accept appends a Journal Entry revision"
         );
         assert_eq!(
-            updated_from_count_for_run(&pool, source_entity_id, &run_id).await,
+            updated_from_count_for_run(&pool, &source_entity_id.to_string(), &run_id).await,
             1,
             "reference update sources from the current user Message"
         );
@@ -1494,10 +1156,7 @@ fn reference_existing_entity_reject_creates_nothing_and_leaves_body() {
     let params_path = workspace.path().join("reference-params.json");
     let thread_id = Uuid::now_v7();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let (source_entity_id, target_entity_id) = rt.block_on(async {
         let pool = migrated_pool(&workspace).await;
@@ -1530,8 +1189,14 @@ fn reference_existing_entity_reject_creates_nothing_and_leaves_body() {
         .spawn();
 
     rt.block_on(async {
-        let (run_id, proposal_id) =
-            park_reference_proposal(&core, thread_id, "Link Ada in that entry.").await;
+        let (run_id, proposal) = park_proposal(
+            &core,
+            thread_id,
+            "Link Ada in that entry.",
+            Some("reference_existing_entity_from_journal_entry"),
+        )
+        .await;
+        let proposal_id = proposal_id_of(&proposal);
         let resp = rpc(
             &core,
             24,
@@ -1556,19 +1221,19 @@ fn reference_existing_entity_reject_creates_nothing_and_leaves_body() {
     });
 
     rt.block_on(async {
-        let pool = open_readonly_pool(workspace.db_path().to_path_buf()).await;
+        let pool = open_readonly_pool(&workspace).await;
         assert_eq!(
             entity_ref_count(&pool, source_entity_id, target_entity_id).await,
             0,
             "reject creates no EntityRef"
         );
         assert_eq!(
-            entity_data(&pool, source_entity_id).await["body"][0]["text"].as_str(),
+            entity_data(&pool, &source_entity_id.to_string()).await["body"][0]["text"].as_str(),
             Some("Met Ada at school."),
             "reject leaves the Journal Entry body unchanged"
         );
         assert_eq!(
-            max_revision_seq(&pool, source_entity_id).await,
+            max_revision_seq(&pool, &source_entity_id.to_string()).await,
             1,
             "reject writes no Journal Entry revision"
         );
@@ -1581,10 +1246,7 @@ fn reference_existing_entity_reuses_existing_ref_for_duplicate_pair() {
     let params_path = workspace.path().join("reference-params.json");
     let thread_id = Uuid::now_v7();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let (source_entity_id, target_entity_id, existing_ref_id) = rt.block_on(async {
         let pool = migrated_pool(&workspace).await;
@@ -1618,8 +1280,14 @@ fn reference_existing_entity_reuses_existing_ref_for_duplicate_pair() {
         .spawn();
 
     rt.block_on(async {
-        let (run_id, proposal_id) =
-            park_reference_proposal(&core, thread_id, "Link Ada in that entry.").await;
+        let (run_id, proposal) = park_proposal(
+            &core,
+            thread_id,
+            "Link Ada in that entry.",
+            Some("reference_existing_entity_from_journal_entry"),
+        )
+        .await;
+        let proposal_id = proposal_id_of(&proposal);
         let resp = rpc(
             &core,
             25,
@@ -1640,13 +1308,13 @@ fn reference_existing_entity_reuses_existing_ref_for_duplicate_pair() {
     });
 
     rt.block_on(async {
-        let pool = open_readonly_pool(workspace.db_path().to_path_buf()).await;
+        let pool = open_readonly_pool(&workspace).await;
         assert_eq!(
             entity_ref_count(&pool, source_entity_id, target_entity_id).await,
             1,
             "duplicate accept does not create a second EntityRef"
         );
-        let data = entity_data(&pool, source_entity_id).await;
+        let data = entity_data(&pool, &source_entity_id.to_string()).await;
         assert_eq!(
             data["body"][1]["ref_id"].as_str(),
             Some(existing_ref_id.to_string().as_str()),
@@ -1657,10 +1325,7 @@ fn reference_existing_entity_reuses_existing_ref_for_duplicate_pair() {
 
 #[test]
 fn reference_existing_entity_accept_rejects_invalid_current_entry_snapshot() {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     for (stored_data, expected_message, label) in [
         ("not-json", "malformed JSON", "malformed-json"),
@@ -1707,8 +1372,14 @@ fn reference_existing_entity_accept_rejects_invalid_current_entry_snapshot() {
             .spawn();
 
         let run_id = rt.block_on(async {
-            let (run_id, proposal_id) =
-                park_reference_proposal(&core, thread_id, "Link Ada in that entry.").await;
+            let (run_id, proposal) = park_proposal(
+                &core,
+                thread_id,
+                "Link Ada in that entry.",
+                Some("reference_existing_entity_from_journal_entry"),
+            )
+            .await;
+            let proposal_id = proposal_id_of(&proposal);
             let resp = rpc(
                 &core,
                 28,
@@ -1736,7 +1407,7 @@ fn reference_existing_entity_accept_rejects_invalid_current_entry_snapshot() {
         });
 
         rt.block_on(async {
-            let pool = open_readonly_pool(workspace.db_path().to_path_buf()).await;
+            let pool = open_readonly_pool(&workspace).await;
             assert_eq!(
                 entity_ref_count(&pool, source_entity_id, target_entity_id).await,
                 0,
@@ -1748,7 +1419,7 @@ fn reference_existing_entity_accept_rejects_invalid_current_entry_snapshot() {
                 "{label} leaves the stored Journal Entry snapshot unchanged"
             );
             assert_eq!(
-                max_revision_seq(&pool, source_entity_id).await,
+                max_revision_seq(&pool, &source_entity_id.to_string()).await,
                 1,
                 "{label} writes no Journal Entry revision"
             );
@@ -1770,10 +1441,7 @@ fn reference_existing_entity_rejects_invalid_source_target_type_and_thread() {
     let source_thread_id = Uuid::now_v7();
     let other_thread_id = Uuid::now_v7();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let (source_entity_id, valid_target_id, wrong_type_target_id) = rt.block_on(async {
         let pool = migrated_pool(&workspace).await;
@@ -1853,8 +1521,14 @@ fn reference_existing_entity_rejects_invalid_source_target_type_and_thread() {
     rt.block_on(async {
         for (source, target, thread, label, expected_code, expected_message) in invalid_cases {
             write_reference_params(&params_path, source, target);
-            let (run_id, proposal_id) =
-                park_reference_proposal(&core, thread, "Link Ada in that entry.").await;
+            let (run_id, proposal) = park_proposal(
+                &core,
+                thread,
+                "Link Ada in that entry.",
+                Some("reference_existing_entity_from_journal_entry"),
+            )
+            .await;
+            let proposal_id = proposal_id_of(&proposal);
             let resp = rpc(
                 &core,
                 26,
@@ -1879,14 +1553,14 @@ fn reference_existing_entity_rejects_invalid_source_target_type_and_thread() {
                 "{label} invalid reason names {expected_message} - body: {resp}"
             );
 
-            let pool = open_readonly_pool(workspace.db_path().to_path_buf()).await;
+            let pool = open_readonly_pool(&workspace).await;
             assert_eq!(
                 entity_ref_count(&pool, source_entity_id, valid_target_id).await,
                 0,
                 "{label} writes no EntityRef"
             );
             assert_eq!(
-                entity_data(&pool, source_entity_id).await["body"][0]["text"].as_str(),
+                entity_data(&pool, &source_entity_id.to_string()).await["body"][0]["text"].as_str(),
                 Some("Met Ada at school."),
                 "{label} leaves the Journal Entry unchanged"
             );
@@ -1909,10 +1583,7 @@ fn cross_thread_update_is_invalid_and_leaves_entry_unchanged() {
     let source_thread_id = Uuid::now_v7();
     let other_thread_id = Uuid::now_v7();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let entity_id = rt.block_on(async {
         let pool = migrated_pool(&workspace).await;
@@ -1942,12 +1613,14 @@ fn cross_thread_update_is_invalid_and_leaves_entry_unchanged() {
         .spawn();
 
     let invalid_run_id = rt.block_on(async {
-        let (run_id, proposal_id) = park_update_proposal(
+        let (run_id, proposal) = park_proposal(
             &core,
             other_thread_id,
             "Actually, update that earlier entry from the other thread.",
+            Some("update_journal_entry"),
         )
         .await;
+        let proposal_id = proposal_id_of(&proposal);
         let resp = rpc(
             &core,
             6,
@@ -1975,21 +1648,21 @@ fn cross_thread_update_is_invalid_and_leaves_entry_unchanged() {
     });
 
     rt.block_on(async {
-        let pool = open_readonly_pool(workspace.db_path().to_path_buf()).await;
+        let pool = open_readonly_pool(&workspace).await;
 
-        let data = entity_data(&pool, entity_id).await;
+        let data = entity_data(&pool, &entity_id.to_string()).await;
         assert_eq!(
             data["body"][0]["text"].as_str(),
             Some("Bought milk after daycare pickup."),
             "invalid update leaves the current entity data unchanged"
         );
         assert_eq!(
-            max_revision_seq(&pool, entity_id).await,
+            max_revision_seq(&pool, &entity_id.to_string()).await,
             1,
             "invalid update writes no new revision"
         );
         assert_eq!(
-            updated_from_count_for_run(&pool, entity_id, &invalid_run_id).await,
+            updated_from_count_for_run(&pool, &entity_id.to_string(), &invalid_run_id).await,
             0,
             "invalid update writes no updated_from source"
         );
@@ -2022,18 +1695,17 @@ fn non_user_created_from_update_is_invalid_and_leaves_entry_unchanged() {
     let params_path = workspace.path().join("update-params.json");
     let thread_id = Uuid::now_v7();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let entity_id = rt.block_on(async {
         let pool = migrated_pool(&workspace).await;
         seed_thread(&pool, thread_id, "Journal thread", 1).await;
-        let entity_id = seed_accepted_journal_entry_with_source_role(
+        let entity_id = seed_accepted_journal_entry_full(
             &pool,
             thread_id,
+            Uuid::now_v7(),
             "2026-06-10T10:30:00",
+            None,
             "Bought milk after daycare pickup.",
             2,
             "assistant",
@@ -2055,8 +1727,14 @@ fn non_user_created_from_update_is_invalid_and_leaves_entry_unchanged() {
         .spawn();
 
     let invalid_run_id = rt.block_on(async {
-        let (run_id, proposal_id) =
-            park_update_proposal(&core, thread_id, "Update that earlier entry.").await;
+        let (run_id, proposal) = park_proposal(
+            &core,
+            thread_id,
+            "Update that earlier entry.",
+            Some("update_journal_entry"),
+        )
+        .await;
+        let proposal_id = proposal_id_of(&proposal);
         let resp = rpc(
             &core,
             7,
@@ -2084,21 +1762,21 @@ fn non_user_created_from_update_is_invalid_and_leaves_entry_unchanged() {
     });
 
     rt.block_on(async {
-        let pool = open_readonly_pool(workspace.db_path().to_path_buf()).await;
+        let pool = open_readonly_pool(&workspace).await;
 
-        let data = entity_data(&pool, entity_id).await;
+        let data = entity_data(&pool, &entity_id.to_string()).await;
         assert_eq!(
             data["body"][0]["text"].as_str(),
             Some("Bought milk after daycare pickup."),
             "non-user created_from invalid update leaves entity data unchanged"
         );
         assert_eq!(
-            max_revision_seq(&pool, entity_id).await,
+            max_revision_seq(&pool, &entity_id.to_string()).await,
             1,
             "non-user created_from invalid update writes no new revision"
         );
         assert_eq!(
-            updated_from_count_for_run(&pool, entity_id, &invalid_run_id).await,
+            updated_from_count_for_run(&pool, &entity_id.to_string(), &invalid_run_id).await,
             0,
             "non-user created_from invalid update writes no updated_from source"
         );

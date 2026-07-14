@@ -28,11 +28,10 @@ import {
 	startRunStream,
 } from "@/store/bridge.js";
 import {
-	appendUserMessage,
+	appendMessage,
 	attachRun,
 	getChatState,
 	resetChatStore,
-	seedAssistantMessage,
 	setPendingProposal,
 	setProposalStatus,
 } from "@/store/chat.js";
@@ -215,7 +214,7 @@ describe("onRunSettled (terminal seam → recent-Runs refresh)", () => {
 	}
 
 	function seed(runId: RunId) {
-		seedAssistantMessage("t1", {
+		appendMessage("t1", {
 			id: "a1",
 			role: "assistant",
 			status: "streaming",
@@ -312,14 +311,14 @@ describe("decideProposal resume fiber tracking (M2)", () => {
 
 		// Seed a parked run + its original (parked) subscribe fiber + a proposal.
 		const runId = "run-resume" as RunId;
-		appendUserMessage("t1", {
+		appendMessage("t1", {
 			id: "u1",
 			role: "user",
 			status: "completed",
 			segments: [{ kind: "text", text: "hi" }],
 			run_id: runId,
 		});
-		seedAssistantMessage("t1", {
+		appendMessage("t1", {
 			id: "a1",
 			role: "assistant",
 			status: "streaming",
@@ -372,14 +371,14 @@ describe("cancelRun (ADR-0014)", () => {
 
 	/** Seed a streaming-or-parked assistant turn whose Run is being watched. */
 	function seedActiveRun(runId: RunId, runtime: WsRuntime) {
-		appendUserMessage("t1", {
+		appendMessage("t1", {
 			id: "u1",
 			role: "user",
 			status: "completed",
 			segments: [{ kind: "text", text: "hi" }],
 			run_id: "",
 		});
-		seedAssistantMessage("t1", {
+		appendMessage("t1", {
 			id: "a1",
 			role: "assistant",
 			status: "streaming",

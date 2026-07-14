@@ -9,17 +9,14 @@ use sqlx::sqlite::SqlitePoolOptions;
 use tokio_tungstenite::tungstenite::Message;
 
 mod common;
-use common::{Workspace, next_text};
+use common::{next_text, rt, Workspace};
 
 #[test]
 fn thread_create_mints_thread_and_first_message() {
     let workspace = Workspace::new();
     let core = workspace.core().worker_fixture("slow-worker.ts").spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let (thread_id, run_id) = rt.block_on(async {
         let mut ws = core.connect().await;
@@ -159,10 +156,7 @@ fn thread_create_empty_prompt_rejected() {
     let workspace = Workspace::new();
     let core = workspace.core().worker_fixture("slow-worker.ts").spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
         let mut ws = core.connect().await;
@@ -222,10 +216,7 @@ fn thread_create_malformed_params_rejected() {
     let workspace = Workspace::new();
     let core = workspace.core().worker_fixture("slow-worker.ts").spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
         let mut ws = core.connect().await;

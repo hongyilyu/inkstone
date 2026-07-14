@@ -1,5 +1,5 @@
-import path from "node:path";
 import { expect, test } from "./fixtures.js";
+import { dbPathFor } from "./seed.js";
 import {
 	seedAcceptedPerson,
 	seedAcceptedProject,
@@ -71,10 +71,6 @@ const GRAPH = {
 		{ kind: "journal_ref", from: "@je", to: "@leadads" },
 	],
 };
-
-function dbPathFor(workspacePath: string): string {
-	return path.join(workspacePath, "db.sqlite");
-}
 
 function count(dbPath: string, sql: string): string {
 	return sqlite(dbPath, sql).trim();

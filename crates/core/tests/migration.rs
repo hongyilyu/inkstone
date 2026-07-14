@@ -4,7 +4,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::{Row, SqlitePool};
 
 mod common;
-use common::Workspace;
+use common::{rt, Workspace};
 
 async fn migrated_pool() -> SqlitePool {
     let options = SqliteConnectOptions::new()
@@ -49,10 +49,7 @@ fn migration_creates_all_tables() {
         workspace.db_path().display()
     );
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let (actual, entity_ref_indexes): (BTreeSet<String>, BTreeSet<String>) = rt.block_on(async {
         let url = format!("sqlite://{}?mode=ro", workspace.db_path().display());

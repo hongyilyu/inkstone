@@ -83,24 +83,6 @@ export function concatText(segments: readonly Segment[]): string {
 }
 
 /**
- * A message as constructed by a caller (the bridge's optimistic seed, a test): the
- * stored {@link Message} minus its required `segments`, which the store derives. A
- * caller MAY supply `segments` explicitly to seed a specific timeline (hydration, a
- * user message's single text segment, tests); otherwise the message opens with an
- * EMPTY timeline (a fresh assistant turn the live builders then fill).
- */
-export type MessageInput = Omit<Message, "segments"> & {
-	readonly segments?: readonly Segment[];
-};
-
-/** Normalize a {@link MessageInput} into a stored {@link Message}: keep an explicit
- * `segments` if supplied, else open with an EMPTY timeline (ADR-0045 — text/tool
- * segments arrive via the live builders or the wire, never a flat-field derivation). */
-function withSegments(input: MessageInput): Message {
-	return { ...input, segments: input.segments ?? [] };
-}
-
-/**
  * Reactive hydrate-on-focus lifecycle (replaces the old non-reactive Set):
  * `loading` while `thread/get` is in flight, `error` on a transient failed fetch
  * (drives a recoverable retry affordance), `not_found` when Core reports the
@@ -354,29 +336,13 @@ export function clearProposal(runId: string): void {
 	});
 }
 
-export function appendUserMessage(
-	threadId: string,
-	message: MessageInput,
-): void {
-	const normalized = withSegments(message);
+/** Append a message to a thread. Also used to seed a live (streaming) assistant
+ * message before the run id is known; {@link attachRun} promotes it. */
+export function appendMessage(threadId: string, message: Message): void {
 	store.setState((s) =>
 		withThread(s, threadId, (t) => ({
 			...t,
-			messages: [...t.messages, normalized],
-		})),
-	);
-}
-
-/** Append a live (streaming) assistant message before the run id is known; {@link attachRun} promotes it. */
-export function seedAssistantMessage(
-	threadId: string,
-	message: MessageInput,
-): void {
-	const normalized = withSegments(message);
-	store.setState((s) =>
-		withThread(s, threadId, (t) => ({
-			...t,
-			messages: [...t.messages, normalized],
+			messages: [...t.messages, message],
 		})),
 	);
 }

@@ -373,30 +373,13 @@ async fn segment_rows_for_run(
 
 #[cfg(test)]
 mod tests {
-    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+    use crate::db::test_support::memory_pool;
 
     use super::*;
     use crate::db::{
         park_on_proposal, persist_thread_with_first_run, persist_tool_call, resolve_tool_call,
     };
     use crate::workflow::Workflow;
-
-    /// A migrated in-memory pool so the `runs` CHECK constraints are in force.
-    async fn memory_pool() -> SqlitePool {
-        let options = SqliteConnectOptions::new()
-            .filename(":memory:")
-            .foreign_keys(true);
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(options)
-            .await
-            .expect("open in-memory sqlite");
-        sqlx::migrate!("./migrations")
-            .run(&pool)
-            .await
-            .expect("run migrations");
-        pool
-    }
 
     /// ADR-0045: `thread/get` rehydrates the assistant turn's ORDERED `segments[]`
     /// from `run_steps` in seq order — text/tool_call/proposal interleaved as they

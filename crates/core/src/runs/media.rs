@@ -138,14 +138,8 @@ pub(super) async fn handle_upload(
                 mime: params.mime,
                 width: params.width,
                 height: params.height,
-                duration_ms: None,
-                capture_time: None,
-                thumbnail_path: None,
                 created_by: "user".to_string(),
                 created_via_proposal_id: None,
-                // Standalone upload: attachment linking lands with the send path
-                // (slice 2), so no targets here — InvalidTarget cannot occur.
-                attachments: Vec::new(),
             },
         )
         .await

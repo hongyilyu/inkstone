@@ -643,17 +643,22 @@ where
     query.build_query_as().fetch_all(executor).await
 }
 
-/// Read one accepted Journal Entry's current snapshot by id from the canonical
-/// `entities` row. `None` when the id does not exist or is not a journal entry.
-pub(super) async fn current_journal_entry_by_id<'e, E>(
+/// Read an accepted Entity's current `data` JSON by id, gated on its stored
+/// `type`. `None` when the id does not exist or is not of `entity_type`. The
+/// one current-snapshot read behind the apply-path merges/recomputes (which run
+/// it in-tx so the read sees committed state under the tx) and the
+/// `proposal/get` review-context facade.
+pub(super) async fn current_entity_data<'e, E>(
     executor: E,
     entity_id: &str,
-) -> sqlx::Result<Option<(String, String)>>
+    entity_type: &str,
+) -> sqlx::Result<Option<String>>
 where
     E: Executor<'e, Database = Sqlite>,
 {
-    sqlx::query_as("SELECT id, data FROM entities WHERE id = ?1 AND type = 'journal_entry'")
+    sqlx::query_scalar("SELECT data FROM entities WHERE id = ?1 AND type = ?2")
         .bind(entity_id)
+        .bind(entity_type)
         .fetch_optional(executor)
         .await
 }
@@ -972,9 +977,6 @@ pub(super) async fn insert_media<'e, E>(
     storage_path: &str,
     width: Option<i64>,
     height: Option<i64>,
-    duration_ms: Option<i64>,
-    capture_time: Option<i64>,
-    thumbnail_path: Option<&str>,
     created_by: &str,
     created_via_proposal_id: Option<&str>,
     now_ms: i64,
@@ -984,10 +986,9 @@ where
 {
     sqlx::query(
         "INSERT INTO media \
-         (id, mime, byte_size, digest, storage_path, width, height, duration_ms, \
-          capture_time, thumbnail_path, created_by, created_via_proposal_id, \
-          created_at, updated_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         (id, mime, byte_size, digest, storage_path, width, height, \
+          created_by, created_via_proposal_id, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(id)
     .bind(mime)
@@ -996,9 +997,6 @@ where
     .bind(storage_path)
     .bind(width)
     .bind(height)
-    .bind(duration_ms)
-    .bind(capture_time)
-    .bind(thumbnail_path)
     .bind(created_by)
     .bind(created_via_proposal_id)
     .bind(now_ms)
@@ -1008,23 +1006,14 @@ where
     .map(|_| ())
 }
 
-/// The media metadata row backing `get_media`. Column order matches the
-/// `SELECT` in [`media_by_id`].
+/// The media metadata row backing `get_media` — the columns production reads.
+/// Column order matches the `SELECT` in [`media_by_id`].
 pub(super) type MediaRowColumns = (
-    String,         // id
-    String,         // mime
-    i64,            // byte_size
-    String,         // digest
-    String,         // storage_path
-    Option<i64>,    // width
-    Option<i64>,    // height
-    Option<i64>,    // duration_ms
-    Option<i64>,    // capture_time
-    Option<String>, // thumbnail_path
-    String,         // created_by
-    Option<String>, // created_via_proposal_id
-    i64,            // created_at
-    i64,            // updated_at
+    String,      // id
+    String,      // mime
+    String,      // storage_path
+    Option<i64>, // width
+    Option<i64>, // height
 );
 
 pub(super) async fn media_by_id<'e, E>(
@@ -1034,14 +1023,10 @@ pub(super) async fn media_by_id<'e, E>(
 where
     E: Executor<'e, Database = Sqlite>,
 {
-    sqlx::query_as(
-        "SELECT id, mime, byte_size, digest, storage_path, width, height, duration_ms, \
-         capture_time, thumbnail_path, created_by, created_via_proposal_id, created_at, updated_at \
-         FROM media WHERE id = ?1",
-    )
-    .bind(id)
-    .fetch_optional(executor)
-    .await
+    sqlx::query_as("SELECT id, mime, storage_path, width, height FROM media WHERE id = ?1")
+        .bind(id)
+        .fetch_optional(executor)
+        .await
 }
 
 /// The media ids attached to one message, in insertion order (`rowid` —
@@ -1111,42 +1096,6 @@ where
     .execute(executor)
     .await
     .map(|_| ())
-}
-
-pub(super) async fn entity_exists<'e, E>(executor: E, entity_id: &str) -> sqlx::Result<bool>
-where
-    E: Executor<'e, Database = Sqlite>,
-{
-    let row: Option<i64> = sqlx::query_scalar("SELECT 1 FROM entities WHERE id = ?1 LIMIT 1")
-        .bind(entity_id)
-        .fetch_optional(executor)
-        .await?;
-    Ok(row.is_some())
-}
-
-pub(super) async fn observation_exists<'e, E>(
-    executor: E,
-    observation_id: &str,
-) -> sqlx::Result<bool>
-where
-    E: Executor<'e, Database = Sqlite>,
-{
-    let row: Option<i64> = sqlx::query_scalar("SELECT 1 FROM observations WHERE id = ?1 LIMIT 1")
-        .bind(observation_id)
-        .fetch_optional(executor)
-        .await?;
-    Ok(row.is_some())
-}
-
-pub(super) async fn proposal_exists<'e, E>(executor: E, proposal_id: &str) -> sqlx::Result<bool>
-where
-    E: Executor<'e, Database = Sqlite>,
-{
-    let row: Option<i64> = sqlx::query_scalar("SELECT 1 FROM proposals WHERE id = ?1 LIMIT 1")
-        .bind(proposal_id)
-        .fetch_optional(executor)
-        .await?;
-    Ok(row.is_some())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1810,55 +1759,6 @@ where
         .execute(executor)
         .await
         .map(|_| ())
-}
-
-/// Read a Todo's current `data` JSON by id (ADR-0031), for `update_todo`'s
-/// partial merge. `None` when the id does not exist or is not a `todo`. Runs
-/// inside the apply tx (the merge must see committed state under the tx).
-pub(super) async fn current_todo_data<'e, E>(
-    executor: E,
-    todo_id: &str,
-) -> sqlx::Result<Option<String>>
-where
-    E: Executor<'e, Database = Sqlite>,
-{
-    sqlx::query_scalar("SELECT data FROM entities WHERE id = ?1 AND type = 'todo'")
-        .bind(todo_id)
-        .fetch_optional(executor)
-        .await
-}
-
-/// Read a Project's current `data` JSON by id (ADR-0034), for
-/// `mark_project_reviewed`'s read-modify-write. `None` when the id does not exist
-/// or is not a `project`. Runs inside the apply tx (the recompute must see
-/// committed state under the tx).
-pub(super) async fn current_project_data<'e, E>(
-    executor: E,
-    project_id: &str,
-) -> sqlx::Result<Option<String>>
-where
-    E: Executor<'e, Database = Sqlite>,
-{
-    sqlx::query_scalar("SELECT data FROM entities WHERE id = ?1 AND type = 'project'")
-        .bind(project_id)
-        .fetch_optional(executor)
-        .await
-}
-
-/// Read a Person's current `data` JSON by id. `None` when the id does not exist
-/// or is not a `person`. Sibling of [`current_todo_data`]/[`current_project_data`],
-/// added for `proposal/get`'s `update_person` review context.
-pub(super) async fn current_person_data<'e, E>(
-    executor: E,
-    person_id: &str,
-) -> sqlx::Result<Option<String>>
-where
-    E: Executor<'e, Database = Sqlite>,
-{
-    sqlx::query_scalar("SELECT data FROM entities WHERE id = ?1 AND type = 'person'")
-        .bind(person_id)
-        .fetch_optional(executor)
-        .await
 }
 
 /// Read every Todo that owns `project_id` (its `data.project_id` matches), for
@@ -3211,10 +3111,10 @@ where
 
 #[cfg(test)]
 mod related_entity_id_filter_tests {
+    use crate::db::test_support::memory_pool;
     use super::*;
     use crate::mutation::EntityType;
     use sqlx::SqlitePool;
-    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
     const HABIT_DESCRIPTOR: ObservationRelation = ObservationRelation {
         schema_key: "habit.checkin",
@@ -3286,22 +3186,6 @@ mod related_entity_id_filter_tests {
     fn empty_descriptor_slice_pushes_and_zero() {
         let sql = predicate_sql(&[], &[]);
         assert_eq!(sql, " AND 0");
-    }
-
-    async fn memory_pool() -> SqlitePool {
-        let options = SqliteConnectOptions::new()
-            .filename(":memory:")
-            .foreign_keys(true);
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(options)
-            .await
-            .expect("open in-memory sqlite");
-        sqlx::migrate!("./migrations")
-            .run(&pool)
-            .await
-            .expect("run migrations");
-        pool
     }
 
     async fn seed_entity(pool: &SqlitePool, id: &str, ty: &str) {
@@ -3419,32 +3303,16 @@ mod related_entity_id_filter_tests {
 
 #[cfg(test)]
 mod observation_delete_block_tests {
+    use crate::db::test_support::memory_pool;
     use super::*;
     use crate::mutation::EntityType;
     use sqlx::SqlitePool;
-    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
     const SYNTHETIC_DESCRIPTOR: ObservationRelation = ObservationRelation {
         schema_key: "test.synthetic",
         json_field: "person_id",
         target: EntityType::Person,
     };
-
-    async fn memory_pool() -> SqlitePool {
-        let options = SqliteConnectOptions::new()
-            .filename(":memory:")
-            .foreign_keys(true);
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(options)
-            .await
-            .expect("open in-memory sqlite");
-        sqlx::migrate!("./migrations")
-            .run(&pool)
-            .await
-            .expect("run migrations");
-        pool
-    }
 
     async fn seed_current_observation(
         pool: &SqlitePool,

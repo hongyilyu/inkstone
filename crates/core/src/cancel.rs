@@ -109,34 +109,14 @@ pub async fn publish_cancelled(hubs: &Hubs, run_id: Uuid, hub: Option<RunHub>) {
 
 #[cfg(test)]
 mod tests {
+    use crate::db::test_support::memory_pool;
     use super::{cancel, publish_cancelled, Outcome};
     use crate::db;
     use crate::hub;
     use crate::protocol::RunEvent;
     use crate::workflow::Workflow;
     use sqlx::SqlitePool;
-    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
     use uuid::Uuid;
-
-    /// A migrated in-memory tier-2 pool (so the `runs`/`proposals` CHECK
-    /// constraints + guarded transitions are in force), `max_connections(1)` so
-    /// the single `:memory:` database persists across calls — same shape as
-    /// `decide.rs`'s and `worker/run.rs`'s test pools.
-    async fn memory_pool() -> SqlitePool {
-        let options = SqliteConnectOptions::new()
-            .filename(":memory:")
-            .foreign_keys(true);
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(options)
-            .await
-            .expect("open in-memory sqlite");
-        sqlx::migrate!("./migrations")
-            .run(&pool)
-            .await
-            .expect("run migrations");
-        pool
-    }
 
     fn test_workflow() -> Workflow {
         Workflow {

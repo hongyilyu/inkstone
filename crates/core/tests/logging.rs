@@ -9,7 +9,7 @@ use futures_util::SinkExt;
 use tokio_tungstenite::tungstenite::Message;
 
 mod common;
-use common::{Workspace, read_jsonl_lines};
+use common::{read_jsonl_lines, rt, Workspace};
 
 /// The boot trail lands in `INKSTONE_LOG_DIR` as JSONL whose lines carry a
 /// stable `event` key — `core.listening` proves the subscriber is wired — AND
@@ -65,10 +65,7 @@ fn malformed_ws_frame_logs_jsonrpc_parse_failed_warn() {
     let log_dir = workspace.path().join("logs");
     let mut core = workspace.core().env("INKSTONE_LOG_DIR", &log_dir).spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     // Match a WARN `core.jsonrpc_parse_failed` line in the trail.
     let is_parse_failed_warn = |line: &str| {

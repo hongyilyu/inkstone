@@ -12,10 +12,7 @@ import type { WsRuntime } from "../runtime.js";
 export async function fetchProviderStatus(
 	runtime: WsRuntime,
 ): Promise<ProviderStatusResult> {
-	const program = Effect.gen(function* () {
-		const client = yield* WsClient;
-		return yield* client.providerStatus();
-	});
+	const program = Effect.flatMap(WsClient, (client) => client.providerStatus());
 	return runtime.runPromise(program);
 }
 
@@ -36,10 +33,9 @@ export async function startLogin(
 	provider: string,
 	openUrl: OpenUrl = defaultOpenUrl,
 ): Promise<void> {
-	const program = Effect.gen(function* () {
-		const client = yield* WsClient;
-		return yield* client.providerLoginStart(provider);
-	});
+	const program = Effect.flatMap(WsClient, (client) =>
+		client.providerLoginStart(provider),
+	);
 	const exit = await runtime.runPromiseExit(program);
 	if (Exit.isSuccess(exit)) {
 		openUrl(exit.value.authorize_url);
@@ -56,10 +52,9 @@ export async function configure(
 	provider: string,
 	apiKey: string,
 ): Promise<ProviderStatusResult> {
-	const program = Effect.gen(function* () {
-		const client = yield* WsClient;
-		return yield* client.providerConfigure(provider, apiKey);
-	});
+	const program = Effect.flatMap(WsClient, (client) =>
+		client.providerConfigure(provider, apiKey),
+	);
 	return runtime.runPromise(program);
 }
 
@@ -71,9 +66,8 @@ export async function test(
 	provider: string,
 	model: string,
 ): Promise<ProviderTestResult> {
-	const program = Effect.gen(function* () {
-		const client = yield* WsClient;
-		return yield* client.providerTest(provider, model);
-	});
+	const program = Effect.flatMap(WsClient, (client) =>
+		client.providerTest(provider, model),
+	);
 	return runtime.runPromise(program);
 }

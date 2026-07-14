@@ -17,30 +17,8 @@
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use futures_util::SinkExt;
-use tokio_tungstenite::tungstenite::Message;
-
 mod common;
-use common::{Workspace, Ws, next_text};
-
-/// Read frames until one whose `id` matches `want_id` (media has no
-/// notifications today, but keep the thread_get.rs idiom).
-async fn read_response_with_id(ws: &mut Ws, want_id: i64) -> serde_json::Value {
-    loop {
-        let body = next_text(ws).await;
-        let v: serde_json::Value = serde_json::from_str(&body)
-            .unwrap_or_else(|e| panic!("frame is JSON: {e} — body: {body}"));
-        if v["id"] == serde_json::json!(want_id) {
-            return v;
-        }
-    }
-}
-
-async fn send(ws: &mut Ws, frame: String) {
-    ws.send(Message::Text(frame.into()))
-        .await
-        .expect("send frame");
-}
+use common::{Workspace, Ws, next_text, read_response_with_id, rt, send};
 
 /// Build a `media/upload` request frame with the given params.
 fn upload_frame(id: i64, params: serde_json::Value) -> String {
@@ -62,10 +40,7 @@ fn media_upload_round_trips_bytes_over_http() {
     // per the ADR-0058 scope boundary, so any bytes round-trip).
     let bytes: Vec<u8> = (0..300u32).map(|i| (i % 251) as u8).collect();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let media_id = rt.block_on(async {
         let mut ws = core.connect().await;
@@ -152,10 +127,7 @@ fn media_get_non_image_mime_is_served_as_attachment() {
     let workspace = Workspace::new();
     let core = workspace.core().spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let media_id = rt.block_on(async {
         let mut ws = core.connect().await;
@@ -261,10 +233,7 @@ fn send_with_attachment_ids_rehydrates_attachment_segments() {
     let workspace = Workspace::new();
     let core = workspace.core().worker_fixture("slow-worker.ts").spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
         let mut ws = core.connect().await;
@@ -440,10 +409,7 @@ fn fresh_manifest_forwards_attachments_as_base64() {
     let encoded = BASE64.encode(bytes);
     let expected_prefix = &encoded[..12];
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
         let mut ws = core.connect().await;
@@ -556,10 +522,7 @@ fn retry_replays_the_original_turns_attachments() {
     let encoded = BASE64.encode(bytes);
     let expected_prefix = &encoded[..12];
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
         let mut ws = core.connect().await;
@@ -642,10 +605,7 @@ fn unknown_attachment_id_rejects_invalid_params_with_zero_rows() {
     let workspace = Workspace::new();
     let core = workspace.core().worker_fixture("slow-worker.ts").spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
         let mut ws = core.connect().await;
@@ -738,10 +698,7 @@ fn too_many_attachment_ids_rejects_invalid_params() {
     let workspace = Workspace::new();
     let core = workspace.core().worker_fixture("slow-worker.ts").spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
         let mut ws = core.connect().await;
@@ -783,10 +740,7 @@ fn media_upload_invalid_base64_rejects_invalid_params() {
     let workspace = Workspace::new();
     let core = workspace.core().spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
         let mut ws = core.connect().await;
@@ -816,10 +770,7 @@ fn media_upload_oversize_rejects_invalid_params() {
     let workspace = Workspace::new();
     let core = workspace.core().spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
         let mut ws = core.connect().await;

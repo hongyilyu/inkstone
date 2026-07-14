@@ -9,7 +9,7 @@
 //! var and serves the embedded SPA, so production never serves files from disk.
 
 mod common;
-use common::Workspace;
+use common::{rt, Workspace};
 
 #[test]
 fn serves_spa_from_web_dir() {
@@ -55,10 +55,7 @@ fn serves_spa_from_web_dir() {
     );
 
     // /ws must still upgrade — the fallback must not swallow the WebSocket route.
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("runtime");
+    let rt = rt();
     rt.block_on(async {
         core.connect().await;
     });

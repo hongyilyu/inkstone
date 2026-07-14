@@ -49,30 +49,6 @@ pub(crate) enum Presence {
     Optional,
 }
 
-/// How an object spec phrases its "value is not an object" rejection — the
-/// hand-written validators are inconsistent and the tests pin the substrings, so
-/// each spec carries its style verbatim.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum ObjErr {
-    /// `"{noun} payload must be a JSON object"` — the top-level person/project/
-    /// media/create_todo/update_todo payloads.
-    Payload,
-    /// `"{noun} must be an object"` — review_every and the recurrence sub-objects.
-    Object,
-    /// `"{noun} must be a JSON object"` — TodoData and the person_refs element.
-    JsonObject,
-}
-
-impl ObjErr {
-    fn message(self, noun: &str) -> String {
-        match self {
-            ObjErr::Payload => format!("{noun} payload must be a JSON object"),
-            ObjErr::Object => format!("{noun} must be an object"),
-            ObjErr::JsonObject => format!("{noun} must be a JSON object"),
-        }
-    }
-}
-
 /// Body-node policy for a Journal-Entry `body` array — which node kinds the
 /// tagged `oneOf` union admits, mirroring [`crate::entities`]'s `BodyNodePolicy`.
 /// Schema-side only; the per-policy validation (and the exactly-one-entity_ref
@@ -105,13 +81,8 @@ pub(crate) enum FieldSpec {
     /// `#[schemars(range(min = 1))]`), so a provider can't pre-pass an `interval`
     /// of `0` that Core only rejects at decide-time.
     PositiveInt,
-    /// A numeric scalar. `integer` switches both the emitted schema type and the
-    /// validation rule; `min`/`max`, when present, apply after the type check.
-    Number {
-        min: Option<f64>,
-        max: Option<f64>,
-        integer: bool,
-    },
+    /// A numeric scalar. `min`, when present, applies after the type check.
+    Number { min: Option<f64> },
     /// A local wall-clock `YYYY-MM-DDTHH:MM:SS` string. Schema carries the regex
     /// pattern + the standard description.
     LocalDateTime,
@@ -267,34 +238,19 @@ impl Field {
 }
 
 /// An ordered set of [`Field`]s plus the `noun` woven into the
-/// `"unsupported {noun} field {key:?}"` rejection and the `obj_err` style for the
-/// "not an object" rejection — the single source of an object's field shape.
+/// `"unsupported {noun} field {key:?}"` and `"{noun} must be a JSON object"`
+/// rejections — the single source of an object's field shape.
 /// `additionalProperties` is always denied (every validator and every deleted
 /// struct denied unknown fields).
 #[derive(Clone, Debug)]
 pub(crate) struct PayloadSpec {
     pub(crate) noun: &'static str,
-    pub(crate) obj_err: ObjErr,
     pub(crate) fields: Vec<Field>,
 }
 
 impl PayloadSpec {
-    /// A top-level payload spec (`"{noun} payload must be a JSON object"`).
     pub(crate) fn payload(noun: &'static str, fields: Vec<Field>) -> Self {
-        PayloadSpec {
-            noun,
-            obj_err: ObjErr::Payload,
-            fields,
-        }
-    }
-
-    /// A nested-object spec with an explicit "not an object" style.
-    pub(crate) fn nested(noun: &'static str, obj_err: ObjErr, fields: Vec<Field>) -> Self {
-        PayloadSpec {
-            noun,
-            obj_err,
-            fields,
-        }
+        PayloadSpec { noun, fields }
     }
 
     fn field(&self, name: &str) -> Option<&Field> {
@@ -331,7 +287,7 @@ impl PayloadSpec {
     pub(crate) fn check(&self, payload: &Value) -> Result<(), String> {
         let obj = payload
             .as_object()
-            .ok_or_else(|| self.obj_err.message(self.noun))?;
+            .ok_or_else(|| format!("{} must be a JSON object", self.noun))?;
 
         for key in obj.keys() {
             if self.field(key).is_none() {
@@ -383,17 +339,11 @@ fn spec_schema(spec: &FieldSpec) -> Value {
             serde_json::json!({ "type": "string" })
         }
         FieldSpec::PositiveInt => serde_json::json!({ "type": "integer", "minimum": 1 }),
-        FieldSpec::Number { min, max, integer } => {
+        FieldSpec::Number { min } => {
             let mut obj = Map::new();
-            obj.insert(
-                "type".to_string(),
-                Value::String(if *integer { "integer" } else { "number" }.to_string()),
-            );
+            obj.insert("type".to_string(), Value::String("number".to_string()));
             if let Some(min) = min {
                 obj.insert("minimum".to_string(), number_value(*min));
-            }
-            if let Some(max) = max {
-                obj.insert("maximum".to_string(), number_value(*max));
             }
             Value::Object(obj)
         }
@@ -515,25 +465,17 @@ fn check_field(field: &Field, value: &Value) -> Result<(), String> {
             },
             _ => Err(format!("{name} must be a positive integer")),
         },
-        FieldSpec::Number { min, max, integer } => {
+        FieldSpec::Number { min } => {
             let Value::Number(n) = value else {
                 return Err(format!("{name} must be a number"));
             };
-            if *integer && n.as_i64().is_none() && n.as_u64().is_none() {
-                return Err(format!("{name} must be an integer"));
-            }
             let Some(value) = n.as_f64() else {
                 return Err(format!("{name} must be a number"));
             };
             if let Some(min) = min
                 && value < *min
             {
-                return Err(format!("{name} must be at least {}", format_bound(*min)));
-            }
-            if let Some(max) = max
-                && value > *max
-            {
-                return Err(format!("{name} must be at most {}", format_bound(*max)));
+                return Err(format!("{name} must be at least {min}"));
             }
             Ok(())
         }
@@ -634,31 +576,16 @@ fn number_value(value: f64) -> Value {
     Value::Number(serde_json::Number::from_f64(value).expect("finite FieldSpec::Number bound"))
 }
 
-fn format_bound(value: f64) -> String {
-    if value.fract() == 0.0 {
-        format!("{value:.0}")
-    } else {
-        value.to_string()
-    }
-}
-
 #[cfg(test)]
 mod observations_number_tests {
     use super::*;
     use serde_json::json;
 
     #[test]
-    fn observations_number_spec_emits_schema_and_rejects_integer_mismatch() {
+    fn observations_number_spec_emits_schema_and_enforces_min() {
         let decimal = PayloadSpec::payload(
             "observation values",
-            vec![Field::required(
-                "kg",
-                FieldSpec::Number {
-                    min: Some(0.0),
-                    max: None,
-                    integer: false,
-                },
-            )],
+            vec![Field::required("kg", FieldSpec::Number { min: Some(0.0) })],
         );
         assert_eq!(
             decimal.json_schema(),
@@ -673,34 +600,10 @@ mod observations_number_tests {
         );
         assert!(decimal.check(&json!({ "kg": 72 })).is_ok());
         assert!(decimal.check(&json!({ "kg": 72.4 })).is_ok());
-
-        let reps = PayloadSpec::payload(
-            "observation values",
-            vec![Field::required(
-                "reps",
-                FieldSpec::Number {
-                    min: Some(1.0),
-                    max: Some(500.0),
-                    integer: true,
-                },
-            )],
-        );
-        assert_eq!(
-            reps.json_schema(),
-            json!({
-                "type": "object",
-                "properties": {
-                    "reps": { "type": "integer", "minimum": 1.0, "maximum": 500.0 }
-                },
-                "required": ["reps"],
-                "additionalProperties": false
-            })
-        );
-        assert!(reps.check(&json!({ "reps": 12 })).is_ok());
-        let reason = reps
-            .check(&json!({ "reps": 12.5 }))
-            .expect_err("decimal is not an integer");
-        assert_eq!(reason, "reps must be an integer");
+        let reason = decimal
+            .check(&json!({ "kg": -1 }))
+            .expect_err("below-min value is rejected");
+        assert_eq!(reason, "kg must be at least 0");
     }
 
     #[test]

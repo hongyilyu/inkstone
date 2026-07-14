@@ -34,7 +34,7 @@ test("mark a due project reviewed → it leaves Review and Core advances next_re
 		},
 	]);
 
-	await page.goto(`${core.url}/library/review`);
+	await page.goto(`${core.url}/library/gtd?filt=review`);
 	const review = page.getByRole("region", { name: /review/i });
 	await expect(review.getByText("Quarterly planning")).toBeVisible({
 		timeout: 15_000,
@@ -87,8 +87,8 @@ test("mark a due project reviewed → it leaves Review and Core advances next_re
 
 	// On RE-ENTRY the snapshot re-derives: the project (now due in the future) is
 	// gone and the queue is empty.
-	await page.goto(`${core.url}/library/inbox`);
-	await page.goto(`${core.url}/library/review`);
+	await page.goto(`${core.url}/library/gtd?filt=inbox`);
+	await page.goto(`${core.url}/library/gtd?filt=review`);
 	await expect(review.getByText("All caught up")).toBeVisible({
 		timeout: 15_000,
 	});
@@ -137,7 +137,7 @@ test("focused review queue steps between projects and completes a todo inline", 
 		},
 	]);
 
-	await page.goto(`${core.url}/library/review`);
+	await page.goto(`${core.url}/library/gtd?filt=review`);
 	const review = page.getByRole("region", { name: /review/i });
 
 	// First project focused, with its cadence, last-reviewed, counter, and its todo.

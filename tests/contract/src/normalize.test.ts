@@ -79,40 +79,6 @@ describe("normalize: unconstrained schema annotations (rule 3b)", () => {
 	});
 });
 
-describe("normalize: $ref inlining + $defs drop (rule 2)", () => {
-	// This rule is a safety net: today's schemas use `S.Number` (not `S.Int`) to
-	// dodge `JSONSchema.make`'s `#/$defs/Int` hoist, so no live parity assertion
-	// exercises it. Pin it directly so a regression in `resolveRef` (wrong prefix
-	// strip, sibling-merge precedence, or a missed `$defs` drop) can't silently
-	// defeat the gate if a future schema reintroduces a `$ref`.
-	it("inlines a `$ref` merged with its siblings and drops `$defs`", () => {
-		const hoisted = {
-			$defs: { Int: { type: "integer", description: "an integer" } },
-			type: "object",
-			properties: { n: { $ref: "#/$defs/Int", minimum: 1 } },
-		};
-		const inlined = {
-			type: "object",
-			properties: {
-				n: { type: "integer", description: "an integer", minimum: 1 },
-			},
-		};
-		expect(normalize(hoisted)).toStrictEqual(normalize(inlined));
-	});
-
-	it("still bites when the referenced target differs", () => {
-		const refInt = {
-			$defs: { T: { type: "integer" } },
-			properties: { n: { $ref: "#/$defs/T" } },
-		};
-		const refString = {
-			$defs: { T: { type: "string" } },
-			properties: { n: { $ref: "#/$defs/T" } },
-		};
-		expect(normalize(refInt)).not.toStrictEqual(normalize(refString));
-	});
-});
-
 describe("normalize: keyword rewrites skip schema-map values (rule 3 scope)", () => {
 	// Regression guard: the `title`-strip (rule 3) and the other per-node keyword
 	// rewrites must apply to schema NODES, not to the arbitrary field-name keys

@@ -11,7 +11,7 @@ use sqlx::sqlite::SqlitePoolOptions;
 use tokio_tungstenite::tungstenite::Message;
 
 mod common;
-use common::{Workspace, next_text};
+use common::{next_text, rt, Workspace};
 
 fn parse(body: &str) -> serde_json::Value {
     serde_json::from_str(body).unwrap_or_else(|e| panic!("frame is JSON: {e} — body: {body}"))
@@ -41,10 +41,7 @@ fn cancel_malformed_run_id_is_invalid_params() {
         .env("INKSTONE_FIXTURE_GATE", workspace.path().join("gate"))
         .spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
         let mut ws = core.connect().await;
@@ -84,10 +81,7 @@ fn cancel_running_run_wins_and_suppresses_late_worker_done() {
         .env("INKSTONE_FIXTURE_GATE", &gate_path)
         .spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let run_id = rt.block_on(async {
         let mut ws = core.connect().await;
@@ -232,10 +226,7 @@ fn cancel_before_worker_start_prevents_worker_output() {
         .env("INKSTONE_WORKER_PRE_SPAWN_DELAY_MS", "750")
         .spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let run_id = rt.block_on(async {
         let mut ws = core.connect().await;
@@ -362,10 +353,7 @@ fn cancel_loses_to_completed_worker_is_already_terminal() {
         .env("INKSTONE_FIXTURE_CHUNKS", "1")
         .spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let run_id = rt.block_on(async {
         let mut ws = core.connect().await;
@@ -476,10 +464,7 @@ fn cancel_during_tool_dispatch_wins_and_keeps_tool_rows() {
         .env("INKSTONE_TOOLWORKER_GATE", &gate_path)
         .spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let run_id = rt.block_on(async {
         let mut ws = core.connect().await;

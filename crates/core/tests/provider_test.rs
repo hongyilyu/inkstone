@@ -13,7 +13,7 @@ use sqlx::sqlite::SqlitePoolOptions;
 use tokio_tungstenite::tungstenite::Message;
 
 mod common;
-use common::{Workspace, Ws, next_text};
+use common::{next_text, rt, Workspace, Ws};
 
 /// Send a request and return the JSON-RPC RESPONSE frame (result or error),
 /// skipping any notifications (e.g. `provider/connected` from `provider/configure`)
@@ -75,10 +75,7 @@ fn provider_test_alive_on_reply_persists_nothing() {
         .env("INKSTONE_CREDENTIALS_DIR", &creds_dir)
         .spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
         let mut ws = core.connect().await;
@@ -138,10 +135,7 @@ fn provider_test_dead_on_error_frame() {
         .env("INKSTONE_LIVENESS_ERROR", "provider rejected the key")
         .spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
         let mut ws = core.connect().await;
@@ -201,10 +195,7 @@ fn provider_test_unconfigured_is_dead_without_spawning() {
         .env("INKSTONE_CREDENTIALS_DIR", &creds_dir)
         .spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
         let mut ws = core.connect().await;
@@ -268,10 +259,7 @@ fn provider_test_alive_for_codex_oauth() {
         .env("INKSTONE_CREDENTIALS_DIR", &creds_dir)
         .spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
         let mut ws = core.connect().await;
@@ -313,10 +301,7 @@ fn provider_test_rejects_unknown_provider_id() {
         .env("INKSTONE_CREDENTIALS_DIR", &creds_dir)
         .spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
         let mut ws = core.connect().await;

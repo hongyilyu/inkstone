@@ -728,26 +728,9 @@ pub async fn recover_interrupted_runs(pool: &SqlitePool, now_ms: i64) -> sqlx::R
 
 #[cfg(test)]
 mod tests {
-    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+    use crate::db::test_support::memory_pool;
 
     use super::*;
-
-    /// A migrated in-memory pool so the `runs` CHECK constraints are in force.
-    async fn memory_pool() -> SqlitePool {
-        let options = SqliteConnectOptions::new()
-            .filename(":memory:")
-            .foreign_keys(true);
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(options)
-            .await
-            .expect("open in-memory sqlite");
-        sqlx::migrate!("./migrations")
-            .run(&pool)
-            .await
-            .expect("run migrations");
-        pool
-    }
 
     /// Insert a Thread + a bare Run row in `status` directly (no Worker), to
     /// hand-craft `running`/`parked` Runs for the tests.

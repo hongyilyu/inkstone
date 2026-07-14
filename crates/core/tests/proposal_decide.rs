@@ -5,102 +5,12 @@
 //! Driven by `tests/fixtures/propose-worker.ts`: spawn 1 proposes & parks;
 //! spawn 2 detects `mode === "resume"` and finishes.
 
-use std::time::{Duration, Instant};
 
-use futures_util::SinkExt;
 use sqlx::Row;
 use sqlx::sqlite::SqlitePoolOptions;
-use tokio_tungstenite::tungstenite::Message;
 
 mod common;
-use common::{CoreHandle, Workspace, next_text};
-
-/// Open a fresh socket, send a single request, return the response body.
-async fn rpc(
-    core: &CoreHandle,
-    id: u64,
-    method: &str,
-    params: serde_json::Value,
-) -> serde_json::Value {
-    let mut ws = core.connect().await;
-    let req = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": id,
-        "method": method,
-        "params": params,
-    });
-    ws.send(Message::Text(req.to_string().into()))
-        .await
-        .expect("send request frame");
-    let body = next_text(&mut ws).await;
-    ws.close(None).await.ok();
-    serde_json::from_str(&body).unwrap_or_else(|e| panic!("response is JSON: {e} — body: {body}"))
-}
-
-/// Create a Run and poll run/subscribe until it parks; returns the run_id.
-async fn create_and_park(core: &CoreHandle) -> String {
-    create_and_park_with_thread(core).await.0
-}
-
-/// Like {@link create_and_park} but also returns the thread_id, for the
-/// `thread/get` rehydration assertion (ADR-0044).
-async fn create_and_park_with_thread(core: &CoreHandle) -> (String, String) {
-    let resp = rpc(
-        core,
-        1,
-        "thread/create",
-        serde_json::json!({ "prompt": "I bought milk after daycare pickup and felt relieved." }),
-    )
-    .await;
-    let run_id = resp["result"]["run_id"]
-        .as_str()
-        .unwrap_or_else(|| panic!("result.run_id is a string — body: {resp}"))
-        .to_string();
-    let thread_id = resp["result"]["thread_id"]
-        .as_str()
-        .unwrap_or_else(|| panic!("result.thread_id is a string — body: {resp}"))
-        .to_string();
-
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        if Instant::now() > deadline {
-            panic!("timed out waiting for run to park");
-        }
-        let resp = rpc(
-            core,
-            2,
-            "run/subscribe",
-            serde_json::json!({ "run_id": run_id }),
-        )
-        .await;
-        if resp["result"]["status"].as_str() == Some("parked") {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(150)).await;
-    }
-    (run_id, thread_id)
-}
-
-/// Poll run/subscribe until the Run reaches `completed`; panics on timeout.
-async fn await_completed(core: &CoreHandle, run_id: &str) {
-    let deadline = Instant::now() + Duration::from_secs(15);
-    loop {
-        if Instant::now() > deadline {
-            panic!("timed out waiting for run to complete");
-        }
-        let resp = rpc(
-            core,
-            9,
-            "run/subscribe",
-            serde_json::json!({ "run_id": run_id }),
-        )
-        .await;
-        if resp["result"]["status"].as_str() == Some("completed") {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(150)).await;
-    }
-}
+use common::{await_completed, create_and_park, rpc, rt, Workspace};
 
 #[test]
 fn decide_malformed_proposal_id_is_invalid_params() {
@@ -113,10 +23,7 @@ fn decide_malformed_proposal_id_is_invalid_params() {
     let workspace = Workspace::new();
     let core = workspace.core().worker_fixture("propose-worker.ts").spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
         let resp = rpc(
@@ -144,13 +51,12 @@ fn accept_applies_and_resumes() {
     let workspace = Workspace::new();
     let core = workspace.core().worker_fixture("propose-worker.ts").spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let (run_id, entity_id) = rt.block_on(async {
-        let run_id = create_and_park(&core).await;
+        let run_id = create_and_park(&core, "I bought milk after daycare pickup and felt relieved.")
+            .await
+            .0;
 
         // Learn the proposal_id.
         let resp = rpc(
@@ -290,13 +196,12 @@ fn reject_resumes_without_applying() {
     let workspace = Workspace::new();
     let core = workspace.core().worker_fixture("propose-worker.ts").spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let run_id = rt.block_on(async {
-        let run_id = create_and_park(&core).await;
+        let run_id = create_and_park(&core, "I bought milk after daycare pickup and felt relieved.")
+            .await
+            .0;
 
         // Learn the proposal_id.
         let resp = rpc(
@@ -411,13 +316,12 @@ fn accept_is_idempotent() {
     let workspace = Workspace::new();
     let core = workspace.core().worker_fixture("propose-worker.ts").spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let run_id = rt.block_on(async {
-        let run_id = create_and_park(&core).await;
+        let run_id = create_and_park(&core, "I bought milk after daycare pickup and felt relieved.")
+            .await
+            .0;
 
         let resp = rpc(
             &core,
@@ -506,13 +410,12 @@ fn edit_applies_edited_payload() {
     let workspace = Workspace::new();
     let core = workspace.core().worker_fixture("propose-worker.ts").spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let (run_id, entity_id) = rt.block_on(async {
-        let run_id = create_and_park(&core).await;
+        let run_id = create_and_park(&core, "I bought milk after daycare pickup and felt relieved.")
+            .await
+            .0;
 
         let resp = rpc(
             &core,
@@ -633,13 +536,12 @@ fn edit_rejects_invalid_payload() {
     let workspace = Workspace::new();
     let core = workspace.core().worker_fixture("propose-worker.ts").spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let run_id = rt.block_on(async {
-        let run_id = create_and_park(&core).await;
+        let run_id = create_and_park(&core, "I bought milk after daycare pickup and felt relieved.")
+            .await
+            .0;
 
         let resp = rpc(
             &core,
@@ -734,13 +636,12 @@ fn accept_resumes_after_multistep_transcript() {
         .env("INKSTONE_MULTISTEP", "1")
         .spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let run_id = rt.block_on(async {
-        let run_id = create_and_park(&core).await;
+        let run_id = create_and_park(&core, "I bought milk after daycare pickup and felt relieved.")
+            .await
+            .0;
 
         let resp = rpc(
             &core,
@@ -813,13 +714,11 @@ fn thread_get_carries_decided_proposal_after_accept() {
     let workspace = Workspace::new();
     let core = workspace.core().worker_fixture("propose-worker.ts").spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
-        let (run_id, thread_id) = create_and_park_with_thread(&core).await;
+        let (run_id, thread_id) =
+            create_and_park(&core, "I bought milk after daycare pickup and felt relieved.").await;
 
         let resp = rpc(
             &core,

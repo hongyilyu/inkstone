@@ -8,78 +8,22 @@
 //! file with the next mutation (create, then update) before posting a message.
 
 use std::path::Path;
-use std::time::{Duration, Instant};
-
-use futures_util::SinkExt;
-use sqlx::Row;
-use sqlx::sqlite::SqlitePoolOptions;
-use sqlx::SqlitePool;
-use tokio_tungstenite::tungstenite::Message;
 
 mod common;
-use common::{CoreHandle, Workspace, next_text};
-
-/// Open a fresh socket, send a single request, return the response body.
-async fn rpc(
-    core: &CoreHandle,
-    id: u64,
-    method: &str,
-    params: serde_json::Value,
-) -> serde_json::Value {
-    let mut ws = core.connect().await;
-    let req = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": id,
-        "method": method,
-        "params": params,
-    });
-    ws.send(Message::Text(req.to_string().into()))
-        .await
-        .expect("send request frame");
-    let body = next_text(&mut ws).await;
-    ws.close(None).await.ok();
-    serde_json::from_str(&body).unwrap_or_else(|e| panic!("response is JSON: {e} — body: {body}"))
-}
+use common::{
+    CoreHandle, Workspace, await_completed, create_and_park, decide_accept, entity_data,
+    max_revision_seq, open_readonly_pool, proposal_and_tool_status_for_run, rpc, rt,
+    updated_from_count_for_run,
+};
 
 fn write_params(path: &Path, params: serde_json::Value) {
     std::fs::write(path, params.to_string()).expect("write propose params file");
 }
 
-async fn await_status(core: &CoreHandle, run_id: &str, want: &str) {
-    let deadline = Instant::now() + Duration::from_secs(15);
-    loop {
-        if Instant::now() > deadline {
-            panic!("timed out waiting for run to reach {want}");
-        }
-        let resp = rpc(
-            core,
-            9,
-            "run/subscribe",
-            serde_json::json!({ "run_id": run_id }),
-        )
-        .await;
-        if resp["result"]["status"].as_str() == Some(want) {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(150)).await;
-    }
-}
-
 /// Post a message on a new thread (the params file already holds the mutation),
 /// wait until the Run parks, and return `(run_id, proposal_id, mutation_kind)`.
 async fn create_thread_and_park(core: &CoreHandle, prompt: &str) -> (String, String, String) {
-    let resp = rpc(
-        core,
-        1,
-        "thread/create",
-        serde_json::json!({ "prompt": prompt }),
-    )
-    .await;
-    let run_id = resp["result"]["run_id"]
-        .as_str()
-        .unwrap_or_else(|| panic!("result.run_id is a string — body: {resp}"))
-        .to_string();
-    await_status(core, &run_id, "parked").await;
+    let (run_id, _) = create_and_park(core, prompt).await;
     let (proposal_id, mutation_kind) = pending_proposal(core, &run_id).await;
     (run_id, proposal_id, mutation_kind)
 }
@@ -113,72 +57,6 @@ async fn pending_proposal(core: &CoreHandle, run_id: &str) -> (String, String) {
     (proposal_id, mutation_kind)
 }
 
-async fn decide_accept(core: &CoreHandle, proposal_id: &str, key: &str) -> serde_json::Value {
-    rpc(
-        core,
-        4,
-        "proposal/decide",
-        serde_json::json!({
-            "proposal_id": proposal_id,
-            "decision": "accept",
-            "decision_idempotency_key": key,
-        }),
-    )
-    .await
-}
-
-async fn open_readonly_pool(workspace: &Workspace) -> SqlitePool {
-    let url = format!("sqlite://{}?mode=ro", workspace.db_path().display());
-    SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect(&url)
-        .await
-        .expect("connect to migrated DB")
-}
-
-async fn entity_data(pool: &SqlitePool, entity_id: &str) -> serde_json::Value {
-    let data: String = sqlx::query_scalar("SELECT data FROM entities WHERE id = ?1")
-        .bind(entity_id)
-        .fetch_one(pool)
-        .await
-        .expect("entity row exists");
-    serde_json::from_str(&data).expect("entity data is JSON")
-}
-
-async fn max_revision_seq(pool: &SqlitePool, entity_id: &str) -> i64 {
-    sqlx::query_scalar("SELECT MAX(seq) FROM entity_revisions WHERE entity_id = ?1")
-        .bind(entity_id)
-        .fetch_one(pool)
-        .await
-        .expect("max revision seq")
-}
-
-async fn updated_from_count_for_run(pool: &SqlitePool, entity_id: &str, run_id: &str) -> i64 {
-    sqlx::query_scalar(
-        "SELECT COUNT(*) FROM entity_sources es \
-         JOIN runs r ON r.user_message_id = es.source_message_id \
-         WHERE es.entity_id = ?1 AND r.id = ?2 AND es.relation = 'updated_from'",
-    )
-    .bind(entity_id)
-    .bind(run_id)
-    .fetch_one(pool)
-    .await
-    .expect("count updated_from sources")
-}
-
-async fn proposal_and_tool_status_for_run(pool: &SqlitePool, run_id: &str) -> (String, String) {
-    let row = sqlx::query(
-        "SELECT p.status, tc.status AS tool_status \
-         FROM proposals p JOIN tool_calls tc ON tc.id = p.tool_call_id \
-         WHERE tc.run_id = ?1",
-    )
-    .bind(run_id)
-    .fetch_one(pool)
-    .await
-    .expect("proposal row exists");
-    (row.get("status"), row.get("tool_status"))
-}
-
 #[test]
 fn update_person_replaces_data_and_records_updated_from() {
     let workspace = Workspace::new();
@@ -200,10 +78,7 @@ fn update_person_replaces_data_and_records_updated_from() {
         .env("INKSTONE_PROPOSE_PARAMS_FILE", &params_path)
         .spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let (entity_id, update_run_id) = rt.block_on(async {
         let (create_run, create_proposal, kind) =
@@ -219,7 +94,7 @@ fn update_person_replaces_data_and_records_updated_from() {
             .as_str()
             .unwrap_or_else(|| panic!("entity_id is a string — body: {resp}"))
             .to_string();
-        await_status(&core, &create_run, "completed").await;
+        await_completed(&core, &create_run).await;
 
         // Run 2 proposes the update of the just-created Person.
         write_params(
@@ -244,7 +119,7 @@ fn update_person_replaces_data_and_records_updated_from() {
             Some(entity_id.as_str()),
             "update returns the target entity id — body: {resp}"
         );
-        await_status(&core, &update_run, "completed").await;
+        await_completed(&core, &update_run).await;
         (entity_id, update_run)
     });
 
@@ -293,10 +168,7 @@ fn update_project_replaces_status_and_records_updated_from() {
         .env("INKSTONE_PROPOSE_PARAMS_FILE", &params_path)
         .spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let (entity_id, update_run_id) = rt.block_on(async {
         let (create_run, create_proposal, kind) =
@@ -312,7 +184,7 @@ fn update_project_replaces_status_and_records_updated_from() {
             .as_str()
             .unwrap_or_else(|| panic!("entity_id is a string — body: {resp}"))
             .to_string();
-        await_status(&core, &create_run, "completed").await;
+        await_completed(&core, &create_run).await;
 
         // active → on_hold is a valid transition; both forbid timestamps.
         write_params(
@@ -337,7 +209,7 @@ fn update_project_replaces_status_and_records_updated_from() {
             Some(entity_id.as_str()),
             "update returns the target entity id — body: {resp}"
         );
-        await_status(&core, &update_run, "completed").await;
+        await_completed(&core, &update_run).await;
         (entity_id, update_run)
     });
 
@@ -382,10 +254,7 @@ fn update_person_with_non_person_target_is_invalid() {
         .env("INKSTONE_PROPOSE_PARAMS_FILE", &params_path)
         .spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let (project_id, update_run_id) = rt.block_on(async {
         let (create_run, create_proposal, _) =
@@ -395,7 +264,7 @@ fn update_person_with_non_person_target_is_invalid() {
             .as_str()
             .unwrap_or_else(|| panic!("entity_id is a string — body: {resp}"))
             .to_string();
-        await_status(&core, &create_run, "completed").await;
+        await_completed(&core, &create_run).await;
 
         // update_person pointed at the Project's id — a target-type mismatch.
         write_params(
@@ -476,10 +345,7 @@ fn proposal_get_returns_current_person_with_replaced_away_fields() {
         .env("INKSTONE_PROPOSE_PARAMS_FILE", &params_path)
         .spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
         let (create_run, create_proposal, kind) =
@@ -490,7 +356,7 @@ fn proposal_get_returns_current_person_with_replaced_away_fields() {
             .as_str()
             .unwrap_or_else(|| panic!("entity_id is a string — body: {resp}"))
             .to_string();
-        await_status(&core, &create_run, "completed").await;
+        await_completed(&core, &create_run).await;
 
         // The proposed update keeps only `name` (renamed) — `note` and `aliases`
         // are omitted, so an accepted REPLACE removes them.
@@ -568,10 +434,7 @@ fn proposal_get_returns_current_project_with_replaced_away_fields() {
         .env("INKSTONE_PROPOSE_PARAMS_FILE", &params_path)
         .spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
         let (create_run, create_proposal, kind) =
@@ -582,7 +445,7 @@ fn proposal_get_returns_current_project_with_replaced_away_fields() {
             .as_str()
             .unwrap_or_else(|| panic!("entity_id is a string — body: {resp}"))
             .to_string();
-        await_status(&core, &create_run, "completed").await;
+        await_completed(&core, &create_run).await;
 
         // The proposed update keeps only `name` + `status` — `outcome` and `note`
         // are omitted, so an accepted REPLACE removes them.

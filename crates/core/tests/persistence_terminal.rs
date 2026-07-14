@@ -12,7 +12,7 @@ use sqlx::sqlite::SqlitePoolOptions;
 use tokio_tungstenite::tungstenite::Message;
 
 mod common;
-use common::{Workspace, next_text};
+use common::{next_text, rt, Workspace};
 
 fn false_binary() -> &'static str {
     if Path::new("/usr/bin/false").exists() {
@@ -30,10 +30,7 @@ fn done_event_completes_run() {
 
     let core = workspace.core().worker_fixture("slow-worker.ts").spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let run_id = rt.block_on(async {
         let mut ws = core.connect().await;
@@ -144,10 +141,7 @@ fn worker_eof_errors_run_and_marks_message_incomplete() {
 
     let core = workspace.core().worker_cmd(false_binary()).spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let run_id = rt.block_on(async {
         let mut ws = core.connect().await;
@@ -271,10 +265,7 @@ fn worker_spawn_failure_errors_run() {
         .worker_cmd("/nonexistent/inkstone-test-worker")
         .spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let run_id = rt.block_on(async {
         let mut ws = core.connect().await;

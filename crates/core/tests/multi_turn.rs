@@ -10,7 +10,7 @@ use futures_util::SinkExt;
 use tokio_tungstenite::tungstenite::Message;
 
 mod common;
-use common::{Workspace, Ws, next_text};
+use common::{next_text, rt, Workspace, Ws};
 
 fn write_faux_workflow(dir: &Path) {
     std::fs::create_dir_all(dir).expect("create workflows dir");
@@ -68,10 +68,7 @@ fn second_run_sees_prior_exchange() {
         .env("INKSTONE_FAUX_ECHO_HISTORY", "1")
         .spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let run2_text = rt.block_on(async {
         let mut ws = core.connect().await;

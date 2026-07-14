@@ -1,3 +1,4 @@
+import { createInterface } from "node:readline";
 import {
 	loginOpenAICodex,
 	refreshOpenAICodexToken,
@@ -14,21 +15,14 @@ const io: HelperIo = {
 	},
 	readFirstLine: () =>
 		new Promise((resolve) => {
-			let buf = "";
-			let done = false;
-			const finish = (v: string | null): void => {
-				if (done) return;
-				done = true;
-				resolve(v);
-			};
-			process.stdin.setEncoding("utf8");
-			process.stdin.on("data", (chunk: string) => {
-				buf += chunk;
-				const nl = buf.indexOf("\n");
-				if (nl >= 0) finish(buf.slice(0, nl));
-			});
-			process.stdin.on("end", () => finish(buf.length > 0 ? buf : null));
-			process.stdin.on("error", () => finish(null));
+			// readline emits a final partial line before "close", so the
+			// no-trailing-newline case resolves with that line; empty input closes
+			// without a "line" event and resolves null. Promise settle-once makes
+			// the line→close double-resolve a no-op.
+			const rl = createInterface({ input: process.stdin });
+			rl.once("line", (line) => resolve(line));
+			rl.once("close", () => resolve(null));
+			rl.once("error", () => resolve(null));
 		}),
 };
 

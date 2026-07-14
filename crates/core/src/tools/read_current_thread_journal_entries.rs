@@ -91,8 +91,8 @@ pub async fn execute(
 
 #[cfg(test)]
 mod tests {
+    use crate::db::test_support::memory_pool;
     use super::*;
-    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
     #[test]
     fn descriptor_has_name_and_empty_object_schema() {
@@ -100,23 +100,6 @@ mod tests {
         assert_eq!(d.name, "read_current_thread_journal_entries");
         assert_eq!(d.label, "Read current thread journal entries");
         assert_eq!(d.json_schema["type"], serde_json::json!("object"));
-    }
-
-    /// A migrated in-memory pool, mirroring the db submodules' `memory_pool` helpers.
-    async fn memory_pool() -> SqlitePool {
-        let options = SqliteConnectOptions::new()
-            .filename(":memory:")
-            .foreign_keys(true);
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(options)
-            .await
-            .expect("open in-memory sqlite");
-        sqlx::migrate!("./migrations")
-            .run(&pool)
-            .await
-            .expect("run migrations");
-        pool
     }
 
     /// Seed a thread + a completed Run + its user Message. The runs↔messages FKs

@@ -5,13 +5,15 @@
 use std::path::Path;
 
 use futures_util::SinkExt;
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::{Executor, SqlitePool};
 use tokio_tungstenite::tungstenite::Message;
 use uuid::Uuid;
 
 mod common;
-use common::{CoreHandle, Workspace, next_text};
+use common::{
+    CoreHandle, Workspace, migrated_pool, next_text, rpc, rt,
+    seed_accepted_journal_entry_full, seed_thread,
+};
 
 const TOOL_NAME: &str = "read_current_thread_journal_entries";
 
@@ -32,170 +34,6 @@ tools = ["{TOOL_NAME}"]
         ),
     )
     .expect("write workflow");
-}
-
-async fn migrated_pool(workspace: &Workspace) -> SqlitePool {
-    let options = SqliteConnectOptions::new()
-        .filename(workspace.db_path())
-        .create_if_missing(true)
-        .foreign_keys(true);
-    let pool = SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect_with(options)
-        .await
-        .expect("open sqlite pool");
-    sqlx::migrate!("./migrations")
-        .run(&pool)
-        .await
-        .expect("run migrations");
-    pool
-}
-
-async fn seed_thread(pool: &SqlitePool, thread_id: Uuid, title: &str, now_ms: i64) {
-    sqlx::query(
-        "INSERT INTO threads (id, title, created_at, last_activity_at) VALUES (?1, ?2, ?3, ?3)",
-    )
-    .bind(thread_id.to_string())
-    .bind(title)
-    .bind(now_ms)
-    .execute(pool)
-    .await
-    .expect("insert thread");
-}
-
-async fn seed_accepted_journal_entry(
-    pool: &SqlitePool,
-    thread_id: Uuid,
-    entity_id: Uuid,
-    occurred_at: &str,
-    ended_at: Option<&str>,
-    body_text: &str,
-    created_at: i64,
-) {
-    let run_id = Uuid::now_v7();
-    let user_message_id = Uuid::now_v7();
-    let assistant_message_id = Uuid::now_v7();
-    let tool_call_id = format!("tc_{entity_id}");
-    let proposal_id = Uuid::now_v7().to_string();
-    let source_id = Uuid::now_v7().to_string();
-
-    let mut payload = serde_json::json!({
-        "occurred_at": occurred_at,
-        "body": [{ "type": "text", "text": body_text }]
-    });
-    if let Some(ended_at) = ended_at {
-        payload["ended_at"] = serde_json::json!(ended_at);
-    }
-    let payload_str = payload.to_string();
-
-    let mut tx = pool.begin().await.expect("begin seed tx");
-    tx.execute(sqlx::query(
-        "INSERT INTO runs \
-         (id, thread_id, workflow_name, workflow_version, provider, model, thinking_level, user_message_id, status, started_at, ended_at, terminal_reason) \
-         VALUES (?1, ?2, 'default', '1.0.0', 'faux', 'fake-model', 'off', ?3, 'completed', ?4, ?4, 'completed')",
-    )
-    .bind(run_id.to_string())
-    .bind(thread_id.to_string())
-    .bind(user_message_id.to_string())
-    .bind(created_at))
-    .await
-    .expect("insert run");
-    tx.execute(
-        sqlx::query(
-            "INSERT INTO messages (id, thread_id, run_id, role, status, created_at, updated_at) \
-         VALUES (?1, ?2, ?3, 'user', 'completed', ?4, ?4)",
-        )
-        .bind(user_message_id.to_string())
-        .bind(thread_id.to_string())
-        .bind(run_id.to_string())
-        .bind(created_at),
-    )
-    .await
-    .expect("insert user message");
-    tx.execute(
-        sqlx::query(
-            "INSERT INTO messages (id, thread_id, run_id, role, status, created_at, updated_at) \
-         VALUES (?1, ?2, ?3, 'assistant', 'completed', ?4, ?4)",
-        )
-        .bind(assistant_message_id.to_string())
-        .bind(thread_id.to_string())
-        .bind(run_id.to_string())
-        .bind(created_at),
-    )
-    .await
-    .expect("insert assistant message");
-    tx.execute(
-        sqlx::query(
-            "INSERT INTO message_parts (message_id, seq, type, text) VALUES (?1, 0, 'text', ?2)",
-        )
-        .bind(user_message_id.to_string())
-        .bind(body_text),
-    )
-    .await
-    .expect("insert user text");
-    tx.execute(
-        sqlx::query(
-            "INSERT INTO message_parts (message_id, seq, type, text) VALUES (?1, 0, 'text', '')",
-        )
-        .bind(assistant_message_id.to_string()),
-    )
-    .await
-    .expect("insert assistant text");
-    tx.execute(sqlx::query(
-        "INSERT INTO tool_calls (id, run_id, name, request_payload, status, result_payload, requested_at, resolved_at) \
-         VALUES (?1, ?2, 'propose_workspace_mutation', ?3, 'completed', '{}', ?4, ?4)",
-    )
-    .bind(&tool_call_id)
-    .bind(run_id.to_string())
-    .bind(serde_json::json!({ "mutation_kind": "create_journal_entry", "payload": payload }).to_string())
-    .bind(created_at))
-    .await
-    .expect("insert tool call");
-    tx.execute(sqlx::query(
-        "INSERT INTO proposals (id, tool_call_id, mutation_kind, status, decided_by, decided_at, applied_at) \
-         VALUES (?1, ?2, 'create_journal_entry', 'accepted', 'user', ?3, ?3)",
-    )
-    .bind(&proposal_id)
-    .bind(&tool_call_id)
-    .bind(created_at))
-    .await
-    .expect("insert proposal");
-    tx.execute(sqlx::query(
-        "INSERT INTO entities (id, type, schema_version, data, created_by, created_via_proposal_id, created_at, updated_at) \
-         VALUES (?1, 'journal_entry', 1, ?2, 'proposal', ?3, ?4, ?4)",
-    )
-    .bind(entity_id.to_string())
-    .bind(&payload_str)
-    .bind(&proposal_id)
-    .bind(created_at))
-    .await
-    .expect("insert entity");
-    tx.execute(
-        sqlx::query(
-            "INSERT INTO entity_revisions (entity_id, seq, data, proposal_id, created_at) \
-         VALUES (?1, 1, ?2, ?3, ?4)",
-        )
-        .bind(entity_id.to_string())
-        .bind(&payload_str)
-        .bind(&proposal_id)
-        .bind(created_at),
-    )
-    .await
-    .expect("insert entity revision");
-    tx.execute(
-        sqlx::query(
-            "INSERT INTO entity_sources (id, entity_id, source_message_id, relation, created_at) \
-         VALUES (?1, ?2, ?3, 'created_from', ?4)",
-        )
-        .bind(&source_id)
-        .bind(entity_id.to_string())
-        .bind(user_message_id.to_string())
-        .bind(created_at),
-    )
-    .await
-    .expect("insert entity source");
-
-    tx.commit().await.expect("commit seed tx");
 }
 
 async fn add_later_revision(
@@ -232,27 +70,6 @@ async fn add_later_revision(
     .await
     .expect("insert later revision");
     tx.commit().await.expect("commit revision tx");
-}
-
-async fn rpc(
-    core: &CoreHandle,
-    id: u64,
-    method: &str,
-    params: serde_json::Value,
-) -> serde_json::Value {
-    let mut ws = core.connect().await;
-    let req = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": id,
-        "method": method,
-        "params": params,
-    });
-    ws.send(Message::Text(req.to_string().into()))
-        .await
-        .expect("send request frame");
-    let body = next_text(&mut ws).await;
-    ws.close(None).await.ok();
-    serde_json::from_str(&body).unwrap_or_else(|e| panic!("response is JSON: {e} - body: {body}"))
 }
 
 async fn run_tool_from_thread(core: &CoreHandle, thread_id: Uuid) -> serde_json::Value {
@@ -325,16 +142,13 @@ fn returns_current_thread_entries_in_latest_revision_order() {
     let other_thread_entry = Uuid::now_v7();
     let assistant_sourced_entry = Uuid::now_v7();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
         let pool = migrated_pool(&workspace).await;
         seed_thread(&pool, thread_a, "Thread A", 1_000).await;
         seed_thread(&pool, thread_b, "Thread B", 1_000).await;
-        seed_accepted_journal_entry(
+        seed_accepted_journal_entry_full(
             &pool,
             thread_a,
             revised_entry,
@@ -342,9 +156,10 @@ fn returns_current_thread_entries_in_latest_revision_order() {
             None,
             "Original wording.",
             2_000,
+            "user",
         )
         .await;
-        seed_accepted_journal_entry(
+        seed_accepted_journal_entry_full(
             &pool,
             thread_a,
             older_entry,
@@ -352,9 +167,10 @@ fn returns_current_thread_entries_in_latest_revision_order() {
             Some("2026-06-10T10:30:00"),
             "Still second after the revision.",
             3_000,
+            "user",
         )
         .await;
-        seed_accepted_journal_entry(
+        seed_accepted_journal_entry_full(
             &pool,
             thread_b,
             other_thread_entry,
@@ -362,9 +178,10 @@ fn returns_current_thread_entries_in_latest_revision_order() {
             None,
             "Other thread should stay out.",
             5_000,
+            "user",
         )
         .await;
-        seed_accepted_journal_entry(
+        seed_accepted_journal_entry_full(
             &pool,
             thread_a,
             assistant_sourced_entry,
@@ -372,6 +189,7 @@ fn returns_current_thread_entries_in_latest_revision_order() {
             None,
             "Assistant-sourced entry should stay out.",
             7_000,
+            "user",
         )
         .await;
         sqlx::query(

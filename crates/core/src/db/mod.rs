@@ -81,15 +81,14 @@ pub use runs::{
     read_run_timeline, recover_interrupted_runs, resolve_tool_call, run_prompt_and_thread,
     run_status, run_workflow_snapshot, select_run_snapshot,
 };
-// Result/row types no caller names (`Backlinks`, `Current*Row`,
+// Result/row types no caller names (`Backlinks`, `CurrentEntityRow`,
 // `ResolvedEntityRef`) and the V0-internal GTD reads (`todos_by_*`, consumed
 // only by `backlinks_for_entity`) are NOT re-exported — callers destructure the
 // returning fns' fields, and in a binary-only crate an unreachable re-export
 // trips `unused_imports`. Re-add a name here when a real caller lands.
 pub use entities_read::{
-    EntityProvenance, EntityRow, backlinks_for_entity, current_journal_entry_by_id,
-    current_person_by_id, current_project_by_id, current_thread_journal_entries,
-    entity_is_type, entity_type_by_id, list_by_type,
+    EntityProvenance, EntityRow, backlinks_for_entity, current_entity_review_data,
+    current_thread_journal_entries, entity_is_type, entity_type_by_id, list_by_type,
 };
 // `MessageRow` is not re-exported: no caller names it (consumers destructure
 // `get_thread_with_messages`' tuple and use `.text()`/`.segments`), and in a
@@ -218,4 +217,119 @@ pub async fn get_setting(pool: &SqlitePool, key: &str) -> sqlx::Result<Option<St
 /// Upsert a user setting (ADR-0024). Single statement; backs `settings/set`.
 pub async fn set_setting(pool: &SqlitePool, key: &str, value: &str) -> sqlx::Result<()> {
     queries::set_setting(pool, key, value).await
+}
+
+/// Shared unit-test fixtures. `cfg(test)` mods are private siblings, so the
+/// in-memory pool and the common seeding helpers live here once instead of
+/// being copy-pasted into every test mod.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use sqlx::SqlitePool;
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+
+    /// A migrated in-memory pool so the schema CHECK constraints are in force.
+    pub(crate) async fn memory_pool() -> SqlitePool {
+        let options = SqliteConnectOptions::new()
+            .filename(":memory:")
+            .foreign_keys(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .expect("open in-memory sqlite");
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .expect("run migrations");
+        pool
+    }
+
+    /// Insert an Entity row directly with the given `type` + `data` JSON, so
+    /// tests can seed Todos/Persons/Projects without a Proposal.
+    pub(crate) async fn seed_entity(pool: &SqlitePool, id: &str, entity_type: &str, data: &str) {
+        sqlx::query(
+            "INSERT INTO entities \
+             (id, type, schema_version, data, created_by, created_via_proposal_id, \
+              created_at, updated_at) \
+             VALUES (?, ?, 1, ?, 'user', NULL, 1, 1)",
+        )
+        .bind(id)
+        .bind(entity_type)
+        .bind(data)
+        .execute(pool)
+        .await
+        .expect("insert entity");
+    }
+
+    /// Seed a Thread + Run + user Message chain so a Message-sourced provenance
+    /// row resolves a real `thread_id`/`thread_title`. The `runs.user_message_id`
+    /// and `messages.run_id` FKs are circular but DEFERRABLE, so the whole chain
+    /// commits in one tx.
+    pub(crate) async fn seed_thread_message(
+        pool: &SqlitePool,
+        thread_id: &str,
+        thread_title: &str,
+        message_id: &str,
+    ) {
+        let mut tx = pool.begin().await.expect("begin");
+        sqlx::query(
+            "INSERT INTO threads (id, title, created_at, last_activity_at) VALUES (?, ?, 1, 1)",
+        )
+        .bind(thread_id)
+        .bind(thread_title)
+        .execute(&mut *tx)
+        .await
+        .expect("insert thread");
+        let run_id = format!("run-for-{message_id}");
+        sqlx::query(
+            "INSERT INTO runs \
+             (id, thread_id, workflow_name, workflow_version, provider, model, \
+              thinking_level, user_message_id, status, started_at) \
+             VALUES (?, ?, 'w', '1', 'p', 'm', 'off', ?, 'completed', 1)",
+        )
+        .bind(&run_id)
+        .bind(thread_id)
+        .bind(message_id)
+        .execute(&mut *tx)
+        .await
+        .expect("insert run");
+        sqlx::query(
+            "INSERT INTO messages (id, thread_id, run_id, role, status, created_at, updated_at) \
+             VALUES (?, ?, ?, 'user', 'completed', 1, 1)",
+        )
+        .bind(message_id)
+        .bind(thread_id)
+        .bind(&run_id)
+        .execute(&mut *tx)
+        .await
+        .expect("insert message");
+        tx.commit().await.expect("commit thread+message");
+    }
+
+    /// Seed one `entity_sources` row. Exactly one of `source_message_id` /
+    /// `source_entity_id` is set (the schema CHECK); pass the other as `None`.
+    pub(crate) async fn seed_source(
+        pool: &SqlitePool,
+        id: &str,
+        entity_id: &str,
+        source_message_id: Option<&str>,
+        source_entity_id: Option<&str>,
+        relation: &str,
+        created_at: i64,
+    ) {
+        sqlx::query(
+            "INSERT INTO entity_sources \
+             (id, entity_id, source_message_id, source_entity_id, relation, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(id)
+        .bind(entity_id)
+        .bind(source_message_id)
+        .bind(source_entity_id)
+        .bind(relation)
+        .bind(created_at)
+        .execute(pool)
+        .await
+        .expect("insert entity_source");
+    }
 }

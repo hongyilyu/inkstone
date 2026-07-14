@@ -133,30 +133,6 @@ export const ProposalGetResult = S.Struct({
 
 export type ProposalGetResult = S.Schema.Type<typeof ProposalGetResult>;
 
-/** The closed set of agent-proposable mutation kinds a Proposal can carry
- * (ADR-0018, ADR-0042, ADR-0053). Mirrors `ProposableMutation`
- * (`mutation.rs`) / the `schemas` registry; the Client switches its Proposal
- * rendering on this. */
-export const ProposalKind = S.Literal(
-	"create_journal_entry",
-	"update_journal_entry",
-	"delete_journal_entry",
-	"reference_existing_entity_from_journal_entry",
-	"create_person",
-	"update_person",
-	"delete_person",
-	"create_project",
-	"update_project",
-	"delete_project",
-	"create_todo",
-	"update_todo",
-	"delete_todo",
-	"apply_intent_graph",
-	"record_observations",
-);
-
-export type ProposalKind = S.Schema.Type<typeof ProposalKind>;
-
 /** One per-node decision in an `apply_intent_graph` decision vector (ADR-0042).
  * Keyed by the graph-local `handle`; `entity_id` overrides a resolved id and
  * `edited_fields` corrects a create-node's content (mutually exclusive per node,

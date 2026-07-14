@@ -18,10 +18,7 @@ export function useProviderStatus() {
 		refetchOnMount: "always",
 		queryFn: () =>
 			runtime.runPromise(
-				Effect.gen(function* () {
-					const client = yield* WsClient;
-					return yield* client.providerStatus();
-				}),
+				Effect.flatMap(WsClient, (client) => client.providerStatus()),
 			),
 	});
 	const anyConnected = query.data?.providers.some((p) => p.connected) ?? false;

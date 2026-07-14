@@ -6,7 +6,7 @@ import {
 	recurrenceSummary,
 	TODO_STATUS_LABEL,
 } from "@/lib/libraryItems";
-import { arrayField, objectField, textField } from "./proposalPayload.js";
+import { readArray, readObject, readString } from "@/lib/readPayload";
 
 /**
  * Inputs a row's `renderBody` strategy reads to draw the card's detail body — the
@@ -128,7 +128,7 @@ function statusLabel(value: string, labels: Record<string, string>): string {
 // payload, reusing the same formatter the Library inspector uses. Null when the
 // payload carries no well-formed rule so the caller skips the row.
 function recurrenceLine(todo: unknown): string | null {
-	const rule = asRecurrence(objectField(todo, "recurrence"));
+	const rule = asRecurrence(readObject(todo, "recurrence"));
 	return rule ? recurrenceSummary(rule) : null;
 }
 
@@ -140,9 +140,9 @@ function personRefLine(
 	ref: unknown,
 	nameFor: (id: string) => string | null,
 ): string | null {
-	const personId = textField(ref, "person_id");
+	const personId = readString(ref, "person_id");
 	if (!personId) return null;
-	const role = textField(ref, "role");
+	const role = readString(ref, "role");
 	const who = displayEntity(personId, nameFor);
 	return role === "waiting_on" ? `Waiting on: ${who}` : `Related: ${who}`;
 }
@@ -162,7 +162,7 @@ function personRefFields(
 	// bare array index (Biome noArrayIndexKey): stable across payload reordering,
 	// and still unique when two unvalidated refs render the identical line.
 	const seen = new Map<string, number>();
-	return arrayField(payload, key)
+	return readArray(payload, key)
 		.map((ref) => personRefLine(ref, nameFor))
 		.filter((line): line is string => line !== null)
 		.map((line) => {
@@ -203,8 +203,8 @@ export function renderJournalBody(
 				currentJournalEntry ? (
 					<EntrySection
 						title="Current entry"
-						occurredAt={textField(currentJournalEntry, "occurred_at")}
-						endedAt={textField(currentJournalEntry, "ended_at")}
+						occurredAt={readString(currentJournalEntry, "occurred_at")}
+						endedAt={readString(currentJournalEntry, "ended_at")}
 						bodyText={journalBody(currentJournalEntry)}
 					/>
 				) : mode === "delete" ? (
@@ -216,8 +216,8 @@ export function renderJournalBody(
 			{showProposed ? (
 				<EntrySection
 					title="Proposed entry"
-					occurredAt={textField(payload, "occurred_at")}
-					endedAt={textField(payload, "ended_at")}
+					occurredAt={readString(payload, "occurred_at")}
+					endedAt={readString(payload, "ended_at")}
 					bodyText={journalBody(payload)}
 				/>
 			) : null}
@@ -230,13 +230,13 @@ export function renderJournalBody(
 // update card stacks two of these (Current + Proposed) so a field present in the
 // current body but omitted from the full-document replace stays visible (ADR-0016).
 function personSection(title: string, body: unknown): ReactNode {
-	const note = textField(body, "note");
-	const aliases = arrayField(body, "aliases").filter(
+	const note = readString(body, "note");
+	const aliases = readArray(body, "aliases").filter(
 		(a): a is string => typeof a === "string",
 	);
 	return (
 		<Section title={title}>
-			<Field label="Name" value={textField(body, "name") || "Unknown"} />
+			<Field label="Name" value={readString(body, "name") || "Unknown"} />
 			{note ? <Field label="Note" value={note} /> : null}
 			{aliases.length > 0 ? (
 				<Field label="Aliases" value={aliases.join(", ")} />
@@ -266,12 +266,12 @@ export function renderPersonBody({
 
 // One labelled `<section>` of Project `<Field>` rows (sibling of personSection).
 function projectSection(title: string, body: unknown): ReactNode {
-	const outcome = textField(body, "outcome");
-	const status = textField(body, "status");
-	const note = textField(body, "note");
+	const outcome = readString(body, "outcome");
+	const status = readString(body, "status");
+	const note = readString(body, "note");
 	return (
 		<Section title={title}>
-			<Field label="Name" value={textField(body, "name") || "Unknown"} />
+			<Field label="Name" value={readString(body, "name") || "Unknown"} />
 			{outcome ? <Field label="Outcome" value={outcome} /> : null}
 			{/* Humanize the raw enum ("on_hold") to its label; fall back to raw. */}
 			{status ? (
@@ -315,11 +315,11 @@ function todoScalarFieldRows(
 	nameFor: (id: string) => string | null,
 	opts: { includeTitle: boolean },
 ): ReactNode[] {
-	const note = textField(todo, "note");
-	const status = textField(todo, "status");
-	const projectId = textField(todo, "project_id");
-	const due = proposalDay(textField(todo, "due_at"));
-	const defer = proposalDay(textField(todo, "defer_at"));
+	const note = readString(todo, "note");
+	const status = readString(todo, "status");
+	const projectId = readString(todo, "project_id");
+	const due = proposalDay(readString(todo, "due_at"));
+	const defer = proposalDay(readString(todo, "defer_at"));
 	const repeats = recurrenceLine(todo);
 	const rows: ReactNode[] = [];
 	if (opts.includeTitle)
@@ -327,7 +327,7 @@ function todoScalarFieldRows(
 			<Field
 				key="title"
 				label="Title"
-				value={textField(todo, "title") || "Untitled"}
+				value={readString(todo, "title") || "Untitled"}
 			/>,
 		);
 	if (note) rows.push(<Field key="note" label="Note" value={note} />);
@@ -361,7 +361,7 @@ export function renderCreateTodoBody({
 	payload,
 	nameFor,
 }: ProposalBodyArgs): ReactNode {
-	const todo = objectField(payload, "todo");
+	const todo = readObject(payload, "todo");
 	return (
 		<div className="flex flex-col gap-3 border-border border-t pt-3">
 			<section className="flex flex-col gap-2">
@@ -381,14 +381,14 @@ export function renderUpdateTodoBody({
 	payload,
 	nameFor,
 }: ProposalBodyArgs): ReactNode {
-	const todo = objectField(payload, "todo");
+	const todo = readObject(payload, "todo");
 	// Reuse the create body's scalar rows, minus title: an update omits an
 	// unchanged title, and "Untitled" here would misread as a title change.
 	const scalarRows = todoScalarFieldRows(todo, nameFor, {
 		includeTitle: false,
 	});
-	const title = textField(todo, "title");
-	const removeIds = arrayField(payload, "remove_person_ids").filter(
+	const title = readString(todo, "title");
+	const removeIds = readArray(payload, "remove_person_ids").filter(
 		(id): id is string => typeof id === "string",
 	);
 	const setRows = personRefFields(

@@ -31,10 +31,7 @@ export function useEntityMutation() {
 	return useMutation<EntityMutateResult, unknown, EntityMutateParams>({
 		mutationFn: async (params) => {
 			const exit = await runtime.runPromiseExit(
-				Effect.gen(function* () {
-					const client = yield* WsClient;
-					return yield* client.entityMutate(params);
-				}),
+				Effect.flatMap(WsClient, (client) => client.entityMutate(params)),
 			);
 			if (Exit.isSuccess(exit)) return exit.value;
 			throw Cause.squash(exit.cause);

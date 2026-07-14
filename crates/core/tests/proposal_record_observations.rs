@@ -3,36 +3,12 @@
 //! `entity_id`, and provenance lands on `observations.created_*`.
 
 use std::path::Path;
-use std::time::{Duration, Instant};
 
-use futures_util::SinkExt;
 use sqlx::Row;
 use sqlx::sqlite::SqlitePoolOptions;
-use tokio_tungstenite::tungstenite::Message;
 
 mod common;
-use common::{CoreHandle, Workspace, next_text};
-
-async fn rpc(
-    core: &CoreHandle,
-    id: u64,
-    method: &str,
-    params: serde_json::Value,
-) -> serde_json::Value {
-    let mut ws = core.connect().await;
-    let req = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": id,
-        "method": method,
-        "params": params,
-    });
-    ws.send(Message::Text(req.to_string().into()))
-        .await
-        .expect("send request frame");
-    let body = next_text(&mut ws).await;
-    ws.close(None).await.ok();
-    serde_json::from_str(&body).unwrap_or_else(|e| panic!("response is JSON: {e} - body: {body}"))
-}
+use common::{await_completed, await_parked, CoreHandle, create_and_park, rpc, rt, Workspace};
 
 async fn create_source_journal_entry(core: &CoreHandle) -> String {
     let resp = rpc(
@@ -67,43 +43,6 @@ fn write_proposal_params(path: &Path, payload: serde_json::Value) {
     .expect("write propose params");
 }
 
-async fn create_and_park(core: &CoreHandle) -> String {
-    let resp = rpc(
-        core,
-        1,
-        "thread/create",
-        serde_json::json!({ "prompt": "I weighed in twice this week." }),
-    )
-    .await;
-    let run_id = resp["result"]["run_id"]
-        .as_str()
-        .unwrap_or_else(|| panic!("result.run_id is a string - body: {resp}"))
-        .to_string();
-
-    await_parked(core, &run_id).await;
-    run_id
-}
-
-async fn await_parked(core: &CoreHandle, run_id: &str) {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        if Instant::now() > deadline {
-            panic!("timed out waiting for run to park");
-        }
-        let resp = rpc(
-            core,
-            2,
-            "run/subscribe",
-            serde_json::json!({ "run_id": run_id }),
-        )
-        .await;
-        if resp["result"]["status"].as_str() == Some("parked") {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(150)).await;
-    }
-}
-
 async fn pending_proposal(core: &CoreHandle, run_id: &str) -> (String, serde_json::Value) {
     let resp = rpc(
         core,
@@ -124,26 +63,6 @@ async fn pending_proposal(core: &CoreHandle, run_id: &str) -> (String, serde_jso
     (proposal_id, resp)
 }
 
-async fn await_completed(core: &CoreHandle, run_id: &str) {
-    let deadline = Instant::now() + Duration::from_secs(15);
-    loop {
-        if Instant::now() > deadline {
-            panic!("timed out waiting for run to complete");
-        }
-        let resp = rpc(
-            core,
-            9,
-            "run/subscribe",
-            serde_json::json!({ "run_id": run_id }),
-        )
-        .await;
-        if resp["result"]["status"].as_str() == Some("completed") {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(150)).await;
-    }
-}
-
 #[test]
 fn accept_records_two_observations_with_proposal_provenance_and_source() {
     let workspace = Workspace::new();
@@ -159,10 +78,7 @@ fn accept_records_two_observations_with_proposal_provenance_and_source() {
         .env("INKSTONE_PROPOSE_PARAMS_FILE", &params_path)
         .spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let (proposal_id, source_journal_entry_id) = rt.block_on(async {
         let source_journal_entry_id = create_source_journal_entry(&core).await;
@@ -186,7 +102,7 @@ fn accept_records_two_observations_with_proposal_provenance_and_source() {
             }),
         );
 
-        let run_id = create_and_park(&core).await;
+        let run_id = create_and_park(&core, "I weighed in twice this week.").await.0;
         let (proposal_id, _) = pending_proposal(&core, &run_id).await;
 
         let resp = rpc(
@@ -292,10 +208,7 @@ fn same_key_replay_does_not_record_observations_twice() {
         .env("INKSTONE_PROPOSE_PARAMS_FILE", &params_path)
         .spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let proposal_id = rt.block_on(async {
         write_proposal_params(
@@ -311,7 +224,7 @@ fn same_key_replay_does_not_record_observations_twice() {
             }),
         );
 
-        let run_id = create_and_park(&core).await;
+        let run_id = create_and_park(&core, "I weighed in twice this week.").await.0;
         let (proposal_id, _) = pending_proposal(&core, &run_id).await;
 
         for request_id in [4_u64, 5] {
@@ -397,10 +310,7 @@ fn reject_writes_no_observations_and_resumes() {
         .env("INKSTONE_PROPOSE_PARAMS_FILE", &params_path)
         .spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let proposal_id = rt.block_on(async {
         write_proposal_params(
@@ -416,7 +326,7 @@ fn reject_writes_no_observations_and_resumes() {
             }),
         );
 
-        let run_id = create_and_park(&core).await;
+        let run_id = create_and_park(&core, "I weighed in twice this week.").await.0;
         let (proposal_id, _) = pending_proposal(&core, &run_id).await;
 
         let resp = rpc(
@@ -489,10 +399,7 @@ fn accept_records_message_evidence_source() {
         .env("INKSTONE_PROPOSE_DELAY_MS", "2000")
         .spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let (proposal_id, message_id) = rt.block_on(async {
         let resp = rpc(
@@ -600,10 +507,7 @@ fn invalid_edited_payload_leaves_pending_and_writes_no_observations() {
         .env("INKSTONE_PROPOSE_PARAMS_FILE", &params_path)
         .spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let proposal_id = rt.block_on(async {
         let source_journal_entry_id = create_source_journal_entry(&core).await;
@@ -621,7 +525,7 @@ fn invalid_edited_payload_leaves_pending_and_writes_no_observations() {
             }),
         );
 
-        let run_id = create_and_park(&core).await;
+        let run_id = create_and_park(&core, "I weighed in twice this week.").await.0;
         let (proposal_id, _) = pending_proposal(&core, &run_id).await;
 
         let resp = rpc(
@@ -713,10 +617,7 @@ fn whole_payload_edit_records_the_edited_observation_payload() {
         .env("INKSTONE_PROPOSE_PARAMS_FILE", &params_path)
         .spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let (proposal_id, source_journal_entry_id) = rt.block_on(async {
         let source_journal_entry_id = create_source_journal_entry(&core).await;
@@ -735,7 +636,7 @@ fn whole_payload_edit_records_the_edited_observation_payload() {
             }),
         );
 
-        let run_id = create_and_park(&core).await;
+        let run_id = create_and_park(&core, "I weighed in twice this week.").await.0;
         let (proposal_id, _) = pending_proposal(&core, &run_id).await;
         let edited_payload = serde_json::json!({
             "observations": [

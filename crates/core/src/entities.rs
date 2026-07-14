@@ -968,9 +968,6 @@ pub(crate) fn validate_apply_intent_graph(payload: &Value) -> Result<(), String>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mutation::{
-        HABIT_SCHEMA_VERSION, JOURNAL_ENTRY_SCHEMA_VERSION, MEDIA_SCHEMA_VERSION,
-    };
     use serde_json::json;
 
     /// Test shim: validate by wire string, mirroring the pre-refactor
@@ -1415,19 +1412,12 @@ mod tests {
 
     #[test]
     fn schema_version_journal_entry_is_one() {
-        assert_eq!(
-            schema_version("create_journal_entry"),
-            JOURNAL_ENTRY_SCHEMA_VERSION
-        );
-        assert_eq!(
-            schema_version("delete_journal_entry"),
-            JOURNAL_ENTRY_SCHEMA_VERSION
-        );
+        assert_eq!(schema_version("create_journal_entry"), 1);
+        assert_eq!(schema_version("delete_journal_entry"), 1);
         assert_eq!(
             schema_version("reference_existing_entity_from_journal_entry"),
-            JOURNAL_ENTRY_SCHEMA_VERSION
+            1
         );
-        assert_eq!(schema_version("create_journal_entry"), 1);
     }
 
     #[test]
@@ -2397,10 +2387,9 @@ mod tests {
 
     #[test]
     fn schema_version_media_is_one() {
-        assert_eq!(schema_version("create_media"), MEDIA_SCHEMA_VERSION);
-        assert_eq!(schema_version("update_media"), MEDIA_SCHEMA_VERSION);
-        assert_eq!(schema_version("delete_media"), MEDIA_SCHEMA_VERSION);
         assert_eq!(schema_version("create_media"), 1);
+        assert_eq!(schema_version("update_media"), 1);
+        assert_eq!(schema_version("delete_media"), 1);
     }
 
     // ─── Habit (Phase 2b) ─────────────────────────────────────────────────
@@ -2522,10 +2511,9 @@ mod tests {
 
     #[test]
     fn schema_version_habit_is_one() {
-        assert_eq!(schema_version("create_habit"), HABIT_SCHEMA_VERSION);
-        assert_eq!(schema_version("update_habit"), HABIT_SCHEMA_VERSION);
-        assert_eq!(schema_version("delete_habit"), HABIT_SCHEMA_VERSION);
         assert_eq!(schema_version("create_habit"), 1);
+        assert_eq!(schema_version("update_habit"), 1);
+        assert_eq!(schema_version("delete_habit"), 1);
     }
 
     // ─── recurrence rule (ADR-0037) ────────────────────────────────────────

@@ -1,4 +1,5 @@
 import { expect, test } from "./fixtures.js";
+import { CommandPalette } from "./page-objects/CommandPalette.js";
 import { FAUX_WORKER_CMD } from "./spawnCore.js";
 
 /**
@@ -46,14 +47,15 @@ test("⌘K finds a message by a body substring and navigates to its thread", asy
 	await expect(chat.userBubbles()).toHaveCount(0);
 
 	// Open the palette and search an interior fragment of the message body.
-	await chat.openCommandPalette();
-	await chat.searchCommandPalette(NEEDLE);
+	const palette = new CommandPalette(chat.page);
+	await palette.openWithKeyboard();
+	await palette.search(NEEDLE);
 
 	// A "Messages" group hit appears carrying the snippet (around the match) and
 	// the source thread's title. Scoped to the Messages group so this proves the
 	// message-search path specifically — the thread title (the word-boundary slug)
 	// does NOT contain the needle, so the Threads group never matches it.
-	const messageHits = chat.commandPaletteGroupOptions("Messages");
+	const messageHits = palette.groupOptions("Messages");
 	await expect(messageHits).toHaveCount(1);
 	const hit = messageHits.first();
 
@@ -71,12 +73,12 @@ test("⌘K finds a message by a body substring and navigates to its thread", asy
 
 	// The Threads group must NOT have surfaced this query (proves it's the body
 	// match, not the title, driving the hit).
-	await expect(chat.commandPaletteGroupOptions("Threads")).toHaveCount(0);
+	await expect(palette.groupOptions("Threads")).toHaveCount(0);
 
 	// Activate the hit: palette closes and the app lands on the source thread,
 	// whose user message (with the coined token) is back in the transcript.
 	await hit.click();
-	await expect(chat.commandPalette()).toBeHidden();
+	await expect(palette.dialog()).toBeHidden();
 	await expect(
 		chat.userBubbles().filter({ hasText: "zylophant daycare schedule" }),
 	).toHaveCount(1);

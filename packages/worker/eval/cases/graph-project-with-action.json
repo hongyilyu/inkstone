@@ -16,7 +16,6 @@
 				"existing_id": "0190d3c1-0000-7000-8000-0000000000e1"
 			},
 			{ "type": "todo", "title": "Figure out the Rodeo side" }
-		],
-		"links": [{ "kind": "journal_ref" }, { "kind": "todo_project" }]
+		]
 	}
 }

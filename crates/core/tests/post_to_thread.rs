@@ -11,7 +11,7 @@ use sqlx::sqlite::SqlitePoolOptions;
 use tokio_tungstenite::tungstenite::Message;
 
 mod common;
-use common::{Workspace, Ws, next_text};
+use common::{next_text, rt, Workspace, Ws};
 
 /// Subscribe to `run_id` and drain the snapshot + tail until the terminal
 /// `done`, so the Worker finishes cleanly before Core is killed.
@@ -39,10 +39,7 @@ fn post_message_starts_second_run_in_existing_thread() {
 
     let core = workspace.core().worker_fixture("slow-worker.ts").spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let (thread_id, run_id_1, run_id_2) = rt.block_on(async {
         let mut ws = core.connect().await;
@@ -156,10 +153,7 @@ fn post_message_unknown_thread_rejected() {
 
     let core = workspace.core().worker_fixture("slow-worker.ts").spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
         let mut ws = core.connect().await;

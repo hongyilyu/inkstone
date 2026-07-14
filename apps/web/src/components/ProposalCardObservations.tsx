@@ -3,11 +3,13 @@ import {
 	type ObservationRecordParams as ObservationRecordPayload,
 } from "@inkstone/protocol";
 import { Either, Schema as S } from "effect";
-import { Check } from "lucide-react";
 import { type ReactNode, useId, useMemo, useState } from "react";
-import { EditorField, EditorTextarea } from "./library/EntityEditor.js";
-import { arrayField, objectField, textField } from "./proposalPayload.js";
-import { Button } from "./ui/button.js";
+import { readArray, readObject, readString } from "@/lib/readPayload";
+import {
+	EditFormFooter,
+	EditorField,
+	EditorTextarea,
+} from "./library/EntityEditor.js";
 
 const decodeObservationRecordParams = S.decodeUnknownEither(
 	ObservationRecordParams,
@@ -27,19 +29,19 @@ export function observationValueText(value: unknown): string {
 }
 
 export function observationBatchSummary(payload: unknown): string {
-	const observations = arrayField(payload, "observations");
+	const observations = readArray(payload, "observations");
 	if (observations.length === 0) return "Observations";
 	if (observations.length === 1) {
-		return textField(observations[0], "schema_key") || "1 observation";
+		return readString(observations[0], "schema_key") || "1 observation";
 	}
 	return `${observations.length} observations`;
 }
 
 function observationEvidenceText(payload: unknown): string {
-	const evidence = objectField(payload, "evidence");
-	const journalEntryId = textField(evidence, "journal_entry_id");
+	const evidence = readObject(payload, "evidence");
+	const journalEntryId = readString(evidence, "journal_entry_id");
 	if (journalEntryId) return `Journal Entry: ${journalEntryId}`;
-	const messageId = textField(evidence, "message_id");
+	const messageId = readString(evidence, "message_id");
 	if (messageId) return `Message: ${messageId}`;
 	return "";
 }
@@ -66,7 +68,7 @@ export function renderObservationBody({
 }: {
 	payload: unknown;
 }): ReactNode {
-	const observations = arrayField(payload, "observations");
+	const observations = readArray(payload, "observations");
 	const evidence = observationEvidenceText(payload);
 	const seen = new Map<string, number>();
 	return (
@@ -79,10 +81,10 @@ export function renderObservationBody({
 					<div className="flex flex-col gap-3">
 						{observations.map((observation, position) => {
 							const schemaKey =
-								textField(observation, "schema_key") || "Observation";
-							const occurredAt = textField(observation, "occurred_at");
-							const endedAt = textField(observation, "ended_at");
-							const note = textField(observation, "note");
+								readString(observation, "schema_key") || "Observation";
+							const occurredAt = readString(observation, "occurred_at");
+							const endedAt = readString(observation, "ended_at");
+							const note = readString(observation, "note");
 							const values = observationValueText(
 								unknownField(observation, "values"),
 							);
@@ -215,28 +217,11 @@ export function ObservationEditForm({
 					Fix before saving: {parsed.error}.
 				</p>
 			) : null}
-			<footer className="flex items-center gap-2 pt-1">
-				<Button
-					type="submit"
-					variant="primary"
-					size="row"
-					className="gap-1.5 px-3.5 py-2"
-					disabled={submitting || parsed.value === null}
-				>
-					<Check className="size-4" aria-hidden />
-					Save changes
-				</Button>
-				<Button
-					type="button"
-					variant="ghost"
-					size="sm"
-					className="ml-auto py-1.5 text-sm"
-					disabled={submitting}
-					onClick={onCancel}
-				>
-					Cancel
-				</Button>
-			</footer>
+			<EditFormFooter
+				submitting={submitting}
+				saveDisabled={parsed.value === null}
+				onCancel={onCancel}
+			/>
 		</form>
 	);
 }

@@ -1,9 +1,13 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { Page } from "@playwright/test";
 import { expect, test } from "./fixtures.js";
-import type { ChatPage } from "./page-objects/ChatPage.js";
+import {
+	acceptedCard,
+	acceptJournalEntry,
+	pendingCard,
+	rejectedCard,
+} from "./proposal-cards.js";
 import { seedAcceptedPerson, sqlite, sqlValue } from "./seed-proposal.js";
 import { FAUX_WORKER_CMD } from "./spawnCore.js";
 
@@ -56,7 +60,7 @@ test("existing Person: accept JE then reference the seeded Person", async ({
 
 	await chat.goto();
 	await chat.send("Caught up with Alice over coffee today.");
-	await acceptJournalEntry(chat);
+	await acceptJournalEntry(chat, JOURNAL_TEXT);
 
 	// The follow-up: a reference to the existing Alice.
 	const refCard = pendingCard(chat);
@@ -84,7 +88,7 @@ test("missing Person: accept JE creates the Person sourced from it, then referen
 
 	await chat.goto();
 	await chat.send("Caught up with Alice over coffee today.");
-	await acceptJournalEntry(chat);
+	await acceptJournalEntry(chat, JOURNAL_TEXT);
 
 	// Search found no Alice → a create_person proposal sourced from the JE.
 	const personCard = pendingCard(chat);
@@ -140,7 +144,7 @@ test("rejected create_person leaves no Person, source, or reference", async ({
 
 	await chat.goto();
 	await chat.send("Caught up with Alice over coffee today.");
-	await acceptJournalEntry(chat);
+	await acceptJournalEntry(chat, JOURNAL_TEXT);
 
 	// The create_person proposal — reject it.
 	const personCard = pendingCard(chat);
@@ -213,7 +217,7 @@ test.describe("Person extraction from the accepted Journal Entry Decision", () =
 
 		await chat.goto();
 		await chat.send("Caught up with Alice over coffee today.");
-		await acceptJournalEntry(chat);
+		await acceptJournalEntry(chat, JOURNAL_TEXT);
 
 		const personCard = pendingCard(chat);
 		await expect(personCard).toBeVisible({ timeout: 15_000 });
@@ -261,36 +265,3 @@ test.describe("Person extraction from the accepted Journal Entry Decision", () =
 		});
 	});
 });
-
-/** Accept the anchor create_journal_entry proposal and wait for its accepted
- * state. The accepted card renders only its status copy (no body text), so pin
- * to the stable `data-proposal` run id captured while the card is still pending
- * — that id survives the pending → accepted transition unambiguously. */
-async function acceptJournalEntry(chat: ChatPage): Promise<void> {
-	const jeCard = chat.page
-		.locator('[data-proposal-status="pending"]')
-		.filter({ hasText: JOURNAL_TEXT });
-	await expect(jeCard).toBeVisible({ timeout: 15_000 });
-	const runId = await jeCard.getAttribute("data-proposal");
-	expect(runId).not.toBeNull();
-	await jeCard.getByRole("button", { name: /add journal entry/i }).click();
-	await expect(chat.page.locator(`[data-proposal="${runId}"]`)).toContainText(
-		/added to journal/i,
-		{ timeout: 15_000 },
-	);
-}
-
-/** The newest pending proposal card — used for each follow-up after the first. */
-function pendingCard(chat: { page: Page }) {
-	return chat.page.locator('[data-proposal-status="pending"]').last();
-}
-
-/** The newest accepted proposal card — a card's status flips off "pending" once decided. */
-function acceptedCard(chat: { page: Page }) {
-	return chat.page.locator('[data-proposal-status="accepted"]').last();
-}
-
-/** The newest rejected proposal card. */
-function rejectedCard(chat: { page: Page }) {
-	return chat.page.locator('[data-proposal-status="rejected"]').last();
-}

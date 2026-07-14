@@ -13,7 +13,7 @@ use futures_util::SinkExt;
 use tokio_tungstenite::tungstenite::Message;
 
 mod common;
-use common::{Workspace, Ws, next_text};
+use common::{next_text, rt, Workspace, Ws};
 
 fn write_codex_workflow(dir: &Path) {
     std::fs::create_dir_all(dir).expect("create workflows dir");
@@ -191,10 +191,7 @@ fn valid_token_used_without_refresh() {
         .env("INKSTONE_REFRESH_COUNTER", &counter_dir)
         .spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let token = rt.block_on(async {
         let mut ws = core.connect().await;

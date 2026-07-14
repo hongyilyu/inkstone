@@ -10,7 +10,7 @@ use futures_util::SinkExt;
 use tokio_tungstenite::tungstenite::Message;
 
 mod common;
-use common::{Workspace, Ws, next_text};
+use common::{next_text, rt, Workspace, Ws};
 
 /// Send a `thread/create` with `prompt`, returning `(run_id, thread_id)`.
 async fn create_thread(ws: &mut Ws, id: u32, prompt: &str) -> (String, String) {
@@ -77,17 +77,14 @@ fn run_get_history_returns_runs_newest_first_with_verbatim_kind() {
     let workspace = Workspace::new();
     let core = workspace.core().worker_fixture("slow-worker.ts").spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
         let mut ws = core.connect().await;
 
         // Run A first (older), then Run B (newer); each driven to `done` so its
         // latest milestone is `done`.
-        let (run_a, thread_a) = create_thread(&mut ws, 1, "first run alpha").await;
+        let (run_a, _thread_a) = create_thread(&mut ws, 1, "first run alpha").await;
         drain_to_done(&mut ws, 11, &run_a).await;
 
         // Sleep so B's `done` milestone created_at is strictly greater than A's,
@@ -180,10 +177,7 @@ fn run_get_history_clamps_non_positive_limit_to_the_default() {
     let workspace = Workspace::new();
     let core = workspace.core().worker_fixture("slow-worker.ts").spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
         let mut ws = core.connect().await;
@@ -226,10 +220,7 @@ fn run_get_history_rejects_a_malformed_limit_with_invalid_params() {
     let workspace = Workspace::new();
     let core = workspace.core().worker_fixture("slow-worker.ts").spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
         let mut ws = core.connect().await;
@@ -262,10 +253,7 @@ fn run_get_history_accepts_omitted_params() {
     let workspace = Workspace::new();
     let core = workspace.core().worker_fixture("slow-worker.ts").spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
         let mut ws = core.connect().await;
@@ -294,10 +282,7 @@ fn run_get_history_is_empty_for_a_fresh_workspace() {
     let workspace = Workspace::new();
     let core = workspace.core().worker_fixture("slow-worker.ts").spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     rt.block_on(async {
         let mut ws = core.connect().await;

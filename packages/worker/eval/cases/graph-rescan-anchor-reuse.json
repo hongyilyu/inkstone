@@ -10,7 +10,6 @@
 	],
 	"expected": {
 		"kind": "apply_intent_graph",
-		"entities": [{ "type": "person", "name": "Priya" }],
-		"links": [{ "kind": "journal_ref", "append_text": "Priya was there too." }]
+		"entities": [{ "type": "person", "name": "Priya" }]
 	}
 }

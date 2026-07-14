@@ -212,7 +212,7 @@ async fn apply_update_todo(
     proposal_id: Option<&str>,
     now_ms: i64,
 ) -> Result<(), ApplyError> {
-    let current = queries::current_todo_data(&mut **tx, todo_id)
+    let current = queries::current_entity_data(&mut **tx, todo_id, "todo")
         .await?
         // The target Todo vanished under the parked Proposal (a user deleted it):
         // ADR-0033's target-gone case → TargetMissing (decide maps to
@@ -421,7 +421,7 @@ async fn apply_mark_project_reviewed(
     now_ms: i64,
     offset_minutes: i64,
 ) -> Result<(), ApplyError> {
-    let current = queries::current_project_data(&mut **tx, project_id)
+    let current = queries::current_entity_data(&mut **tx, project_id, "project")
         .await?
         // The target Project vanished (a concurrent delete) — ADR-0033's
         // target-gone case, distinct from a DB fault.
@@ -610,14 +610,9 @@ pub(crate) async fn apply_entity_mutation(
     let effective_payload = edited_payload.unwrap_or(payload);
 
     // The review-anchor offset seeds an active Project's default next_review_at.
-    // Read it INSIDE the tx (via the executor-generic query) so the derived
-    // default comes from the same serialized state we commit — a concurrent
-    // `settings/set` can't make us persist a stale offset.
-    let review_anchor_offset =
-        queries::get_setting(&mut **tx, crate::settings::REVIEW_ANCHOR_UTC_OFFSET_KEY)
-            .await?
-            .and_then(|v| v.parse::<i64>().ok())
-            .unwrap_or(0);
+    // No surface writes an offset setting, so every install runs at 0
+    // (local == UTC); the offset_minutes params stay as the unit-test seam.
+    let review_anchor_offset = 0;
     // Effective entity data: edited payload when present, else the proposed
     // data, routed by the contract's `write_class` facet. `NoData` deletes touch
     // no entity data; the `InTx` kinds compute their data inside the tx below,
@@ -692,12 +687,11 @@ pub(crate) async fn apply_entity_mutation(
         let ref_id = reference_ref_id
             .as_deref()
             .expect("reference mutation creates or reuses an entity_ref");
-        let current_data = queries::current_journal_entry_by_id(&mut **tx, &entity_id)
+        let current_data = queries::current_entity_data(&mut **tx, &entity_id, "journal_entry")
             .await?
             // The target Journal Entry vanished under the parked Proposal
             // (ADR-0033) — surface TargetMissing, not an opaque DB fault.
-            .ok_or(ApplyError::TargetMissing)?
-            .1;
+            .ok_or(ApplyError::TargetMissing)?;
         let current_data: serde_json::Value = serde_json::from_str(&current_data).map_err(|e| {
             ApplyError::InvalidMutation(format!("stored Journal Entry data is malformed JSON: {e}"))
         })?;
@@ -1011,26 +1005,10 @@ pub(crate) async fn apply_entity_mutation(
 
 #[cfg(test)]
 mod tests {
+    use crate::db::test_support::memory_pool;
     use super::*;
     use serde_json::json;
     use sqlx::SqlitePool;
-    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-
-    async fn memory_pool() -> SqlitePool {
-        let options = SqliteConnectOptions::new()
-            .filename(":memory:")
-            .foreign_keys(true);
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(options)
-            .await
-            .expect("open in-memory sqlite");
-        sqlx::migrate!("./migrations")
-            .run(&pool)
-            .await
-            .expect("run migrations");
-        pool
-    }
 
     // ─── entity_data_payload: pure per-kind default-injection / normalization ──
     //

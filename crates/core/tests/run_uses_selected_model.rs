@@ -16,7 +16,7 @@ use sqlx::sqlite::SqlitePoolOptions;
 use tokio_tungstenite::tungstenite::Message;
 
 mod common;
-use common::{Workspace, Ws, next_text};
+use common::{next_text, rt, Workspace, Ws};
 
 async fn request(ws: &mut Ws, id: u64, method: &str, params: serde_json::Value) -> serde_json::Value {
     let req = serde_json::json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
@@ -35,10 +35,7 @@ fn assert_run_resolves(model: &str, expected_provider: &str) {
     let workspace = Workspace::new();
     let core = workspace.core().worker_fixture("manifest-capture.ts").spawn();
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
+    let rt = rt();
 
     let run_id = rt.block_on(async {
         let mut ws = core.connect().await;

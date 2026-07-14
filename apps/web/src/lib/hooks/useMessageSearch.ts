@@ -12,10 +12,7 @@ export function useMessageSearch(query: string) {
 		enabled: trimmed.length > 0,
 		queryFn: () =>
 			runtime.runPromise(
-				Effect.gen(function* () {
-					const client = yield* WsClient;
-					return yield* client.messageSearch(trimmed);
-				}),
+				Effect.flatMap(WsClient, (client) => client.messageSearch(trimmed)),
 			),
 	});
 }

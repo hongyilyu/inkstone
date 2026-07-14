@@ -20,16 +20,7 @@
 
 use serde_json::Value;
 
-use crate::field_spec::{BodyPolicy, Field, FieldSpec, ObjErr, PayloadSpec, Presence};
-
-// Re-export schema version values for external consumers (entities.rs tests,
-// db/mod.rs). The canonical values now live inline on the `EntityTypeSpec` rows.
-pub const JOURNAL_ENTRY_SCHEMA_VERSION: i64 = 1;
-pub const PERSON_SCHEMA_VERSION: i64 = 1;
-pub const PROJECT_SCHEMA_VERSION: i64 = 1;
-pub const TODO_SCHEMA_VERSION: i64 = 1;
-pub const MEDIA_SCHEMA_VERSION: i64 = 1;
-pub const HABIT_SCHEMA_VERSION: i64 = 1;
+use crate::field_spec::{BodyPolicy, Field, FieldSpec, PayloadSpec, Presence};
 
 /// Search/reference projection for an Entity Type. Kept small on purpose: the
 /// stored data field that names the row, plus an optional aliases field for
@@ -718,9 +709,8 @@ fn media_state_enum() -> FieldSpec {
 
 /// The Habit cadence sub-object: a positive interval and coarse calendar unit.
 fn habit_cadence_spec() -> PayloadSpec {
-    PayloadSpec::nested(
+    PayloadSpec::payload(
         "habit cadence",
-        ObjErr::Object,
         vec![
             Field::required("interval", FieldSpec::PositiveInt),
             Field::required(
@@ -737,9 +727,8 @@ fn habit_cadence_spec() -> PayloadSpec {
 /// The `review_every` cadence sub-object (ADR-0031): a positive `interval` and a
 /// `unit` enum. Validated inline by the spec walk (it has no cross-field rule).
 fn review_every_spec() -> PayloadSpec {
-    PayloadSpec::nested(
+    PayloadSpec::payload(
         "review_every",
-        ObjErr::Object,
         vec![
             Field::required("interval", FieldSpec::PositiveInt),
             Field::required(
@@ -757,9 +746,8 @@ fn review_every_spec() -> PayloadSpec {
 /// optional `role` enum. Validated inline by the spec walk; a missing role
 /// defaults to `related` at apply-time.
 fn person_ref_spec() -> PayloadSpec {
-    PayloadSpec::nested(
+    PayloadSpec::payload(
         "person_refs",
-        ObjErr::JsonObject,
         vec![
             Field::required("person_id", FieldSpec::non_empty_string()),
             Field::optional(
@@ -778,9 +766,8 @@ fn person_ref_spec() -> PayloadSpec {
 /// the schema single-sources from here. `end` is itself a hook-validated nested
 /// object.
 fn recurrence_spec() -> PayloadSpec {
-    PayloadSpec::nested(
+    PayloadSpec::payload(
         "recurrence",
-        ObjErr::Object,
         vec![
             Field::required("interval", FieldSpec::PositiveInt),
             Field::required(
@@ -805,9 +792,8 @@ fn recurrence_spec() -> PayloadSpec {
 /// `recurrence.end` schema (`validate_recurrence_end`): an `until` datetime or an
 /// `after_count`. The at-most-one cardinality is the hook's job.
 fn recurrence_end_spec() -> PayloadSpec {
-    PayloadSpec::nested(
+    PayloadSpec::payload(
         "recurrence end",
-        ObjErr::Object,
         vec![
             Field::datetime("until"),
             Field::optional("after_count", FieldSpec::PositiveInt),
@@ -945,7 +931,7 @@ impl MutationKind {
 
 /// The full TodoData sub-object spec for a [`Mode`] (`todo` envelope value).
 pub(crate) fn todo_data_spec(mode: Mode) -> PayloadSpec {
-    PayloadSpec::nested("todo", ObjErr::JsonObject, EntityType::todo_core(mode))
+    PayloadSpec::payload("todo", EntityType::todo_core(mode))
 }
 
 /// An update payload: the `entity_id` target prepended to the entity data core.
@@ -1023,7 +1009,7 @@ fn entity_node(type_domain: &'static [&'static str], type_fields: Vec<Field>) ->
         Field::optional("existing_id", FieldSpec::Uuid { schema_regex: true }),
     ];
     fields.extend(type_fields);
-    PayloadSpec::nested("intent graph entity", ObjErr::JsonObject, fields)
+    PayloadSpec::payload("intent graph entity", fields)
 }
 
 /// One graph body node: a `{type:"text", text}` or a `{type:"entity_ref",
@@ -1031,17 +1017,15 @@ fn entity_node(type_domain: &'static [&'static str], type_fields: Vec<Field>) ->
 fn graph_body_nodes() -> FieldSpec {
     FieldSpec::OneOfArray {
         variants: vec![
-            PayloadSpec::nested(
+            PayloadSpec::payload(
                 "intent graph body text node",
-                ObjErr::JsonObject,
                 vec![
                     graph_discriminant("type", &["text"]),
                     Field::required("text", FieldSpec::non_empty_string()),
                 ],
             ),
-            PayloadSpec::nested(
+            PayloadSpec::payload(
                 "intent graph body entity_ref node",
-                ObjErr::JsonObject,
                 vec![
                     graph_discriminant("type", &["entity_ref"]),
                     Field::required("target", FieldSpec::non_empty_string()),
@@ -1063,9 +1047,8 @@ fn graph_body_nodes() -> FieldSpec {
 /// — create-mode fails loud at apply if its woven body is empty/absent
 /// (`validate_woven_journal_body`), anchor-reuse ignores any body.
 fn intent_graph_journal_entry_node() -> PayloadSpec {
-    PayloadSpec::nested(
+    PayloadSpec::payload(
         "intent graph journal entry",
-        ObjErr::JsonObject,
         vec![
             Field::required("handle", FieldSpec::non_empty_string()),
             Field::optional("existing_id", FieldSpec::Uuid { schema_regex: true }),
@@ -1105,19 +1088,16 @@ fn intent_graph_links() -> FieldSpec {
     ));
     FieldSpec::OneOfArray {
         variants: vec![
-            PayloadSpec::nested(
+            PayloadSpec::payload(
                 "intent graph todo_project link",
-                ObjErr::JsonObject,
                 todo_project,
             ),
-            PayloadSpec::nested(
+            PayloadSpec::payload(
                 "intent graph todo_person link",
-                ObjErr::JsonObject,
                 todo_person,
             ),
-            PayloadSpec::nested(
+            PayloadSpec::payload(
                 "intent graph journal_ref link",
-                ObjErr::JsonObject,
                 journal_ref,
             ),
         ],
@@ -2210,27 +2190,12 @@ mod tests {
             "search_entities exposes searchable Entity Type specs"
         );
 
-        assert_eq!(
-            EntityType::Person.spec().schema_version,
-            PERSON_SCHEMA_VERSION
-        );
-        assert_eq!(
-            EntityType::Project.spec().schema_version,
-            PROJECT_SCHEMA_VERSION
-        );
-        assert_eq!(EntityType::Todo.spec().schema_version, TODO_SCHEMA_VERSION);
-        assert_eq!(
-            EntityType::Media.spec().schema_version,
-            MEDIA_SCHEMA_VERSION
-        );
-        assert_eq!(
-            EntityType::Habit.spec().schema_version,
-            HABIT_SCHEMA_VERSION
-        );
-        assert_eq!(
-            EntityType::JournalEntry.spec().schema_version,
-            JOURNAL_ENTRY_SCHEMA_VERSION
-        );
+        assert_eq!(EntityType::Person.spec().schema_version, 1);
+        assert_eq!(EntityType::Project.spec().schema_version, 1);
+        assert_eq!(EntityType::Todo.spec().schema_version, 1);
+        assert_eq!(EntityType::Media.spec().schema_version, 1);
+        assert_eq!(EntityType::Habit.spec().schema_version, 1);
+        assert_eq!(EntityType::JournalEntry.spec().schema_version, 1);
     }
 
     #[test]
