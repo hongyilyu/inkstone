@@ -30,6 +30,23 @@ If the request fits neither cleanly, ask which. Domain truth lives in `CONTEXT.m
 
 This ordering is the point: **think hard → research the field → verify reality → close decisions with the user → let feature-flow build.** Never jump to feature-flow with decisions still open or anchors unverified.
 
+## Autopilot (explicit flag or pre-resolved brief)
+
+The interactive ending exists for underspecified requests. When the invocation opts out — `--auto`/`--ship` in the arguments, or a brief that itself closes every decision ("all decisions are closed; no user questions remain") — run the whole chain as ONE continuous run: kickoff → feature-flow → `/review-loop`, done-bar = **PR open, comments addressed, revision pushed, CI green** (review-loop's own exit).
+
+- Steps 1–3 run unchanged. Step 4 collapses to a check: if research + verification leave zero `UNVERIFIED:` items and zero open decisions, there is nothing to grill — don't invent questions. Any open decision or `UNVERIFIED:` item **cancels autopilot**: fall back to grilling. A "pre-resolved" brief that isn't gets surfaced, not bulldozed.
+- Skip the end-ask. Invoke feature-flow immediately; when it hands off, run `/review-loop` to completion per its own contract. Skill handoffs are internal steps of one run, not stopping points — do not pause to ask "continue?" between them.
+- This subsumes the stop-hook goal previously set by hand ("run /feature-flow, then /review-loop — don't stop until comments are addressed and a new revision is pushed"); the user may still set it as a backstop.
+
+## Prompt-pack output (N candidates → files in /tmp)
+
+When the ask is hand-off prompts for several candidates ("write a prompt for each", "for each P0, provide a prompt", "output to files"), pipeline steps 1–3 run per candidate, but the terminal step changes — do NOT hand to feature-flow, do NOT dump prompts into chat:
+
+- Write ONE file per candidate: `/tmp/<project>-prompts/<id>-<slug>.md` (e.g. `/tmp/inkstone-prompts/05-chat-image-attachments.md`).
+- Fixed sections in each: **Context / Goal / End state / Desired outcome / Testing approach.**
+- These are working files, not repo content — never commit them or open a PR with them (that mistake produced PR #307, which had to be reverted). `/tmp` unless the user names another destination.
+- Reply with just the file list — absolute paths, one per line.
+
 ## Local reference repos (`~/dev` — pull each before reading)
 
 Research inspects these CLONES, not the web. Name 2-4 whose class matches — don't list all five reflexively.
@@ -48,5 +65,6 @@ Research inspects these CLONES, not the web. Name 2-4 whose class matches — do
 - **Research is local + recommend-first.** Read the `~/dev` clones (pull first); arrive at a recommendation with repo+file references before offering options — in BOTH modes.
 - **Stay in the domain language** of `CONTEXT.md` / `docs/adr/`. For refactor mode, stay in module/seam/depth vocabulary and don't design the interface if it's still open — that's a grilling question.
 - **Multiple candidates:** order by dependency (B is cleaner after A → sequence), call out the one-parity-gate-at-a-time rule, and name the lead recommendation (most depth/value per unit effort).
+- **Meta-artifacts go to /tmp, not the repo.** Implementation prompts, plans, and analysis reports are working files — write them under `/tmp` (or `.agents/runs/`), never commit or PR them unless the user explicitly asks for them in the repo.
 - **ADRs are planning artifacts** — when a decision is hard-to-reverse + surprising-without-context + a real trade-off, author/amend `docs/adr/NNNN-*.md` during grilling, with the user. Impl agents may not write them later.
-- End by asking whether to run feature-flow now or hand the plan over as-is.
+- End by asking whether to run feature-flow now or hand the plan over as-is — unless Autopilot (above) applies, which replaces the ask with the chain.

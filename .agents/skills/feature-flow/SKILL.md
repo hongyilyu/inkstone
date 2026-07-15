@@ -252,7 +252,7 @@ SLICE_BASE := $(git rev-parse feature/<slug>)   # the durable branch tip
 
 Record the SHA in `STATE.md` alongside the `slice-<n>-decomposed` event. Use the same SHA for every subagent spawned for that slice (impl, reviewers, retries). If the slice's parent moves between phases for any reason, **the SHA does not** — that's the point.
 
-The orchestrator computes the envelope once per spawn and pastes it at the top of the prompt before the SOP body. Subagents reference fields by name (`SLICE_BASE`, `OUTPUT_PATH`, etc.) rather than re-deriving from git state.
+The orchestrator computes the envelope once per spawn and pastes it at the top of the prompt before the SOP body. Subagents reference fields by name (`SLICE_BASE`, `OUTPUT_PATH`, etc.) rather than re-deriving from git state. Every spawn passes `model: "fable"` explicitly; a failed/stalled spawn is resumed or respawned immediately — never accept a partial result.
 
 For the first iteration of a slice, `PRIOR_FINDINGS` is empty. For retries, it lists the failing reviewer files from the previous iteration so the impl agent gets the failure context inline.
 
@@ -362,6 +362,8 @@ FEATURE_BASE   := the master SHA recorded in STATE.md at flow start
 FEATURE_BRANCH := feature/<slug>
 FEATURE_TIP    := $(git rev-parse FEATURE_BRANCH)   # snapshot the tip
 ```
+
+**Handoff invariant — assert before running any gate:** `git log $FEATURE_BASE..$FEATURE_TIP --oneline` must be non-empty (one commit per passed slice, plus any `final-fix:`). Empty means the slices were never squashed onto `feature/<slug>` — the work is stranded on the `flow/<slug>/slice-<n>` scratch branches, and the handoff would die at PR time with "No commits between master and feature/<slug>". Recover: run the phase-6 squash for each `slice-<n>-passed` slice in `STATE.md` order, then re-capture `FEATURE_TIP`. If the branch can't be reconstructed, write `BLOCKED.md` — an empty range is a feature-flow handoff failure, not review-loop's to discover. Re-assert after the Final phase 2 rebase: `git log origin/master..feature/<slug>` non-empty before invoking `/review-loop`.
 
 ### Final phase 1: feature-level deterministic gates
 
