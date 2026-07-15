@@ -30,12 +30,13 @@ If the request fits neither cleanly, ask which. Domain truth lives in `CONTEXT.m
 
 This ordering is the point: **think hard → research the field → verify reality → close decisions with the user → let feature-flow build.** Never jump to feature-flow with decisions still open or anchors unverified.
 
-## Autopilot (explicit flag or pre-resolved brief)
+## Autopilot (the default)
 
-The interactive ending exists for underspecified requests. When the invocation opts out — `--auto`/`--ship` in the arguments, or a brief that itself closes every decision ("all decisions are closed; no user questions remain") — run the whole chain as ONE continuous run: kickoff → feature-flow → `/review-loop`, done-bar = **PR open, comments addressed, revision pushed, CI green** (review-loop's own exit).
+Every kickoff runs the whole chain as ONE continuous run: kickoff → feature-flow → `/review-loop`, done-bar = **PR open, comments addressed, revision pushed, CI green** (review-loop's own exit).
 
-- Steps 1–3 run unchanged. Step 4 collapses to a check: if research + verification leave zero `UNVERIFIED:` items and zero open decisions, there is nothing to grill — don't invent questions. Any open decision or `UNVERIFIED:` item **cancels autopilot**: fall back to grilling. A "pre-resolved" brief that isn't gets surfaced, not bulldozed.
-- Skip the end-ask. Invoke feature-flow immediately; when it hands off, run `/review-loop` to completion per its own contract. Skill handoffs are internal steps of one run, not stopping points — do not pause to ask "continue?" between them.
+- Steps 1–4 run unchanged — grilling still happens whenever research + verification leave open decisions or `UNVERIFIED:` items; autopilot changes what follows the answers, not whether the questions get asked. Zero open decisions ⇒ nothing to grill — don't invent questions.
+- No end-ask. Once decisions are closed, invoke feature-flow immediately; when it hands off, run `/review-loop` to completion per its own contract. Skill handoffs are internal steps of one run, not stopping points — do not pause to ask "continue?" between them.
+- Opt out with `--plan-only` in the arguments, or when the ask is itself a plan/prompt-pack ("write the plan", "hand it over as-is", the [prompt-pack shape](#prompt-pack-output-n-candidates--files-in-tmp)) — then end at the plan.
 - This subsumes the stop-hook goal previously set by hand ("run /feature-flow, then /review-loop — don't stop until comments are addressed and a new revision is pushed"); the user may still set it as a backstop.
 
 ## Prompt-pack output (N candidates → files in /tmp)
@@ -67,4 +68,4 @@ Research inspects these CLONES, not the web. Name 2-4 whose class matches — do
 - **Multiple candidates:** order by dependency (B is cleaner after A → sequence), call out the one-parity-gate-at-a-time rule, and name the lead recommendation (most depth/value per unit effort).
 - **Meta-artifacts go to /tmp, not the repo.** Implementation prompts, plans, and analysis reports are working files — write them under `/tmp` (or `.agents/runs/`), never commit or PR them unless the user explicitly asks for them in the repo.
 - **ADRs are planning artifacts** — when a decision is hard-to-reverse + surprising-without-context + a real trade-off, author/amend `docs/adr/NNNN-*.md` during grilling, with the user. Impl agents may not write them later.
-- End by asking whether to run feature-flow now or hand the plan over as-is — unless Autopilot (above) applies, which replaces the ask with the chain.
+- Autopilot is the default: once decisions close, continue into feature-flow → `/review-loop` without asking. Only `--plan-only` (or a plan/prompt-pack ask) ends at the plan.
