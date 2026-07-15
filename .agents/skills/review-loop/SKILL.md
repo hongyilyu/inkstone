@@ -41,7 +41,7 @@ A push that creates or advances the PR happens **only** on a clean/quiescent Pha
 Before every push (Phase 1) or fix-round commit (Phase 0), the change **must** clear the repo's [§6 CI gate](../../../docs/agents/ci.md) locally — the same four jobs the PR faces (`lint-format`, `ts`, `rust`, `e2e`). A review fix that breaks the gate is a worse regression than the finding it fixed. Run, top to bottom, from the repo root:
 
 - `pnpm install --frozen-lockfile` — only if `pnpm-lock.yaml` changed.
-- `pnpm exec biome ci .` — the read-only `lint-format` job (not `pnpm format`, which mutates).
+- `pnpm exec biome ci .` — the read-only `lint-format` job (not `pnpm format`, which mutates). It must report `Checked N files` with N > 0: "No files were processed" / 0 files checked means the gate **did not run** — treat it as red and fix the invocation (e.g. explicit paths `pnpm exec biome ci apps/ packages/ tests/`), never as an environmental pass.
 - `pnpm -r --if-present check` then `pnpm -r test` — the `ts` job (workspace tsc + every package's vitest, including contract parity).
 - `cargo check --locked --manifest-path crates/core/Cargo.toml`, `cargo test --locked --manifest-path crates/core/Cargo.toml`, then the schema-fixture staleness check (`cargo test … regenerate_schema_fixtures`, `git add -N tests/contract/fixtures/ && git diff --exit-code tests/contract/fixtures/`) — the `rust` job. Skip only if no Rust/protocol file changed this round.
 - `pnpm -C apps/web build` (if `apps/web`/`ui-sdk` changed) then `pnpm -C tests/e2e exec playwright install chromium` then `pnpm test:e2e` — the `e2e` job.
@@ -65,9 +65,11 @@ Run this **before** opening the PR (skip with `--skip-phase0`, or when invoked w
 ### Phase-0 preconditions
 
 1. On a feature branch (not `master`). The diff under review must be **committed** — if there are uncommitted edits you intend to ship, commit them first, *then* proceed (unlike Phase 1's clean-tree gate, a dirty tree here is a commit-then-continue step, not a stop).
-2. If the branch already has an upstream, it must be **even with or ahead of** it (same divergence guard as Phase 1 precondition 3) — review-fix commits on a stale branch would clobber remote work at push time. Behind ⇒ stop.
+2. If the branch already has an upstream, it must be **even with or ahead of** it (same divergence guard as Phase 1 precondition 3) — review-fix commits on a stale branch would clobber remote work at push time. Behind with no local-only commits (the user advanced the branch on GitHub — e.g. merged master into it) ⇒ `git pull --ff-only`, re-gate, continue. Diverged (both sides have commits the other lacks) ⇒ stop.
 3. [The gate](#the-gate-shared-by-both-phases) is green on the current tip — review a green base, not a broken one.
 4. Resolve `BASE` (the branch point, default `origin/master`) and capture the diff once: `git diff $BASE...HEAD`. **Empty diff** ⇒ nothing to review: if a PR is already open, go straight to Phase 1; otherwise there's nothing to review *or* open — stop and say so.
+5. **Push preflight — prove the exit is reachable before doing the work.** Phase 0's only reward is a push ([Open the PR](#open-the-pr)); confirm at minute 1 that it will be allowed: `git push --dry-run -u origin HEAD` and `gh auth status`. A permission denial or auth failure ⇒ stop and surface it **now** — never discover it after the review rounds. If a permission was just granted or settings were just edited and the same command is *still* denied, don't retry it verbatim: mid-session settings edits don't reliably apply to a running session — ask the user to run the push once via `!`-bash (or restart the session), then continue.
+6. **Preflight the cross-engine CLI** — `command -v codex` (or `command -v claude` when running as Codex; a CLI the user has designated as the cross engine, e.g. `opencode`, also counts). Missing ⇒ **stop and surface now**, before any review work: the user decides — install it, name a substitute engine, or explicitly waive the cross pass for this run. Never silently degrade to a single-engine Phase 0; a mandated stream skipped without an explicit waiver can never yield a Clean exit (treat as cap-hit: no PR).
 
 ### The Phase-0 round loop
 
@@ -88,11 +90,15 @@ Exit per the [shared termination conditions](#termination-conditions-shared-by-b
 
 Reached **only** on a clean/quiescent Phase-0 exit (the [PR-raise invariant](#the-pr-raise-invariant)) — this is the first and only point in the skill where the branch is pushed. Push the branch, then resolve the PR — **capture its number into `PR`**, which Phase 1 needs for `await-review`/`findings`:
 
+**Freshness first.** Phase-0 rounds take hours — any rebase feature-flow did at handoff is stale by now, and parallel PR batches mean master has usually moved. Before the push: `git fetch origin master`; if the branch is behind `origin/master`, integrate — **no upstream yet (first push) ⇒ `git rebase origin/master`**; **branch already pushed ⇒ `git merge origin/master`** (rebasing published history needs a force-push, which is gated in this environment; a merge keeps the pushed tip an ancestor so plain `git push` still fast-forwards). Then re-run [the gate](#the-gate-shared-by-both-phases) on the integrated tip — a clean integration is not a green one.
+
 - **No PR yet:** create one **non-interactively** (bare `gh pr create` prompts and will hang an autonomous run). Write the dual-engine review summary (found / fixed / deferred) to a file and pass it:
   `git push -u origin HEAD && gh pr create --title "<subject>" --body-file <summary> && PR=$(gh pr view --json number -q .number)`
 - **PR already open for the branch:** `git push`, then `PR=$(gh pr view --json number -q .number)`. CodeRabbit auto-reviews the new HEAD on push; Phase 1's `await-review` step waits for that review (and posts a fallback `@coderabbitai review` if it stalls).
 
-Then continue into **Phase 1** with that `PR`.
+Push→PR-create is one atomic step — **never end a turn between the push and `gh pr create`**. If the chain is interrupted (push permission-denied, `gh` error), resume at the interrupted command in the *same* session once unblocked — a pushed branch with no PR is not a stopping point.
+
+Then continue into **Phase 1** with that `PR`, **in this session**: launch `await-review` backgrounded and keep working when it returns. Never end the run with "awaiting CodeRabbit — invoke `/review-loop <pr>` in a fresh session" — Phase 1 is this run's job, not a handoff.
 
 ## Phase 1 — CodeRabbit loop
 
@@ -100,8 +106,9 @@ Then continue into **Phase 1** with that `PR`.
 
 1. PR resolves and is **open**. If closed/merged, stop.
 2. Working tree clean (`git status --porcelain` empty). WIP risks a dirty push — stop if not.
-3. The local branch tracks the PR's head branch and is **even with or ahead of** `origin` (no unpulled remote commits). If behind, stop — the user has remote work you'd clobber.
+3. The local branch tracks the PR's head branch and is **even with or ahead of** `origin` (no unpulled remote commits). Behind with no local-only commits ⇒ `git pull --ff-only`, continue; diverged ⇒ stop — the user has remote work you'd clobber.
 4. [The gate](#the-gate-shared-by-both-phases) is green on the current tip. (If you arrived here straight from Phase 0 / feature-flow it just passed; otherwise run it once before entering the loop, so round 1 starts from a known-green base.)
+5. Push preflight: `git push --dry-run` succeeds (permission + auth) — same rule as Phase-0 precondition 5. A denied push discovered at step 7 wastes the whole round; surface it here instead.
 
 Record `PR`, `HEAD := git rev-parse HEAD`, and `REPO := owner/name` for the run.
 
@@ -119,7 +126,14 @@ Up to `--max-rounds` rounds (default 3). Each round:
 7. push    → push the branch → next round (the push auto-triggers CodeRabbit; the round's `await` step also posts a fallback `@coderabbitai review` if it stalls)
 ```
 
-Exit per the [shared termination conditions](#termination-conditions-shared-by-both-phases), read against CodeRabbit threads: **clean** = `fetch` returns zero unresolved threads at HEAD after a fresh review; **quiescent** = a round produced no code change (every thread refuted/deferred + resolved, nothing to push, so CodeRabbit won't re-review); **cap-hit** = `--max-rounds` reached with threads still open (surfaced in the digest verbatim). On exit, write the [digest](#terminal-digest).
+Exit per the [shared termination conditions](#termination-conditions-shared-by-both-phases), read against CodeRabbit threads: **clean** = `fetch` returns zero unresolved threads at HEAD after a fresh review; **quiescent** = a round produced no code change (every thread refuted/deferred + resolved, nothing to push, so CodeRabbit won't re-review); **cap-hit** = `--max-rounds` reached with threads still open (surfaced in the digest verbatim).
+
+A clean/quiescent signal is **provisional** until two exit checks pass:
+
+- **Settle re-fetch.** CodeRabbit's inline threads can trail its walkthrough comment by minutes — sleep 2–5 min, re-run `cr.mjs findings <PR>`, and re-run it once more immediately before writing the digest. Any thread present (`count > 0`, even with `actionable == 0`) re-enters the round loop — fix or reply+resolve, never exit over it.
+- **Remote CI.** After the last push, run `gh pr checks <PR> --watch` **backgrounded** (`run_in_background: true` — the e2e job exceeds the foreground cap). `pending` is not a terminal state and "CI should go green" is not a digest line; red checks re-enter the round loop as a fix round (counting against the cap). Only pass or fail goes in the digest.
+
+On exit, write the [digest](#terminal-digest).
 
 ### 1. await (rate-limit-aware)
 
@@ -142,13 +156,15 @@ CodeRabbit **auto-reviews** on this repo — a push or opening the PR triggers a
 `await-review` still posts `@coderabbitai review` (don't post it yourself), but now as a **fallback nudge** — the auto-review usually lands first; the explicit trigger covers a paused auto-review or a re-push that needs poking. CodeRabbit will reply "*does not re-review already reviewed commits*" if it already reviewed HEAD, which is itself a confirmation. The cadence is **dynamic**:
 
 - returns ready the moment either signal shows HEAD is reviewed;
-- **when throttled, sleeps the window's actual remaining time** (parsed from CodeRabbit's "available in N minutes and M seconds" notice, +30s buffer, rounded up to the minute) — not a fixed poll. No point waking every 5 min through a 40-min window;
+- **when throttled, sleeps the window's actual remaining time** (parsed from CodeRabbit's "available in N minutes" notice — markdown bold stripped — +30s buffer + 1–5 min jitter) — not a fixed poll. No point waking every 5 min through a 40-min window;
 - once not throttled, posts the fallback `@coderabbitai review` trigger **exactly once per window** (a lift-gate prevents a fresh trigger every tick), then polls every `pollMin` (default **5 min**) to catch either the review landing or a *fresh* throttle notice (the per-user contention case — re-throttled before our turn), and loops;
 - posts the fallback trigger immediately on entry when there's no active throttle.
 
 `maxWaitMin` defaults to **480 (8h)** precisely because riding out several contended windows is the expected case — set it higher for a busy multi-PR day; it's a backstop against a genuinely dead CodeRabbit, not a normal exit.
 
 **Run it backgrounded.** A single throttle sleep alone exceeds the foreground Bash 10-min cap, so launch with `run_in_background: true` and read its output when it re-invokes you on exit; each state change logs to stderr (so a long silent sleep is expected, not a hang). `ready:true` ⇒ proceed to fetch. `ready:false` (hit `maxWaitMin`) ⇒ CodeRabbit is down or the limit never cleared for this PR — stop, record "CodeRabbit unavailable" in the digest. Don't loop blindly.
+
+**A throttle notice is a pending state, never a terminal one.** "Rate-limited" is not "reviewed", and it is never grounds to end the phase or the session: while a CodeRabbit review of the current HEAD is known to be pending (unexpired window, trigger owed), the loop is still inside step 1 — stopping there abandons the run mid-await. If `await-review` itself misbehaves mid-loop (e.g. a notice it can't parse), fix it, then **re-arm it backgrounded for the pending window and resume the round loop** — the fix is not the exit. The only two exits from await are `ready:true` (proceed to fetch) and `ready:false` at `maxWaitMin` (stop, record "CodeRabbit unavailable").
 
 ### 2. fetch
 
@@ -170,13 +186,13 @@ Returns `{ head, count, actionable, threads[] }`. Each thread:
 | `aiPrompt` | CodeRabbit's "🤖 Prompt for AI Agents" block — its own fix instructions |
 | `body` | full markdown, for the verifier |
 
-Only unresolved, non-outdated threads authored by CodeRabbit are returned — threads CodeRabbit already auto-resolved (e.g. it confirmed a prior fix) drop out on their own. `count == 0` ⇒ **Clean** exit. A clean review reports as a walkthrough comment ("*No actionable comments were generated* 🎉") with **no threads** — `await-review` already returned ready off that comment, so `count == 0` here is the expected clean state, not a "didn't review yet" ambiguity.
+Only unresolved, non-outdated threads authored by CodeRabbit are returned — threads CodeRabbit already auto-resolved (e.g. it confirmed a prior fix) drop out on their own. `count == 0` ⇒ **Clean** exit — **after one cross-check**: if the latest CodeRabbit comment on the PR is an *unexpired* rate-limit notice ("Next review available in: **N minutes**" — the window is often bold-wrapped), the review of HEAD hasn't happened and `count == 0` is **review pending, not Clean**. Go back to step 1 (re-arm the backgrounded `await-review`; it sleeps the stated window + jitter) instead of exiting — this exact misread once declared "Zero findings" mid-throttle, and the real review landed 4 hours later with 5 findings (one XSS) with nothing watching. Absent a live throttle notice, a clean review reports as a walkthrough comment ("*No actionable comments were generated* 🎉") with **no threads** — `await-review` already returned ready off that comment, so `count == 0` is the expected clean state, not a "didn't review yet" ambiguity.
 
 ### 3. verify (adversarial: the heart of full-auto)
 
 CodeRabbit is good but not authoritative: it raises stale findings (already fixed in a later commit), false positives, and style nits dressed as issues. **Never apply a finding blind.** This repo's history is full of CodeRabbit findings that were correctly *refuted* on inspection (e.g. `CSS.escape` valid, `scrollIntoView`-restore unnecessary under the test's isolation).
 
-Spawn **one verifier subagent per `actionable` finding, in parallel** (single message, multiple `Agent` calls; or a `Workflow` fan-out if the batch is large). Each verifier:
+Spawn **one verifier subagent per `actionable` finding, in parallel** (single message, multiple `Agent` calls; or a `Workflow` fan-out if the batch is large). Every spawn passes `model: "fable"` explicitly; a failed/stalled spawn is resumed or respawned immediately — never accept a partial result. Each verifier:
 
 - Reads the **current** code at `path` around `line` — plus enough context (the function, the `afterEach`/test-isolation setup, the type it references) to judge whether the issue *actually reproduces at this HEAD*.
 - Renders a verdict, biased toward skepticism but grounded in the code (not "default refuted"):
@@ -184,7 +200,7 @@ Spawn **one verifier subagent per `actionable` finding, in parallel** (single me
   - **`refuted`** — does not reproduce / is wrong / is already handled. Returns a one-sentence reason citing the code (this becomes the reply).
 - Stays in scope: a `real` fix must not expand the PR's behavior or touch files unrelated to the finding. If the only correct fix is out of scope, verdict is `real` but **`defer`** with a reason — record it, don't act this round.
 
-`nit`/`minor` (non-actionable) findings skip verification and are treated as **deferred** by default — replied-and-resolved with a brief "nit — not blocking" unless one is trivially correct *and* in-scope, in which case promote it to the fix set.
+`nit`/`minor` (non-actionable) findings skip verification and are treated as **deferred** by default — replied-and-resolved with a brief "nit — not blocking" — but a nit carrying a `suggestedDiff` that is correct and in-scope **defaults into the fix set**, not deferral: deferring a one-line fix the user must come back and ask for is a failed exit, not a quiescent one.
 
 Give each verifier a structured envelope so verdicts come back parseable:
 
@@ -233,6 +249,8 @@ Pushing the new commit auto-triggers a fresh CodeRabbit review of the new HEAD; 
 
 ## Terminal digest
 
+**Re-check before declaring done** (clean/quiescent exits with an open PR): `git fetch origin master`, `gh pr view <PR> --json mergeStateStatus`, `gh pr checks <PR>`. Master moving mid-run is the norm. `BEHIND`/`DIRTY` or a red check ⇒ run **one** freshness round — `git merge origin/master` into the branch, resolve, [gate](#the-gate-shared-by-both-phases), push, let the next `await`/`fetch` confirm CodeRabbit stayed quiet — then re-check once. Still stale after that (another PR merged meanwhile) ⇒ write the digest with the true `mergeStateStatus` and what's left, rather than looping forever.
+
 When the run exits, print a short digest covering both phases (and nothing else — no essay):
 
 ```
@@ -240,7 +258,7 @@ review-loop: <slug/PR> — <clean | quiescent | cap-hit>
 
 Phase 0 (local dual-engine):
   Rounds: <r>
-  Reviewers: deep-review + thermo-nuclear × {<your-engine>, <cross-engine>}
+  Streams (each accounted for): deep@<yours> <ran|relaunched ×n> · thermo@<yours> <…> · deep@<cross> <…> · thermo@<cross> <…|waived by user: <reason>>
   Findings: <total> (<fixed> fixed, <refuted> refuted, <deferred> deferred)
   Cross-engine catches: <n notable findings the cross engine raised>
 # Phase 1 + CI lines ONLY if a PR exists (Phase 1 ran). Omit this whole block
@@ -249,7 +267,7 @@ Phase 1 (CodeRabbit):
   Rounds: <r>
   Findings: <total> (<fixed> fixed, <refuted> refuted, <deferred> deferred)
   Commits pushed: <sha list>
-  CI after last push: <pass/fail/pending — gh pr checks>
+  CI after last push: <pass | fail — from `gh pr checks --watch`; "pending" is never a terminal digest state>
 
 Deferred (resolved, not acted on):
 - <path>:<line> — <title> — <reason>
@@ -287,6 +305,12 @@ Spawn all four streams in one batch, but run the cross-engine CLI **backgrounded
 
 **A stream must SUCCEED to count.** A cross-engine CLI that errored, timed out, hit an auth/rate problem, or produced no parseable verdict has **not reviewed** — it is *not* a clean stream. Confirm each stream returned a real verdict (CLI exit 0 + a findings block, even if "no issues"); if a stream failed, re-run it before judging termination. A failed reviewer never counts as zero findings — otherwise the loop could declare Clean having skipped the mandatory second-engine pass. When all four return successfully, dedup, verify, and fix as one set.
 
+Three degradations that have actually happened, all forbidden:
+
+- **Never launched = failed.** A missing cross-engine CLI does not shrink the round to two streams — that's the preflight stop in the Phase-0 preconditions. And "the diff was already reviewed during feature-flow" is not a reason to skip thermo-nuclear or the cross pass; it's exactly the rationalization the extra streams exist to catch.
+- **A user interrupt is not a cancellation.** If backgrounded streams die as a side effect of the user interjecting ("N background agents were stopped by the user"), handle the message, then relaunch every incomplete stream with its original prompt. Only an explicit "stop the review" from the user cancels them.
+- **No verdict at 3/4.** Clean / quiescent / cap-hit is judged on the full stream set — Phase 0 may not exit while any backgrounded stream has not returned output. Late streams have carried real bugs; wait or re-run, never judge without them.
+
 > The cross-engine pass is not optional flourish. A second model reviewing the first model's work (including its review-fixes) is where the highest-value, least-expected findings come from — keep both engines in every Phase-0 round.
 
 ## Composing with feature-flow
@@ -295,9 +319,11 @@ Spawn all four streams in one batch, but run the cross-engine CLI **backgrounded
 
 ## Rules
 
-- **Never merge, never touch `master`.** Push the PR branch, reply, resolve. The merge is the user's.
+- **Never merge, never touch `master`.** Push the PR branch, reply, resolve. The merge is the user's. Merging `origin/master` *into the PR branch* (freshness integration) is not that merge — it's allowed and expected.
 - **Both engines, both reviews, in Phase 0.** deep-review AND thermo-nuclear, each on your engine (subagents) AND the cross engine (`codex exec` / `claude -p`). Don't drop the cross-engine pass to save time — it's the part that catches what you'd rationalize.
 - **Loop until quiet, both phases.** Re-run the reviewers after each fix round; a reviewer raising a new finding about your fix is expected. Phase 0 exits only on a clean/quiescent full round; Phase 1 only on a clean/quiescent CodeRabbit pass.
+- **Phase 1 runs in THIS session.** After the PR opens, `await-review` runs backgrounded and the loop continues when it returns. "Awaiting CodeRabbit — re-invoke `/review-loop` in a fresh session" is an abandoned run, not an exit.
+- **Throttled is pending, not done.** Never declare Phase 1 clean, and never end the session, while CodeRabbit's latest comment is an unexpired rate-limit notice or a review of HEAD is otherwise known to be pending — ride the window (backgrounded `await-review`) to one of its two exits.
 - **Verify before fixing.** No finding is applied without a code-grounded `real` verdict. Skepticism is the default; every reviewer (CodeRabbit, deep-review, thermo-nuclear, the cross engine) is an input, not an authority.
 - **Gate before every push/commit.** Never leave a red tree. A broken review-fix is a worse regression than the finding it fixed.
 - **Every finding gets a resolution.** Phase 1 thread: Fixed → "Addressed in <sha>"; refuted/deferred → reason + resolve. Phase 0 finding: fixed, refuted (reason), or deferred (reason in the digest). Nothing dropped silently.

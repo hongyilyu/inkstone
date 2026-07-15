@@ -10,7 +10,7 @@
 		"includes": [
 			"**",
 			"!**/.agents",
-			"!**/.claude",
+			"!.claude",
 			"!**/.impeccable",
 			"!**/*.gen.ts",
 			"!skills-lock.json",

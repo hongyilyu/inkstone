@@ -89,6 +89,16 @@ cargo test --manifest-path crates/core/Cargo.toml
 - **Format normalizes; it does not reason.** Confirm the only non-comment, non-whitespace edits trace to your task — `git diff -w` should show just your real changes.
 - Pre-existing failures unrelated to your change: name them, don't silently absorb them into your diff.
 
+## Subagent workflows
+
+Rules for every `Agent`/`Workflow` spawn. 429s and stalls are routine here — a failed run is an unfinished run, not a result.
+
+- **Always spawn with `model: "fable"`** — explicitly, on every `Agent(...)` call and in every Workflow script's `agent()` options. Never inherit the session default; never downgrade on retry.
+- **A failed run has not run.** API error, 429, null/partial result, stall — resume it (`resumeFromRunId`) or respawn the moment it fails. Retry until it succeeds completely.
+- **Never accept partial results.** Don't `TaskStop` a workflow while retryable units remain; don't wait on a whole-batch timeout while individual agents are dead — monitor and retry per-agent.
+- **Chunk fan-outs to ~2-4 concurrent agents** to dodge rate limits.
+- **If an item keeps rate-limiting, do it inline yourself** rather than parking it "blocked".
+
 ## Response style
 
 - Lead with the answer. No "let me work through this" preamble.
@@ -114,6 +124,12 @@ docs(adr): record client/core wire protocol
 ```
 
 A change spanning packages takes the dominant component, or split into one commit per package (each is its own git repo where applicable).
+
+Meta-artifacts (hand-off prompts, plans, analysis reports) are working files — write them to `/tmp` or `.agents/runs/`, never commit or PR them unless explicitly asked.
+
+## Skills
+
+Project skills live in `.agents/skills/` (exposed to Claude Code via the `.claude/skills` relative symlink). If a slash-command skill reports "Unknown skill", do not substitute a different skill — read and follow `.agents/skills/<name>/SKILL.md` directly, and flag the broken symlink (fix: `ln -sfn ../.agents/skills .claude/skills`).
 
 ## Pointers
 
