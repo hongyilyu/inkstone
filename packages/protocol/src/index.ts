@@ -1,7 +1,6 @@
 // The @inkstone/protocol export surface: a pure re-export barrel over the
 // domain files (the schemas themselves live in run/thread/entity/media/
-// observation/proposal/provider/worker + payloads). Byte-for-byte the same
-// named exports the old single-file index had.
+// observation/proposal/provider/worker + payloads). No schema is defined here.
 
 export * from "./entity.js";
 export * from "./media.js";

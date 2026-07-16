@@ -87,12 +87,12 @@ describe("model catalog drift", () => {
 	// provider prepends the vendor label), whereas pi-ai names the same model
 	// inconsistently across providers (e.g. "GPT-5.4 mini" vs "GPT-5.4 Mini").
 	it("every derived model id still exists in pi-ai (unique per provider)", () => {
-		const MODELS = piModels();
+		const modelsByProvider = piModels();
 		const derived = derive(source());
 		expect(derived.length, "catalog has providers").toBeGreaterThan(0);
 
 		for (const provider of derived) {
-			const upstream = MODELS[provider.id];
+			const upstream = modelsByProvider[provider.id];
 			expect(
 				upstream,
 				`pi-ai's registry has a '${provider.id}' provider`,
@@ -122,7 +122,7 @@ describe("model catalog drift", () => {
 	// whichever provider serves it. Split from the id-existence check above so a
 	// failure names the vendor model, not just the derived id.
 	it("each vendor model's reasoning + input match pi-ai", () => {
-		const MODELS = piModels();
+		const modelsByProvider = piModels();
 		const src = source();
 
 		// Build vendorId → the pi-ai record for that model, via any provider that
@@ -139,7 +139,7 @@ describe("model catalog drift", () => {
 				`vendor ${vendor.id} is reached by a provider`,
 			).toBeDefined();
 			if (!provider) continue;
-			const group = MODELS[provider.id];
+			const group = modelsByProvider[provider.id];
 			for (const m of vendor.models) {
 				const id =
 					provider.id_style === "bare" ? m.key : `${vendor.id}/${m.key}`;

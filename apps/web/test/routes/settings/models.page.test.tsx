@@ -217,8 +217,8 @@ describe("Models settings page (ADR-0024)", () => {
 
 	it("on a provider/status fetch FAILURE shows Not connected with NO action button but DOES surface a 'couldn't check' banner + retry (no silent strand)", async () => {
 		// settings/get and model/catalog succeed (so the row renders), but
-		// provider/status REJECTS. connectedById is synthesized `false` (so the row
-		// leaves "Checking…" for an honest "Not connected"), but there is NO wire
+		// provider/status REJECTS. The failed statusView derives every row to "Not
+		// connected" (never a permanent "Checking…"), but there is NO wire
 		// auth_kind — so we must render NEITHER a Connect (oauth) NOR a Configure
 		// (api_key) button. A defaulted "oauth" would show a bogus Connect on a
 		// key-provider; the correct affordance only appears on the next SUCCESSFUL
