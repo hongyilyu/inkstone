@@ -18,7 +18,6 @@ const MODELS: readonly ModelInfo[] = [
 /** Minimal props; each test overrides `label`/`onTest` as needed. */
 function baseProps() {
 	return {
-		providerId: "provider-a",
 		label: "Provider A",
 		models: MODELS,
 		selectedId: null,
@@ -45,11 +44,7 @@ describe("ProviderModelsDetail liveness", () => {
 
 		const props = baseProps();
 		const { rerender } = render(
-			<ProviderModelsDetail
-				key={props.providerId}
-				{...props}
-				onTest={onTest}
-			/>,
+			<ProviderModelsDetail key="provider-a" {...props} onTest={onTest} />,
 		);
 
 		// Start the probe on Provider A → "Testing…".
@@ -62,7 +57,6 @@ describe("ProviderModelsDetail liveness", () => {
 			<ProviderModelsDetail
 				key="provider-b"
 				{...props}
-				providerId="provider-b"
 				label="Provider B"
 				onTest={onTest}
 			/>,

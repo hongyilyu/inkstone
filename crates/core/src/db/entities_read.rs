@@ -319,9 +319,11 @@ pub struct CurrentEntityRow {
 }
 
 /// Read one accepted Entity of `entity_type` by id. `None` when it does not
-/// exist or is not of that type. A malformed stored snapshot also yields
-/// `None` — the `proposal/get` review preview is optional; corruption is
-/// rejected loudly on the decide path (`db::apply` → `-32602`).
+/// exist, is not of that type, or its stored snapshot is malformed — the
+/// `proposal/get` review preview is display-only and degrades to Proposed-only.
+/// A corrupt snapshot never flows onward: accepting the proposal replaces
+/// (update kinds) or deletes (delete kinds) it, and the reference weave
+/// re-parses it loudly in `db::apply` (`-32602`).
 pub async fn current_entity_review_data(
     pool: &SqlitePool,
     entity_id: &str,
@@ -667,6 +669,34 @@ mod tests {
         assert!(
             user.source.is_none(),
             "a user-authored Entity carries no Captured-from provenance"
+        );
+    }
+
+    /// With TWO `created_from` rows on one Entity (the cross-Thread case,
+    /// ADR-0030), the OLDEST wins — pinned here because the pick lives solely in
+    /// `provenance_for_entities`' ROW_NUMBER window (`ORDER BY created_at, id`,
+    /// `rn = 1`); `attach_provenance` inserts blindly, so a regressed window
+    /// (DESC, or a dropped `rn = 1`) would silently flip the reported origin.
+    #[tokio::test]
+    async fn provenance_oldest_created_from_wins() {
+        let pool = memory_pool().await;
+        seed_thread_message(&pool, "thr-1", "Morning brain dump", "msg-1").await;
+        seed_entity(&pool, "je-1", "journal_entry", r#"{"occurred_at":"x"}"#).await;
+        seed_entity(&pool, "t-two", "todo", r#"{"title":"Cross-thread"}"#).await;
+
+        // Insert the NEWER (Message) source first so neither insertion order nor
+        // rowid can masquerade as the oldest-wins pick.
+        seed_source(&pool, "src-new", "t-two", Some("msg-1"), None, "created_from", 20).await;
+        seed_source(&pool, "src-old", "t-two", None, Some("je-1"), "created_from", 10).await;
+
+        let rows = list_by_type(&pool, "todo").await.expect("list todos");
+        let row = rows.iter().find(|r| r.id == "t-two").expect("t-two");
+        assert!(
+            matches!(
+                row.source.as_ref(),
+                Some(EntityProvenance::JournalEntry { journal_entry_id }) if journal_entry_id == "je-1"
+            ),
+            "the oldest created_from (the origin) wins over a later cross-Thread source"
         );
     }
 

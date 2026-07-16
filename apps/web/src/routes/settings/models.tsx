@@ -400,7 +400,6 @@ function ModelsSettings() {
 				<ProviderModelsDetail
 					// Keyed by provider: a switch remounts the detail, so the transient test verdict — and any in-flight probe — is per-provider (ADR-0062).
 					key={focused.id}
-					providerId={focused.id}
 					label={focused.label}
 					models={focused.models}
 					// A disconnected provider's models can't be set as the default

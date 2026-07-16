@@ -508,6 +508,17 @@ describe("WorkerOutbound", () => {
 			S.decodeUnknownSync(WorkerOutbound)({ kind: "cancelled" }),
 		).toThrow();
 	});
+
+	it("rejects the Core-synthesized tool_call kind", () => {
+		expect(() =>
+			S.decodeUnknownSync(WorkerOutbound)({
+				kind: "tool_call",
+				tool_call_id: "tc_01",
+				name: "read_thread",
+				status: "started",
+			}),
+		).toThrow();
+	});
 });
 
 describe("ProviderStatusResult", () => {

@@ -1,4 +1,4 @@
-import type { RunEvent } from "@inkstone/protocol";
+import type { WorkerRunEvent } from "@inkstone/protocol";
 import { Effect, Layer } from "effect";
 import type { ToolCallResponse } from "./tool-proxy.js";
 import { WorkerTransport } from "./transport.js";
@@ -20,7 +20,7 @@ export interface InMemoryToolChannel {
 
 /** Test `Layer` for {@link WorkerTransport} (ADR-0027): `captured`/`tools` arrays are the assertions, no real stdio. See docs/design/worker-transport.md. */
 export const InMemoryTransport = (
-	captured: RunEvent[],
+	captured: WorkerRunEvent[],
 	tools?: InMemoryToolChannel,
 ): Layer.Layer<WorkerTransport> =>
 	Layer.succeed(WorkerTransport, {

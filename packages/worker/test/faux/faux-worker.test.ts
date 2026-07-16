@@ -3,8 +3,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type {
 	ManifestMessage,
-	RunEvent,
 	WorkerManifest,
+	WorkerRunEvent,
 } from "@inkstone/protocol";
 import { Effect } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
@@ -305,7 +305,7 @@ const jeEntry = (id: string, occurredAt: string, text: string) => ({
 
 // Reassemble text_delta events (as faux_run.rs does); faux/streamSimple chunk
 // boundaries aren't fixed, so per-delta asserts flake.
-const deltaText = (events: RunEvent[]): string =>
+const deltaText = (events: WorkerRunEvent[]): string =>
 	events
 		.filter(
 			(e): e is { kind: "text_delta"; delta: string } =>
@@ -319,8 +319,8 @@ const deltaText = (events: RunEvent[]): string =>
 function runChat(
 	manifest: WorkerManifest,
 	results: Record<string, ToolCallResponse> = {},
-): Promise<{ events: RunEvent[]; requests: CapturedToolRequest[] }> {
-	const captured: RunEvent[] = [];
+): Promise<{ events: WorkerRunEvent[]; requests: CapturedToolRequest[] }> {
+	const captured: WorkerRunEvent[] = [];
 	const requests: CapturedToolRequest[] = [];
 	return Effect.runPromise(
 		runInterpreter(manifest, fauxDepsFor(manifest)).pipe(

@@ -1,5 +1,5 @@
 import { PassThrough, Writable } from "node:stream";
-import type { RunEvent } from "@inkstone/protocol";
+import type { WorkerRunEvent } from "@inkstone/protocol";
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 import { ManifestParseError, WorkerTransport } from "../src/transport.js";
@@ -46,7 +46,7 @@ describe("StdioTransportLive (over injected streams)", () => {
 
 			const manifest = yield* t.readManifest;
 
-			t.emit({ kind: "text_delta", delta: "hi" } satisfies RunEvent);
+			t.emit({ kind: "text_delta", delta: "hi" } satisfies WorkerRunEvent);
 
 			// callTool writes a tool_request, then resolves when the matching tool_result line arrives on stdin (bidirectional, ADR-0006).
 			const respPromise = t.callTool("tc1", "read_thread", {

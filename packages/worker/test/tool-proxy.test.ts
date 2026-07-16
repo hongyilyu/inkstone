@@ -6,7 +6,7 @@ import {
 	fauxProvider,
 	fauxToolCall,
 } from "@earendil-works/pi-ai";
-import type { RunEvent, WorkerManifest } from "@inkstone/protocol";
+import type { WorkerManifest, WorkerRunEvent } from "@inkstone/protocol";
 import { Effect } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 import { fauxInterpreterDeps } from "../src/faux/faux-deps.js";
@@ -73,7 +73,7 @@ describe("tool proxy round-trip via WorkerTransport (faux provider)", () => {
 		const deps = fauxDeps(faux);
 
 		// The seam supplies the scripted Tool Result (keyed by tool_call_id) and records the outbound tool_request (ADR-0027).
-		const events: RunEvent[] = [];
+		const events: WorkerRunEvent[] = [];
 		const requests: CapturedToolRequest[] = [];
 		await Effect.runPromise(
 			runInterpreter(manifestWithReadThread(), deps).pipe(
@@ -140,7 +140,7 @@ describe("tool proxy round-trip via WorkerTransport (faux provider)", () => {
 
 		const deps = fauxDeps(faux);
 
-		const events: RunEvent[] = [];
+		const events: WorkerRunEvent[] = [];
 		const requests: CapturedToolRequest[] = [];
 		await Effect.runPromise(
 			runInterpreter(manifestWithReadThread(), deps).pipe(

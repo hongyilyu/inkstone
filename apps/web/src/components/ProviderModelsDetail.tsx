@@ -5,10 +5,6 @@ import { ModelCatalogTable } from "./ModelCatalogTable.js";
 import { Button } from "./ui/button.js";
 
 export interface ProviderModelsDetailProps {
-	/** The provider's stable catalog id, e.g. "openrouter". The parent keys this
-	 * component on it, so a provider switch remounts the detail (unlike `label`,
-	 * ids can't collide). */
-	providerId: string;
 	/** The provider's display label, e.g. "OpenAI". */
 	label: string;
 	/** That provider's catalog models. */
