@@ -56,8 +56,7 @@ export function ProviderModelsDetail({
 
 	const runTest = () => {
 		if (onTest === undefined) return;
-		// Re-test clears the prior verdict first — no stale indicator. (A
-		// same-provider re-test can't race: the button is disabled while pending.)
+		// A same-provider re-test can't race: the button is disabled while pending.
 		setTest({ kind: "pending" });
 		onTest()
 			.then((r) => {

@@ -236,7 +236,9 @@ async fn mentioned_in_journal_entries(
 
 /// Attach each row's origin provenance ("Captured from", ADR-0030) in one batched
 /// read. Shared by [`list_by_type`] and [`mentioned_in_journal_entries`] so the
-/// two reads can't drift.
+/// two reads can't drift. Exactly one source kind is non-NULL per row (schema
+/// CHECK), so `source_entity_id` alone routes the shape; a Message row's thread
+/// id/title default defensively on a thin join rather than dropping the row.
 async fn attach_provenance(pool: &SqlitePool, rows: &mut [EntityRow]) -> sqlx::Result<()> {
     let entity_ids = rows.iter().map(|row| row.id.clone()).collect::<Vec<_>>();
     let provenance = queries::provenance_for_entities(pool, &entity_ids).await?;
@@ -673,10 +675,9 @@ mod tests {
     }
 
     /// With TWO `created_from` rows on one Entity (the cross-Thread case,
-    /// ADR-0030), the OLDEST wins — pinned here because the pick lives solely in
-    /// `provenance_for_entities`' ROW_NUMBER window (`ORDER BY created_at, id`,
-    /// `rn = 1`); `attach_provenance` inserts blindly, so a regressed window
-    /// (DESC, or a dropped `rn = 1`) would silently flip the reported origin.
+    /// ADR-0030), the OLDEST wins. The pick lives solely in
+    /// `provenance_for_entities`' SQL — nothing downstream re-checks it — so a
+    /// regressed ordering would silently flip the reported origin.
     #[tokio::test]
     async fn provenance_oldest_created_from_wins() {
         let pool = memory_pool().await;

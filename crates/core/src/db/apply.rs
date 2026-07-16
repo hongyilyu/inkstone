@@ -645,13 +645,10 @@ pub(crate) async fn apply_entity_mutation(
         }
     }
 
-    // The reference kind's stored data is the target Journal Entry's CURRENT body
-    // with the new entity_ref placeholder rewritten to carry the freshly-minted
-    // `ref_id`. It needs committed state + that ref id, so it is computed here
-    // (the pre-write seam left it `None`); every other kind already has its data_str.
-    // Load-then-write, like `apply_update_todo`: the source load runs BEFORE the
-    // `entity_refs` insert, so a gone source surfaces as TargetMissing rather than
-    // tripping the insert's FK.
+    // The reference kind computes its data_str here (the `InTx` seam above left it
+    // `None`). Load-then-write, like `apply_update_todo`: the source load runs
+    // BEFORE the `entity_refs` insert, so a gone source surfaces as TargetMissing
+    // rather than tripping the insert's FK.
     if kind == MutationKind::ReferenceExistingEntityFromJournalEntry {
         let current_data = queries::current_entity_data(&mut **tx, &entity_id, "journal_entry")
             .await?

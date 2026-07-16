@@ -81,7 +81,7 @@ function piModels(): PiModels {
 describe("model catalog drift", () => {
 	// Each vendor is a deliberately CURATED subset of pi-ai (product policy trims
 	// it), so a raw deep-equals is wrong. The invariant: every DERIVED model id
-	// still exists in pi-ai's `MODELS[providerId]`, and its capability fields
+	// still exists in pi-ai's registry for that provider, and its capability fields
 	// ({reasoning, input}) match pi-ai EXACTLY. The display NAME is intentionally
 	// NOT pinned — it is vendor-owned (defined once) and derived (a `prefixed`
 	// provider prepends the vendor label), whereas pi-ai names the same model
@@ -95,7 +95,7 @@ describe("model catalog drift", () => {
 			const upstream = MODELS[provider.id];
 			expect(
 				upstream,
-				`pi-ai has a MODELS['${provider.id}'] group`,
+				`pi-ai's registry has a '${provider.id}' provider`,
 			).toBeDefined();
 
 			expect(
@@ -111,7 +111,7 @@ describe("model catalog drift", () => {
 			for (const model of provider.models) {
 				expect(
 					upstream[model.id],
-					`derived model ${model.id} still present in pi-ai MODELS['${provider.id}']`,
+					`derived model ${model.id} still present in pi-ai's '${provider.id}' registry`,
 				).toBeDefined();
 			}
 		}

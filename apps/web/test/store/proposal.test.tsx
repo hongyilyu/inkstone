@@ -57,7 +57,9 @@ function makeStubRuntime(opts: {
 	onSubscribe?: () => void;
 	threadGet?: (threadId: string) => Effect.Effect<ThreadGetResult, WsError>;
 }) {
-	// Each subscribeRun gets the next queue in runQueues (a fresh hub per subscribe).
+	// Each subscribeRun gets the next queue in runQueues — one stub queue per
+	// subscribe SEGMENT (test modeling of the wire, not production plumbing;
+	// see docs/design/web-store-tests.md).
 	let subscribeIdx = 0;
 	return makeCoreRuntime({
 		overrides: {
@@ -835,7 +837,8 @@ describe("proposal stream + decide", () => {
 		const proposalQueue = Effect.runSync(
 			Queue.unbounded<ProposalNotification>(),
 		);
-		// Distinct queues per subscribe (fresh hub each time) — see docs/design/web-store-tests.md
+		// Distinct stub queues per subscribe segment — test modeling of each wire
+		// segment, not production plumbing (docs/design/web-store-tests.md).
 		const parkedQueue = Effect.runSync(Queue.unbounded<RunEventValue>());
 		const resumeQueue = Effect.runSync(Queue.unbounded<RunEventValue>());
 		const runtime = makeStubRuntime({
