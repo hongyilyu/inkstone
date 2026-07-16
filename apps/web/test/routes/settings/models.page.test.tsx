@@ -306,8 +306,8 @@ describe("Models settings page (ADR-0024)", () => {
 		const user = userEvent.setup();
 		// provider/status REJECTS until we flip `shouldFail` right before the retry
 		// click, then SUCCEEDS — modelling a transient unreachable-Core that recovers.
-		// Gated on a boolean (not a call count) because refreshConnected auto-refires
-		// when the catalog load changes its `providers` dep, so several polls fire
+		// Gated on a boolean (not a call count) because the catalog landing re-fires
+		// refreshConnected (loadCatalog's success repoll), so several polls fire
 		// before any user interaction; ALL of them must fail so the banner is stable
 		// to click. The success payload carries the codex auth_kind, so the retry both
 		// clears the banner and lets the correct Connect (oauth) affordance appear.
@@ -351,6 +351,69 @@ describe("Models settings page (ADR-0024)", () => {
 		expect(
 			screen.queryByText(/couldn't check provider connections/i),
 		).toBeNull();
+	});
+
+	it("repolls provider/status when the catalog lands — even a valid EMPTY catalog — with no user interaction (2 polls per mount)", async () => {
+		// The catalog resolving is the "Core is reachable" signal that re-fires the
+		// status poll (the transient-failure self-heal seam). An empty providers
+		// list is still a SUCCESSFUL catalog read, so the repoll must not be gated
+		// on non-emptiness; deleting the repoll (or re-gating it on
+		// `providers.length > 0`) drops this to a single mount poll.
+		const providerStatus = vi.fn(() =>
+			Effect.succeed({
+				providers: [
+					{ id: "openai-codex", connected: false, auth_kind: "oauth" as const },
+				],
+			}),
+		);
+		const overrides: Partial<WsClientService> = {
+			...BASE_OVERRIDES,
+			providerStatus,
+			modelCatalog: () => Effect.succeed({ providers: [] }),
+		};
+		await renderPage(overrides);
+
+		// Mount poll + catalog-landing repoll — no focus, push, or retry fired.
+		await waitFor(() => expect(providerStatus).toHaveBeenCalledTimes(2));
+	});
+
+	it("self-heals a TRANSIENT provider/status failure automatically: the catalog-landing repoll clears the banner with NO user interaction", async () => {
+		// The mount poll REJECTS (a transient blip); the repoll the catalog landing
+		// triggers SUCCEEDS. No Try-again click, no focus-return, no push — the
+		// recovery must be automatic, or the user is stuck on the "couldn't check"
+		// banner until a focus-return happens to fire.
+		let statusCalls = 0;
+		const providerStatus = vi.fn(() => {
+			statusCalls += 1;
+			return statusCalls === 1
+				? Effect.die("provider/status unreachable")
+				: Effect.succeed({
+						providers: [
+							{
+								id: "openai-codex",
+								connected: true,
+								auth_kind: "oauth" as const,
+							},
+						],
+					});
+		});
+		const overrides: Partial<WsClientService> = {
+			...BASE_OVERRIDES,
+			providerStatus,
+		};
+		await renderPage(overrides);
+
+		// The catalog-triggered second poll heals the row to the real status…
+		await waitFor(() =>
+			expect(screen.getByTestId("provider-status")).toHaveTextContent(
+				/^connected$/i,
+			),
+		);
+		// …and the "couldn't check" banner is gone — all without any interaction.
+		expect(
+			screen.queryByText(/couldn't check provider connections/i),
+		).toBeNull();
+		expect(providerStatus).toHaveBeenCalledTimes(2);
 	});
 
 	it("persists an effort change via settings/set", async () => {

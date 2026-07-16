@@ -235,27 +235,24 @@ async fn mentioned_in_journal_entries(
 }
 
 /// Attach each row's origin provenance ("Captured from", ADR-0030) in one batched
-/// read. The query returns oldest-first per Entity, so the FIRST row per id is the
-/// true origin `created_from`; later cross-Thread sources (if any) are ignored.
-/// Exactly one source kind is non-NULL (schema CHECK); a Message source carries
-/// its Thread id + title, defaulted defensively rather than dropping the whole
-/// provenance if the join is somehow thin. Shared by [`list_by_type`] (all rows)
-/// and [`mentioned_in_journal_entries`] (the JE rows) so the two reads can't drift.
+/// read. Shared by [`list_by_type`] and [`mentioned_in_journal_entries`] so the
+/// two reads can't drift.
 async fn attach_provenance(pool: &SqlitePool, rows: &mut [EntityRow]) -> sqlx::Result<()> {
     let entity_ids = rows.iter().map(|row| row.id.clone()).collect::<Vec<_>>();
     let provenance = queries::provenance_for_entities(pool, &entity_ids).await?;
     let mut provenance_by_entity = HashMap::<String, EntityProvenance>::new();
     for (entity_id, source_entity_id, thread_id, thread_title, message_id) in provenance {
-        provenance_by_entity
-            .entry(entity_id)
-            .or_insert_with(|| match source_entity_id {
+        provenance_by_entity.insert(
+            entity_id,
+            match source_entity_id {
                 Some(journal_entry_id) => EntityProvenance::JournalEntry { journal_entry_id },
                 None => EntityProvenance::Message {
                     thread_id: thread_id.unwrap_or_default(),
                     thread_title: thread_title.unwrap_or_default(),
                     message_id,
                 },
-            });
+            },
+        );
     }
     for row in &mut *rows {
         row.source = provenance_by_entity.remove(&row.id);
@@ -314,28 +311,17 @@ pub struct CurrentThreadJournalEntryRow {
     pub anchored_entities: Vec<String>,
 }
 
-/// One accepted Entity snapshot for `proposal/get` review context. `data` is
-/// the current `entities.data` snapshot. Unlike the canonical [`EntityRow`]
-/// reads, this is a display-only review-context snapshot: a malformed `data`
-/// degrades to `Value::Null` rather than failing the read (see
-/// [`current_entity_review_data`]).
+/// One accepted Entity snapshot for `proposal/get` review context; `data` is
+/// the parsed current `entities.data` snapshot.
 pub struct CurrentEntityRow {
     pub entity_id: String,
     pub data: serde_json::Value,
 }
 
 /// Read one accepted Entity of `entity_type` by id. `None` when it does not
-/// exist or is not of that type.
-///
-/// Display-only review read: its sole caller is `proposal/get`'s
-/// `review_context_for_proposal` preview, which is designed to degrade gracefully
-/// when the current-entity snapshot is unparseable. So a malformed `data` falls
-/// back to `Value::Null` here rather than routing through [`parse_entity_data`] —
-/// deliberately NOT a canonical authoritative read. The loud parse-failure
-/// guarantee for this Entity's data lives on the decide/apply path
-/// (`db::apply`, which parses the same snapshot and returns
-/// `ApplyError::InvalidMutation` → `-32602`), so corruption is rejected where it
-/// matters without breaking the optional review preview.
+/// exist or is not of that type. A malformed stored snapshot also yields
+/// `None` — the `proposal/get` review preview is optional; corruption is
+/// rejected loudly on the decide path (`db::apply` → `-32602`).
 pub async fn current_entity_review_data(
     pool: &SqlitePool,
     entity_id: &str,
@@ -345,9 +331,12 @@ pub async fn current_entity_review_data(
     else {
         return Ok(None);
     };
+    let Ok(data) = serde_json::from_str(&data) else {
+        return Ok(None);
+    };
     Ok(Some(CurrentEntityRow {
         entity_id: entity_id.to_string(),
-        data: serde_json::from_str(&data).unwrap_or(serde_json::Value::Null),
+        data,
     }))
 }
 

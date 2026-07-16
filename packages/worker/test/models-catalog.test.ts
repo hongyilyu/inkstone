@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { describe, expect, it } from "vitest";
 
 // The embedded catalog SOURCE is vendor-owned (ADR-0024): `vendors` each own
@@ -61,13 +62,20 @@ function derive(
 
 type PiModels = Record<
 	string,
-	Record<string, { id: string; reasoning?: boolean; input: string[] }>
+	Record<string, { id: string; reasoning: boolean; input: string[] }>
 >;
 
-async function piModels(): Promise<PiModels> {
-	const mainUrl = import.meta.resolve("@earendil-works/pi-ai");
-	const genUrl = new URL("./models.generated.js", mainUrl);
-	return (await import(genUrl.href)).MODELS as PiModels;
+// Index pi-ai's public registry — the same `builtinModels()` collection the
+// interpreter resolves models from at runtime — as provider id → model id.
+function piModels(): PiModels {
+	const models = builtinModels();
+	const byProvider: PiModels = {};
+	for (const provider of models.getProviders()) {
+		byProvider[provider.id] = Object.fromEntries(
+			models.getModels(provider.id).map((m) => [m.id, m] as const),
+		);
+	}
+	return byProvider;
 }
 
 describe("model catalog drift", () => {
@@ -78,8 +86,8 @@ describe("model catalog drift", () => {
 	// NOT pinned — it is vendor-owned (defined once) and derived (a `prefixed`
 	// provider prepends the vendor label), whereas pi-ai names the same model
 	// inconsistently across providers (e.g. "GPT-5.4 mini" vs "GPT-5.4 Mini").
-	it("every derived model id still exists in pi-ai (unique per provider)", async () => {
-		const MODELS = await piModels();
+	it("every derived model id still exists in pi-ai (unique per provider)", () => {
+		const MODELS = piModels();
 		const derived = derive(source());
 		expect(derived.length, "catalog has providers").toBeGreaterThan(0);
 
@@ -113,8 +121,8 @@ describe("model catalog drift", () => {
 	// {reasoning, input} we author must equal pi-ai's for the same model, under
 	// whichever provider serves it. Split from the id-existence check above so a
 	// failure names the vendor model, not just the derived id.
-	it("each vendor model's reasoning + input match pi-ai", async () => {
-		const MODELS = await piModels();
+	it("each vendor model's reasoning + input match pi-ai", () => {
+		const MODELS = piModels();
 		const src = source();
 
 		// Build vendorId → the pi-ai record for that model, via any provider that
@@ -143,7 +151,7 @@ describe("model catalog drift", () => {
 				expect(
 					{ reasoning: m.reasoning, input: m.input },
 					`vendor model ${vendor.id}/${m.key} matches pi-ai reasoning + input`,
-				).toEqual({ reasoning: !!up.reasoning, input: up.input });
+				).toEqual({ reasoning: up.reasoning, input: up.input });
 			}
 		}
 	});

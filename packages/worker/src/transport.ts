@@ -1,4 +1,4 @@
-import type { RunEvent, WorkerManifest } from "@inkstone/protocol";
+import type { WorkerManifest, WorkerRunEvent } from "@inkstone/protocol";
 import { Context, Data, type Effect } from "effect";
 import type { CallTool } from "./tool-proxy.js";
 
@@ -24,7 +24,7 @@ export class WorkerTransport extends Context.Tag(
 			ManifestParseError
 		>;
 		/** Emit one Run Event (fire-and-forget; ADR-0006 Run Event channel). */
-		readonly emit: (event: RunEvent) => void;
+		readonly emit: (event: WorkerRunEvent) => void;
 		/** Round-trip one Tool Request to Core and await its Tool Result (bidirectional Tool Protocol; ADR-0006). Same shape as the proxy's {@link CallTool}. */
 		readonly callTool: CallTool;
 	}

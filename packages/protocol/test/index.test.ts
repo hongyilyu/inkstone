@@ -488,7 +488,7 @@ describe("RunEvent", () => {
 });
 
 describe("WorkerOutbound", () => {
-	it("aliases RunEvent and accepts text_delta", () => {
+	it("accepts text_delta", () => {
 		expect(
 			S.decodeUnknownSync(WorkerOutbound)({
 				kind: "text_delta",
@@ -497,16 +497,16 @@ describe("WorkerOutbound", () => {
 		).toEqual({ kind: "text_delta", delta: "echo: hi" });
 	});
 
-	it("aliases RunEvent and accepts done", () => {
+	it("accepts done", () => {
 		expect(S.decodeUnknownSync(WorkerOutbound)({ kind: "done" })).toEqual({
 			kind: "done",
 		});
 	});
 
-	it("aliases RunEvent and accepts cancelled", () => {
-		expect(S.decodeUnknownSync(WorkerOutbound)({ kind: "cancelled" })).toEqual({
-			kind: "cancelled",
-		});
+	it("rejects the Core-synthesized cancelled kind", () => {
+		expect(() =>
+			S.decodeUnknownSync(WorkerOutbound)({ kind: "cancelled" }),
+		).toThrow();
 	});
 });
 
@@ -764,7 +764,7 @@ describe("CoreToolDescriptor", () => {
 	});
 });
 
-describe("WorkerOutbound (RunEvent | ToolRequest)", () => {
+describe("WorkerOutbound (WorkerRunEvent | ToolRequest)", () => {
 	it("accepts a tool_request variant", () => {
 		const wire = {
 			kind: "tool_request",

@@ -683,8 +683,8 @@ export const fixtures: readonly FixtureEntry[] = [
 	// the closed status domain is locked, plus reasoning_delta — ADR-0045 reasoning
 	// segment, #202), ToolResult (ToolOutcome ok/err arms), WorkerManifest
 	// (ManifestMessage 3 variants transitively), WorkerStdout (5 variants,
-	// hand-authored — decoded against the BROADER TS WorkerOutbound union, see the
-	// asymmetry note in structs.test.ts).
+	// hand-authored — decoded against the TS WorkerOutbound =
+	// WorkerRunEvent | ToolRequest union, its exact mirror).
 	{
 		message: "RunEvent",
 		file: "run_event.text_delta.json",
@@ -757,11 +757,11 @@ export const fixtures: readonly FixtureEntry[] = [
 		schema: WorkerManifest,
 		dir: "emitted",
 	},
-	// WorkerStdout: Rust deser-only (4 variants); decoded against the TS
-	// WorkerOutbound = RunEvent | ToolRequest union, which is deliberately BROADER
-	// (the Worker never emits RunEvent's cancelled/tool_call; Core never sends them
-	// downstream as stdout). text_delta/done/error decode as RunEvent members;
-	// tool_request as the ToolRequest member.
+	// WorkerStdout: Rust deser-only (5 variants); decoded against the TS
+	// WorkerOutbound = WorkerRunEvent | ToolRequest union, its exact 1:1 mirror
+	// (RunEvent's Core-synthesized cancelled/tool_call kinds are excluded from
+	// WorkerRunEvent). text_delta/reasoning_delta/done/error decode as
+	// WorkerRunEvent members; tool_request as the ToolRequest member.
 	{
 		message: "WorkerStdout",
 		file: "worker_stdout.text_delta.json",

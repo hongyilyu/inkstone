@@ -6,16 +6,14 @@ Design rationale extracted from code comments during cleanup — keep in sync wi
 
 A stub `WsClient` backed by an in-memory `Queue` the test offers events to. This is the slice-10 `RuntimeProvider` injection seam: a runtime built from `ManagedRuntime.make(Layer.succeed(WsClient, stub))` (no real socket). Only `postMessage` + `subscribeRun` are exercised here; the rest never run.
 
-## proposal.test.tsx — resume snapshot SETs after pre-park prose (M1)
+## run-record.test.tsx — resume snapshot SETs over the pre-park prefix (M1)
 
-Two distinct stream segments: the original parked subscribe and the resume re-subscribe each get a fresh queue (production opens a new hub per subscribe, so the resume's first delta is again the cumulative snapshot).
+The snapshot SET-vs-APPEND scenario is pinned at the store level, on the Run record's `snapshotArmed` bit: `beginRunSubscription` arms it, the FIRST `text_delta` SETs the cumulative snapshot and clears it, the rest APPEND — no caller threads a flag. The M1 case parks the Run on a Proposal, then resumes through the SAME begin verb: re-arming makes the resume's first delta — again the cumulative snapshot, RE-INCLUDING the pre-park prose — SET.
 
-The original subscribe streams the pre-park prose. Its FIRST delta is the cumulative snapshot (SET), marking `snapshotApplied[run-1] = true` — exactly what production does on every first subscribe. The model streams prose, then parks on `propose_workspace_mutation` (NO terminal event, so the fiber stays blocked — this is the parked state).
+- SET (correct): the snapshot replaced the on-screen prefix ("Let me check. Done.").
+- Append (the M1 bug): "Let me check. Let me check. Done." (duplicated prefix).
 
-After park + decide → resume re-subscribe, the resume snapshot RE-INCLUDES the pre-park prose (the cumulative text Core reconstructed) and then appends the closing line. The resume tail (on the FRESH resume queue): the first delta is the cumulative snapshot (re-including the prefix) → must SET, not append; the remaining deltas APPEND.
-
-- SET (correct): the snapshot replaced the on-screen prefix.
-- Append (the M1 bug): "Let me check the other thread. Let me check the other thread. Done — added it." (duplicated prefix).
+proposal.test.tsx keeps the bridge-level M1/M2 guards: the double-decide test (M1 — a second decide observing `deciding` short-circuits, so a fast double-click never stomps an accepted card with a spurious error) and the single-consumer resume test (M2 — decide interrupts the parked fiber before re-subscribing, so the resume tail's deltas are not split across two consumers). Its end-to-end resume flows give each subscribe a fresh stub queue — modeling each subscribe's wire segment, not production plumbing (Core reuses the run epoch's hub — a subscribe just attaches a receiver — and `WsClientLive` reuses one queue per run id); the resume's first delta is again the cumulative snapshot because Core's `run/subscribe` always emits it as the FIRST `text_delta` (ADR-0022 snapshot-then-tail).
 
 ## bridge.test.tsx — decideProposal resume fiber tracking (M2)
 

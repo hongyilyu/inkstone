@@ -30,22 +30,26 @@ import {
 } from "@/store/providers";
 import { fetchCatalog, fetchSettings, saveSettings } from "@/store/settings";
 
+// Auth kinds ride the provider/status wire (ADR-0062; the Web never guesses one),
+// so only a loaded status carries them. "failed" = the check failed, not a real disconnect.
+type ProviderStatusView =
+	| { kind: "checking" }
+	| { kind: "failed" }
+	| {
+			kind: "loaded";
+			connectedById: Record<string, boolean>;
+			authKindById: Record<string, ProviderAuthKind>;
+	  };
+
 /** `/settings/models` (ADR-0024): a provider master/detail. The LIST view shows one row per `model/catalog` provider group (label, connection status, model count) plus the global effort control; clicking a provider opens its DETAIL view — that provider's models with the Preferred affordance. Persisted via `settings/*`, read from `model/catalog`. */
 function ModelsSettings() {
 	const runtime = useRuntime();
 	const queryClient = useQueryClient();
-	// Connection state keyed by provider id (null while the first status query is
-	// in flight). Drives every provider row's status without resynthesis.
-	const [connectedById, setConnectedById] = useState<Record<
-		string,
-		boolean
-	> | null>(null);
-	// Each provider's auth kind (ADR-0062), read off the same provider/status
-	// payload. Drives the Connect (oauth) vs Configure (api_key) affordance — the
-	// wire carries it, so the Web never guesses "not-codex = key".
-	const [authKindById, setAuthKindById] = useState<
-		Record<string, ProviderAuthKind>
-	>({});
+	// The provider/status read: drives every row's status, the Connect/Configure
+	// affordance, and the "couldn't check" banner from one state.
+	const [statusView, setStatusView] = useState<ProviderStatusView>({
+		kind: "checking",
+	});
 	// Latest in-flight provider/status request — guards refreshConnected's writes
 	// against out-of-order resolution (see the useCallback below).
 	const latestStatusRequest = useRef(0);
@@ -59,12 +63,10 @@ function ModelsSettings() {
 	// from an unreachable Core so the Providers section shows an honest error + a
 	// retry instead of a blank list of dead-clickable rows.
 	const [catalogFailed, setCatalogFailed] = useState(false);
-	// Whether the provider/status read failed. Distinguishes "couldn't reach Core to
-	// CHECK connection" from a genuine all-disconnected state — the catch below
-	// synthesizes `connected: false` (so rows stay readable) but that reads exactly
-	// like a real disconnect. This flag raises an honest "couldn't check" banner +
-	// retry so the user is never silently stranded (mirrors `catalogFailed`).
-	const [statusFailed, setStatusFailed] = useState(false);
+	// Count of successful catalog reads (mount + every retry). Each landing bumps
+	// this, and an effect below re-polls provider/status off the bump — even for
+	// an EMPTY catalog, which is still a successful read (Core reachable).
+	const [catalogGeneration, setCatalogGeneration] = useState(0);
 	// Master/detail: null = provider list, otherwise the focused provider's id.
 	const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
 	// The message for a provider login that failed to start (surfaced in the
@@ -124,27 +126,25 @@ function ModelsSettings() {
 					: "idle";
 
 	// The shared live-refresh chokepoint (ADR-0049): commit a freshly-read
-	// provider/status into BOTH the per-row map and the ["provider-status"] cache
+	// provider/status into BOTH the per-row view and the ["provider-status"] cache
 	// the chat gate reads. refreshConnected (mount/focus/push) and the configure
 	// success path both route through this, so a stored key flips the row exactly
 	// like a login does — no reload.
 	const applyStatus = useCallback(
 		(status: ProviderStatusResult) => {
-			setConnectedById(
-				Object.fromEntries(status.providers.map((p) => [p.id, p.connected])),
-			);
-			setAuthKindById(
-				Object.fromEntries(status.providers.map((p) => [p.id, p.auth_kind])),
-			);
+			setStatusView({
+				kind: "loaded",
+				connectedById: Object.fromEntries(
+					status.providers.map((p) => [p.id, p.connected]),
+				),
+				authKindById: Object.fromEntries(
+					status.providers.map((p) => [p.id, p.auth_kind]),
+				),
+			});
 			queryClient.setQueryData<ProviderStatusResult>(
 				["provider-status"],
 				status,
 			);
-			// Any fresh, valid status clears the "couldn't check" banner — at the
-			// chokepoint, so BOTH a successful refresh AND a provider/configure success
-			// dismiss it. (Clearing only in refreshConnected's .then would leave the
-			// banner stuck if a poll failed while a configure submit was in flight.)
-			setStatusFailed(false);
 		},
 		[queryClient],
 	);
@@ -165,7 +165,7 @@ function ModelsSettings() {
 		fetchProviderStatus(runtime)
 			.then((status) => {
 				if (requestId !== latestStatusRequest.current) return;
-				// Write the freshly-read truth into both the per-row map and the shared
+				// Write the freshly-read truth into both the per-row view and the shared
 				// ["provider-status"] cache the chat gate (connect welcome + composer
 				// soft-disable) reads via useProviderStatus. applyStatus is the single
 				// chokepoint — mount, focus, the `provider/connected` push, AND a
@@ -179,33 +179,15 @@ function ModelsSettings() {
 				// before the refetch lands, flashing the connect screen at a now-connected
 				// user. Writing the value keeps the cache truthful for that remount AND
 				// notifies a still-mounted chat observer immediately (no refetch needed).
-				// applyStatus also clears the statusFailed banner (the chokepoint), so a
-				// successful read here dismisses it — no separate reset needed.
 				applyStatus(status);
 			})
 			.catch(() => {
 				if (requestId !== latestStatusRequest.current) return;
-				// Status fetch failed: resolve each loaded-catalog provider id to
-				// `connected: false` so rows read an honest "Not connected" instead of a
-				// permanent "Checking…" (which an empty map produced, since every id then
-				// resolved to null). This path has NO wire `auth_kind`, and we CLEAR any
-				// prior one so the rows render with no Connect/Configure button — a
-				// STALE kind from an earlier successful read would otherwise still paint a
-				// (now-unverifiable) Connect/Configure button alongside the failure banner.
-				// With no button, the rows are silently indistinct from a genuine
-				// disconnect, so we ALSO raise `statusFailed` to surface a "couldn't check
-				// connections" banner + retry (below) rather than strand the user.
-				// Local-only: do NOT write a synthesized all-disconnected snapshot into
-				// the shared ["provider-status"] cache — the chat gate derives
-				// anyConnected across it, and a fake disconnect would falsely gate a
-				// genuinely-connected user. Leave that cache alone on error.
-				setConnectedById(
-					Object.fromEntries(providers.map((p) => [p.id, false])),
-				);
-				setAuthKindById({});
-				setStatusFailed(true);
+				// Local UI only — never write a synthesized disconnect into the shared
+				// ["provider-status"] cache; the chat gate derives anyConnected from it (ADR-0049).
+				setStatusView({ kind: "failed" });
 			});
-	}, [runtime, applyStatus, providers]);
+	}, [runtime, applyStatus]);
 
 	// Clear the transient acknowledgement after a beat (all hooks + the connect error).
 	const { clearStatus: clearEffortStatus } = effort;
@@ -258,6 +240,9 @@ function ModelsSettings() {
 				// rendered) the instant "Try again" is clicked — a blank flash until
 				// the fetch settles, worse if the retry also fails.
 				setCatalogFailed(false);
+				// Signal the repoll effect below: a landed catalog proves Core
+				// reachable, so provider/status is worth re-asking.
+				setCatalogGeneration((g) => g + 1);
 			})
 			.catch(() => {
 				if (requestId !== latestCatalogRequest.current) return;
@@ -282,6 +267,19 @@ function ModelsSettings() {
 			++latestCatalogRequest.current;
 		};
 	}, [runtime, seedEffort, seedModel, seedEnabled, loadCatalog]);
+
+	// Re-poll provider/status each time a catalog read lands (the generation bump
+	// in loadCatalog): the two reads race on mount, so a transient status failure
+	// self-heals as soon as Core proves reachable — no waiting on a focus-return.
+	// Unconditional on content: an EMPTY catalog is still a successful read. An
+	// EFFECT (post-commit), not an inline call in loadCatalog's .then — inline,
+	// the repoll would start in the same microtask sweep as the mount poll's
+	// still-in-flight resolution and supersede it, dropping a result that should
+	// have painted (stuck on "Checking…" for as long as the repoll dawdles).
+	useEffect(() => {
+		if (catalogGeneration === 0) return;
+		refreshConnected();
+	}, [catalogGeneration, refreshConnected]);
 
 	// Full catalog ids across all providers — the materialized baseline when the
 	// stored enabled set is empty(=all) and the user makes a first toggle (so the
@@ -400,12 +398,18 @@ function ModelsSettings() {
 
 			{focused && enabledModels.value !== null ? (
 				<ProviderModelsDetail
+					// Keyed by provider: a switch remounts the detail, so the transient test verdict — and any in-flight probe — is per-provider (ADR-0062).
+					key={focused.id}
 					providerId={focused.id}
 					label={focused.label}
 					models={focused.models}
 					// A disconnected provider's models can't be set as the default
 					// (they'd run tokenless, ADR-0062) — lock select/toggle with a hint.
-					connected={connectedById?.[focused.id] ?? false}
+					connected={
+						statusView.kind === "loaded"
+							? (statusView.connectedById[focused.id] ?? false)
+							: false
+					}
 					selectedId={model.value}
 					onSelect={model.set}
 					// Only rendered once settings have seeded (`enabledModels.value !==
@@ -442,19 +446,21 @@ function ModelsSettings() {
 							/>
 						) : (
 							<div className="flex flex-col gap-2">
-								{statusFailed && (
-									// provider/status couldn't be read — the rows below fell back
-									// to a look-alike "Not connected" with no action button, so
-									// surface an honest "couldn't check" notice + a retry. Retrying
-									// just re-runs the stable refreshConnected, which clears this on
-									// its own success.
+								{statusView.kind === "failed" && (
+									// The rows below read "Not connected" with no action button, so
+									// surface an honest "couldn't check" notice + a retry.
 									<RetryPanel
 										message="Couldn't check provider connections. Check that Inkstone is running."
 										onRetry={() => refreshConnected()}
 									/>
 								)}
 								{providers.map((p) => {
-									const connected = connectedById?.[p.id] ?? null;
+									const connected =
+										statusView.kind === "loaded"
+											? (statusView.connectedById[p.id] ?? null)
+											: statusView.kind === "failed"
+												? false
+												: null;
 									const status =
 										connected === null
 											? "Checking…"
@@ -462,17 +468,12 @@ function ModelsSettings() {
 												? "Connected"
 												: "Not connected";
 									const count = p.models.length;
-									// Auth kind comes off the provider/status wire row (ADR-0062),
-									// not a client-side id guess. It is absent until a successful
-									// status read supplies it — in particular the fetch-failed
-									// recovery path synthesizes `connected: false` with NO wire auth
-									// kind. Do NOT synthesize one (a defaulted "oauth" would render a
-									// bogus Connect on a key-provider). While it is undefined we render
-									// the row WITHOUT any auth-specific action button (just the neutral
-									// status); the correct Connect/Configure affordance appears on the
-									// next successful status read.
+									// Auth kind exists only on a loaded status (ADR-0062: it rides
+									// the wire, never a client-side guess) — no action button until known.
 									const authKind: ProviderAuthKind | undefined =
-										authKindById[p.id];
+										statusView.kind === "loaded"
+											? statusView.authKindById[p.id]
+											: undefined;
 									return (
 										<div key={p.id} className="flex flex-col gap-2">
 											<div className="flex items-center gap-2 rounded-md border border-input pr-3">
@@ -519,16 +520,9 @@ function ModelsSettings() {
 														aria-hidden
 													/>
 												</button>
-												{/* The connect/onboarding affordance stays reachable per
-											    provider row. Branch on auth kind (ADR-0062): an OAuth
-											    provider (codex) offers Connect (opens the OAuth tab;
-											    credential write is out-of-band, ADR-0023); a
-											    key-configurable provider (OpenRouter) offers Configure,
-											    which opens an inline paste-key form below the row. Until
-											    a successful status supplies the auth kind
-											    (`authKind === undefined`, e.g. the fetch-failure path)
-											    render NO action button — a defaulted kind would show the
-											    wrong affordance. */}
+												{/* Branch on the wire auth kind (ADR-0062): Connect opens the
+											    OAuth tab (credential write is out-of-band, ADR-0023);
+											    Configure opens an inline paste-key form below the row. */}
 												{connected === false && authKind === "oauth" && (
 													<Button
 														variant="chip"

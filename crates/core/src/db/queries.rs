@@ -608,9 +608,8 @@ where
 ///
 /// `created_from` is the ORIGIN relation — `updated_from` rows (a later proposal
 /// edit) are excluded, so this answers "why does this Entity exist?", not "what
-/// last touched it". An Entity may carry more than one `created_from` in the
-/// long-term cross-Thread model (ADR-0030), so rows are ordered oldest-first and
-/// the caller keeps the first per Entity (the true origin). Entities with no
+/// last touched it". At most one row per Entity: its oldest `created_from` (the
+/// origin; later cross-Thread sources ignored, ADR-0030). Entities with no
 /// `created_from` (user-authored, direct Library writes) simply return no row.
 pub(super) async fn provenance_for_entities<'e, E>(
     executor: E,
@@ -624,21 +623,30 @@ where
     }
 
     let mut query = QueryBuilder::<Sqlite>::new(
-        "SELECT source.entity_id, source.source_entity_id, \
-                source_message.thread_id, source_thread.title, source_message.id \
-         FROM entity_sources source \
-         LEFT JOIN messages source_message \
-           ON source_message.id = source.source_message_id \
-         LEFT JOIN threads source_thread \
-           ON source_thread.id = source_message.thread_id \
-         WHERE source.relation = 'created_from' \
-           AND source.entity_id IN (",
+        "WITH origins AS ( \
+             SELECT entity_id, source_entity_id, source_message_id, \
+                    ROW_NUMBER() OVER ( \
+                        PARTITION BY entity_id ORDER BY created_at, id \
+                    ) AS rn \
+             FROM entity_sources \
+             WHERE relation = 'created_from' \
+               AND entity_id IN (",
     );
     let mut separated = query.separated(", ");
     for entity_id in entity_ids {
         separated.push_bind(entity_id);
     }
-    separated.push_unseparated(") ORDER BY source.entity_id, source.created_at, source.id");
+    separated.push_unseparated(
+        ")) \
+         SELECT origin.entity_id, origin.source_entity_id, \
+                source_message.thread_id, source_thread.title, source_message.id \
+         FROM origins origin \
+         LEFT JOIN messages source_message \
+           ON source_message.id = origin.source_message_id \
+         LEFT JOIN threads source_thread \
+           ON source_thread.id = source_message.thread_id \
+         WHERE origin.rn = 1",
+    );
 
     query.build_query_as().fetch_all(executor).await
 }

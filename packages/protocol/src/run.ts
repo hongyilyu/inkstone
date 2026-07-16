@@ -99,8 +99,24 @@ export const RunHistoryResult = S.Struct({ runs: S.Array(RunHistoryItem) });
 
 export type RunHistoryResult = S.Schema.Type<typeof RunHistoryResult>;
 
-export const RunEvent = S.Union(
+/** The Run Events the Worker itself emits: streaming deltas plus one terminal
+ * `done`/`error` (the Worker half of Rust's `WorkerStdout`). */
+export const WorkerRunEvent = S.Union(
 	S.Struct({ kind: S.Literal("text_delta"), delta: S.String }),
+	// A reasoning (thinking) delta, mirroring `text_delta` (ADR-0045 reasoning
+	// amendment, #202): the segment boundary is inferred from the interleaved stream,
+	// so no position field — the open reasoning segment opens on the first such delta.
+	S.Struct({ kind: S.Literal("reasoning_delta"), delta: S.String }),
+	S.Struct({ kind: S.Literal("done") }),
+	S.Struct({ kind: S.Literal("error"), message: S.String }),
+);
+
+export type WorkerRunEvent = S.Schema.Type<typeof WorkerRunEvent>;
+
+/** The full stream the Client subscribes to: the Worker-emitted events plus the
+ * two kinds only Core synthesizes. */
+export const RunEvent = S.Union(
+	...WorkerRunEvent.members,
 	// Core-synthesized, ephemeral tool-call boundary (ADR-0006); `arg` is the
 	// tool's display argument (ADR-0043), omitted for argless tools — see docs/design/protocol.md
 	S.Struct({
@@ -110,13 +126,7 @@ export const RunEvent = S.Union(
 		status: S.Literal("started", "completed", "error"),
 		arg: S.optional(S.String),
 	}),
-	S.Struct({ kind: S.Literal("done") }),
 	S.Struct({ kind: S.Literal("cancelled") }),
-	S.Struct({ kind: S.Literal("error"), message: S.String }),
-	// A reasoning (thinking) delta, mirroring `text_delta` (ADR-0045 reasoning
-	// amendment, #202): the segment boundary is inferred from the interleaved stream,
-	// so no position field — the open reasoning segment opens on the first such delta.
-	S.Struct({ kind: S.Literal("reasoning_delta"), delta: S.String }),
 );
 
 export type RunEvent = S.Schema.Type<typeof RunEvent>;
