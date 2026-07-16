@@ -16,8 +16,8 @@ import { fileURLToPath } from "node:url";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import type {
 	CoreToolDescriptor,
-	RunEvent,
 	WorkerManifest,
+	WorkerRunEvent,
 } from "@inkstone/protocol";
 import { Effect, Layer } from "effect";
 import { type InterpreterDeps, runInterpreter } from "../src/interpreter.js";
@@ -215,7 +215,7 @@ function searchWorld(
  * into `events`. */
 function evalTransport(
 	fixture: Fixture,
-	events: RunEvent[],
+	events: WorkerRunEvent[],
 	capture: { current: PredictedProposal | null },
 ): Layer.Layer<WorkerTransport> {
 	return Layer.succeed(WorkerTransport, {
@@ -335,7 +335,7 @@ export async function runFixture(
 	const resolved: InterpreterDeps = deps ?? defaultRealDeps();
 
 	const manifest = buildManifest(fixture);
-	const events: RunEvent[] = [];
+	const events: WorkerRunEvent[] = [];
 	const capture: { current: PredictedProposal | null } = { current: null };
 
 	await Effect.runPromise(

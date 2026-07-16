@@ -18,7 +18,6 @@ const MODELS: readonly ModelInfo[] = [
 /** Minimal props; each test overrides `label`/`onTest` as needed. */
 function baseProps() {
 	return {
-		providerId: "provider-a",
 		label: "Provider A",
 		models: MODELS,
 		selectedId: null,
@@ -45,19 +44,19 @@ describe("ProviderModelsDetail liveness", () => {
 
 		const props = baseProps();
 		const { rerender } = render(
-			<ProviderModelsDetail {...props} onTest={onTest} />,
+			<ProviderModelsDetail key="provider-a" {...props} onTest={onTest} />,
 		);
 
 		// Start the probe on Provider A → "Testing…".
 		fireEvent.click(screen.getByRole("button", { name: "Test" }));
 		expect(screen.getByTestId("liveness-status")).toHaveTextContent("Testing…");
 
-		// Switch to Provider B before the probe settles → verdict clears to idle
-		// (no indicator rendered). The guard keys on `providerId`, so the id changes.
+		// Switch to Provider B before the probe settles. The parent keys the detail
+		// by provider id, so the switch REMOUNTS it — fresh idle state, no indicator.
 		rerender(
 			<ProviderModelsDetail
+				key="provider-b"
 				{...props}
-				providerId="provider-b"
 				label="Provider B"
 				onTest={onTest}
 			/>,

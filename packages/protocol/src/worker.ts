@@ -3,7 +3,7 @@
 
 import { Schema as S } from "effect";
 
-import { RunEvent } from "./run.js";
+import { WorkerRunEvent } from "./run.js";
 
 // tool protocol (ADR-0018): the Worker<->Core duplex for tool calls — see docs/design/protocol.md
 
@@ -58,8 +58,8 @@ export const CoreToolDescriptor = S.Struct({
 
 export type CoreToolDescriptor = S.Schema.Type<typeof CoreToolDescriptor>;
 
-// What the Worker writes to stdout; reuses `RunEvent`, so its `tool_call`/`cancelled` kinds are never emitted here — see docs/design/protocol.md
-export const WorkerOutbound = S.Union(RunEvent, ToolRequest);
+/** What the Worker writes to stdout (mirrors Rust's `WorkerStdout` in crates/core/src/protocol/worker.rs). */
+export const WorkerOutbound = S.Union(WorkerRunEvent, ToolRequest);
 
 export type WorkerOutbound = S.Schema.Type<typeof WorkerOutbound>;
 

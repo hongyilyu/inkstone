@@ -12,11 +12,11 @@ The faux response factory reads the live context the REAL transform produced, pr
 
 ## models-catalog.test.ts — "model catalog drift"
 
-Drift guard (ADR-0024): Core embeds the model catalog as one **vendor-owned** source file (`catalog.json`: a `vendors` array that owns each model by bare `key`, plus a `providers` array where each provider only declares which vendors it *reaches*). Core derives the per-provider catalog from it; this test re-derives the same way and, for each derived model, asserts the id still exists in `pi-ai`'s `MODELS[provider.id]` and its `{reasoning, input}` match `pi-ai` exactly — so a `pi-ai` bump that adds/removes/retypes a shipped model fails CI here, prompting a JSON fix rather than silent drift.
+Drift guard (ADR-0024): Core embeds the model catalog as one **vendor-owned** source file (`catalog.json`: a `vendors` array that owns each model by bare `key`, plus a `providers` array where each provider only declares which vendors it *reaches*). Core derives the per-provider catalog from it; this test re-derives the same way and, for each derived model, asserts the id still exists in `pi-ai`'s registry for that provider and its `{reasoning, input}` match `pi-ai` exactly — so a `pi-ai` bump that adds/removes/retypes a shipped model fails CI here, prompting a JSON fix rather than silent drift.
 
 The display **name is intentionally NOT pinned**: it is vendor-owned (authored once) and, for a `prefixed` provider, derived by prepending the vendor label — whereas `pi-ai` names the same model inconsistently across providers (e.g. `"GPT-5.4 mini"` under openai-codex vs `"GPT-5.4 Mini"` under openrouter). There is no cross-provider "consistency" test because the vendor owns a single list — no per-provider copy exists to diverge.
 
-`pi-ai` does not re-export `MODELS` from its package entry, and its `exports` map blocks the deep `dist/models.generated.js` path via specifier, so the test resolves the package's main entry and imports the sibling generated file by absolute URL (which bypasses the exports gate).
+The test drift-checks the same public registry the interpreter resolves at runtime (`builtinModels()` from `@earendil-works/pi-ai/providers/all`).
 
 ## cli.guard.test.ts — "production entry guard"
 

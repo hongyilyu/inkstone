@@ -6,13 +6,9 @@ Design rationale extracted from code comments during cleanup — keep in sync wi
 
 The store is a plain *vanilla* zustand store so the free action functions stay callable OUTSIDE React render — the bridge (`bridge.ts`) and hydration (`hydrate.ts`) drive these imperatively. The selector hooks wrap zustand's `useStore`, which is backed by `useSyncExternalStore`; returning stable references (e.g. `EMPTY_MESSAGES`) preserves selector identity across unrelated state changes. ADR-0020: Effect owns the wire; React state is plain (zustand, not `@effect/atom`).
 
-## apps/web/src/store/chat.ts — resetSnapshot
-
-Clear the snapshot-applied bit for `runId` (ADR-0025 resume re-subscribe). A parked Run's resume opens a FRESH `run/subscribe` whose first `text_delta` is again the cumulative snapshot (`subscribe.rs` always emits one). The original parked subscribe already marked `snapshotApplied[runId] = true`, so without this reset the resume snapshot would be treated as an incremental delta and APPENDed — duplicating any pre-park assistant text. Resetting the bit makes the next `text_delta` SET the authoritative cumulative text (which already contains the pre-park prefix). A no-op when the thread is unknown.
-
 ## apps/web/src/store/chat.ts — loadThreadMessages
 
-CRITICAL (snapshot-vs-resubscribe interplay): this does NOT pre-mark `snapshotApplied[run_id]` for the streaming message. Leaving it unset means the resubscribe's FIRST `text_delta` (the cumulative snapshot) SETs the text to the authoritative cumulative value in `applyEvent` — the hydrated partial text is just an initial paint that the snapshot then supersedes. The orchestrator (`hydrate.ts#hydrateThread`) owns the thread/get → load → resubscribe flow; this action only loads.
+This does NOT arm a Run snapshot — arming is owned by `beginRunSubscription`, which the resubscribe (`startRunStream`) runs for the streaming message's Run. The armed record makes the resubscribe's FIRST `text_delta` (the cumulative snapshot) SET the text to the authoritative cumulative value in `applyEvent` — the hydrated partial text is just an initial paint that the snapshot then supersedes. The orchestrator (`hydrate.ts#hydrateThread`) owns the thread/get → load → resubscribe flow; this action only loads.
 
 ## apps/web/src/store/bridge.ts — bridge module
 
@@ -38,7 +34,7 @@ An `edit` carries the user's `editedPayload`; Core re-validates it and applies i
 
 Double-submit guard (M1): a decide already in flight short-circuits. Returning stops a fast double-click from firing a second `proposal/decide` that races behind the first — the Run un-parks after the first decide, so the second hits Core as `proposal_not_pending` and its catch would stomp an accept that actually succeeded with a spurious `error`. Retry from `error` is still allowed (only `deciding` short-circuits).
 
-Stale-fiber guard (M2): a parked Run's forwarder closes with NO terminal event, so the original `subscribeRun` fiber (bounded by `takeUntil` on the terminal set) never completed and is still blocked on the per-run queue. Interrupt it BEFORE re-subscribing so exactly one consumer drains the resume tail — two consumers would split a multi-chunk continuation between them and corrupt the text. Then reset the snapshot bit: the original parked subscribe already marked `snapshotApplied[runId] = true` on its initial (possibly empty) snapshot delta; the resume's FIRST `text_delta` is again the cumulative snapshot (it re-includes any pre-park prose), so without the reset it would be APPENDed onto the on-screen text and duplicate the prefix. Clearing the bit makes it SET the authoritative cumulative text instead.
+Stale-fiber guard (M2): a parked Run's forwarder closes with NO terminal event, so the original `subscribeRun` fiber (bounded by `takeUntil` on the terminal set) never completed and is still blocked on the per-run queue. Interrupt it BEFORE re-subscribing so exactly one consumer drains the resume tail — two consumers would split a multi-chunk continuation between them and corrupt the text. Re-subscribing then owns the snapshot boundary itself: `startRunStream` internally `beginRunSubscription`s, re-arming the record's cumulative-snapshot bit (`snapshotArmed`), so the resume's FIRST `text_delta` — again the cumulative snapshot, re-including any pre-park prose — SETs the authoritative cumulative text; appended, it would duplicate the on-screen prefix (the M1 bug).
 
 ## apps/web/src/store/hydrate.ts — toMessage
 
@@ -52,7 +48,7 @@ Hydrate a thread from `thread/get` and resume any streaming run (slice 13).
 
 Reactive status (issue #108): hydration drives a per-thread `hydration: "loading" | "ready" | "error"` field on `ThreadState` (the `useHydrationStatus` selector + `setHydrationStatus` action in `chat.ts`), which replaces the old non-reactive `hydration-set.ts` Set. `hydrateThread` sets `loading` BEFORE the await, then settles to `ready` on success or `error` on a failed `threadGet`. This is the signal that lets `ChatColumn` show a recoverable error instead of an eternal skeleton, and it gates re-hydration: `useHydrateFocusedThread` fires only when status is `undefined` (never-hydrated), so a settled `error`/`ready` is not auto-re-fetched — a failed thread is retried only by the user via the error affordance.
 
-Flow: set status `loading` → run `threadGet(threadId)` on the runtime → map the wire messages to live `Message`s → `loadThreadMessages` → for every message with `status === "streaming"` AND a non-empty `run_id`, `startRunStream` to resubscribe (the resubscribe's first cumulative `text_delta` SETs the text, since `loadThreadMessages` left `snapshotApplied` unset) → settle status `ready`.
+Flow: set status `loading` → run `threadGet(threadId)` on the runtime → map the wire messages to live `Message`s → `loadThreadMessages` → for every message with `status === "streaming"` AND a non-empty `run_id`, `startRunStream` to resubscribe (arming the record's snapshot bit via `beginRunSubscription`, so the resubscribe's first cumulative `text_delta` SETs the text) → settle status `ready`.
 
 On failure (`WsError`) the effect's success branch never runs, so nothing is loaded and status settles to `error` (unless a send made the thread live mid-fetch — see became-live below — in which case it settles `ready`). Not a throw; the returned Promise always resolves. (`App.test` focuses no thread, so hydration never fires there regardless.)
 

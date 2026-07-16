@@ -259,18 +259,8 @@ async fn check_reference_existing_entity(
     pool: &SqlitePool,
     payload: &serde_json::Value,
 ) -> Result<(), TargetError> {
-    // Validate the source Journal Entry (the primary anchor) FIRST: the apply path
-    // inserts into `entity_refs` keyed on `source_entity_id` before it loads the
-    // source JE, so a deleted source trips the FK → an opaque internal error. A GONE
-    // source is a delete-race on the primary anchor (TargetMissing → NotDecidable on
-    // the accept path); a wrong-TYPE source is a payload error (Invalid).
-    //
-    // This pool-level read is sufficient (no in-tx re-check needed) because the pool
-    // is `max_connections(1)` (see `db::open`): every write path runs on the single
-    // shared, serialized connection, so no concurrent transaction can delete the
-    // source/target between this check and the `entity_refs` insert. It closes the
-    // validate→apply gap for THIS mutation, not a race against another writer (there
-    // is none).
+    // The source JE is the reference's PRIMARY anchor: GONE → TargetMissing
+    // (NotDecidable on the accept path, ADR-0033); a wrong-TYPE source → Invalid.
     let source_entity_id = mutation::target_entity_id(
         MutationKind::ReferenceExistingEntityFromJournalEntry.describe(),
         payload,

@@ -645,7 +645,24 @@ pub(crate) async fn apply_entity_mutation(
         }
     }
 
-    let reference_ref_id = if kind == MutationKind::ReferenceExistingEntityFromJournalEntry {
+    // The reference kind computes its data_str here (the `InTx` seam above left it
+    // `None`). Load-then-write, like `apply_update_todo`: the source load runs
+    // BEFORE the `entity_refs` insert, so a gone source surfaces as TargetMissing
+    // rather than tripping the insert's FK.
+    if kind == MutationKind::ReferenceExistingEntityFromJournalEntry {
+        let current_data = queries::current_entity_data(&mut **tx, &entity_id, "journal_entry")
+            .await?
+            // The target Journal Entry vanished under the parked Proposal
+            // (ADR-0033) — surface TargetMissing, not an opaque DB fault.
+            .ok_or(ApplyError::TargetMissing)?;
+        let current_data: serde_json::Value = serde_json::from_str(&current_data).map_err(|e| {
+            ApplyError::InvalidMutation(format!("stored Journal Entry data is malformed JSON: {e}"))
+        })?;
+        if !current_data.is_object() {
+            return Err(ApplyError::InvalidMutation(
+                "stored Journal Entry data must be a JSON object".to_string(),
+            ));
+        }
         let target_entity_id = crate::entities::reference_target_entity_id(effective_payload)
             .ok_or_else(|| {
                 ApplyError::InvalidMutation(
@@ -666,45 +683,19 @@ pub(crate) async fn apply_entity_mutation(
             now_ms,
         )
         .await?;
-        Some(
+        let ref_id =
             queries::entity_ref_id_for_source_target(&mut **tx, &entity_id, target_entity_id)
                 .await?
                 .ok_or_else(|| {
                     ApplyError::InvalidMutation(
                         "failed to create or find entity_ref for source and target".to_string(),
                     )
-                })?,
-        )
-    } else {
-        None
-    };
-
-    // The reference kind's stored data is the target Journal Entry's CURRENT body
-    // with the new entity_ref placeholder rewritten to carry the freshly-minted
-    // `ref_id`. It needs committed state + that ref id, so it is computed here
-    // (the pre-write seam left it `None`); every other kind already has its data_str.
-    if kind == MutationKind::ReferenceExistingEntityFromJournalEntry {
-        let ref_id = reference_ref_id
-            .as_deref()
-            .expect("reference mutation creates or reuses an entity_ref");
-        let current_data = queries::current_entity_data(&mut **tx, &entity_id, "journal_entry")
-            .await?
-            // The target Journal Entry vanished under the parked Proposal
-            // (ADR-0033) — surface TargetMissing, not an opaque DB fault.
-            .ok_or(ApplyError::TargetMissing)?;
-        let current_data: serde_json::Value = serde_json::from_str(&current_data).map_err(|e| {
-            ApplyError::InvalidMutation(format!("stored Journal Entry data is malformed JSON: {e}"))
-        })?;
-        if !current_data.is_object() {
-            return Err(ApplyError::InvalidMutation(
-                "stored Journal Entry data must be a JSON object".to_string(),
-            ));
-        }
+                })?;
         data_str = Some(
             crate::entities::reference_existing_entity_data_payload(
                 &current_data,
                 effective_payload,
-                ref_id,
+                &ref_id,
             )
             .to_string(),
         );
@@ -811,7 +802,7 @@ pub(crate) async fn apply_entity_mutation(
         // block instead of this dispatch). TRAP for a future `InTx` kind: an
         // InTx kind reaching these generic Update/Create arms must have
         // computed its `data_str` BEFORE this match — the reference weave does,
-        // in its pre-match blocks above. A new InTx kind without that hits the
+        // in its pre-match block above. A new InTx kind without that hits the
         // "carry entity data" expect below; give it a named arm instead. (No
         // blanket InTx guard here: the weave legitimately rides the generic
         // update arm.)
@@ -1281,6 +1272,54 @@ mod tests {
         assert!(
             matches!(result, Err(ApplyError::TargetMissing)),
             "a vanished update_todo target is TargetMissing, not InvalidMutation: {result:?}"
+        );
+    }
+
+    /// The apply-layer backstop for the reference weave's load-before-write
+    /// ordering: a SOURCE Journal Entry gone AT APPLY TIME (decide's pool-level
+    /// pre-validation bypassed — this layer must not depend on it) surfaces
+    /// `TargetMissing`. The in-tx source load runs BEFORE the `entity_refs`
+    /// insert, whose `source_entity_id` FK would otherwise trip into an opaque
+    /// `Sql` error.
+    #[tokio::test]
+    async fn reference_weave_gone_source_at_apply_is_target_missing() {
+        let pool = memory_pool().await;
+        // A real referenceable target, so the gone SOURCE is the only fault.
+        let target_person_id = create(
+            &pool,
+            MutationKind::CreatePerson,
+            serde_json::json!({ "name": "Alice" }),
+        )
+        .await;
+        let missing_source_je_id = Uuid::now_v7().to_string();
+
+        let mut tx = pool.begin().await.expect("begin");
+        let result = apply_entity_mutation(
+            &mut tx,
+            EntityMutationSpec {
+                kind: MutationKind::ReferenceExistingEntityFromJournalEntry,
+                target_entity_id: Some(&missing_source_je_id),
+                payload: &serde_json::json!({
+                    "source_entity_id": missing_source_je_id,
+                    "target_entity_id": target_person_id,
+                    "label_snapshot": "Alice",
+                    "body": [
+                        { "type": "text", "text": "Linked " },
+                        { "type": "entity_ref" }
+                    ]
+                }),
+                edited_payload: None,
+                created_by: "user",
+                proposal_id: None,
+                source: None,
+                now_ms: 2,
+            },
+        )
+        .await;
+
+        assert!(
+            matches!(result, Err(ApplyError::TargetMissing)),
+            "a gone reference source at apply is TargetMissing, not the entity_refs FK's Sql error: {result:?}"
         );
     }
 

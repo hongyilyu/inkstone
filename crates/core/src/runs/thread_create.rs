@@ -88,20 +88,9 @@ pub(super) async fn handle(
         .await
         .map_err(HandlerError::from)?;
 
-        // Fire the one-shot title Worker (ADR-0046) — fire-and-forget, so the
-        // create RESPONSE never waits on it. `started.provider` is the
-        // resolved Workflow's provider, guaranteed connected (the verb's
-        // ADR-0062 gate rejects a disconnected one before this point).
-        // `out_tx.clone()` is this connection's outbound channel: on a
-        // successful generation the titler frames a `thread/titled`
-        // notification onto it (ADR-0047) so the creating tab's sidebar
-        // updates live. On empty/whitespace output it silently keeps the
-        // prompt-derived placeholder and pushes nothing. Ordering: this now
-        // fires AFTER the Run's `worker::spawn` (inside the verb) instead of
-        // between hub-create and spawn — equivalent, because both are
-        // fire-and-forget onto independent subsystems (the titler is a
-        // one-shot non-Run worker sharing no state with the Run worker), so
-        // the swap is not wire-observable.
+        // Fire the one-shot title Worker (ADR-0046) — fire-and-forget, the
+        // create response never waits on it; the `thread/titled` contract
+        // lives on `spawn_title_generation`.
         worker::spawn_title_generation(
             thread_id,
             params.prompt,

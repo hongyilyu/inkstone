@@ -4,7 +4,7 @@ import {
 	fauxText,
 	fauxThinking,
 } from "@earendil-works/pi-ai";
-import type { RunEvent, WorkerManifest } from "@inkstone/protocol";
+import type { WorkerManifest, WorkerRunEvent } from "@inkstone/protocol";
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 import { fauxInterpreterDeps } from "../src/faux/faux-deps.js";
@@ -41,8 +41,8 @@ function fauxManifest(overrides: Partial<WorkerManifest> = {}): WorkerManifest {
 function runChat(
 	manifest: WorkerManifest,
 	deps: InterpreterDeps,
-): Promise<RunEvent[]> {
-	const captured: RunEvent[] = [];
+): Promise<WorkerRunEvent[]> {
+	const captured: WorkerRunEvent[] = [];
 	return Effect.runPromise(
 		runInterpreter(manifest, deps).pipe(
 			Effect.provide(InMemoryTransport(captured)),
@@ -179,7 +179,7 @@ describe("generic interpreter (faux provider)", () => {
 		});
 
 		// Drive through the seam directly to assert no tool round-tripped: empty result table plus a `requests` log.
-		const events: RunEvent[] = [];
+		const events: WorkerRunEvent[] = [];
 		const requests: CapturedToolRequest[] = [];
 		await Effect.runPromise(
 			runInterpreter(manifest, deps).pipe(

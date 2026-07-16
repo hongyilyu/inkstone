@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { describe, expect, it } from "vitest";
 
 // The embedded catalog SOURCE is vendor-owned (ADR-0024): `vendors` each own
@@ -61,33 +62,40 @@ function derive(
 
 type PiModels = Record<
 	string,
-	Record<string, { id: string; reasoning?: boolean; input: string[] }>
+	Record<string, { id: string; reasoning: boolean; input: string[] }>
 >;
 
-async function piModels(): Promise<PiModels> {
-	const mainUrl = import.meta.resolve("@earendil-works/pi-ai");
-	const genUrl = new URL("./models.generated.js", mainUrl);
-	return (await import(genUrl.href)).MODELS as PiModels;
+// Index pi-ai's public registry — the same `builtinModels()` collection the
+// interpreter resolves models from at runtime — as provider id → model id.
+function piModels(): PiModels {
+	const models = builtinModels();
+	const byProvider: PiModels = {};
+	for (const provider of models.getProviders()) {
+		byProvider[provider.id] = Object.fromEntries(
+			models.getModels(provider.id).map((m) => [m.id, m] as const),
+		);
+	}
+	return byProvider;
 }
 
 describe("model catalog drift", () => {
 	// Each vendor is a deliberately CURATED subset of pi-ai (product policy trims
 	// it), so a raw deep-equals is wrong. The invariant: every DERIVED model id
-	// still exists in pi-ai's `MODELS[providerId]`, and its capability fields
+	// still exists in pi-ai's registry for that provider, and its capability fields
 	// ({reasoning, input}) match pi-ai EXACTLY. The display NAME is intentionally
 	// NOT pinned — it is vendor-owned (defined once) and derived (a `prefixed`
 	// provider prepends the vendor label), whereas pi-ai names the same model
 	// inconsistently across providers (e.g. "GPT-5.4 mini" vs "GPT-5.4 Mini").
-	it("every derived model id still exists in pi-ai (unique per provider)", async () => {
-		const MODELS = await piModels();
+	it("every derived model id still exists in pi-ai (unique per provider)", () => {
+		const modelsByProvider = piModels();
 		const derived = derive(source());
 		expect(derived.length, "catalog has providers").toBeGreaterThan(0);
 
 		for (const provider of derived) {
-			const upstream = MODELS[provider.id];
+			const upstream = modelsByProvider[provider.id];
 			expect(
 				upstream,
-				`pi-ai has a MODELS['${provider.id}'] group`,
+				`pi-ai's registry has a '${provider.id}' provider`,
 			).toBeDefined();
 
 			expect(
@@ -103,7 +111,7 @@ describe("model catalog drift", () => {
 			for (const model of provider.models) {
 				expect(
 					upstream[model.id],
-					`derived model ${model.id} still present in pi-ai MODELS['${provider.id}']`,
+					`derived model ${model.id} still present in pi-ai's '${provider.id}' registry`,
 				).toBeDefined();
 			}
 		}
@@ -113,8 +121,8 @@ describe("model catalog drift", () => {
 	// {reasoning, input} we author must equal pi-ai's for the same model, under
 	// whichever provider serves it. Split from the id-existence check above so a
 	// failure names the vendor model, not just the derived id.
-	it("each vendor model's reasoning + input match pi-ai", async () => {
-		const MODELS = await piModels();
+	it("each vendor model's reasoning + input match pi-ai", () => {
+		const modelsByProvider = piModels();
 		const src = source();
 
 		// Build vendorId → the pi-ai record for that model, via any provider that
@@ -131,7 +139,7 @@ describe("model catalog drift", () => {
 				`vendor ${vendor.id} is reached by a provider`,
 			).toBeDefined();
 			if (!provider) continue;
-			const group = MODELS[provider.id];
+			const group = modelsByProvider[provider.id];
 			for (const m of vendor.models) {
 				const id =
 					provider.id_style === "bare" ? m.key : `${vendor.id}/${m.key}`;
@@ -143,7 +151,7 @@ describe("model catalog drift", () => {
 				expect(
 					{ reasoning: m.reasoning, input: m.input },
 					`vendor model ${vendor.id}/${m.key} matches pi-ai reasoning + input`,
-				).toEqual({ reasoning: !!up.reasoning, input: up.input });
+				).toEqual({ reasoning: up.reasoning, input: up.input });
 			}
 		}
 	});
