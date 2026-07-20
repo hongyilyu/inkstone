@@ -29,7 +29,7 @@ pub async fn dispatch_and_resolve(
     resolve_effective_workflow(pool, base).await
 }
 
-pub fn dispatch(_thread_id: uuid::Uuid, _prompt: &str) -> &'static Workflow {
+fn dispatch(_thread_id: uuid::Uuid, _prompt: &str) -> &'static Workflow {
     workflow::default_workflow()
 }
 
@@ -45,7 +45,7 @@ pub fn dispatch(_thread_id: uuid::Uuid, _prompt: &str) -> &'static Workflow {
 /// The returned Workflow always carries a concrete `model`/`thinking_level` (the
 /// wire manifest requires them). A settings read error is treated as "unset" so
 /// a transient DB hiccup falls back to the default rather than failing the Run.
-pub async fn resolve_effective_workflow(pool: &SqlitePool, base: &Workflow) -> Workflow {
+async fn resolve_effective_workflow(pool: &SqlitePool, base: &Workflow) -> Workflow {
     let model_setting = settings::preferred_model(pool, &base.name)
         .await
         .unwrap_or(None);
