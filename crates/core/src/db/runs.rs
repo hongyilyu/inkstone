@@ -708,20 +708,29 @@ pub async fn error_run_with_message(
 }
 
 /// Boot recovery sweep (ADR-0012): on Core start, force-error every `running`
-/// Run (no live Worker survives a restart) to `errored` with
-/// `terminal_reason='core_restarted'`, flipping its `streaming` Message to
-/// `incomplete` (ADR-0017) in the same transaction. Preserves `parked` Runs
-/// (ADR-0025) — they stay durable and decidable across a restart. Returns the
-/// swept count for boot logging.
+/// Run (no live Worker survives a restart) by funnelling each through the typed
+/// [`RunStatus::fail`] verb — so it lands `errored` with
+/// `terminal_reason='core_restarted'`, its `streaming` Message flipped to
+/// `incomplete` (ADR-0017), and a terminal `error` Run Log row appended by the
+/// verb's single `run_log::append` writer, all in one transaction. Preserves
+/// `parked` Runs (ADR-0025) — they stay durable and decidable across a restart.
+/// Returns the swept count for boot logging.
 pub async fn recover_interrupted_runs(pool: &SqlitePool, now_ms: i64) -> sqlx::Result<u64> {
     let mut tx = pool.begin().await?;
-    let error_message = "core restarted while run in flight";
-    let swept = queries::recover_interrupted_runs(&mut *tx, error_message, now_ms).await?;
-    queries::mark_recovered_streaming_messages_incomplete(&mut *tx, now_ms).await?;
-    // Append the terminal `error` Run Log row the typed `fail()` verb would have
-    // written, so a crash-recovered Run reads as errored (not Running) in
-    // `run/get_history`. Same tx as the status flip.
-    queries::append_recovered_error_events(&mut *tx, error_message, now_ms).await?;
+    let mut swept: u64 = 0;
+    for id in queries::select_running_run_ids(&mut *tx).await? {
+        let run_id = Uuid::parse_str(&id).map_err(|e| sqlx::Error::Decode(e.into()))?;
+        let moved = RunStatus::fail(
+            &mut *tx,
+            run_id,
+            TerminalReason::CoreRestarted,
+            "core_restarted",
+            "core restarted while run in flight",
+            now_ms,
+        )
+        .await?;
+        swept += moved.won() as u64;
+    }
     tx.commit().await?;
     Ok(swept)
 }
@@ -844,28 +853,34 @@ mod tests {
     #[tokio::test]
     async fn recover_errors_running_preserves_parked() {
         let pool = memory_pool().await;
-        insert_bare_run(&pool, "run-running", "running").await;
-        insert_bare_run(&pool, "run-parked", "parked").await;
+        // Real UUID ids: the sweep now funnels each running id through
+        // `Uuid::parse_str`, so non-UUID ids would fault the recovery tx.
+        let running_id = "11111111-1111-4111-8111-111111111111";
+        let parked_id = "22222222-2222-4222-8222-222222222222";
+        insert_bare_run(&pool, running_id, "running").await;
+        insert_bare_run(&pool, parked_id, "parked").await;
 
         let swept = recover_interrupted_runs(&pool, 42).await.expect("sweep ok");
         assert_eq!(swept, 1, "swept exactly the running Run");
 
-        assert_eq!(run_status_of(&pool, "run-running").await, "errored");
+        assert_eq!(run_status_of(&pool, running_id).await, "errored");
         assert_eq!(
-            run_status_of(&pool, "run-parked").await,
+            run_status_of(&pool, parked_id).await,
             "parked",
             "parked Run preserved across the sweep"
         );
 
         // Swept Runs carry the core_restarted terminal_reason + error fields.
         let reason: Option<String> =
-            sqlx::query_scalar("SELECT terminal_reason FROM runs WHERE id = 'run-running'")
+            sqlx::query_scalar("SELECT terminal_reason FROM runs WHERE id = ?1")
+                .bind(running_id)
                 .fetch_one(&pool)
                 .await
                 .unwrap();
         assert_eq!(reason.as_deref(), Some("core_restarted"));
         let ended_at: Option<i64> =
-            sqlx::query_scalar("SELECT ended_at FROM runs WHERE id = 'run-running'")
+            sqlx::query_scalar("SELECT ended_at FROM runs WHERE id = ?1")
+                .bind(running_id)
                 .fetch_one(&pool)
                 .await
                 .unwrap();
@@ -874,7 +889,8 @@ mod tests {
         // The swept Run's streaming Message is flipped to incomplete; the parked
         // Run's stays streaming (it is not terminal).
         let swept_msg: String =
-            sqlx::query_scalar("SELECT status FROM messages WHERE run_id = 'run-running'")
+            sqlx::query_scalar("SELECT status FROM messages WHERE run_id = ?1")
+                .bind(running_id)
                 .fetch_one(&pool)
                 .await
                 .unwrap();
@@ -883,30 +899,32 @@ mod tests {
             "swept Run's streaming message → incomplete"
         );
         let parked_msg: String =
-            sqlx::query_scalar("SELECT status FROM messages WHERE run_id = 'run-parked'")
+            sqlx::query_scalar("SELECT status FROM messages WHERE run_id = ?1")
+                .bind(parked_id)
                 .fetch_one(&pool)
                 .await
                 .unwrap();
         assert_eq!(parked_msg, "streaming", "parked Run's message untouched");
 
-        // The sweep appends a terminal `error` Run Log milestone for the swept
-        // Run (the raw bulk UPDATE is outside the typed `fail()` verb), so
+        // The sweep funnels each running Run through the typed `fail()` verb,
+        // whose `run_log::append` writes the terminal `error` milestone, so
         // `run/get_history` reads it as errored, not Running. The preserved
         // parked Run gets none.
         assert_eq!(
-            run_event_count(&pool, "run-running", "error").await,
+            run_event_count(&pool, running_id, "error").await,
             1,
             "swept Run gets one terminal error Run Log row"
         );
         assert_eq!(
-            run_event_count(&pool, "run-parked", "error").await,
+            run_event_count(&pool, parked_id, "error").await,
             0,
             "preserved parked Run gets no error row"
         );
         let recovered_kind: String = sqlx::query_scalar(
-            "SELECT kind FROM run_log WHERE run_id = 'run-running' \
+            "SELECT kind FROM run_log WHERE run_id = ?1 \
              ORDER BY run_seq DESC LIMIT 1",
         )
+        .bind(running_id)
         .fetch_one(&pool)
         .await
         .unwrap();
