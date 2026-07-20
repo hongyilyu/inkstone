@@ -99,12 +99,6 @@ pub async fn get_pending_proposal_for_run(
     }))
 }
 
-/// Auto-approve seam (ADR-0025, ADR-0016). Always `false` for now — every
-/// Proposal is manual, so every `propose_workspace_mutation` parks the Run.
-pub fn should_auto_approve() -> bool {
-    false
-}
-
 /// A Proposal loaded by id for `proposal/decide` (ADR-0025): owning Run, awaited
 /// `tool_call_id`, lifecycle columns, the proposed `payload` (from the tool
 /// call's `request_payload`), and any recorded `decision_idempotency_key`.

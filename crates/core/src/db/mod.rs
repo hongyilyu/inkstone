@@ -66,7 +66,7 @@ pub(crate) use observations::{
 pub use proposals::{
     ApplyError, DecidableProposal, ProposalRow, apply_proposal, apply_user_mutation,
     entity_id_for_proposal, get_pending_proposal_for_run, journal_entry_origin_thread_id,
-    journal_entry_target_is_valid, load_proposal_for_decide, park_on_proposal, should_auto_approve,
+    journal_entry_target_is_valid, load_proposal_for_decide, park_on_proposal,
 };
 // `PartType` rides along from `queries` (the Worker run loop names it at the
 // open/append seam); the row/step types stay module-private where unnamed.

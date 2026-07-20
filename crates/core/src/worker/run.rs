@@ -136,7 +136,7 @@ pub(super) async fn run_loop<P: WorkerPort + Send>(
                 // and dispatch branches below.
                 open_text_part = None;
                 open_reasoning_part = None;
-                if crate::tools::is_proposal(&name) && !db::should_auto_approve() {
+                if crate::tools::is_proposal(&name) {
                     if let Err(message) = crate::tools::validate_proposal_request(&name, &params) {
                         worker_error = Some(message);
                         worker.shutdown().await;
