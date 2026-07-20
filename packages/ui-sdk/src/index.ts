@@ -551,11 +551,18 @@ export function onNotification<A, I>(
 			Stream.runForEach(client.notifications(method, schema), (value) =>
 				// Contain a throwing `onValue` per frame so one bad callback invocation
 				// can't fail the whole subscription fiber and silently stop later
-				// notifications — the per-frame isolation the old registry's try/catch gave.
+				// notifications — the per-frame isolation the old registry's try/catch
+				// gave. Log the throw so a genuine consumer bug (e.g. a broken cache
+				// patch) stays debuggable rather than vanishing with the frame.
 				Effect.sync(() => {
 					try {
 						onValue(value);
-					} catch {}
+					} catch (error) {
+						console.error(
+							`onNotification callback threw for "${method}"`,
+							error,
+						);
+					}
 				}),
 			),
 		),
