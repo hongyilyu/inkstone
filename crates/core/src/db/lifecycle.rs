@@ -30,12 +30,8 @@ pub enum TerminalReason {
     Completed,
     Cancelled,
     WorkerDisconnected,
-    // The boot recovery sweep (ADR-0012) stamps `terminal_reason='core_restarted'`
-    // via a bulk raw-SQL `UPDATE` (`queries::recover_interrupted_runs`), not the
-    // typed `fail()` seam, so no caller constructs this variant. It is retained so
-    // the enum stays a complete catalog of the `runs.terminal_reason` CHECK values
-    // and its `as_str()` keeps a single owner for the wire string.
-    #[allow(dead_code)]
+    // Boot recovery sweep (ADR-0012): the funnel errors each interrupted Run
+    // through `fail()` with this reason.
     CoreRestarted,
     Errored,
 }
@@ -397,8 +393,8 @@ mod tests {
     /// wire string (ADR-0028/0029): the `error_run_*`/`fail`/`cancel`/`complete`
     /// verbs now pass a variant and the string is produced once, here. This pins
     /// every variant to its exact CHECK-constraint value so a rename that would
-    /// silently violate the `runs` CHECK (or drift from the boot-sweep's raw-SQL
-    /// `'core_restarted'` literal) fails this test instead of a migration at runtime.
+    /// silently violate the `runs` CHECK fails this test instead of a migration at
+    /// runtime.
     #[test]
     fn terminal_reason_as_str_matches_check_vocabulary() {
         assert_eq!(TerminalReason::Completed.as_str(), "completed");
