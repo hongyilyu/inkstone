@@ -1,12 +1,10 @@
-import type {
-	ProviderAuthKind,
-	ProviderModels,
-	ProviderStatusResult,
-} from "@inkstone/protocol";
 import {
-	clearNotificationHandler,
-	setNotificationHandler,
-} from "@inkstone/ui-sdk";
+	type ProviderAuthKind,
+	ProviderConnectedNotification,
+	type ProviderModels,
+	type ProviderStatusResult,
+} from "@inkstone/protocol";
+import { onNotification } from "@inkstone/ui-sdk";
 import { useQueryClient } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { ChevronRight } from "lucide-react";
@@ -218,10 +216,16 @@ function ModelsSettings() {
 	// rather than patch (it carries `{provider}`, not `connected`). Route-scoped:
 	// registered/torn down with the Models route, alongside the global
 	// `thread/titled` handler (two real consumers of the by-method channel, ADR-0047).
-	useEffect(() => {
-		setNotificationHandler("provider/connected", () => refreshConnected());
-		return () => clearNotificationHandler("provider/connected");
-	}, [refreshConnected]);
+	useEffect(
+		() =>
+			onNotification(
+				runtime,
+				"provider/connected",
+				ProviderConnectedNotification,
+				() => refreshConnected(),
+			),
+		[runtime, refreshConnected],
+	);
 
 	const { seed: seedEffort } = effort;
 	const { seed: seedModel } = model;

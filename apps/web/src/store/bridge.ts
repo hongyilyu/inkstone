@@ -5,22 +5,13 @@ import {
 	ThreadTitledNotification,
 } from "@inkstone/protocol";
 import {
-	clearNotificationHandler,
+	onNotification,
 	type RunId,
-	setNotificationHandler,
 	WsClient,
 	type WsError,
 } from "@inkstone/ui-sdk";
 import type { QueryClient } from "@tanstack/react-query";
-import {
-	Cause,
-	Effect,
-	Either,
-	Exit,
-	Fiber,
-	Schema as S,
-	Stream,
-} from "effect";
+import { Cause, Effect, Exit, Fiber, Stream } from "effect";
 import { taggedErrorMessage } from "../lib/taggedErrorMessage.js";
 import type { WsRuntime } from "../runtime.js";
 import {
@@ -73,8 +64,6 @@ export function resetBridge(): void {
 	onRunSettled = undefined;
 }
 
-const decodeThreadTitled = S.decodeUnknownEither(ThreadTitledNotification);
-
 /**
  * Patch the `["threads"]` cache in place for a `thread/titled` push (ADR-0047):
  * re-title the matching row, leave everything else verbatim. Immutable map (new
@@ -99,25 +88,24 @@ export function applyThreadTitled(
 }
 
 /**
- * Wire the SDK's generic notification seam (ADR-0047) to the `["threads"]` cache
- * patch so the sidebar row re-titles live — no refetch. Decode-guards `params`
- * (the SDK passes raw `unknown`); a malformed frame is ignored, matching the
- * SDK's own decode-guard arms. Returns a disposer for the `__root.tsx` unmount
- * that clears ONLY this method's handler (`clearNotificationHandler`), so a
- * future run-less consumer's handler survives this one's teardown — the
- * method-keyed channel's teardown is method-scoped, not clear-all.
+ * Wire the SDK's generic notification stream (ADR-0047 amendment) to the
+ * `["threads"]` cache patch so the sidebar row re-titles live — no refetch. The
+ * SDK decodes each `thread/titled` push through `ThreadTitledNotification` and
+ * decode-drops a malformed frame, so this receives only well-formed values.
+ * Returns the {@link onNotification} disposer for the `__root.tsx` unmount — it
+ * interrupts ONLY this subscription's fiber, so a future run-less consumer's
+ * subscription survives this one's teardown.
  */
 export function registerThreadTitledHandler(
+	runtime: WsRuntime,
 	queryClient: QueryClient,
 ): () => void {
-	setNotificationHandler("thread/titled", (params) => {
-		const decoded = decodeThreadTitled(params);
-		if (Either.isLeft(decoded)) {
-			return;
-		}
-		applyThreadTitled(queryClient, decoded.right);
-	});
-	return () => clearNotificationHandler("thread/titled");
+	return onNotification(
+		runtime,
+		"thread/titled",
+		ThreadTitledNotification,
+		(n) => applyThreadTitled(queryClient, n),
+	);
 }
 
 /** The outcome of a send — a discriminated result so callers learn of failure off the awaited promise. */

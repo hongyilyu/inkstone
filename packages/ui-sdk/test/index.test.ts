@@ -1,23 +1,14 @@
-import {
-	Deferred,
-	Effect,
-	Either,
-	Fiber,
-	Layer,
-	Runtime,
-	Stream,
-} from "effect";
-import { afterEach, describe, expect, it } from "vitest";
+import { ThreadTitledNotification } from "@inkstone/protocol";
+import { Effect, Either, Fiber, Layer, Stream } from "effect";
+import { describe, expect, it } from "vitest";
 import { WebSocketServer, type WebSocket as WsConn } from "ws";
 import {
 	type ConnectionStatus,
-	clearNotificationHandler,
 	requestDescriptors,
-	resetNotificationHandlers,
-	setNotificationHandler,
 	WsClient,
 	WsClientConfig,
 	WsClientLive,
+	type WsClientService,
 	type WsError,
 } from "../src/index.js";
 
@@ -55,12 +46,6 @@ const provide =
 		);
 
 describe("WsClient", () => {
-	// The notification-handler registry is module-global state; clear it between
-	// cases so a registered handler never leaks into another test.
-	afterEach(() => {
-		resetNotificationHandlers();
-	});
-
 	it("threadCreate returns the ids and subscribeRun streams the run's events after run/subscribe", async () => {
 		const threadId = "01999999-0000-7000-8000-000000000001";
 		const runId = "01234567-89ab-7def-8012-345678901234";
@@ -554,56 +539,9 @@ describe("WsClient", () => {
 		}
 	});
 
-	it("routes a registered notification method to its handler", async () => {
-		const threadId = "01999999-0000-7000-8000-000000000001";
-		const title = "Buying milk and other errands";
+	// --- notifications(method, schema): generic run-less stream (ADR-0047 amendment) ---
 
-		// On a benign request the server pushes an unsolicited (id-less)
-		// thread/titled notification frame.
-		const server = await makeServer((ws, req) => {
-			if (req.method === "thread/list") {
-				ws.send(
-					JSON.stringify({
-						jsonrpc: "2.0",
-						id: req.id,
-						result: { threads: [] },
-					}),
-				);
-				ws.send(
-					JSON.stringify({
-						jsonrpc: "2.0",
-						method: "thread/titled",
-						params: { thread_id: threadId, title },
-					}),
-				);
-			}
-		});
-
-		const program = Effect.gen(function* () {
-			const client = yield* WsClient;
-			// A Deferred completed by the registered handler; the program awaits it
-			// so the assertion runs only after the pushed frame is dispatched. The
-			// handler is invoked synchronously from onFrame (off-fiber), so complete
-			// the Deferred through the program's own runtime.
-			const received = yield* Deferred.make<unknown>();
-			const runtime = yield* Effect.runtime();
-			setNotificationHandler("thread/titled", (params) => {
-				Runtime.runFork(runtime)(Deferred.succeed(received, params));
-			});
-			// Trigger the push.
-			yield* client.threadList();
-			return yield* Deferred.await(received);
-		});
-
-		try {
-			const params = await Effect.runPromise(provide(server.url)(program));
-			expect(params).toEqual({ thread_id: threadId, title });
-		} finally {
-			await server.close();
-		}
-	});
-
-	it("drops an unregistered notification method silently", async () => {
+	it("drops a pushed frame for a method with no subscriber silently", async () => {
 		const expected = {
 			threads: [
 				{
@@ -614,7 +552,7 @@ describe("WsClient", () => {
 			],
 		};
 
-		// The server pushes an unhandled notification, then answers a later
+		// The server pushes an unsubscribed notification, then answers a later
 		// request — proving the unknown frame neither threw nor tore down the loop.
 		const server = await makeServer((ws, req) => {
 			if (req.method === "thread/list") {
@@ -622,7 +560,7 @@ describe("WsClient", () => {
 					JSON.stringify({
 						jsonrpc: "2.0",
 						method: "thread/titled",
-						params: { thread_id: "whatever", title: "no handler" },
+						params: { thread_id: "whatever", title: "no subscriber" },
 					}),
 				);
 				ws.send(
@@ -633,7 +571,7 @@ describe("WsClient", () => {
 
 		const program = Effect.gen(function* () {
 			const client = yield* WsClient;
-			// No setNotificationHandler call: "thread/titled" is unregistered.
+			// No notifications() subscription: "thread/titled" has no hub.
 			return yield* client.threadList();
 		});
 
@@ -645,72 +583,21 @@ describe("WsClient", () => {
 		}
 	});
 
-	it("a throwing notification handler does not tear down the socket", async () => {
-		const expected = {
-			threads: [
-				{
-					id: "01999999-0000-7000-8000-000000000001",
-					title: "First thread",
-					last_activity_at: 1717200000000,
-				},
-			],
-		};
+	it("notifications(method, schema) decode-delivers a pushed frame to a subscriber", async () => {
+		const threadId = "01999999-0000-7000-8000-000000000001";
+		const title = "Buying milk and other errands";
 
-		// The first thread/list answer is followed by an unsolicited thread/titled
-		// notification whose registered handler throws; the server then answers a
-		// SECOND thread/list. If the throw escaped onFrame it would kill the
-		// receive loop and the follow-up request would never resolve.
+		// On a benign request the server pushes an unsolicited (id-less)
+		// thread/titled notification frame ahead of the response.
 		const server = await makeServer((ws, req) => {
 			if (req.method === "thread/list") {
-				ws.send(
-					JSON.stringify({ jsonrpc: "2.0", id: req.id, result: expected }),
-				);
 				ws.send(
 					JSON.stringify({
 						jsonrpc: "2.0",
 						method: "thread/titled",
-						params: {
-							thread_id: "01999999-0000-7000-8000-000000000001",
-							title: "boom title",
-						},
+						params: { thread_id: threadId, title },
 					}),
 				);
-			}
-		});
-
-		const program = Effect.gen(function* () {
-			const client = yield* WsClient;
-			setNotificationHandler("thread/titled", () => {
-				throw new Error("boom");
-			});
-			// First request triggers the push that fires the throwing handler.
-			yield* client.threadList();
-			// A subsequent request must still resolve — proves onFrame's try/catch
-			// contained the throw and the receive loop kept running.
-			return yield* client.threadList();
-		});
-
-		try {
-			const after = await Effect.runPromise(provide(server.url)(program));
-			expect(after).toEqual(expected);
-		} finally {
-			await server.close();
-		}
-	});
-
-	it("clearNotificationHandler removes only its method — siblings still dispatch", async () => {
-		// Register two methods, clear ONE, then push both frames. Only the
-		// surviving method's handler must fire — proving teardown is method-scoped,
-		// not clear-all (a mutation reverting to resetNotificationHandlers fails this).
-		const titled: unknown[] = [];
-		const other: unknown[] = [];
-
-		// Push both notifications once, on the FIRST thread/list only; a SECOND
-		// thread/list is a flush barrier — frames ahead of its response are all
-		// processed by the time it resolves (single-socket frame order).
-		let pushed = false;
-		const server = await makeServer((ws, req) => {
-			if (req.method === "thread/list") {
 				ws.send(
 					JSON.stringify({
 						jsonrpc: "2.0",
@@ -718,40 +605,150 @@ describe("WsClient", () => {
 						result: { threads: [] },
 					}),
 				);
-				if (!pushed) {
-					pushed = true;
-					ws.send(
-						JSON.stringify({
-							jsonrpc: "2.0",
-							method: "thread/titled",
-							params: { thread_id: "t1", title: "x" },
-						}),
-					);
-					ws.send(
-						JSON.stringify({
-							jsonrpc: "2.0",
-							method: "other/event",
-							params: { v: 1 },
-						}),
-					);
-				}
 			}
 		});
 
 		const program = Effect.gen(function* () {
 			const client = yield* WsClient;
-			setNotificationHandler("thread/titled", (p) => titled.push(p));
-			setNotificationHandler("other/event", (p) => other.push(p));
-			// Dispose only "thread/titled" — "other/event" must keep dispatching.
-			clearNotificationHandler("thread/titled");
-			yield* client.threadList(); // triggers both pushes
-			yield* client.threadList(); // flush barrier
+			// The subscriber's acquire races the trigger's push (an unsubscribed
+			// method's frame is dropped, at-most-once), so re-trigger the benign
+			// request until a push lands AFTER the subscription is established.
+			const collect = Stream.runCollect(
+				client
+					.notifications("thread/titled", ThreadTitledNotification)
+					.pipe(Stream.take(1)),
+			);
+			const trigger = client
+				.threadList()
+				.pipe(Effect.zipRight(Effect.sleep("10 millis")), Effect.forever);
+			const events = yield* Effect.raceFirst(collect, trigger);
+			return Array.from(events);
 		});
 
 		try {
-			await Effect.runPromise(provide(server.url)(program));
-			expect(titled).toEqual([]); // cleared method: handler gone
-			expect(other).toEqual([{ v: 1 }]); // sibling survives and dispatched
+			const events = await Effect.runPromise(provide(server.url)(program));
+			expect(events).toEqual([{ thread_id: threadId, title }]);
+		} finally {
+			await server.close();
+		}
+	});
+
+	it("decode-drops a malformed frame — the subscriber sees only the well-formed push and a later request resolves", async () => {
+		// Each thread/list pushes a malformed thread/titled frame (missing `title`)
+		// FOLLOWED by a valid one on the same ordered socket: were the malformed
+		// frame not decode-dropped, it would reach the subscriber first.
+		const server = await makeServer((ws, req) => {
+			if (req.method === "thread/list") {
+				ws.send(
+					JSON.stringify({
+						jsonrpc: "2.0",
+						method: "thread/titled",
+						params: { thread_id: "t1" },
+					}),
+				);
+				ws.send(
+					JSON.stringify({
+						jsonrpc: "2.0",
+						method: "thread/titled",
+						params: { thread_id: "t1", title: "well-formed" },
+					}),
+				);
+				ws.send(
+					JSON.stringify({
+						jsonrpc: "2.0",
+						id: req.id,
+						result: { threads: [] },
+					}),
+				);
+			}
+		});
+
+		const program = Effect.gen(function* () {
+			const client = yield* WsClient;
+			const collect = Stream.runCollect(
+				client
+					.notifications("thread/titled", ThreadTitledNotification)
+					.pipe(Stream.take(1)),
+			);
+			const trigger = client
+				.threadList()
+				.pipe(Effect.zipRight(Effect.sleep("10 millis")), Effect.forever);
+			const events = yield* Effect.raceFirst(collect, trigger);
+			// A later request still resolves: the malformed frame neither threw
+			// nor tore down the receive loop.
+			const after = yield* client.threadList();
+			return { events: Array.from(events), after };
+		});
+
+		try {
+			const { events, after } = await Effect.runPromise(
+				provide(server.url)(program),
+			);
+			expect(events).toEqual([{ thread_id: "t1", title: "well-formed" }]);
+			expect(after).toEqual({ threads: [] });
+		} finally {
+			await server.close();
+		}
+	});
+
+	it("unsubscribe restores the drop — no replay of frames pushed while unsubscribed", async () => {
+		// Each thread/get pushes a thread/titled frame whose title echoes the
+		// requested thread_id, so every phase controls exactly what is pushed.
+		const server = await makeServer((ws, req) => {
+			if (req.method === "thread/get") {
+				ws.send(
+					JSON.stringify({
+						jsonrpc: "2.0",
+						method: "thread/titled",
+						params: { thread_id: "t1", title: req.params?.thread_id },
+					}),
+				);
+				ws.send(
+					JSON.stringify({
+						jsonrpc: "2.0",
+						id: req.id,
+						result: { thread_id: "t1", title: "T", messages: [] },
+					}),
+				);
+			}
+		});
+
+		// Take ONE decoded push, re-triggering `thread/get(trigger)` until a push
+		// lands after the subscription is established (same race as above).
+		const takeNext = (client: WsClientService, trigger: string) =>
+			Effect.raceFirst(
+				Stream.runCollect(
+					client
+						.notifications("thread/titled", ThreadTitledNotification)
+						.pipe(Stream.take(1)),
+				),
+				client
+					.threadGet(trigger)
+					.pipe(Effect.zipRight(Effect.sleep("10 millis")), Effect.forever),
+			);
+
+		const program = Effect.gen(function* () {
+			const client = yield* WsClient;
+			// Phase 1: a subscriber takes one value, then unsubscribes (refcount → 0).
+			const first = yield* takeNext(client, "one");
+			// Phase 2: unsubscribed — the push for "two" lands with no hub and is
+			// dropped; the request itself still resolves (socket loop intact).
+			yield* client.threadGet("two");
+			// Phase 3: a NEW subscriber sees only what is pushed after it
+			// subscribes — "three", never a stale replay of "two".
+			const second = yield* takeNext(client, "three");
+			return {
+				first: Array.from(first).map((n) => n.title),
+				second: Array.from(second).map((n) => n.title),
+			};
+		});
+
+		try {
+			const { first, second } = await Effect.runPromise(
+				provide(server.url)(program),
+			);
+			expect(first).toEqual(["one"]);
+			expect(second).toEqual(["three"]);
 		} finally {
 			await server.close();
 		}

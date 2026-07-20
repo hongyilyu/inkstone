@@ -1,8 +1,8 @@
 import type { ThreadListResult } from "@inkstone/protocol";
-import * as sdk from "@inkstone/ui-sdk";
 import {
 	type RunEventValue,
 	type RunId,
+	type WsClientService,
 	type WsError,
 	WsRequestError,
 } from "@inkstone/ui-sdk";
@@ -665,71 +665,43 @@ describe("thread/titled handler (ADR-0047 — patch the threads cache in place)"
 		expect(qc.getQueryData<ThreadListResult>(["threads"])).toBeUndefined();
 	});
 
-	/**
-	 * Capture the closure `registerThreadTitledHandler` registers under
-	 * "thread/titled" by spying the SDK seam, so a test can drive raw (unknown)
-	 * `params` through the REAL decode→applyThreadTitled glue — the load-bearing
-	 * wiring the feature ships on. A gutted/no-op registration leaves `registered`
-	 * undefined (or never patches), failing these tests where a `.not.toThrow()`
-	 * matcher would not.
-	 */
-	function captureRegisteredHandler(
-		qc: QueryClient,
-	): (params: unknown) => void {
-		let registered: ((params: unknown) => void) | undefined;
-		const spy = vi
-			.spyOn(sdk, "setNotificationHandler")
-			.mockImplementation((method, handler) => {
-				if (method === "thread/titled") {
-					registered = handler;
-				}
-			});
-		registerThreadTitledHandler(qc);
-		spy.mockRestore();
-		if (registered === undefined) {
-			throw new Error(
-				'registerThreadTitledHandler did not register a "thread/titled" handler',
-			);
-		}
-		return registered;
-	}
-
-	it("wires the SDK seam so a valid thread/titled frame re-titles the cached row", () => {
+	it("wires the SDK notifications stream so a pushed thread/titled frame re-titles the cached row", async () => {
 		const qc = seedThreads();
-		const handler = captureRegisteredHandler(qc);
-
-		// Drive a raw `unknown` params object through the real registered closure
-		// (decode → applyThreadTitled), exactly as the SDK's onFrame would.
-		handler({ thread_id: "t1", title: "new A" });
-
-		expect(qc.getQueryData<ThreadListResult>(["threads"])).toEqual({
-			threads: [
-				{ id: "t1", title: "new A", last_activity_at: 2 },
-				{ id: "t2", title: "old B", last_activity_at: 1 },
-			],
+		// Drive the channel end-to-end through the real onNotification wiring: a
+		// test-owned queue feeds the stubbed `notifications` stream, so offering a
+		// decoded frame exercises registerThreadTitledHandler → onNotification →
+		// applyThreadTitled exactly as the live SDK's PubSub would (the SDK owns the
+		// raw-frame decode now; the ui-sdk wire suite covers decode-drop).
+		const titled = Effect.runSync(
+			Queue.unbounded<{ thread_id: string; title: string }>(),
+		);
+		const runtime = makeCoreRuntime({
+			overrides: {
+				// The stub bypasses the SDK's schema decode — the test offers an
+				// already-decoded value — so cast to the generic member's shape.
+				notifications: (() =>
+					Stream.fromQueue(titled)) as WsClientService["notifications"],
+			},
 		});
+
+		const dispose = registerThreadTitledHandler(runtime, qc);
+		Effect.runSync(Queue.offer(titled, { thread_id: "t1", title: "new A" }));
+
+		await vi.waitFor(() =>
+			expect(qc.getQueryData<ThreadListResult>(["threads"])).toEqual({
+				threads: [
+					{ id: "t1", title: "new A", last_activity_at: 2 },
+					{ id: "t2", title: "old B", last_activity_at: 1 },
+				],
+			}),
+		);
+		dispose();
 	});
 
-	it("ignores a malformed thread/titled frame — no throw, cache untouched", () => {
-		const qc = seedThreads();
-		const handler = captureRegisteredHandler(qc);
-
-		// Missing `title` → the schema decode fails; the Either.isLeft guard must
-		// early-return so the bad frame neither throws nor mutates the cache.
-		expect(() => handler({ thread_id: "t1" })).not.toThrow();
-		expect(() => handler({ nonsense: true })).not.toThrow();
-
-		expect(qc.getQueryData<ThreadListResult>(["threads"])).toEqual({
-			threads: [
-				{ id: "t1", title: "old A", last_activity_at: 2 },
-				{ id: "t2", title: "old B", last_activity_at: 1 },
-			],
-		});
-	});
-
-	it("registers via the SDK seam and its disposer clears without throwing", () => {
+	it("registers via the SDK stream and its disposer tears down without throwing", () => {
 		const qc = makeQueryClient();
-		const dispose = registerThreadTitledHandler(qc);
+		const runtime = makeCoreRuntime();
+		const dispose = registerThreadTitledHandler(runtime, qc);
 		expect(() => dispose()).not.toThrow();
 	});
 });

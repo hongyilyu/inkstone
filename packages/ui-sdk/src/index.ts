@@ -44,6 +44,8 @@ import {
 	Either,
 	Fiber,
 	Layer,
+	type ManagedRuntime,
+	PubSub,
 	Queue,
 	Runtime,
 	Schema as S,
@@ -162,38 +164,6 @@ export type ProposalNotification =
 			readonly status: "accepted" | "rejected";
 	  };
 
-// Generic by-method inbound-notification dispatch (ADR-0047): the Client half of
-// the run-less notification channel. A producer at the app edge registers a
-// handler for a method string; `onFrame`'s fallthrough routes any matching
-// non-`run/event`, non-`proposal/*` notification to it with raw `params`. The
-// SDK stays message-agnostic — it never decodes the payload or special-cases a
-// method, so a new run-less message is a registered handler, not an interface
-// change. Module-global, mirroring the `proposalQueue` state below; tests must
-// `resetNotificationHandlers()` between cases.
-const notificationHandlers = new Map<string, (params: unknown) => void>();
-
-/** Register (overwriting) a handler for an inbound notification `method`. */
-export function setNotificationHandler(
-	method: string,
-	handler: (params: unknown) => void,
-): void {
-	notificationHandlers.set(method, handler);
-}
-
-/** Clear all registered notification handlers (test isolation). */
-export function resetNotificationHandlers(): void {
-	notificationHandlers.clear();
-}
-
-/**
- * Unregister one method's handler (runtime disposal). A consumer tears down only
- * its own handler — `resetNotificationHandlers` (clear-all) is for test isolation
- * and would clobber sibling methods on the method-keyed channel.
- */
-export function clearNotificationHandler(method: string): void {
-	notificationHandlers.delete(method);
-}
-
 // run/subscribe acknowledgement is not a pinned protocol shape; accept {} or {run_id}.
 const SubscribeAck = S.Struct({ run_id: S.optional(S.String) });
 
@@ -226,10 +196,11 @@ export class WsClientConfig extends Context.Tag(
  * optional `map` post-processing the decoded result (e.g. `postMessage`
  * collapsing to `run_id`). The `WsClient` tag's request surface, the live layer, AND
  * `stubWsClient` all derive from this ONE table, so adding a plain RPC verb
- * costs one row. The 3 stream members (`subscribeRun`,
- * `proposalNotifications`, `connectionStatus`) stay hand-written on the tag —
- * they are not request/response — and `subscribeRun`'s snapshot-then-tail wire
- * dance stays a hand-written implementation.
+ * costs one row. The 4 stream members (`subscribeRun`,
+ * `proposalNotifications`, `connectionStatus`, `notifications`) stay
+ * hand-written on the tag — they are not request/response — and
+ * `subscribeRun`'s snapshot-then-tail wire dance stays a hand-written
+ * implementation.
  *
  * Exported for the table-driven round-trip test; production consumers use the
  * `WsClient` tag, never the table.
@@ -503,6 +474,14 @@ export class WsClient extends Context.Tag("@inkstone/ui-sdk/WsClient")<
 		// subscribe (then streams changes), so an indicator mounting long after
 		// boot gets the live status immediately, not just future transitions.
 		readonly connectionStatus: () => Stream.Stream<ConnectionStatus>;
+		// Generic run-less notification stream (ADR-0047 amendment): decoded
+		// pushes for one inbound `method`, decode-dropping frames that fail the
+		// caller-supplied `schema`. At-most-once — a method with no live
+		// subscriber drops its frames, and nothing buffers while unsubscribed.
+		readonly notifications: <A, I>(
+			method: string,
+			schema: S.Schema<A, I>,
+		) => Stream.Stream<A>;
 	}
 >() {}
 
@@ -517,12 +496,13 @@ export type WsClientService = Context.Tag.Service<typeof WsClient>;
  * - The 28 request VERBS default to `Effect.die("WsClient.<method> not stubbed")`.
  *   A verb returns a value the code under test asserts on, so an un-stubbed call
  *   must fail LOUD with a named cause — never silently return a wrong value.
- * - The 3 STREAM members (`subscribeRun`, `proposalNotifications`,
- *   `connectionStatus`) default to `Stream.empty`. These are subscribed passively
- *   at mount (the connection pill, the proposal channel, a run's event feed); an
- *   empty stream is the honest "no events" quiescent state, so a component mounts
- *   cleanly without the test having to hand-stub a stream it does not drive. A
- *   test that DOES drive events overrides the member with a real stream.
+ * - The 4 STREAM members (`subscribeRun`, `proposalNotifications`,
+ *   `connectionStatus`, `notifications`) default to `Stream.empty`. These are
+ *   subscribed passively at mount (the connection pill, the proposal channel, a
+ *   run's event feed, a route's notification effect); an empty stream is the
+ *   honest "no events" quiescent state, so a component mounts cleanly without
+ *   the test having to hand-stub a stream it does not drive. A test that DOES
+ *   drive events overrides the member with a real stream.
  *
  * The `Partial<WsClientService>` spread stays compiler-checked, so a NEW verb
  * added to the tag makes this factory (and thus the whole suite) fail typecheck
@@ -550,8 +530,32 @@ export function stubWsClient(
 		subscribeRun: () => Stream.empty,
 		proposalNotifications: () => Stream.empty,
 		connectionStatus: () => Stream.empty,
+		notifications: () => Stream.empty,
 		...overrides,
 	});
+}
+
+/**
+ * React sugar over {@link WsClient}'s `notifications` stream: fork one
+ * subscription on `runtime`, calling `onValue` per decoded push. The returned
+ * disposer interrupts the fiber — exactly a `useEffect` cleanup.
+ */
+export function onNotification<A, I>(
+	runtime: ManagedRuntime.ManagedRuntime<WsClient, never>,
+	method: string,
+	schema: S.Schema<A, I>,
+	onValue: (value: A) => void,
+): () => void {
+	const fiber = runtime.runFork(
+		Effect.flatMap(WsClient, (client) =>
+			Stream.runForEach(client.notifications(method, schema), (value) =>
+				Effect.sync(() => onValue(value)),
+			),
+		),
+	);
+	return () => {
+		runtime.runFork(Fiber.interrupt(fiber));
+	};
 }
 
 export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
@@ -567,6 +571,14 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 			const runQueues = new Map<RunId, Queue.Queue<RunEventValue>>();
 			// Shared, lazily-created proposal/* queue (ADR-0025) — see docs/design/ui-sdk.md
 			let proposalQueue: Queue.Queue<ProposalNotification> | undefined;
+			// Per-method run-less notification hubs (ADR-0047 amendment): lazily
+			// created on first subscribe, refcounted, torn down by the last
+			// unsubscriber — so a method with no live subscriber has NO entry and
+			// its frames drop in onFrame (at-most-once, nothing buffers).
+			const notificationHubs = new Map<
+				string,
+				{ pubsub: PubSub.PubSub<unknown>; refs: number }
+			>();
 			let nextId = 1;
 
 			// Socket-liveness state (ADR-0051). Starts `connected` since the layer
@@ -643,16 +655,14 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 					}
 					return;
 				}
-				// Generic fallthrough (ADR-0047): route any other notification to a
-				// registered by-method handler with raw `params`. An unregistered
-				// method stays a silent no-op (preserves the drop-unknown behavior).
-				// A throwing handler is swallowed so it can't tear down the receive
-				// loop — same defensive posture as the decode-guarded arms above.
-				const handler = notificationHandlers.get(frame.method);
-				if (handler !== undefined) {
-					try {
-						handler(frame.params);
-					} catch {}
+				// Generic fallthrough (ADR-0047): publish any other notification's
+				// raw `params` to its method's hub — only when a subscriber already
+				// created one. An unsubscribed method stays a silent no-op
+				// (preserves the drop-unknown behavior); decode happens at the
+				// subscription edge with the caller-supplied schema.
+				const hub = notificationHubs.get(frame.method);
+				if (hub !== undefined) {
+					Queue.unsafeOffer(hub.pubsub, frame.params);
 				}
 			};
 
@@ -855,11 +865,67 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 			const connectionStatus = (): Stream.Stream<ConnectionStatus> =>
 				statusRef.changes;
 
+			// First subscriber creates the method's hub; later ones share it.
+			const acquireHub = (
+				method: string,
+			): Effect.Effect<PubSub.PubSub<unknown>> =>
+				Effect.sync(() => {
+					let entry = notificationHubs.get(method);
+					if (entry === undefined) {
+						entry = { pubsub: runSync(PubSub.unbounded<unknown>()), refs: 0 };
+						notificationHubs.set(method, entry);
+					}
+					entry.refs += 1;
+					return entry.pubsub;
+				});
+
+			// Last unsubscriber shuts the hub down and drops the map entry, so
+			// onFrame's lookup misses and the method's frames drop again.
+			const releaseHub = (method: string): Effect.Effect<void> =>
+				Effect.suspend(() => {
+					const entry = notificationHubs.get(method);
+					if (entry === undefined) {
+						return Effect.void;
+					}
+					entry.refs -= 1;
+					if (entry.refs > 0) {
+						return Effect.void;
+					}
+					notificationHubs.delete(method);
+					return PubSub.shutdown(entry.pubsub);
+				});
+
+			// Run-less notification stream (ADR-0047 amendment): a PubSub (broadcast
+			// fan-out — every subscriber sees every frame) over the method's raw
+			// pushed `params`, decode-dropped with the caller's schema at the
+			// subscription edge (mirroring the run/event arm). `{ scoped: true }`
+			// subscribes inside the SAME scope the hub was acquired in, closing the
+			// acquire→subscribe drop window.
+			const notifications = <A, I>(
+				method: string,
+				schema: S.Schema<A, I>,
+			): Stream.Stream<A> => {
+				const decode = S.decodeUnknownEither(schema);
+				return Stream.unwrapScoped(
+					Effect.gen(function* () {
+						const pubsub = yield* Effect.acquireRelease(
+							acquireHub(method),
+							() => releaseHub(method),
+						);
+						const raw = yield* Stream.fromPubSub(pubsub, { scoped: true });
+						return raw.pipe(
+							Stream.filterMap((params) => Either.getRight(decode(params))),
+						);
+					}),
+				);
+			};
+
 			return WsClient.of({
 				...verbs,
 				subscribeRun,
 				proposalNotifications,
 				connectionStatus,
+				notifications,
 			});
 		}),
 	);

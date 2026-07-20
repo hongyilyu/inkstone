@@ -1,6 +1,5 @@
 import type { ModelInfo, ProviderStatusResult } from "@inkstone/protocol";
 import type { WsClientService } from "@inkstone/ui-sdk";
-import * as sdk from "@inkstone/ui-sdk";
 import { ProviderLoginFailedError, WsRequestError } from "@inkstone/ui-sdk";
 import type { QueryClient } from "@tanstack/react-query";
 import {
@@ -14,13 +13,12 @@ import {
 } from "@test/test-utils/renderWithCore";
 import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Effect } from "effect";
+import { Effect, Queue, Stream } from "effect";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { routeTree } from "@/routeTree.gen";
 
 afterEach(() => {
 	cleanup();
-	sdk.resetNotificationHandlers();
 });
 
 function makeOverrides(opts: {
@@ -1134,23 +1132,43 @@ function makeFlippingOverrides(): Partial<WsClientService> {
 }
 
 describe("Models settings page — provider/connected live push (ADR-0049)", () => {
-	it("flips the card to Connected from the live push alone — no window 'focus'", async () => {
-		// Capture the closure the page registers under "provider/connected" by
-		// spying the SDK seam (the bridge.test.tsx captureRegisteredHandler pattern).
-		let pushed: ((params: unknown) => void) | undefined;
-		const spy = vi
-			.spyOn(sdk, "setNotificationHandler")
-			.mockImplementation((method, handler) => {
-				if (method === "provider/connected") pushed = handler;
-			});
+	// Drive the `provider/connected` push through the SDK's `notifications` stream
+	// (ADR-0047 amendment): a test-owned unbounded queue backs the stubbed member,
+	// so `push()` offers a decoded frame exactly as the live PubSub would deliver
+	// one. Unbounded → offering before the mount subscribe still delivers (no
+	// race). Returns the overrides to spread + a `push` fn to fire after mount.
+	function makeConnectedPush(base: Partial<WsClientService>): {
+		overrides: Partial<WsClientService>;
+		push: () => void;
+	} {
+		const queue = Effect.runSync(Queue.unbounded<unknown>());
+		return {
+			overrides: {
+				...base,
+				// The stub bypasses the SDK's schema decode — the test owns the payload
+				// it offers. Key by method so this only drives `provider/connected`: the
+				// mounted routeTree also subscribes `thread/titled` at the root, and a
+				// method-blind shared queue would make the two subscribers contend
+				// (Queue = one taker per item) instead of the live per-method PubSub
+				// broadcast. Other methods get an empty stream.
+				notifications: ((method: string) =>
+					method === "provider/connected"
+						? Stream.fromQueue(queue)
+						: Stream.empty) as WsClientService["notifications"],
+			},
+			push: () =>
+				Effect.runSync(Queue.offer(queue, { provider: "openai-codex" })),
+		};
+	}
 
+	it("flips the card to Connected from the live push alone — no window 'focus'", async () => {
 		// Watch every window 'focus' dispatch — the verdict-critical assertion is
 		// that the push path NEVER relies on one.
 		const focusSpy = vi.fn();
 		window.addEventListener("focus", focusSpy);
 
 		try {
-			const overrides = makeFlippingOverrides();
+			const { overrides, push } = makeConnectedPush(makeFlippingOverrides());
 			await renderPage(overrides);
 
 			// First poll (mount) reports Not connected.
@@ -1160,15 +1178,9 @@ describe("Models settings page — provider/connected live push (ADR-0049)", () 
 				),
 			);
 
-			if (pushed === undefined) {
-				throw new Error(
-					'ModelsSettings did not register a "provider/connected" handler',
-				);
-			}
-
-			// Fire the captured push handler (params ignored) — this alone must
+			// Fire the push (params ignored by the consumer) — this alone must
 			// trigger a refetch that flips the card.
-			pushed({ provider: "openai-codex" });
+			push();
 
 			await waitFor(() =>
 				expect(screen.getByTestId("provider-status")).toHaveTextContent(
@@ -1179,7 +1191,6 @@ describe("Models settings page — provider/connected live push (ADR-0049)", () 
 			// No focus event was dispatched anywhere on the push path.
 			expect(focusSpy).not.toHaveBeenCalled();
 		} finally {
-			spy.mockRestore();
 			window.removeEventListener("focus", focusSpy);
 		}
 	});
@@ -1202,56 +1213,38 @@ describe("Models settings page — provider/connected live push (ADR-0049)", () 
 	}
 
 	it("writes connected into the ['provider-status'] cache on the live push, so a remounting chat gate reads the truth (no stale-cache flash)", async () => {
-		// Capture the page's "provider/connected" closure via the SDK seam.
-		let pushed: ((params: unknown) => void) | undefined;
-		const spy = vi
-			.spyOn(sdk, "setNotificationHandler")
-			.mockImplementation((method, handler) => {
-				if (method === "provider/connected") pushed = handler;
-			});
+		const client = makeQueryClient();
+		// Pre-seed the cache as a prior disconnected `/` visit would have: the
+		// chat query is now INACTIVE (the user navigated here to /settings), so
+		// invalidateQueries (type:"active" by default) would NOT refetch it — only
+		// setQueryData keeps it truthful for the chat column's remount. This is the
+		// regression guard for the cross-engine-caught stale-cache flash.
+		client.setQueryData<ProviderStatusResult>(["provider-status"], {
+			providers: [
+				{ id: "openai-codex", connected: false, auth_kind: "oauth" as const },
+			],
+		});
 
-		try {
-			const client = makeQueryClient();
-			// Pre-seed the cache as a prior disconnected `/` visit would have: the
-			// chat query is now INACTIVE (the user navigated here to /settings), so
-			// invalidateQueries (type:"active" by default) would NOT refetch it — only
-			// setQueryData keeps it truthful for the chat column's remount. This is the
-			// regression guard for the cross-engine-caught stale-cache flash.
-			client.setQueryData<ProviderStatusResult>(["provider-status"], {
-				providers: [
-					{ id: "openai-codex", connected: false, auth_kind: "oauth" as const },
-				],
-			});
+		const { overrides, push } = makeConnectedPush(makeFlippingOverrides());
+		await renderPageWithClient(overrides, client);
 
-			const overrides = makeFlippingOverrides();
-			await renderPageWithClient(overrides, client);
+		// Let mount settle: the card first reports Not connected.
+		await waitFor(() =>
+			expect(screen.getByTestId("provider-status")).toHaveTextContent(
+				/not connected/i,
+			),
+		);
 
-			// Let mount settle: the card first reports Not connected.
-			await waitFor(() =>
-				expect(screen.getByTestId("provider-status")).toHaveTextContent(
-					/not connected/i,
-				),
-			);
+		// Fire the push: the flipping runtime now reports connected, so the page
+		// must write connected:true into the shared cache (not just mark it stale).
+		push();
 
-			if (pushed === undefined) {
-				throw new Error(
-					'ModelsSettings did not register a "provider/connected" handler',
-				);
-			}
-
-			// Fire the push: the flipping runtime now reports connected, so the page
-			// must write connected:true into the shared cache (not just mark it stale).
-			pushed({ provider: "openai-codex" });
-
-			await waitFor(() => {
-				const cached = client.getQueryData<ProviderStatusResult>([
-					"provider-status",
-				]);
-				expect(cached?.providers.some((p) => p.connected)).toBe(true);
-			});
-		} finally {
-			spy.mockRestore();
-		}
+		await waitFor(() => {
+			const cached = client.getQueryData<ProviderStatusResult>([
+				"provider-status",
+			]);
+			expect(cached?.providers.some((p) => p.connected)).toBe(true);
+		});
 	});
 
 	it("writes the FULL provider/status payload, not a single-provider snapshot (preserves other providers)", async () => {
@@ -1260,45 +1253,31 @@ describe("Models settings page — provider/connected live push (ADR-0049)", () 
 		// result — not a synthesized openai-codex-only row that would drop other
 		// providers from the shared cache. The runtime reports TWO providers; the
 		// write must keep both.
-		let pushed: ((params: unknown) => void) | undefined;
-		const spy = vi
-			.spyOn(sdk, "setNotificationHandler")
-			.mockImplementation((method, handler) => {
-				if (method === "provider/connected") pushed = handler;
-			});
+		const twoProviderStatus: ProviderStatusResult = {
+			providers: [
+				{ id: "openai-codex", connected: true, auth_kind: "oauth" as const },
+				{ id: "anthropic", connected: true, auth_kind: "oauth" as const },
+			],
+		};
+		const { overrides, push } = makeConnectedPush({
+			...BASE_OVERRIDES,
+			providerStatus: () => Effect.succeed(twoProviderStatus),
+		});
+		const client = makeQueryClient();
+		await renderPageWithClient(overrides, client);
 
-		try {
-			const twoProviderStatus: ProviderStatusResult = {
-				providers: [
-					{ id: "openai-codex", connected: true, auth_kind: "oauth" as const },
-					{ id: "anthropic", connected: true, auth_kind: "oauth" as const },
-				],
-			};
-			const overrides: Partial<WsClientService> = {
-				...BASE_OVERRIDES,
-				providerStatus: () => Effect.succeed(twoProviderStatus),
-			};
-			const client = makeQueryClient();
-			await renderPageWithClient(overrides, client);
+		push();
 
-			if (pushed === undefined) {
-				await waitFor(() => expect(pushed).toBeDefined());
-			}
-			pushed?.({ provider: "openai-codex" });
-
-			await waitFor(() => {
-				const cached = client.getQueryData<ProviderStatusResult>([
-					"provider-status",
-				]);
-				// BOTH providers survive — not clobbered down to the openai-codex row.
-				expect(cached?.providers.map((p) => p.id).sort()).toEqual([
-					"anthropic",
-					"openai-codex",
-				]);
-			});
-		} finally {
-			spy.mockRestore();
-		}
+		await waitFor(() => {
+			const cached = client.getQueryData<ProviderStatusResult>([
+				"provider-status",
+			]);
+			// BOTH providers survive — not clobbered down to the openai-codex row.
+			expect(cached?.providers.map((p) => p.id).sort()).toEqual([
+				"anthropic",
+				"openai-codex",
+			]);
+		});
 	});
 
 	it("focus-refetch fallback flips the card in isolation — no push fired", async () => {
