@@ -55,7 +55,7 @@ pub struct SpawnManifest {
     pub history: Vec<(String, String)>,
     /// The current turn's pre-encoded image attachments
     /// (chat-image-attachments) — resolved by the shell, shipped in the fresh
-    /// spawn manifest.
+    /// manifest line.
     pub manifest_attachments: Vec<ManifestAttachment>,
     pub pool: SqlitePool,
     pub assistant_message_id: Uuid,
@@ -63,8 +63,8 @@ pub struct SpawnManifest {
     pub run_hub: RunHub,
 }
 
-/// Spawn a Worker for `run_id` (fresh path). Returns immediately; a Tokio task
-/// builds the manifest line and hands it to [`drive`]. A pre-spawn failure
+/// Spawn a Worker for `m.run_id` (fresh path). Returns immediately; a Tokio
+/// task builds the manifest line and hands it to [`drive`]. A pre-spawn failure
 /// (token resolution or process spawn) terminates the Run via
 /// [`finalize_error`]. `text_delta`s append to the assistant row pre-inserted
 /// at `seq=0`. `m.manifest_attachments` is the CURRENT turn's images, already
