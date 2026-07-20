@@ -167,8 +167,12 @@ interface SearchResultRow {
 }
 
 /** Wrap a JSON payload in the `ok` Tool Result shape Core returns: one text
- * content node carrying the stringified payload (mirrors `AgentToolResult`). */
-function okResult(payload: unknown): ToolCallResponse {
+ * content node carrying the stringified payload (mirrors `AgentToolResult`).
+ * Returns the `ok` arm specifically (not the full outcome union) so callers can
+ * read `.ok` without narrowing — the fixture transport only ever answers success. */
+function okResult(
+	payload: unknown,
+): Extract<ToolCallResponse, { ok: unknown }> {
 	return {
 		ok: { content: [{ type: "text", text: JSON.stringify(payload) }] },
 	};
@@ -246,15 +250,16 @@ function evalTransport(
 						};
 					}
 					// `terminate: true` ends pi's agent loop after this tool result
-					// (`ToolResultOk.terminate`, honored by the proxy and
+					// (the `ok` outcome's `terminate`, honored by the proxy and
 					// `shouldTerminateToolBatch`). We capture the FIRST proposal and
 					// stop the turn: the default capture prompt's create-then-link
 					// flow could otherwise drive a SECOND propose call that silently
 					// overwrites the captured payload (last-wins). Stopping here makes
 					// the eval first-wins and saves a wasted model turn per fixture.
-					const accepted = okResult({ status: "accepted" });
-					if ("ok" in accepted) accepted.ok.terminate = true;
-					return Promise.resolve(accepted);
+					// Build the terminate-flagged result as a fresh literal — the
+					// decoded outcome fields are readonly, so we don't mutate in place.
+					const base = okResult({ status: "accepted" });
+					return Promise.resolve({ ok: { ...base.ok, terminate: true } });
 				}
 				default:
 					return Promise.reject(
