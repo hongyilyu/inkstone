@@ -67,7 +67,7 @@ pub(super) async fn handle(
                 skip_history: false,
                 deferred_spawn: false,
             },
-            start_run::default_spawn,
+            crate::worker::spawn,
         )
         .await
         .map_err(HandlerError::from)?;
