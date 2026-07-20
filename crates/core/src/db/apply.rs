@@ -14,6 +14,74 @@ use crate::mutation::{
     EntityType, MutationKind, OBSERVATION_RELATIONS, ObservationRelation, WriteClass, WriteOp,
 };
 
+/// Write a new revision of an existing Entity: replace its `data` and append the
+/// next revision snapshot, in the caller's open tx (ADR-0004, ADR-0033). The
+/// composite every in-place write shares, so its rowcount⇒`TargetMissing` guard
+/// and monotonic seq allocation live in ONE place.
+///
+/// The rows-affected guard is the target-gone signal: `update_entity` filters
+/// `WHERE id = ? AND type = ?`, so a vanished OR wrong-type target updates zero
+/// rows and surfaces [`ApplyError::TargetMissing`] (the parked Proposal's target
+/// was deleted — ADR-0033), which decide maps to `NotDecidable`. `schema_version`
+/// is derived from `entity_type` (the type is the home of the version), so callers
+/// pass only the type. The delete-project cascade rewrites TODOS while its `kind`
+/// is `DeleteProject`, so the type is an explicit argument, never derived from the
+/// mutation kind.
+pub(super) async fn update_entity_with_revision(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    entity_id: &str,
+    entity_type: EntityType,
+    data: &str,
+    proposal_id: Option<&str>,
+    now_ms: i64,
+) -> Result<(), ApplyError> {
+    let updated = queries::update_entity(
+        &mut **tx,
+        entity_id,
+        entity_type.as_str(),
+        entity_type.schema_version(),
+        data,
+        now_ms,
+    )
+    .await?;
+    if updated != 1 {
+        return Err(ApplyError::TargetMissing);
+    }
+    let next_seq = queries::next_entity_revision_seq(&mut **tx, entity_id).await?;
+    queries::insert_entity_revision(&mut **tx, entity_id, next_seq, data, proposal_id, now_ms)
+        .await?;
+    Ok(())
+}
+
+/// Insert a freshly-minted Entity plus its seq-1 revision in the caller's open tx
+/// (ADR-0004) — the create counterpart of [`update_entity_with_revision`], sharing
+/// the same schema-version-from-`entity_type` derivation. `created_by` is the
+/// origin marker (`'proposal'`/`'user'`); `proposal_id` stamps both the entity's
+/// `created_via_proposal_id` and the revision (`None` on the user path).
+pub(super) async fn insert_entity_with_first_revision(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    entity_id: &str,
+    entity_type: EntityType,
+    data: &str,
+    created_by: &str,
+    proposal_id: Option<&str>,
+    now_ms: i64,
+) -> Result<(), ApplyError> {
+    queries::insert_entity(
+        &mut **tx,
+        entity_id,
+        entity_type.as_str(),
+        entity_type.schema_version(),
+        data,
+        created_by,
+        proposal_id,
+        now_ms,
+    )
+    .await?;
+    queries::insert_entity_revision(&mut **tx, entity_id, 1, data, proposal_id, now_ms).await?;
+    Ok(())
+}
+
 /// An already-resolved Entity Source row to write for this mutation (ADR-0030,
 /// ADR-0033). The caller resolves the run-coupled bits (the user Message id from
 /// the Run; the Journal-Entry anchor from the payload) into one of these before
@@ -207,7 +275,6 @@ async fn apply_update_todo(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
     todo_id: &str,
     payload: &serde_json::Value,
-    schema_version: i64,
     created_by: &str,
     proposal_id: Option<&str>,
     now_ms: i64,
@@ -249,22 +316,7 @@ async fn apply_update_todo(
     recheck_todo_project_link(tx, &merged).await?;
     let data_str = merged.to_string();
 
-    let updated = queries::update_entity(
-        &mut **tx,
-        todo_id,
-        "todo",
-        schema_version,
-        &data_str,
-        now_ms,
-    )
-    .await?;
-    if updated != 1 {
-        // The target Todo row vanished (a user deleted it under the parked
-        // Proposal) — ADR-0033's target-gone case, distinct from a DB fault.
-        return Err(ApplyError::TargetMissing);
-    }
-    let next_seq = queries::next_entity_revision_seq(&mut **tx, todo_id).await?;
-    queries::insert_entity_revision(&mut **tx, todo_id, next_seq, &data_str, proposal_id, now_ms)
+    update_entity_with_revision(tx, todo_id, EntityType::Todo, &data_str, proposal_id, now_ms)
         .await?;
 
     // Ref-op precedence: set (wholesale replace) → add (upsert/upgrade) → remove.
@@ -352,19 +404,16 @@ async fn spawn_recurrence_successor(
     let data_str = successor.to_string();
 
     let successor_id = Uuid::now_v7().to_string();
-    queries::insert_entity(
-        &mut **tx,
+    insert_entity_with_first_revision(
+        tx,
         &successor_id,
-        EntityType::Todo.as_str(),
-        EntityType::Todo.schema_version(),
+        EntityType::Todo,
         &data_str,
         created_by,
         proposal_id,
         now_ms,
     )
     .await?;
-    queries::insert_entity_revision(&mut **tx, &successor_id, 1, &data_str, proposal_id, now_ms)
-        .await?;
 
     // Carry every Todo Person Reference forward, role preserved (ADR-0039): the
     // rule is a repeating template and its People are part of it.
@@ -416,7 +465,6 @@ fn set_or_remove(
 async fn apply_mark_project_reviewed(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
     project_id: &str,
-    schema_version: i64,
     proposal_id: Option<&str>,
     now_ms: i64,
     offset_minutes: i64,
@@ -471,30 +519,8 @@ async fn apply_mark_project_reviewed(
     crate::entities::validate_project_data(&merged).map_err(ApplyError::InvalidMutation)?;
     let data_str = merged.to_string();
 
-    let updated = queries::update_entity(
-        &mut **tx,
-        project_id,
-        "project",
-        schema_version,
-        &data_str,
-        now_ms,
-    )
-    .await?;
-    if updated != 1 {
-        return Err(ApplyError::TargetMissing);
-    }
-    let next_seq = queries::next_entity_revision_seq(&mut **tx, project_id).await?;
-    queries::insert_entity_revision(
-        &mut **tx,
-        project_id,
-        next_seq,
-        &data_str,
-        proposal_id,
-        now_ms,
-    )
-    .await?;
-
-    Ok(())
+    update_entity_with_revision(tx, project_id, EntityType::Project, &data_str, proposal_id, now_ms)
+        .await
 }
 
 async fn textualize_journal_refs_targeting_deleted_entity(
@@ -525,23 +551,10 @@ async fn textualize_journal_refs_targeting_deleted_entity(
             }
         }
         let new_data = data.to_string();
-        let updated = queries::update_entity(
-            &mut **tx,
+        update_entity_with_revision(
+            tx,
             &journal_entry_id,
-            EntityType::JournalEntry.as_str(),
-            EntityType::JournalEntry.schema_version(),
-            &new_data,
-            now_ms,
-        )
-        .await?;
-        if updated != 1 {
-            return Err(ApplyError::TargetMissing);
-        }
-        let next_seq = queries::next_entity_revision_seq(&mut **tx, &journal_entry_id).await?;
-        queries::insert_entity_revision(
-            &mut **tx,
-            &journal_entry_id,
-            next_seq,
+            EntityType::JournalEntry,
             &new_data,
             proposal_id,
             now_ms,
@@ -578,7 +591,6 @@ pub(crate) async fn apply_entity_mutation(
     } = spec;
     let desc = kind.describe();
     let entity_type = desc.entity_type;
-    let schema_version = entity_type.schema_version();
     let mutation_kind = kind.as_wire();
 
     // `apply_entity_mutation` is the SINGLE-ENTITY write core. The intent graph
@@ -701,12 +713,12 @@ pub(crate) async fn apply_entity_mutation(
         );
     }
 
-    // The in-tx write dispatch: the THREE kinds with irreducibly per-kind write
-    // bodies keep named arms (DeleteProject's cascade, UpdateTodo's merge,
-    // MarkProjectReviewed's recompute — the residual in-tx dispatch the write
-    // contract deliberately leaves here), ApplyIntentGraph keeps its
-    // unreachable-after-guard arm, and every other kind routes generically by
-    // the contract's `write_op`.
+    // The in-tx write dispatch: every kind with a per-kind write body keeps a
+    // named arm — DeleteProject's cascade, UpdateTodo's merge,
+    // MarkProjectReviewed's recompute, and the reference weave (its `data_str` was
+    // computed in the pre-match block above) — so EVERY `WriteClass::InTx` kind is
+    // named; ApplyIntentGraph keeps its unreachable-after-guard arm; every other
+    // kind routes generically by the contract's `write_op`.
     match kind {
         // delete_project is the ONE non-FK cascade (ADR-0031): project_id lives in
         // the Todo JSON, not an FK column. In THIS tx, unset project_id on every
@@ -725,27 +737,13 @@ pub(crate) async fn apply_entity_mutation(
                     })?;
                 data.remove("project_id");
                 let new_data = serde_json::Value::Object(data).to_string();
-                // The rewritten rows are TODOS, so stamp the Todo schema version —
-                // NOT this mutation's entity_type (Project). This is the one site
-                // where the cascade touches a different Entity Type than `kind`.
-                let updated = queries::update_entity(
-                    &mut **tx,
+                // The rewritten rows are TODOS, so pass EntityType::Todo — NOT this
+                // mutation's entity_type (Project). This is the one site where the
+                // cascade touches a different Entity Type than `kind`.
+                update_entity_with_revision(
+                    tx,
                     &todo_id,
-                    EntityType::Todo.as_str(),
-                    EntityType::Todo.schema_version(),
-                    &new_data,
-                    now_ms,
-                )
-                .await?;
-                if updated != 1 {
-                    // An owning Todo row vanished mid-cascade (ADR-0033 target-gone).
-                    return Err(ApplyError::TargetMissing);
-                }
-                let next_seq = queries::next_entity_revision_seq(&mut **tx, &todo_id).await?;
-                queries::insert_entity_revision(
-                    &mut **tx,
-                    &todo_id,
-                    next_seq,
+                    EntityType::Todo,
                     &new_data,
                     proposal_id,
                     now_ms,
@@ -768,7 +766,6 @@ pub(crate) async fn apply_entity_mutation(
                 tx,
                 &entity_id,
                 effective_payload,
-                schema_version,
                 created_by,
                 proposal_id,
                 now_ms,
@@ -783,12 +780,23 @@ pub(crate) async fn apply_entity_mutation(
             apply_mark_project_reviewed(
                 tx,
                 &entity_id,
-                schema_version,
                 proposal_id,
                 now_ms,
                 review_anchor_offset,
             )
             .await?;
+        }
+        // The reference weave writes a new revision of the SOURCE Journal Entry
+        // whose body gained the entity_ref — a `WriteClass::InTx` update whose
+        // `data_str` was computed in the pre-match block above (the entity_ref is
+        // inserted there FIRST so the body can embed its minted id). Named here so
+        // every InTx kind has its own arm; the write itself is the shared composite.
+        MutationKind::ReferenceExistingEntityFromJournalEntry => {
+            let data_str = data_str
+                .as_deref()
+                .expect("the reference weave computes its data_str before this match");
+            update_entity_with_revision(tx, &entity_id, entity_type, data_str, proposal_id, now_ms)
+                .await?;
         }
         // Rejected at the guard above (the graph is not a single-entity
         // mutation) — named BEFORE the generic write_op arms so its
@@ -796,16 +804,19 @@ pub(crate) async fn apply_entity_mutation(
         MutationKind::ApplyIntentGraph => {
             unreachable!("apply_intent_graph is rejected before this seam")
         }
-        // Every remaining kind routes generically by the contract's `write_op`
-        // (an exhaustive inner match — a new WriteOp variant must declare its
-        // write body here; a new KIND is forced through `describe()`'s contract
-        // block instead of this dispatch). TRAP for a future `InTx` kind: an
-        // InTx kind reaching these generic Update/Create arms must have
-        // computed its `data_str` BEFORE this match — the reference weave does,
-        // in its pre-match block above. A new InTx kind without that hits the
-        // "carry entity data" expect below; give it a named arm instead. (No
-        // blanket InTx guard here: the weave legitimately rides the generic
-        // update arm.)
+        // A `WriteClass::InTx` kind computes its data inside the tx and MUST have a
+        // named arm above (all three do). Reaching here means a new InTx kind was
+        // declared without one, so fail loud rather than write its un-computed
+        // `data_str` down the generic path below. This structural guard replaces the
+        // old prose TRAP: a mis-declared InTx kind now stops at a named arm, not at
+        // the generic arm's `data_str` expect.
+        _ if desc.write_class == WriteClass::InTx => unreachable!(
+            "a WriteClass::InTx kind must have a named dispatch arm ({mutation_kind})"
+        ),
+        // Every remaining kind (NoData / Normalized) routes generically by the
+        // contract's `write_op` — an exhaustive inner match, so a new WriteOp
+        // variant must declare its write body here, and a new KIND is forced
+        // through `describe()`'s contract block instead of this dispatch.
         _ => match desc.write_op {
             // Generic delete (journal_entry, person, todo, media, habit): remove
             // the entity of this `entity_type`. Its revisions/sources and a
@@ -867,34 +878,17 @@ pub(crate) async fn apply_entity_mutation(
             // Generic update (journal_entry, person, project, media, habit):
             // replace the target entity's data of this `entity_type` + append
             // the next revision snapshot. The journal-entry body-ref check above
-            // is gated to journal kinds; person/project/media carry no body
-            // refs. `reference_existing_entity_from_journal_entry` is a
-            // `WriteOp::Update` too, so it joins this branch (its data_str was
-            // rewritten above to carry the new entity_ref placeholder);
-            // update_todo and mark_project_reviewed took their named in-tx arms
-            // above.
+            // is gated to journal kinds; person/project/media carry no body refs.
+            // The InTx kinds (update_todo, mark_project_reviewed, the reference
+            // weave) took their named in-tx arms above.
             WriteOp::Update => {
                 let data_str = data_str
                     .as_deref()
                     .expect("non-delete mutations always carry entity data");
-                let updated = queries::update_entity(
-                    &mut **tx,
+                update_entity_with_revision(
+                    tx,
                     &entity_id,
-                    entity_type.as_str(),
-                    schema_version,
-                    data_str,
-                    now_ms,
-                )
-                .await?;
-                if updated != 1 {
-                    // The update target vanished under the parked Proposal (ADR-0033).
-                    return Err(ApplyError::TargetMissing);
-                }
-                let next_seq = queries::next_entity_revision_seq(&mut **tx, &entity_id).await?;
-                queries::insert_entity_revision(
-                    &mut **tx,
-                    &entity_id,
-                    next_seq,
+                    entity_type,
                     data_str,
                     proposal_id,
                     now_ms,
@@ -918,22 +912,12 @@ pub(crate) async fn apply_entity_mutation(
                     // (ADR-0033). Auxiliary ref → InvalidMutation, not TargetMissing.
                     recheck_todo_project_link(tx, todo).await?;
                 }
-                queries::insert_entity(
-                    &mut **tx,
+                insert_entity_with_first_revision(
+                    tx,
                     &entity_id,
-                    entity_type.as_str(),
-                    schema_version,
+                    entity_type,
                     data_str,
                     created_by,
-                    proposal_id,
-                    now_ms,
-                )
-                .await?;
-                queries::insert_entity_revision(
-                    &mut **tx,
-                    &entity_id,
-                    1,
-                    data_str,
                     proposal_id,
                     now_ms,
                 )
