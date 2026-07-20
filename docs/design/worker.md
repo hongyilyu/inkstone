@@ -48,13 +48,13 @@ Run only when this file is the process entry (Core/e2e spawn it as `tsx .../faux
 
 The Provider Helper (`provider.ts`) moved to its own package — see `provider-helper.md` (ADR-0040).
 
-## tool-proxy.ts — module / makeProxyTools / ToolResultOk
+## tool-proxy.ts — module / makeProxyTools / ToolCallResponse
 
 Worker-side tool proxies (ADR-0018). Tools are implemented once in Rust (Core); the Worker builds thin `pi-agent-core` `AgentTool` proxies whose `execute` round-trips a `tool_request`/`tool_result` to Core over stdio. There is zero per-tool code here — the factory is generic over the descriptors Core ships in the manifest.
 
-`ToolResultOk` is the `ok` outcome Core sends in a `tool_result`. It mirrors the Rust `AgentToolResult` wire shape: `content` is required; `details`/`terminate` are omitted when absent (Rust `skip_serializing_if`). Distinct from `pi-agent-core`'s `AgentToolResult<T>`, which requires `details`.
+`ToolCallResponse` is Core's reply to a tool call. It is not re-declared here — it is `ToolResult["outcome"]`, the `outcome` union of the protocol `ToolResult` (`@inkstone/protocol`), which is the single source of truth for the tool-result wire shape and the one copy the contract/parity suite checks against Rust. The Worker imports that type rather than hand-mirroring it, so the Worker-local type cannot drift from `@inkstone/protocol` (the Rust↔protocol hand-mirror is still held honest by the parity gate, not by this alias).
 
-`makeProxyTools` builds `AgentTool` proxies from Core's tool descriptors. Each proxy carries the descriptor's metadata and a `json_schema` (TypeBox's `TSchema` is structurally a JSON Schema with a TS-only brand, ADR-0018:102, so the Core-supplied schema satisfies it at runtime). `execute` delegates to `callTool`; on an `err` outcome it THROWS — `pi-agent-core` signals a tool error by `execute` throwing and converts it into an error tool result.
+`makeProxyTools` builds `AgentTool` proxies from Core's tool descriptors. Each proxy carries the descriptor's metadata and a `json_schema` (TypeBox's `TSchema` is structurally a JSON Schema with a TS-only brand, ADR-0018:102, so the Core-supplied schema satisfies it at runtime). `execute` delegates to `callTool`; on an `err` outcome it THROWS — `pi-agent-core` signals a tool error by `execute` throwing and converts it into an error tool result. The decoded `ok` content is a readonly array, so `execute` copies it (`[...content]`) into the mutable array pi expects — the wire value itself is never mutated.
 
 ## worker-main.ts — runWorkerMain
 

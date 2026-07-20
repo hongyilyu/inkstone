@@ -1,21 +1,13 @@
 import { appendFileSync } from "node:fs";
 import type { AgentTool, AgentToolResult } from "@earendil-works/pi-agent-core";
-import type { TextContent } from "@earendil-works/pi-ai";
-import type { CoreToolDescriptor } from "@inkstone/protocol";
+import type { CoreToolDescriptor, ToolResult } from "@inkstone/protocol";
 
 // Worker-side tool proxies: thin AgentTool wrappers round-tripping to Core over stdio — see docs/design/worker.md (ADR-0018)
 
-/** The `ok` outcome Core sends in a `tool_result`; mirrors the Rust `AgentToolResult` wire shape. */
-export interface ToolResultOk {
-	content: TextContent[];
-	details?: unknown;
-	terminate?: boolean;
-}
-
-/** Core's reply to a tool call. */
-export type ToolCallResponse =
-	| { ok: ToolResultOk }
-	| { err: { code: string; message: string } };
+/** Core's reply to a tool call: the `outcome` union of the protocol `ToolResult`
+ * — the single source of truth for the tool-result wire shape (the one copy the
+ * contract/parity suite checks against Rust). No hand-written mirror to drift. */
+export type ToolCallResponse = ToolResult["outcome"];
 
 /** Round-trip one tool call to Core (stdout `tool_request` / stdin `tool_result`); tests stub it. */
 export type CallTool = (
@@ -65,7 +57,9 @@ export function makeProxyTools(
 						throw new Error(resp.err.message);
 					}
 					return {
-						content: resp.ok.content,
+						// Copy the decoded (readonly) content into the mutable array
+						// pi's AgentToolResult expects — the wire value is not mutated.
+						content: [...resp.ok.content],
 						details: resp.ok.details,
 						terminate: resp.ok.terminate,
 					};

@@ -55,6 +55,7 @@ describe("StdioTransportLive (over injected streams)", () => {
 			input.write(
 				`${JSON.stringify({
 					kind: "tool_result",
+					run_id: "01900000-0000-7000-8000-000000000abc",
 					tool_call_id: "tc1",
 					outcome: { ok: { content: [{ type: "text", text: "ok" }] } },
 				})}\n`,
@@ -85,6 +86,38 @@ describe("StdioTransportLive (over injected streams)", () => {
 		});
 
 		expect(resp).toEqual({ ok: { content: [{ type: "text", text: "ok" }] } });
+	});
+
+	it("settles the pending call LOUD when an inbound tool_result fails schema decode", async () => {
+		const input = new PassThrough();
+		const { output } = capturingWritable();
+		input.write(`${manifestJson}\n`);
+
+		const program = Effect.gen(function* () {
+			const t = yield* WorkerTransport;
+			yield* t.readManifest;
+
+			const respPromise = t.callTool("tc1", "read_thread", { thread_id: "x" });
+			// A frame that parses as JSON and carries the correlation id, but whose
+			// outcome is neither a valid `ok` nor `err` — the skew a truthiness guard
+			// would wave through, resolving the call with junk that later throws and
+			// gets misattributed. The strict seam must instead settle it loud.
+			input.write(
+				`${JSON.stringify({
+					kind: "tool_result",
+					run_id: "01900000-0000-7000-8000-000000000abc",
+					tool_call_id: "tc1",
+					outcome: {},
+				})}\n`,
+			);
+			return yield* Effect.promise(() => respPromise);
+		});
+
+		const resp = await Effect.runPromise(
+			program.pipe(Effect.provide(makeStdioTransport(input, output))),
+		);
+
+		expect(resp).toMatchObject({ err: { code: "tool_result_decode_error" } });
 	});
 
 	it("readManifest returns null on empty stdin (closed with no line)", async () => {
