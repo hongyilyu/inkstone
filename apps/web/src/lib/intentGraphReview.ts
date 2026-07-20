@@ -148,8 +148,10 @@ export interface ReviewState {
 }
 
 /** The empty review state — every node sits at its per-node default (acceptable →
- * accept, unpicked ambiguous → reject), nothing edited or re-pointed. The reducer's
- * `reset` returns this, and `useReducer` initializes with it. */
+ * accept, unpicked ambiguous → reject), nothing edited and no EXPLICIT repoint
+ * overrides (a single-near-match create node still defaults to reuse via
+ * {@link repointFor} — the empty repoints map records only user departures from that
+ * default). The reducer's `reset` returns this, and `useReducer` initializes with it. */
 export const initialReviewState: ReviewState = {
 	stages: new Map(),
 	repoints: new Map(),

@@ -980,8 +980,16 @@ describe("reviewReducer — cross-buffer invariants live in one transition", () 
 			node: nearMatchProject,
 			draft: { type: "project", name: "Renamed", outcome: "", note: "" },
 		});
+		// Explicitly REJECT the node too, so the assertion below proves reuseExisting
+		// FORCES accept (not merely preserves a prior accept).
+		state = reviewReducer(state, {
+			type: "stage",
+			node: nearMatchProject,
+			stage: "reject",
+		});
 		expect(state.repoints.get("@leadads")).toBeNull(); // override present
 		expect(state.drafts.has("@leadads")).toBe(true);
+		expect(state.stages.get("@leadads")).toBe("reject"); // rejected before reuse
 
 		const next = reviewReducer(state, {
 			type: "reuseExisting",
@@ -1024,12 +1032,21 @@ describe("reviewReducer — cross-buffer invariants live in one transition", () 
 	});
 
 	it("reset clears every buffer back to empty", () => {
-		const dirtied = reviewReducer(initialReviewState, {
+		// Populate ALL THREE buffers so the reset must clear each — a pick (stages +
+		// repoints) plus a saved draft (drafts + stages).
+		let dirtied = reviewReducer(initialReviewState, {
 			type: "pick",
 			node: ambiguousPerson,
 			entityId: "m1",
 		});
+		dirtied = reviewReducer(dirtied, {
+			type: "saveDraft",
+			node: createTodo,
+			draft: { type: "todo", title: "Renamed", note: "" },
+		});
+		expect(dirtied.stages.size).toBeGreaterThan(0);
 		expect(dirtied.repoints.size).toBeGreaterThan(0);
+		expect(dirtied.drafts.size).toBeGreaterThan(0);
 		const reset = reviewReducer(dirtied, { type: "reset" });
 		// Behaviorally empty: no staged/repointed/drafted node survives the reset.
 		expect(reset.stages.size).toBe(0);
