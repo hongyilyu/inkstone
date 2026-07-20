@@ -1,4 +1,5 @@
 import type { NodeDecision, ResolvedNode } from "@inkstone/protocol";
+import { assertNever } from "@/lib/assertNever";
 import { parseAliases } from "@/lib/entityFields";
 import { readString, readStringArray } from "@/lib/readPayload";
 
@@ -22,23 +23,11 @@ import { readString, readStringArray } from "@/lib/readPayload";
 export type NodeStage = "accept" | "reject";
 
 /** The per-node staging buffer, keyed by graph handle. A handle with no entry is
- * "undecided" — the user has not stepped past it yet. */
-export type StagingBuffer = Readonly<Record<string, NodeStage>>;
-
-/** Read a handle-keyed record as an OWN-property lookup, not `record[handle]`.
- * Every buffer here is keyed by `ResolvedNode.handle`, an unvalidated model-supplied
- * wire string (protocol `handle` is a bare string, no `@` pattern), so a handle equal
- * to a prototype key ("toString", "constructor", "__proto__") would make a direct
- * index return an inherited `Object.prototype` member — a function masquerading as a
- * `NodeStage`/draft — rather than `undefined`. `Object.hasOwn` is the same hardening
- * {@link repointFor} already documents; this is the shared helper the other
- * handle-keyed reads route through. */
-export function getOwn<T>(
-	record: Readonly<Record<string, T>>,
-	handle: string,
-): T | undefined {
-	return Object.hasOwn(record, handle) ? record[handle] : undefined;
-}
+ * "undecided" — the user has not stepped past it yet. Every buffer here is keyed by
+ * `ResolvedNode.handle`, an unvalidated model-supplied wire string, so buffers are
+ * `ReadonlyMap`s: `Map.get` returns `undefined` for a missing key by construction,
+ * even one equal to an `Object.prototype` key ("toString", "__proto__"). */
+export type StagingBuffer = ReadonlyMap<string, NodeStage>;
 
 /** Whether a node's disposition permits `accept`. `create`/`reuse` are freely
  * acceptable. An `ambiguous` node has no silent fallback (ADR-0042), so it is
@@ -47,12 +36,12 @@ export function getOwn<T>(
  * collapses the node `ambiguous → reuse` at decide. So an ambiguous node is
  * acceptable iff a candidate has been picked (#181 disambiguation picker).
  *
- * `repoints` defaults to `{}` so a caller that only has a node (no pick context)
- * still reads the pre-pick truth: a create/reuse node is acceptable, an ambiguous
- * one is not. */
+ * `repoints` defaults to an empty Map so a caller that only has a node (no pick
+ * context) still reads the pre-pick truth: a create/reuse node is acceptable, an
+ * ambiguous one is not. */
 export function isAcceptable(
 	node: ResolvedNode,
-	repoints: RepointBuffer = {},
+	repoints: RepointBuffer = new Map(),
 ): boolean {
 	if (node.disposition !== "ambiguous") return true;
 	return repointFor(repoints, node) !== null;
@@ -65,7 +54,7 @@ export function isAcceptable(
  *   - `null` → the user explicitly chose "Create new instead" (suppress the
  *     default re-point a single near-match would otherwise apply);
  *   - absent → no explicit choice; the default applies (see {@link repointFor}). */
-export type RepointBuffer = Readonly<Record<string, string | null>>;
+export type RepointBuffer = ReadonlyMap<string, string | null>;
 
 /** The effective re-point id for a node (ADR-0042 amendment), prioritizing the
  * existing entity: an explicit buffer entry wins (a string id re-points; `null`
@@ -77,11 +66,9 @@ export function repointFor(
 	buffer: RepointBuffer,
 	node: ResolvedNode,
 ): string | null {
-	// Read the explicit entry via `getOwn` (the shared prototype-key guard): a handle
-	// equal to a prototype key ("toString", "__proto__") must not surface an inherited
-	// member. An explicit entry — a string id OR `null` ("create new instead") — wins;
+	// An explicit entry — a string id OR `null` ("create new instead") — wins;
 	// `undefined` means absent, so fall through to the near-match default below.
-	const explicit = getOwn(buffer, node.handle);
+	const explicit = buffer.get(node.handle);
 	if (explicit !== undefined) return explicit;
 	if (node.disposition !== "create") return null;
 	const near = node.near_matches ?? [];
@@ -96,10 +83,10 @@ export function repointFor(
 export function stageFor(
 	buffer: StagingBuffer,
 	node: ResolvedNode,
-	repoints: RepointBuffer = {},
+	repoints: RepointBuffer = new Map(),
 ): NodeStage {
 	return (
-		getOwn(buffer, node.handle) ??
+		buffer.get(node.handle) ??
 		(isAcceptable(node, repoints) ? "accept" : "reject")
 	);
 }
@@ -112,19 +99,19 @@ export function setStage(
 	buffer: StagingBuffer,
 	node: ResolvedNode,
 	stage: NodeStage,
-	repoints: RepointBuffer = {},
+	repoints: RepointBuffer = new Map(),
 ): StagingBuffer {
 	if (stage === "accept" && !isAcceptable(node, repoints)) {
 		return buffer;
 	}
-	return { ...buffer, [node.handle]: stage };
+	return new Map(buffer).set(node.handle, stage);
 }
 
 /** Stage EVERY node `reject` — the "Reject all" affordance. */
 export function rejectAll(plan: readonly ResolvedNode[]): StagingBuffer {
-	const next: Record<string, NodeStage> = {};
+	const next = new Map<string, NodeStage>();
 	for (const node of plan) {
-		next[node.handle] = "reject";
+		next.set(node.handle, "reject");
 	}
 	return next;
 }
@@ -144,7 +131,151 @@ export type GraphNodeDraft =
 
 /** The per-handle draft buffer (component state), holding a draft for every create
  * node the user has opened for edit. A handle with no entry was never edited. */
-export type DraftBuffer = Readonly<Record<string, GraphNodeDraft>>;
+export type DraftBuffer = ReadonlyMap<string, GraphNodeDraft>;
+
+/** The whole client-side review state for one `apply_intent_graph` proposal: the
+ * three per-node buffers that together decide what the commit sends. The card WRITES
+ * only through dispatched intents ({@link reviewReducer}) and reads per-node facts
+ * through {@link nodeView} — so the cross-buffer invariants (a pick sets repoint AND
+ * accept; reuse-existing clears repoint+draft AND accepts) live in the reducer, in one
+ * place, rather than scattered across card handlers. (The card still reads the buffers
+ * for whole-plan derivations — the decision vector, downgrade notices — passing them to
+ * the pure `buildDecisions`/`downgradeNotices` helpers unchanged.) */
+export interface ReviewState {
+	readonly stages: StagingBuffer;
+	readonly repoints: RepointBuffer;
+	readonly drafts: DraftBuffer;
+}
+
+/** The empty review state — every node sits at its per-node default (acceptable →
+ * accept, unpicked ambiguous → reject), nothing edited and no EXPLICIT repoint
+ * overrides (a single-near-match create node still defaults to reuse via
+ * {@link repointFor} — the empty repoints map records only user departures from that
+ * default). The reducer's `reset` returns this, and `useReducer` initializes with it. */
+export const initialReviewState: ReviewState = {
+	stages: new Map(),
+	repoints: new Map(),
+	drafts: new Map(),
+};
+
+/** A user intent against the review state. Each variant names what the user did, not
+ * which buffers move — the reducer owns that mapping so a single action can enforce a
+ * cross-buffer invariant atomically (e.g. `pick` sets the repoint AND the accept in
+ * one transition, which is why the card needs no post-pick repoint hand-off). */
+export type ReviewAction =
+	| { type: "stage"; node: ResolvedNode; stage: NodeStage }
+	| { type: "pick"; node: ResolvedNode; entityId: string }
+	| { type: "createNewInstead"; handle: string }
+	| { type: "reuseExisting"; node: ResolvedNode }
+	| { type: "saveDraft"; node: ResolvedNode; draft: GraphNodeDraft }
+	| { type: "rejectAll"; plan: readonly ResolvedNode[] }
+	| { type: "reset" };
+
+/** The one pure transition for the review state (ADR-0042). Never mutates `state` or
+ * its Maps: a branch that changes a buffer builds a fresh Map for it (leaving the
+ * untouched buffers shared by reference), so React sees a new `ReviewState` — except a
+ * no-op (`stage` blocked by the accept-guard) returns `state` itself and `reset`
+ * returns the shared `initialReviewState`, both intentional identity short-circuits.
+ * Each branch owns its whole cross-buffer invariant:
+ *
+ *  - `stage` toggles one node, honoring the ambiguous accept-block ({@link setStage}
+ *    ignores an accept on an unpicked ambiguous node — a no-op returns `state`);
+ *  - `pick` records the candidate's `entity_id` as the node's repoint AND stages it
+ *    accept in the SAME transition — the pick is visible to the accept, so there is no
+ *    sibling-setState ordering hazard the card must dodge;
+ *  - `createNewInstead` sets the repoint to `null` (suppress the near-match default);
+ *  - `reuseExisting` clears the explicit repoint AND drops any edit draft AND stages
+ *    accept (a reused entity is linked-to, not minted/edited — mutually exclusive);
+ *  - `saveDraft` records the edit draft AND stages accept (an edit only applies to a
+ *    node you keep);
+ *  - `rejectAll` stages every node in the carried plan `reject`;
+ *  - `reset` returns {@link initialReviewState} (a fresh proposal identity). */
+export function reviewReducer(
+	state: ReviewState,
+	action: ReviewAction,
+): ReviewState {
+	switch (action.type) {
+		case "stage": {
+			const stages = setStage(
+				state.stages,
+				action.node,
+				action.stage,
+				state.repoints,
+			);
+			return stages === state.stages ? state : { ...state, stages };
+		}
+		case "pick": {
+			const repoints = new Map(state.repoints).set(
+				action.node.handle,
+				action.entityId,
+			);
+			// Stage accept against the JUST-computed repoints, not `state.repoints`, so
+			// the picked node reads as acceptable in the same transition.
+			const stages = setStage(state.stages, action.node, "accept", repoints);
+			return { ...state, stages, repoints };
+		}
+		case "createNewInstead": {
+			const repoints = new Map(state.repoints).set(action.handle, null);
+			return { ...state, repoints };
+		}
+		case "reuseExisting": {
+			const repoints = new Map(state.repoints);
+			repoints.delete(action.node.handle);
+			const drafts = new Map(state.drafts);
+			drafts.delete(action.node.handle);
+			// Clear repoint+draft FIRST, then stage accept against the cleared repoints so
+			// the single-near-match default re-applies (an ambiguous node is not reused
+			// here — this affordance is for create nodes, which are always acceptable).
+			const stages = setStage(state.stages, action.node, "accept", repoints);
+			return { stages, repoints, drafts };
+		}
+		case "saveDraft": {
+			const drafts = new Map(state.drafts).set(
+				action.node.handle,
+				action.draft,
+			);
+			const stages = setStage(
+				state.stages,
+				action.node,
+				"accept",
+				state.repoints,
+			);
+			return { ...state, stages, drafts };
+		}
+		case "rejectAll":
+			return { ...state, stages: rejectAll(action.plan) };
+		case "reset":
+			return initialReviewState;
+		default:
+			return assertNever(action, "review action");
+	}
+}
+
+/** The per-node facts a row renders, bundled into one read so the card consults the
+ * state through a single selector instead of four raw buffer reads: the effective
+ * `stage`, the RAW `explicitStage` (undefined when the node sits at its default —
+ * distinguishes an unpicked ambiguous node from an explicitly rejected one), the
+ * effective `repointId`, and the node's edit `draft`. */
+export interface NodeView {
+	readonly stage: NodeStage;
+	readonly explicitStage: NodeStage | undefined;
+	readonly repointId: string | null;
+	readonly draft: GraphNodeDraft | undefined;
+}
+
+/** Project the four per-node facts a row needs out of the {@link ReviewState}
+ * (ADR-0042): the effective `stage`, the RAW `explicitStage`, the effective
+ * `repointId`, and the edit `draft`. Delegates to {@link stageFor}/{@link repointFor}
+ * so the effective-stage rule lives in ONE place — the row and the decision vector
+ * (via {@link buildDecisions}, which also calls `stageFor`) can never drift. */
+export function nodeView(state: ReviewState, node: ResolvedNode): NodeView {
+	return {
+		stage: stageFor(state.stages, node, state.repoints),
+		explicitStage: state.stages.get(node.handle),
+		repointId: repointFor(state.repoints, node),
+		draft: state.drafts.get(node.handle),
+	};
+}
 
 /** Index the graph payload's `entities[]` by handle, so an edit can seed from — and
  * diff against — a node's ORIGINAL proposed fields. Degrades a malformed payload to
@@ -315,9 +446,9 @@ function sameStrings(a: readonly string[], b: readonly string[]): boolean {
 export function buildDecisions(
 	plan: readonly ResolvedNode[],
 	buffer: StagingBuffer,
-	drafts: DraftBuffer = {},
+	drafts: DraftBuffer = new Map(),
 	entities: Map<string, Record<string, unknown>> = new Map(),
-	repoints: RepointBuffer = {},
+	repoints: RepointBuffer = new Map(),
 ): NodeDecision[] {
 	return plan.map((node) => {
 		const decision = stageFor(buffer, node, repoints);
@@ -344,7 +475,7 @@ export function buildDecisions(
 				if (repoint !== null) {
 					return { handle: node.handle, decision, entity_id: repoint };
 				}
-				const draft = getOwn(drafts, node.handle);
+				const draft = drafts.get(node.handle);
 				if (draft !== undefined) {
 					const edited = buildEditedFields(entities.get(node.handle), draft);
 					if (edited !== undefined) {
@@ -454,7 +585,7 @@ export function appendedClauses(
 	plan: readonly ResolvedNode[],
 	links: readonly GraphLink[],
 	buffer: StagingBuffer,
-	repoints: RepointBuffer = {},
+	repoints: RepointBuffer = new Map(),
 ): AppendedClause[] {
 	const byHandle = new Map(plan.map((node) => [node.handle, node]));
 	const out: AppendedClause[] = [];
@@ -487,7 +618,7 @@ export function downgradeNotices(
 	plan: readonly ResolvedNode[],
 	links: readonly GraphLink[],
 	buffer: StagingBuffer,
-	repoints: RepointBuffer = {},
+	repoints: RepointBuffer = new Map(),
 ): DowngradeNotice[] {
 	const byHandle = new Map(plan.map((node) => [node.handle, node]));
 	const isAccepted = (handle: string): boolean => {
