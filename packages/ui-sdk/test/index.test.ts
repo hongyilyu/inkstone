@@ -756,20 +756,27 @@ describe("WsClient", () => {
 
 	it("broadcasts one pushed frame to two concurrent subscribers of the same method (PubSub fan-out, not Queue steal)", async () => {
 		// The refcounted per-method hub is a PubSub: every live subscriber sees every
-		// frame. A Queue would deliver each item to exactly ONE taker, so under a
-		// Queue only one of the two collectors below would receive the push. Both
-		// subscribe before the frame is pushed (re-triggering until it lands), so a
-		// single `thread/titled` frame must reach BOTH.
+		// frame. This test must FAIL under a shared Queue, so the server pushes EXACTLY
+		// ONE `thread/titled` frame — on the first `thread/list` request only. Under a
+		// Queue that single item goes to exactly one taker, so the other collector
+		// would hang and the test would time out; under PubSub both collectors get it.
+		// (An earlier version pushed a frame per `thread/list` re-trigger — that let a
+		// Queue satisfy both takers with DIFFERENT frames, so it couldn't distinguish
+		// the two shapes; cross-engine review caught it.)
 		const title = "shared title";
+		let pushed = false;
 		const server = await makeServer((ws, req) => {
 			if (req.method === "thread/list") {
-				ws.send(
-					JSON.stringify({
-						jsonrpc: "2.0",
-						method: "thread/titled",
-						params: { thread_id: "t1", title },
-					}),
-				);
+				if (!pushed) {
+					pushed = true;
+					ws.send(
+						JSON.stringify({
+							jsonrpc: "2.0",
+							method: "thread/titled",
+							params: { thread_id: "t1", title },
+						}),
+					);
+				}
 				ws.send(
 					JSON.stringify({
 						jsonrpc: "2.0",
@@ -782,24 +789,31 @@ describe("WsClient", () => {
 
 		const program = Effect.gen(function* () {
 			const client = yield* WsClient;
-			// Two independent subscriptions to the SAME method, each taking one value.
-			const collectA = Stream.runCollect(
-				client
-					.notifications("thread/titled", ThreadTitledNotification)
-					.pipe(Stream.take(1)),
+			// Fork both subscriptions, each taking one value, and wait for both hubs to
+			// be established (acquireHub runs synchronously when the stream is pulled;
+			// the brief sleep lets both forked fibers reach their subscribe point)
+			// BEFORE the single push, so the one frame can't land pre-subscription.
+			const a = yield* Effect.fork(
+				Stream.runCollect(
+					client
+						.notifications("thread/titled", ThreadTitledNotification)
+						.pipe(Stream.take(1)),
+				),
 			);
-			const collectB = Stream.runCollect(
-				client
-					.notifications("thread/titled", ThreadTitledNotification)
-					.pipe(Stream.take(1)),
+			const b = yield* Effect.fork(
+				Stream.runCollect(
+					client
+						.notifications("thread/titled", ThreadTitledNotification)
+						.pipe(Stream.take(1)),
+				),
 			);
-			const trigger = client
-				.threadList()
-				.pipe(Effect.zipRight(Effect.sleep("10 millis")), Effect.forever);
-			// Race the trigger against BOTH collectors completing — both must land.
-			const both = Effect.all([collectA, collectB], { concurrency: 2 });
-			const [a, b] = yield* Effect.raceFirst(both, trigger);
-			return { a: Array.from(a), b: Array.from(b) };
+			yield* Effect.sleep("50 millis");
+			// Exactly one frame is pushed (server guards with `pushed`), so a Queue
+			// could satisfy only ONE collector — Fiber.join on the other would hang.
+			yield* client.threadList();
+			const ra = yield* Fiber.join(a);
+			const rb = yield* Fiber.join(b);
+			return { a: Array.from(ra), b: Array.from(rb) };
 		});
 
 		try {
