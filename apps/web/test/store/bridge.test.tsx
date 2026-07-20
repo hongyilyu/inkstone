@@ -3,6 +3,7 @@ import {
 	ThreadTitledNotification,
 } from "@inkstone/protocol";
 import {
+	onNotification,
 	type RunEventValue,
 	type RunId,
 	type WsClientService,
@@ -14,7 +15,7 @@ import {
 	makeCoreRuntime,
 	makeQueryClient,
 } from "@test/test-utils/renderWithCore";
-import { Effect, Queue, Stream } from "effect";
+import { Deferred, Effect, Queue, Stream } from "effect";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { WsRuntime } from "@/runtime.js";
 import {
@@ -713,17 +714,22 @@ describe("thread/titled handler (ADR-0047 — patch the threads cache in place)"
 
 	it("its disposer stops delivery — a frame pushed after dispose does not patch the cache", async () => {
 		const qc = seedThreads();
-		// A live queue-backed subscription: a frame pushed BEFORE dispose patches the
-		// cache; a frame pushed AFTER dispose must NOT — proving the disposer actually
-		// interrupts the subscription fiber, not a vacuous no-op (a Stream.empty stub
-		// could never distinguish a real disposer from a no-op one).
+		// A live queue-backed subscription with a FINALIZER: a frame pushed BEFORE
+		// dispose patches the cache; a frame pushed AFTER dispose must NOT — proving the
+		// disposer actually interrupts the subscription fiber, not a vacuous no-op (a
+		// Stream.empty stub could never distinguish a real disposer from a no-op one).
+		// Teardown is synchronized on a Deferred the stream's finalizer completes —
+		// deterministic, not a fixed sleep (which could miss a delayed delivery).
 		const titled = Effect.runSync(
 			Queue.unbounded<{ thread_id: string; title: string }>(),
 		);
+		const tornDown = Effect.runSync(Deferred.make<void>());
 		const runtime = makeCoreRuntime({
 			overrides: {
 				notifications: (() =>
-					Stream.fromQueue(titled)) as WsClientService["notifications"],
+					Stream.fromQueue(titled).pipe(
+						Stream.ensuring(Deferred.succeed(tornDown, undefined)),
+					)) as WsClientService["notifications"],
 			},
 		});
 
@@ -737,20 +743,64 @@ describe("thread/titled handler (ADR-0047 — patch the threads cache in place)"
 			).toBe("before"),
 		);
 
+		// Dispose, then await the subscription's finalizer — proof the fiber was
+		// interrupted — before pushing the post-dispose frame.
 		dispose();
-		// Give the forked interrupt a beat to land, then push a post-dispose frame.
-		await new Promise((r) => setTimeout(r, 50));
+		await runtime.runPromise(Deferred.await(tornDown));
 		Effect.runSync(
 			Queue.offer(titled, { thread_id: "t1", title: "after-dispose" }),
 		);
 
 		// The post-dispose frame must never reach applyThreadTitled: the title stays
-		// "before". Poll a few times so a (buggy) late delivery would be caught.
-		await new Promise((r) => setTimeout(r, 100));
+		// "before". A short settle window lets any (buggy) late delivery surface.
+		await new Promise((r) => setTimeout(r, 50));
 		expect(
 			qc
 				.getQueryData<ThreadListResult>(["threads"])
 				?.threads.find((t) => t.id === "t1")?.title,
 		).toBe("before");
+	});
+
+	it("a throwing onValue is contained per-frame — a later notification still patches the cache", async () => {
+		// Guards the onNotification try/catch (round-1 fix): if the callback throws on
+		// one frame, the subscription must keep running and apply the NEXT frame. Without
+		// per-frame containment the first throw fails the fiber and the second frame is lost.
+		const qc = seedThreads();
+		const titled = Effect.runSync(
+			Queue.unbounded<{ thread_id: string; title: string }>(),
+		);
+		const runtime = makeCoreRuntime({
+			overrides: {
+				notifications: (() =>
+					Stream.fromQueue(titled)) as WsClientService["notifications"],
+			},
+		});
+
+		// Register a handler that THROWS on the first thread_id, then delegates to the
+		// real cache patch — so frame 1 throws inside onValue, frame 2 must still land.
+		let seen = 0;
+		const dispose = onNotification(
+			runtime,
+			"thread/titled",
+			ThreadTitledNotification,
+			(n) => {
+				seen += 1;
+				if (seen === 1) throw new Error("boom on first frame");
+				applyThreadTitled(qc, n);
+			},
+		);
+
+		Effect.runSync(Queue.offer(titled, { thread_id: "t1", title: "boom" }));
+		Effect.runSync(Queue.offer(titled, { thread_id: "t1", title: "survived" }));
+
+		// The second frame patched the cache → the subscription survived the first throw.
+		await vi.waitFor(() =>
+			expect(
+				qc
+					.getQueryData<ThreadListResult>(["threads"])
+					?.threads.find((t) => t.id === "t1")?.title,
+			).toBe("survived"),
+		);
+		dispose();
 	});
 });

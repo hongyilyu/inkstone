@@ -1,4 +1,8 @@
-import type { ModelInfo, ProviderStatusResult } from "@inkstone/protocol";
+import {
+	type ModelInfo,
+	ProviderConnectedNotification,
+	type ProviderStatusResult,
+} from "@inkstone/protocol";
 import type { WsClientService } from "@inkstone/ui-sdk";
 import { ProviderLoginFailedError, WsRequestError } from "@inkstone/ui-sdk";
 import type { QueryClient } from "@tanstack/react-query";
@@ -1140,8 +1144,11 @@ describe("Models settings page — provider/connected live push (ADR-0049)", () 
 	function makeConnectedPush(base: Partial<WsClientService>): {
 		overrides: Partial<WsClientService>;
 		push: () => void;
+		/** The schema the page subscribed `provider/connected` with (asserted in tests). */
+		subscribedSchema: () => unknown;
 	} {
 		const queue = Effect.runSync(Queue.unbounded<unknown>());
+		let providerConnectedSchema: unknown;
 		return {
 			overrides: {
 				...base,
@@ -1150,14 +1157,18 @@ describe("Models settings page — provider/connected live push (ADR-0049)", () 
 				// mounted routeTree also subscribes `thread/titled` at the root, and a
 				// method-blind shared queue would make the two subscribers contend
 				// (Queue = one taker per item) instead of the live per-method PubSub
-				// broadcast. Other methods get an empty stream.
-				notifications: ((method: string) =>
-					method === "provider/connected"
-						? Stream.fromQueue(queue)
-						: Stream.empty) as WsClientService["notifications"],
+				// broadcast. Other methods get an empty stream. The schema is captured so
+				// a test can assert the page wires the RIGHT schema (else a wrong
+				// production schema would decode-drop real frames yet pass here).
+				notifications: ((method: string, schema: unknown) => {
+					if (method !== "provider/connected") return Stream.empty;
+					providerConnectedSchema = schema;
+					return Stream.fromQueue(queue);
+				}) as WsClientService["notifications"],
 			},
 			push: () =>
 				Effect.runSync(Queue.offer(queue, { provider: "openai-codex" })),
+			subscribedSchema: () => providerConnectedSchema,
 		};
 	}
 
@@ -1168,7 +1179,9 @@ describe("Models settings page — provider/connected live push (ADR-0049)", () 
 		window.addEventListener("focus", focusSpy);
 
 		try {
-			const { overrides, push } = makeConnectedPush(makeFlippingOverrides());
+			const { overrides, push, subscribedSchema } = makeConnectedPush(
+				makeFlippingOverrides(),
+			);
 			await renderPage(overrides);
 
 			// First poll (mount) reports Not connected.
@@ -1177,6 +1190,11 @@ describe("Models settings page — provider/connected live push (ADR-0049)", () 
 					/not connected/i,
 				),
 			);
+
+			// The page must subscribe provider/connected with the RIGHT schema — a wrong
+			// one would decode-drop real Core frames while this stub (which bypasses
+			// decode) still passed.
+			expect(subscribedSchema()).toBe(ProviderConnectedNotification);
 
 			// Fire the push (params ignored by the consumer) — this alone must
 			// trigger a refetch that flips the card.
@@ -1254,27 +1272,22 @@ describe("Models settings page — provider/connected live push (ADR-0049)", () 
 		// providers from the shared cache. The runtime reports TWO providers; the
 		// write must keep both.
 		//
-		// The FULL two-provider payload is exposed ONLY on the post-push refetch: the
-		// mount poll returns a single-provider snapshot, so the two-provider assertion
-		// can pass ONLY if the push actually drove a refresh (guards against the test
-		// passing off the mount poll alone, which would make `push()` incidental).
+		// The FULL two-provider payload is exposed ONLY AFTER `push()` — gated on an
+		// explicit `pushed` flag, NOT a call count (mount itself makes multiple
+		// provider/status reads: the mount effect + the catalog-generation repoll, so a
+		// count-based gate could flip to the full payload during mount, before any push,
+		// making `push()` incidental). With the flag, the two-provider assertion can pass
+		// ONLY if the push actually drove a refetch; we also assert the call count rose
+		// across the push to pin the causal link.
 		let calls = 0;
+		let pushedFlag = false;
 		const { overrides, push } = makeConnectedPush({
 			...BASE_OVERRIDES,
 			providerStatus: () => {
 				calls += 1;
 				return Effect.succeed(
-					calls === 1
+					pushedFlag
 						? {
-								providers: [
-									{
-										id: "openai-codex",
-										connected: false,
-										auth_kind: "oauth" as const,
-									},
-								],
-							}
-						: {
 								providers: [
 									{
 										id: "openai-codex",
@@ -1287,6 +1300,15 @@ describe("Models settings page — provider/connected live push (ADR-0049)", () 
 										auth_kind: "oauth" as const,
 									},
 								],
+							}
+						: {
+								providers: [
+									{
+										id: "openai-codex",
+										connected: false,
+										auth_kind: "oauth" as const,
+									},
+								],
 							},
 				);
 			},
@@ -1294,7 +1316,8 @@ describe("Models settings page — provider/connected live push (ADR-0049)", () 
 		const client = makeQueryClient();
 		await renderPageWithClient(overrides, client);
 
-		// Mount settles on the single-provider snapshot first.
+		// Mount settles on the single-provider snapshot first (all mount reads see
+		// pushedFlag=false), regardless of how many provider/status reads mount fires.
 		await waitFor(() => {
 			const cached = client.getQueryData<ProviderStatusResult>([
 				"provider-status",
@@ -1302,6 +1325,8 @@ describe("Models settings page — provider/connected live push (ADR-0049)", () 
 			expect(cached?.providers.map((p) => p.id)).toEqual(["openai-codex"]);
 		});
 
+		const callsBeforePush = calls;
+		pushedFlag = true;
 		push();
 
 		await waitFor(() => {
@@ -1314,6 +1339,8 @@ describe("Models settings page — provider/connected live push (ADR-0049)", () 
 				"openai-codex",
 			]);
 		});
+		// The push causally drove a provider/status refetch (not an incidental mount read).
+		expect(calls).toBeGreaterThan(callsBeforePush);
 	});
 
 	it("focus-refetch fallback flips the card in isolation — no push fired", async () => {
