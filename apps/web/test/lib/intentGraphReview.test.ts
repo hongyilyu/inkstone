@@ -943,13 +943,20 @@ describe("reviewReducer — cross-buffer invariants live in one transition", () 
 		expect(next.stages.get("@morris")).toBeUndefined();
 	});
 
-	it("stage accepts a create/reuse node", () => {
-		const next = reviewReducer(initialReviewState, {
+	it("stage records an explicit accept or reject for a create/reuse node", () => {
+		const rejected = reviewReducer(initialReviewState, {
 			type: "stage",
 			node: createTodo,
 			stage: "reject",
 		});
-		expect(next.stages.get("@rodeo")).toBe("reject");
+		expect(rejected.stages.get("@rodeo")).toBe("reject");
+		// And a subsequent accept flips it back (a create node is always acceptable).
+		const accepted = reviewReducer(rejected, {
+			type: "stage",
+			node: createTodo,
+			stage: "accept",
+		});
+		expect(accepted.stages.get("@rodeo")).toBe("accept");
 	});
 
 	it("createNewInstead suppresses the near-match default (repoint → null)", () => {
@@ -960,27 +967,41 @@ describe("reviewReducer — cross-buffer invariants live in one transition", () 
 		expect(next.repoints.get("@leadads")).toBeNull();
 	});
 
-	it("reuseExisting clears the repoint AND the draft AND stages accept", () => {
-		// Seed a state that has an explicit 'create new instead' override + an edit draft.
+	it("reuseExisting clears the create-new override AND the draft AND re-points to the near-match", () => {
+		// A single-near-match create node the user had sent back to New (create-new
+		// override) with an edit draft. reuseExisting must clear BOTH so the near-match
+		// default re-applies — proven by the emitted entity_id, not just Map deletion.
 		let state = reviewReducer(initialReviewState, {
 			type: "createNewInstead",
-			handle: "@rodeo",
+			handle: "@leadads",
 		});
 		state = reviewReducer(state, {
 			type: "saveDraft",
-			node: createTodo,
-			draft: { type: "todo", title: "Renamed", note: "" },
+			node: nearMatchProject,
+			draft: { type: "project", name: "Renamed", outcome: "", note: "" },
 		});
-		expect(state.repoints.has("@rodeo")).toBe(true);
-		expect(state.drafts.has("@rodeo")).toBe(true);
+		expect(state.repoints.get("@leadads")).toBeNull(); // override present
+		expect(state.drafts.has("@leadads")).toBe(true);
 
 		const next = reviewReducer(state, {
 			type: "reuseExisting",
-			node: createTodo,
+			node: nearMatchProject,
 		});
-		expect(next.repoints.has("@rodeo")).toBe(false); // override cleared → default re-applies
-		expect(next.drafts.has("@rodeo")).toBe(false); // draft discarded (reused, not minted)
-		expect(next.stages.get("@rodeo")).toBe("accept");
+		expect(next.repoints.has("@leadads")).toBe(false); // override cleared → default re-applies
+		expect(next.drafts.has("@leadads")).toBe(false); // draft discarded (reused, not minted)
+		expect(next.stages.get("@leadads")).toBe("accept");
+		// The node now commits as a REUSE of the near-match entity, not a fresh create.
+		expect(
+			buildDecisions(
+				[nearMatchProject],
+				next.stages,
+				next.drafts,
+				new Map(),
+				next.repoints,
+			),
+		).toEqual([
+			{ handle: "@leadads", decision: "accept", entity_id: "existing-leadads" },
+		]);
 	});
 
 	it("saveDraft records the draft AND forces accept", () => {

@@ -134,11 +134,13 @@ export type GraphNodeDraft =
 export type DraftBuffer = ReadonlyMap<string, GraphNodeDraft>;
 
 /** The whole client-side review state for one `apply_intent_graph` proposal: the
- * three per-node buffers that together decide what the commit sends. Opaque to the
- * card — it dispatches intents ({@link reviewReducer}) and reads through
- * {@link nodeView}, never touching a buffer directly. The cross-buffer invariants
- * (a pick sets repoint AND accept; reuse-existing clears repoint+draft AND accepts)
- * live in the reducer, in one place, rather than scattered across card handlers. */
+ * three per-node buffers that together decide what the commit sends. The card WRITES
+ * only through dispatched intents ({@link reviewReducer}) and reads per-node facts
+ * through {@link nodeView} — so the cross-buffer invariants (a pick sets repoint AND
+ * accept; reuse-existing clears repoint+draft AND accepts) live in the reducer, in one
+ * place, rather than scattered across card handlers. (The card still reads the buffers
+ * for whole-plan derivations — the decision vector, downgrade notices — passing them to
+ * the pure `buildDecisions`/`downgradeNotices` helpers unchanged.) */
 export interface ReviewState {
 	readonly stages: StagingBuffer;
 	readonly repoints: RepointBuffer;
@@ -167,12 +169,15 @@ export type ReviewAction =
 	| { type: "rejectAll"; plan: readonly ResolvedNode[] }
 	| { type: "reset" };
 
-/** The one pure transition for the review state (ADR-0042). Every branch returns a
- * NEW `ReviewState` with fresh Maps — never mutates `state` — so React sees a new
- * reference. Each branch owns its whole cross-buffer invariant:
+/** The one pure transition for the review state (ADR-0042). Never mutates `state` or
+ * its Maps: a branch that changes a buffer builds a fresh Map for it (leaving the
+ * untouched buffers shared by reference), so React sees a new `ReviewState` — except a
+ * no-op (`stage` blocked by the accept-guard) returns `state` itself and `reset`
+ * returns the shared `initialReviewState`, both intentional identity short-circuits.
+ * Each branch owns its whole cross-buffer invariant:
  *
  *  - `stage` toggles one node, honoring the ambiguous accept-block ({@link setStage}
- *    ignores an accept on an unpicked ambiguous node);
+ *    ignores an accept on an unpicked ambiguous node — a no-op returns `state`);
  *  - `pick` records the candidate's `entity_id` as the node's repoint AND stages it
  *    accept in the SAME transition — the pick is visible to the accept, so there is no
  *    sibling-setState ordering hazard the card must dodge;
@@ -257,13 +262,18 @@ export interface NodeView {
 }
 
 /** Project the four per-node facts a row needs out of the opaque {@link ReviewState}
- * (ADR-0042). Computes the repoint once (via {@link repointFor}) and derives the
- * effective stage from it, so a row never re-derives the repoint twice. */
+ * (ADR-0042). Resolves the repoint ONCE and derives the effective stage from it (rather
+ * than calling {@link stageFor}, which would resolve it again via {@link isAcceptable}):
+ * a node's explicit stage wins, else it defaults to `accept` unless it is an unpicked
+ * ambiguous node (no repoint) — the same rule {@link stageFor} encodes. */
 export function nodeView(state: ReviewState, node: ResolvedNode): NodeView {
+	const explicitStage = state.stages.get(node.handle);
+	const repointId = repointFor(state.repoints, node);
+	const acceptable = node.disposition !== "ambiguous" || repointId !== null;
 	return {
-		stage: stageFor(state.stages, node, state.repoints),
-		explicitStage: state.stages.get(node.handle),
-		repointId: repointFor(state.repoints, node),
+		stage: explicitStage ?? (acceptable ? "accept" : "reject"),
+		explicitStage,
+		repointId,
 		draft: state.drafts.get(node.handle),
 	};
 }
