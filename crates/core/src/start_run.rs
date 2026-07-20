@@ -16,8 +16,8 @@
 //! The persist step is a closed [`PersistStep`] enum (exactly three variants —
 //! `FreshRun`, `CreateThread`, `RetryCas`), not user-extensible: each variant
 //! keeps its current transactional shape behind the shared sequence. The Worker
-//! spawn is INJECTED as `spawn_fn` (production: [`default_spawn`]) so the
-//! sequence is assertable against a `:memory:` pool without a real Worker
+//! spawn is INJECTED as `spawn_fn` (production: [`crate::worker::spawn`]) so
+//! the sequence is assertable against a `:memory:` pool without a real Worker
 //! binary — mirroring how [`crate::cancel`] injects `get_hub` (ADR-0026: no new
 //! subsystem dependency). `deferred_spawn` returns the spawn as an unfired
 //! closure for retry's response-BEFORE-spawn wire ordering.
@@ -27,8 +27,9 @@ use uuid::Uuid;
 
 use crate::db;
 use crate::dispatcher;
-use crate::hub::{self, Hubs, RunHub};
+use crate::hub::{self, Hubs};
 use crate::protocol::ManifestAttachment;
+use crate::worker::SpawnManifest;
 use crate::workflow::Workflow;
 
 /// What the persist step does — a closed set (exactly three variants:
@@ -236,38 +237,6 @@ pub enum StartRunError {
     Internal(anyhow::Error),
 }
 
-/// Everything `worker::spawn` takes — built by [`start_run`], consumed by the
-/// injected `spawn_fn` (production: [`default_spawn`]).
-pub struct SpawnManifest {
-    pub run_id: Uuid,
-    pub workflow: Workflow,
-    pub prompt: String,
-    pub history: Vec<(String, String)>,
-    /// The current turn's pre-encoded image attachments
-    /// (chat-image-attachments) — resolved by the shell, shipped in the fresh
-    /// spawn manifest.
-    pub manifest_attachments: Vec<ManifestAttachment>,
-    pub pool: SqlitePool,
-    pub assistant_message_id: Uuid,
-    pub hubs: Hubs,
-    pub run_hub: RunHub,
-}
-
-/// The production spawn: hand the manifest to the real Worker spawner.
-pub fn default_spawn(m: SpawnManifest) {
-    crate::worker::spawn(
-        m.run_id,
-        m.workflow,
-        m.prompt,
-        m.history,
-        m.manifest_attachments,
-        m.pool,
-        m.assistant_message_id,
-        m.hubs,
-        m.run_hub,
-    );
-}
-
 /// The ADR-0062 provider-credential gate, in the verb's own error vocabulary —
 /// the ONLY gate in the codebase now that every Run-creation site (post_message,
 /// thread_create, journal_entry, retry) routes through this verb (the handler
@@ -380,9 +349,10 @@ mod tests {
     use sqlx::SqlitePool;
     use uuid::Uuid;
 
-    use super::{PersistStep, SpawnManifest, StartRunError, StartRunParams, start_run};
+    use super::{PersistStep, StartRunError, StartRunParams, start_run};
     use crate::db;
     use crate::hub;
+    use crate::worker::SpawnManifest;
     use crate::workflow::default_workflow;
 
     /// A panic-safe credentials-dir fixture (shared

@@ -203,7 +203,7 @@ async fn prepare(
             skip_history: false,
             deferred_spawn: true,
         },
-        start_run::default_spawn,
+        crate::worker::spawn,
     )
     .await
     {
@@ -335,7 +335,8 @@ mod tests {
     async fn errored_run_prepares_accepted_with_reused_ids() {
         use std::sync::{Arc, Mutex};
 
-        use crate::start_run::{PersistStep, SpawnManifest, StartRunParams, start_run};
+        use crate::start_run::{PersistStep, StartRunParams, start_run};
+        use crate::worker::SpawnManifest;
 
         // The resolved provider (default openai-codex) must be connected or the
         // ADR-0062 gate would return ProviderNotConnected before the flip.

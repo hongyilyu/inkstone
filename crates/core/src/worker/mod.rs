@@ -1,6 +1,6 @@
 //! Worker process spawn (ADR-0013) behind the transport seam (ADR-0026). One
 //! Worker process per Run, stdio transport with NDJSON framing. `spawn`/`resume`
-//! build the spawn manifest (the only fresh-vs-resume difference) and hand it to
+//! build the manifest line (the only fresh-vs-resume difference) and hand it to
 //! [`drive`] — the one shared driver body — which spawns a
 //! [`child::ChildWorker`] (the sole `Command::spawn` site) and drives it with
 //! the shared generic [`run::run_loop`]. The loop publishes each Run Event into
@@ -46,24 +46,42 @@ fn resolve_worker_cmd(run_id: Uuid) -> Option<launch::ResolvedCommand> {
     }
 }
 
-/// Spawn a Worker for `run_id` (fresh path). Returns immediately; a Tokio task
-/// builds the manifest and hands it to [`drive`]. A pre-spawn failure (token
-/// resolution or process spawn) terminates the Run via [`finalize_error`].
-/// `text_delta`s append to the assistant row pre-inserted at `seq=0`.
-/// `attachments` is the CURRENT turn's images, already read + base64-encoded
-/// by the handler (so a read failure fails the RPC, not this detached task).
-#[allow(clippy::too_many_arguments)]
-pub fn spawn(
-    run_id: Uuid,
-    workflow: Workflow,
-    prompt: String,
-    history: Vec<(String, String)>,
-    attachments: Vec<ManifestAttachment>,
-    pool: SqlitePool,
-    assistant_message_id: Uuid,
-    hubs: Hubs,
-    run_hub: RunHub,
-) {
+/// Everything [`spawn`] takes — built by [`crate::start_run::start_run`],
+/// consumed by the injected `spawn_fn` (production: [`spawn`]).
+pub struct SpawnManifest {
+    pub run_id: Uuid,
+    pub workflow: Workflow,
+    pub prompt: String,
+    pub history: Vec<(String, String)>,
+    /// The current turn's pre-encoded image attachments
+    /// (chat-image-attachments) — resolved by the shell, shipped in the fresh
+    /// manifest line.
+    pub manifest_attachments: Vec<ManifestAttachment>,
+    pub pool: SqlitePool,
+    pub assistant_message_id: Uuid,
+    pub hubs: Hubs,
+    pub run_hub: RunHub,
+}
+
+/// Spawn a Worker for `m.run_id` (fresh path). Returns immediately; a Tokio
+/// task builds the manifest line and hands it to [`drive`]. A pre-spawn failure
+/// (token resolution or process spawn) terminates the Run via
+/// [`finalize_error`]. `text_delta`s append to the assistant row pre-inserted
+/// at `seq=0`. `m.manifest_attachments` is the CURRENT turn's images, already
+/// read + base64-encoded by the handler (so a read failure fails the RPC, not
+/// this detached task).
+pub fn spawn(m: SpawnManifest) {
+    let SpawnManifest {
+        run_id,
+        workflow,
+        prompt,
+        history,
+        manifest_attachments: attachments,
+        pool,
+        assistant_message_id,
+        hubs,
+        run_hub,
+    } = m;
     // Correlation span (ADR-0038): every Diagnostic Log event emitted inside this
     // task — including `child.rs`'s stdout-reader sites where `run_id` is not a
     // parameter — inherits `run_id` from this span. `tokio::spawn` does NOT
