@@ -998,25 +998,12 @@ async fn anchor_reuse_journal_entry(
         obj.insert("body".to_string(), body);
     }
     let data_str = data.to_string();
-    let schema_version = crate::mutation::EntityType::JournalEntry.schema_version();
-    let updated = queries::update_entity(
-        &mut **tx,
+    // A gone JE (deleted between the guard read and this write) surfaces as
+    // TargetMissing via the helper's rowcount guard (ADR-0033 target-gone).
+    apply::update_entity_with_revision(
+        tx,
         existing_id,
-        crate::mutation::EntityType::JournalEntry.as_str(),
-        schema_version,
-        &data_str,
-        ctx.now_ms,
-    )
-    .await?;
-    if updated != 1 {
-        // The JE vanished between the guard read and the write (ADR-0033 target-gone).
-        return Err(ApplyError::TargetMissing);
-    }
-    let next_seq = queries::next_entity_revision_seq(&mut **tx, existing_id).await?;
-    queries::insert_entity_revision(
-        &mut **tx,
-        existing_id,
-        next_seq,
+        crate::mutation::EntityType::JournalEntry,
         &data_str,
         Some(ctx.proposal_id),
         ctx.now_ms,
