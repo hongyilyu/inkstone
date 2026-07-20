@@ -167,8 +167,12 @@ interface SearchResultRow {
 }
 
 /** Wrap a JSON payload in the `ok` Tool Result shape Core returns: one text
- * content node carrying the stringified payload (mirrors `AgentToolResult`). */
-function okResult(payload: unknown): ToolCallResponse {
+ * content node carrying the stringified payload (mirrors `AgentToolResult`).
+ * Returns the `ok` arm specifically (not the full outcome union) so callers can
+ * read `.ok` without narrowing — the fixture transport only ever answers success. */
+function okResult(
+	payload: unknown,
+): Extract<ToolCallResponse, { ok: unknown }> {
 	return {
 		ok: { content: [{ type: "text", text: JSON.stringify(payload) }] },
 	};
@@ -255,9 +259,7 @@ function evalTransport(
 					// Build the terminate-flagged result as a fresh literal — the
 					// decoded outcome fields are readonly, so we don't mutate in place.
 					const base = okResult({ status: "accepted" });
-					return Promise.resolve(
-						"ok" in base ? { ok: { ...base.ok, terminate: true } } : base,
-					);
+					return Promise.resolve({ ok: { ...base.ok, terminate: true } });
 				}
 				default:
 					return Promise.reject(
