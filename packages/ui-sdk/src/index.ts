@@ -549,7 +549,14 @@ export function onNotification<A, I>(
 	const fiber = runtime.runFork(
 		Effect.flatMap(WsClient, (client) =>
 			Stream.runForEach(client.notifications(method, schema), (value) =>
-				Effect.sync(() => onValue(value)),
+				// Contain a throwing `onValue` per frame so one bad callback invocation
+				// can't fail the whole subscription fiber and silently stop later
+				// notifications — the per-frame isolation the old registry's try/catch gave.
+				Effect.sync(() => {
+					try {
+						onValue(value);
+					} catch {}
+				}),
 			),
 		),
 	);

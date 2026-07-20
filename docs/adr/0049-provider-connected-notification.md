@@ -32,8 +32,8 @@ connection has no live signal.
 > [ADR-0047](./0047-connection-notification-channel.md). Every *normative* decision
 > here still holds (reuse the channel unchanged, refetch-not-patch, route-scoped
 > registration/teardown, best-effort): `models.tsx` now registers via
-> `onNotification("provider/connected", ProviderConnectedNotification, () =>
-> refreshConnected())` and the SDK decode-drops a malformed frame at the
+> `onNotification(runtime, "provider/connected", ProviderConnectedNotification,
+> () => refreshConnected())` and the SDK decode-drops a malformed frame at the
 > subscription edge. Only the function names below are stale.
 
 - **Reuse the ADR-0047 channel unchanged.** Core clones the handler's `out_tx`

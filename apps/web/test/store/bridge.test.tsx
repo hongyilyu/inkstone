@@ -1,4 +1,7 @@
-import type { ThreadListResult } from "@inkstone/protocol";
+import {
+	type ThreadListResult,
+	ThreadTitledNotification,
+} from "@inkstone/protocol";
 import {
 	type RunEventValue,
 	type RunId,
@@ -675,12 +678,19 @@ describe("thread/titled handler (ADR-0047 — patch the threads cache in place)"
 		const titled = Effect.runSync(
 			Queue.unbounded<{ thread_id: string; title: string }>(),
 		);
+		// Capture the (method, schema) the bridge subscribes with, so wrong wiring
+		// (subscribing the wrong method, or dropping the schema) fails this test rather
+		// than passing on a method-blind stub. The stub bypasses the SDK's schema
+		// decode — the test offers an already-decoded value — hence the cast.
+		let subscribedMethod: string | undefined;
+		let subscribedSchema: unknown;
 		const runtime = makeCoreRuntime({
 			overrides: {
-				// The stub bypasses the SDK's schema decode — the test offers an
-				// already-decoded value — so cast to the generic member's shape.
-				notifications: (() =>
-					Stream.fromQueue(titled)) as WsClientService["notifications"],
+				notifications: ((method: string, schema: unknown) => {
+					subscribedMethod = method;
+					subscribedSchema = schema;
+					return Stream.fromQueue(titled);
+				}) as WsClientService["notifications"],
 			},
 		});
 
@@ -695,13 +705,52 @@ describe("thread/titled handler (ADR-0047 — patch the threads cache in place)"
 				],
 			}),
 		);
+		// The bridge must subscribe the "thread/titled" method with the protocol schema.
+		expect(subscribedMethod).toBe("thread/titled");
+		expect(subscribedSchema).toBe(ThreadTitledNotification);
 		dispose();
 	});
 
-	it("registers via the SDK stream and its disposer tears down without throwing", () => {
-		const qc = makeQueryClient();
-		const runtime = makeCoreRuntime();
+	it("its disposer stops delivery — a frame pushed after dispose does not patch the cache", async () => {
+		const qc = seedThreads();
+		// A live queue-backed subscription: a frame pushed BEFORE dispose patches the
+		// cache; a frame pushed AFTER dispose must NOT — proving the disposer actually
+		// interrupts the subscription fiber, not a vacuous no-op (a Stream.empty stub
+		// could never distinguish a real disposer from a no-op one).
+		const titled = Effect.runSync(
+			Queue.unbounded<{ thread_id: string; title: string }>(),
+		);
+		const runtime = makeCoreRuntime({
+			overrides: {
+				notifications: (() =>
+					Stream.fromQueue(titled)) as WsClientService["notifications"],
+			},
+		});
+
 		const dispose = registerThreadTitledHandler(runtime, qc);
-		expect(() => dispose()).not.toThrow();
+		Effect.runSync(Queue.offer(titled, { thread_id: "t1", title: "before" }));
+		await vi.waitFor(() =>
+			expect(
+				qc
+					.getQueryData<ThreadListResult>(["threads"])
+					?.threads.find((t) => t.id === "t1")?.title,
+			).toBe("before"),
+		);
+
+		dispose();
+		// Give the forked interrupt a beat to land, then push a post-dispose frame.
+		await new Promise((r) => setTimeout(r, 50));
+		Effect.runSync(
+			Queue.offer(titled, { thread_id: "t1", title: "after-dispose" }),
+		);
+
+		// The post-dispose frame must never reach applyThreadTitled: the title stays
+		// "before". Poll a few times so a (buggy) late delivery would be caught.
+		await new Promise((r) => setTimeout(r, 100));
+		expect(
+			qc
+				.getQueryData<ThreadListResult>(["threads"])
+				?.threads.find((t) => t.id === "t1")?.title,
+		).toBe("before");
 	});
 });

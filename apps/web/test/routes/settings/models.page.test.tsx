@@ -1253,18 +1253,54 @@ describe("Models settings page — provider/connected live push (ADR-0049)", () 
 		// result — not a synthesized openai-codex-only row that would drop other
 		// providers from the shared cache. The runtime reports TWO providers; the
 		// write must keep both.
-		const twoProviderStatus: ProviderStatusResult = {
-			providers: [
-				{ id: "openai-codex", connected: true, auth_kind: "oauth" as const },
-				{ id: "anthropic", connected: true, auth_kind: "oauth" as const },
-			],
-		};
+		//
+		// The FULL two-provider payload is exposed ONLY on the post-push refetch: the
+		// mount poll returns a single-provider snapshot, so the two-provider assertion
+		// can pass ONLY if the push actually drove a refresh (guards against the test
+		// passing off the mount poll alone, which would make `push()` incidental).
+		let calls = 0;
 		const { overrides, push } = makeConnectedPush({
 			...BASE_OVERRIDES,
-			providerStatus: () => Effect.succeed(twoProviderStatus),
+			providerStatus: () => {
+				calls += 1;
+				return Effect.succeed(
+					calls === 1
+						? {
+								providers: [
+									{
+										id: "openai-codex",
+										connected: false,
+										auth_kind: "oauth" as const,
+									},
+								],
+							}
+						: {
+								providers: [
+									{
+										id: "openai-codex",
+										connected: true,
+										auth_kind: "oauth" as const,
+									},
+									{
+										id: "anthropic",
+										connected: true,
+										auth_kind: "oauth" as const,
+									},
+								],
+							},
+				);
+			},
 		});
 		const client = makeQueryClient();
 		await renderPageWithClient(overrides, client);
+
+		// Mount settles on the single-provider snapshot first.
+		await waitFor(() => {
+			const cached = client.getQueryData<ProviderStatusResult>([
+				"provider-status",
+			]);
+			expect(cached?.providers.map((p) => p.id)).toEqual(["openai-codex"]);
+		});
 
 		push();
 

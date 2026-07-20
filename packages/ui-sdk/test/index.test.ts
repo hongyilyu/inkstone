@@ -754,6 +754,63 @@ describe("WsClient", () => {
 		}
 	});
 
+	it("broadcasts one pushed frame to two concurrent subscribers of the same method (PubSub fan-out, not Queue steal)", async () => {
+		// The refcounted per-method hub is a PubSub: every live subscriber sees every
+		// frame. A Queue would deliver each item to exactly ONE taker, so under a
+		// Queue only one of the two collectors below would receive the push. Both
+		// subscribe before the frame is pushed (re-triggering until it lands), so a
+		// single `thread/titled` frame must reach BOTH.
+		const title = "shared title";
+		const server = await makeServer((ws, req) => {
+			if (req.method === "thread/list") {
+				ws.send(
+					JSON.stringify({
+						jsonrpc: "2.0",
+						method: "thread/titled",
+						params: { thread_id: "t1", title },
+					}),
+				);
+				ws.send(
+					JSON.stringify({
+						jsonrpc: "2.0",
+						id: req.id,
+						result: { threads: [] },
+					}),
+				);
+			}
+		});
+
+		const program = Effect.gen(function* () {
+			const client = yield* WsClient;
+			// Two independent subscriptions to the SAME method, each taking one value.
+			const collectA = Stream.runCollect(
+				client
+					.notifications("thread/titled", ThreadTitledNotification)
+					.pipe(Stream.take(1)),
+			);
+			const collectB = Stream.runCollect(
+				client
+					.notifications("thread/titled", ThreadTitledNotification)
+					.pipe(Stream.take(1)),
+			);
+			const trigger = client
+				.threadList()
+				.pipe(Effect.zipRight(Effect.sleep("10 millis")), Effect.forever);
+			// Race the trigger against BOTH collectors completing — both must land.
+			const both = Effect.all([collectA, collectB], { concurrency: 2 });
+			const [a, b] = yield* Effect.raceFirst(both, trigger);
+			return { a: Array.from(a), b: Array.from(b) };
+		});
+
+		try {
+			const { a, b } = await Effect.runPromise(provide(server.url)(program));
+			expect(a).toEqual([{ thread_id: "t1", title }]);
+			expect(b).toEqual([{ thread_id: "t1", title }]);
+		} finally {
+			await server.close();
+		}
+	});
+
 	// --- Socket-liveness signal (ADR-0051) ---
 
 	// A server that CLOSES the first `dropFirstN` connections immediately on open,
