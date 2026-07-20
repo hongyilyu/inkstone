@@ -10,12 +10,16 @@ import {
 	draftRequiredEmpty,
 	type GraphLink,
 	type GraphNodeDraft,
+	initialReviewState,
 	isAcceptable,
+	nodeView,
 	parseGraphEntities,
 	parseGraphLinks,
 	type RepointBuffer,
+	type ReviewState,
 	rejectAll,
 	repointFor,
+	reviewReducer,
 	type StagingBuffer,
 	seedNodeDraft,
 	setStage,
@@ -180,7 +184,13 @@ describe("buildDecisions resolves a picked ambiguous node (the disambiguation pi
 		// entity_id (the override Core collapses ambiguous → reuse). The whole graph
 		// is now applicable.
 		const repoints: RepointBuffer = new Map([["@morris", "m1"]]);
-		const vector = buildDecisions(PLAN, new Map(), new Map(), new Map(), repoints);
+		const vector = buildDecisions(
+			PLAN,
+			new Map(),
+			new Map(),
+			new Map(),
+			repoints,
+		);
 		expect(vector.find((d) => d.handle === "@morris")).toEqual({
 			handle: "@morris",
 			decision: "accept",
@@ -475,7 +485,12 @@ describe("downgradeNotices", () => {
 		expect(downgradeNotices(PLAN, personLinks, new Map())).toHaveLength(1);
 		// Picked: @morris is acceptable (default accept) → the link is kept, no notice.
 		expect(
-			downgradeNotices(PLAN, personLinks, new Map(), new Map([["@morris", "m1"]])),
+			downgradeNotices(
+				PLAN,
+				personLinks,
+				new Map(),
+				new Map([["@morris", "m1"]]),
+			),
 		).toEqual([]);
 	});
 
@@ -873,7 +888,10 @@ describe("buildDecisions with edits", () => {
 
 	it("omits edited_fields for an unchanged draft (plain accept)", () => {
 		const drafts = new Map<string, GraphNodeDraft>([
-			["@rodeo", { type: "todo", title: "Figure out the Rodeo side", note: "" }],
+			[
+				"@rodeo",
+				{ type: "todo", title: "Figure out the Rodeo side", note: "" },
+			],
 		]);
 		expect(buildDecisions(plan, new Map(), drafts, entities)).toEqual([
 			{ handle: "@rodeo", decision: "accept" },
@@ -897,5 +915,149 @@ describe("buildDecisions with edits", () => {
 			{ handle: "@rodeo", decision: "accept" },
 			{ handle: "@leadads", decision: "accept" },
 		]);
+	});
+});
+
+describe("reviewReducer — cross-buffer invariants live in one transition", () => {
+	// THE CANONICAL PIN (deletes the card's synthesized-repoint workaround): picking a
+	// candidate must record the repoint AND stage the node accept in ONE transition, so
+	// the accept sees the just-set pick — no sibling-setState ordering hazard.
+	it("pick stages accept AND records the repoint in one transition", () => {
+		const next = reviewReducer(initialReviewState, {
+			type: "pick",
+			node: ambiguousPerson,
+			entityId: "m1",
+		});
+		expect(next.stages.get("@morris")).toBe("accept");
+		expect(next.repoints.get("@morris")).toBe("m1");
+	});
+
+	it("stage honors the ambiguous accept-block (unpicked ambiguous accept is ignored)", () => {
+		const next = reviewReducer(initialReviewState, {
+			type: "stage",
+			node: ambiguousPerson,
+			stage: "accept",
+		});
+		// setStage returns the same buffer, so the reducer returns the same state.
+		expect(next).toBe(initialReviewState);
+		expect(next.stages.get("@morris")).toBeUndefined();
+	});
+
+	it("stage accepts a create/reuse node", () => {
+		const next = reviewReducer(initialReviewState, {
+			type: "stage",
+			node: createTodo,
+			stage: "reject",
+		});
+		expect(next.stages.get("@rodeo")).toBe("reject");
+	});
+
+	it("createNewInstead suppresses the near-match default (repoint → null)", () => {
+		const next = reviewReducer(initialReviewState, {
+			type: "createNewInstead",
+			handle: "@leadads",
+		});
+		expect(next.repoints.get("@leadads")).toBeNull();
+	});
+
+	it("reuseExisting clears the repoint AND the draft AND stages accept", () => {
+		// Seed a state that has an explicit 'create new instead' override + an edit draft.
+		let state = reviewReducer(initialReviewState, {
+			type: "createNewInstead",
+			handle: "@rodeo",
+		});
+		state = reviewReducer(state, {
+			type: "saveDraft",
+			node: createTodo,
+			draft: { type: "todo", title: "Renamed", note: "" },
+		});
+		expect(state.repoints.has("@rodeo")).toBe(true);
+		expect(state.drafts.has("@rodeo")).toBe(true);
+
+		const next = reviewReducer(state, {
+			type: "reuseExisting",
+			node: createTodo,
+		});
+		expect(next.repoints.has("@rodeo")).toBe(false); // override cleared → default re-applies
+		expect(next.drafts.has("@rodeo")).toBe(false); // draft discarded (reused, not minted)
+		expect(next.stages.get("@rodeo")).toBe("accept");
+	});
+
+	it("saveDraft records the draft AND forces accept", () => {
+		const draft: GraphNodeDraft = { type: "todo", title: "Renamed", note: "" };
+		const next = reviewReducer(initialReviewState, {
+			type: "saveDraft",
+			node: createTodo,
+			draft,
+		});
+		expect(next.drafts.get("@rodeo")).toEqual(draft);
+		expect(next.stages.get("@rodeo")).toBe("accept");
+	});
+
+	it("rejectAll stages every plan node reject", () => {
+		const next = reviewReducer(initialReviewState, {
+			type: "rejectAll",
+			plan: PLAN,
+		});
+		expect([...next.stages.values()]).toEqual(["reject", "reject", "reject"]);
+	});
+
+	it("reset returns the initial state", () => {
+		const dirtied = reviewReducer(initialReviewState, {
+			type: "pick",
+			node: ambiguousPerson,
+			entityId: "m1",
+		});
+		expect(reviewReducer(dirtied, { type: "reset" })).toBe(initialReviewState);
+	});
+
+	it("returns a NEW state and never mutates the input (referential purity)", () => {
+		const before = initialReviewState;
+		const next = reviewReducer(before, {
+			type: "stage",
+			node: createTodo,
+			stage: "reject",
+		});
+		expect(next).not.toBe(before);
+		expect(next.stages).not.toBe(before.stages);
+		// The input's Maps are untouched.
+		expect(before.stages.size).toBe(0);
+	});
+});
+
+describe("nodeView — the row's four per-node facts from the opaque state", () => {
+	it("projects stage/explicitStage/repointId/draft consistent with the buffers", () => {
+		const state: ReviewState = {
+			stages: new Map([["@rodeo", "reject"]]),
+			repoints: new Map([["@leadads", "existing-x"]]),
+			drafts: new Map([
+				["@rodeo", { type: "todo", title: "Renamed", note: "" }],
+			]),
+		};
+		const rodeo = nodeView(state, createTodo);
+		expect(rodeo.stage).toBe("reject");
+		expect(rodeo.explicitStage).toBe("reject");
+		expect(rodeo.draft).toEqual({ type: "todo", title: "Renamed", note: "" });
+		expect(rodeo.repointId).toBeNull();
+	});
+
+	it("explicitStage is undefined at a node's default (distinguishes pending from rejected)", () => {
+		// An unpicked ambiguous node's effective stage is reject, but its RAW entry is
+		// undefined — it is pending a pick, not explicitly dismissed.
+		const view = nodeView(initialReviewState, ambiguousPerson);
+		expect(view.stage).toBe("reject");
+		expect(view.explicitStage).toBeUndefined();
+		expect(view.repointId).toBeNull();
+	});
+
+	it("reflects a picked ambiguous node as accept with the repoint id", () => {
+		const state = reviewReducer(initialReviewState, {
+			type: "pick",
+			node: ambiguousPerson,
+			entityId: "m2",
+		});
+		const view = nodeView(state, ambiguousPerson);
+		expect(view.stage).toBe("accept");
+		expect(view.repointId).toBe("m2");
 	});
 });

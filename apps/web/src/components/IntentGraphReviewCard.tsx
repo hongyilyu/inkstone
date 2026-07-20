@@ -8,27 +8,23 @@ import {
 	TriangleAlert,
 	X,
 } from "lucide-react";
-import { useEffect, useId, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useReducer, useState } from "react";
 import { useLibraryItems } from "@/lib/hooks/useLibraryItems";
 import {
 	appendedClauses,
 	buildDecisions,
 	buildEditedFields,
 	candidateSubtitle,
-	type DraftBuffer,
 	downgradeNotices,
 	draftLabel,
 	draftRequiredEmpty,
 	type GraphNodeDraft,
+	initialReviewState,
+	nodeView,
 	parseGraphEntities,
 	parseGraphLinks,
-	type RepointBuffer,
-	rejectAll,
-	repointFor,
-	type StagingBuffer,
+	reviewReducer,
 	seedNodeDraft,
-	setStage,
-	stageFor,
 	summarizeDecisions,
 } from "@/lib/intentGraphReview";
 import {
@@ -119,35 +115,26 @@ export function IntentGraphReviewCard({
 		for (const item of libraryItems ?? []) map.set(item.id, item);
 		return map;
 	}, [libraryItems]);
-	// The staging buffer starts at the per-node defaults (acceptable → accept,
+	// The whole per-node review state (staging + repoints + edit drafts) behind ONE
+	// reducer. It starts at the per-node defaults (acceptable → accept, unpicked
 	// ambiguous → reject), so a plain Apply with no toggles accepts everything
-	// resolvable — the common path.
-	const [buffer, setBuffer] = useState<StagingBuffer>(new Map());
-	// Per-handle inline edit drafts for create nodes (ADR-0042 `edited_fields`). A
-	// handle gains an entry when its row is opened for edit; the draft survives a
-	// reject→accept toggle so a correction is not lost. `editingHandle` is the ONE
-	// row currently expanded (one open at a time).
-	const [drafts, setDrafts] = useState<DraftBuffer>(new Map());
+	// resolvable — the common path. The card dispatches intents; the reducer owns the
+	// cross-buffer invariants (see `reviewReducer`).
+	const [review, dispatch] = useReducer(reviewReducer, initialReviewState);
+	// `editingHandle` is the ONE row currently expanded (one open at a time) — UI focus,
+	// not review state, so it stays local.
 	const [editingHandle, setEditingHandle] = useState<string | null>(null);
-	// Per-handle near-match re-point choices (ADR-0042 amendment). A create node
-	// with a single near-match DEFAULTS to reusing that existing entity (no entry
-	// needed — `repointFor` derives it); the buffer only records EXPLICIT user
-	// overrides: a string id (a future picker pick) or `null` ("Create new instead",
-	// suppressing the default). Mutually exclusive with an edit draft per node.
-	const [repoints, setRepoints] = useState<RepointBuffer>(new Map());
 	const [inFlight, setInFlight] = useState<"commit" | "reject" | null>(null);
-	// Reset the per-node staging when the proposal IDENTITY changes. The card is
-	// keyed by run_id, not proposal_id, so a multi-step Run that parks a SECOND
-	// `apply_intent_graph` proposal after a resume reuses this same mounted card
-	// with a fresh proposal_id. The buffer is keyed by graph-local handles (ephemeral
-	// model labels that collide across extractions), so without this reset a prior
-	// graph's toggles could leak into the next and submit an unintended decision.
+	// Reset the per-node review when the proposal IDENTITY changes. The card is keyed
+	// by run_id, not proposal_id, so a multi-step Run that parks a SECOND
+	// `apply_intent_graph` proposal after a resume reuses this same mounted card with a
+	// fresh proposal_id. The state is keyed by graph-local handles (ephemeral model
+	// labels that collide across extractions), so without this reset a prior graph's
+	// toggles could leak into the next and submit an unintended decision.
 	// biome-ignore lint/correctness/useExhaustiveDependencies: reset keyed on the proposal id.
 	useEffect(() => {
-		setBuffer(new Map());
-		setDrafts(new Map());
+		dispatch({ type: "reset" });
 		setEditingHandle(null);
-		setRepoints(new Map());
 	}, [proposal.proposal_id]);
 	useEffect(() => {
 		if (proposal.status !== "deciding") setInFlight(null);
@@ -183,34 +170,47 @@ export function IntentGraphReviewCard({
 	const submitting = deciding || inFlight !== null;
 	const isError = status === "error";
 
-	const notices = downgradeNotices(plan, links, buffer, repoints);
+	const notices = downgradeNotices(plan, links, review.stages, review.repoints);
 	// The clauses Core will APPEND to a saved entry's prose for accepted `journal_ref`s
 	// carrying `append_text` (ADR-0042 #221). This new prose exists only in the proposal,
 	// so the card MUST show it — the approval contract is the user reading the sentence
 	// before accepting it. (A `match_text` ref chips prose the entry already shows, so it
 	// needs no preview.)
-	const appendClauses = appendedClauses(plan, links, buffer, repoints);
+	const appendClauses = appendedClauses(
+		plan,
+		links,
+		review.stages,
+		review.repoints,
+	);
 	// The decision vector is the SINGLE source of truth for what Apply sends — build
 	// it once and derive the count + reject-all path from it (not a parallel `stageFor`
 	// pass), so the "Apply N items" label and the scalar decision can never disagree
 	// with the vector. `buildDecisions` is where the `ambiguous-without-pick → reject`
 	// coercion lives, so a separate count could otherwise show "Apply 1" on an
 	// all-reject vector.
-	const decisions = buildDecisions(plan, buffer, drafts, entities, repoints);
+	const decisions = buildDecisions(
+		plan,
+		review.stages,
+		review.drafts,
+		entities,
+		review.repoints,
+	);
 	const { acceptedCount, allRejected: everythingRejected } =
 		summarizeDecisions(decisions);
 	// An ambiguous node is still UNRESOLVED while it has neither a pick (a repoint
 	// id) nor an EXPLICIT reject — it sits at its reject-only default awaiting a
 	// decision. This drives the dynamic guidance note; once every ambiguous node is
 	// picked or explicitly rejected, the note disappears (no nag). The explicit-reject
-	// check reads the RAW buffer entry (not `stageFor`, whose default for an unpicked
-	// ambiguous node is already `reject`).
-	const unresolvedAmbiguous = plan.some(
-		(node) =>
+	// check reads the RAW buffer entry via `nodeView` (not the effective `stage`, whose
+	// default for an unpicked ambiguous node is already `reject`).
+	const unresolvedAmbiguous = plan.some((node) => {
+		const view = nodeView(review, node);
+		return (
 			node.disposition === "ambiguous" &&
-			repointFor(repoints, node) === null &&
-			buffer.get(node.handle) !== "reject",
-	);
+			view.repointId === null &&
+			view.explicitStage !== "reject"
+		);
+	});
 
 	const commit = () => {
 		if (submitting) return;
@@ -226,68 +226,53 @@ export function IntentGraphReviewCard({
 	};
 	const rejectEverything = () => {
 		if (submitting) return;
-		setBuffer(rejectAll(plan));
+		// Build the reject-all vector from the reducer's own transition so the sent
+		// vector and the dispatched state can never diverge. A reject-all mints nothing,
+		// so no edited_fields ride along.
+		const rejected = reviewReducer(review, { type: "rejectAll", plan });
 		setInFlight("reject");
-		// A reject-all mints nothing, so no edited_fields ride along.
-		onDecide("reject", undefined, buildDecisions(plan, rejectAll(plan)));
+		onDecide("reject", undefined, buildDecisions(plan, rejected.stages));
+		dispatch({ type: "rejectAll", plan });
 	};
 
 	// Open one create node's inline edit form (one row at a time). The form holds its
-	// own working draft; the card's `drafts` buffer gains an entry only on Save.
+	// own working draft; the review state gains an entry only on Save.
 	const openEdit = (handle: string) => {
 		if (submitting) return;
 		setEditingHandle(handle);
 	};
-	// Save commits the working draft to the buffer and forces the node ACCEPT (an
-	// edit only applies to a node you keep), then collapses the row.
+	// Save commits the working draft and forces the node ACCEPT (an edit only applies to
+	// a node you keep, `saveDraft` owns that pairing), then collapses the row.
 	const saveEdit = (node: ResolvedNode, draft: GraphNodeDraft) => {
-		setDrafts((current) => new Map(current).set(node.handle, draft));
-		setBuffer((current) => setStage(current, node, "accept"));
+		dispatch({ type: "saveDraft", node, draft });
 		setEditingHandle(null);
 	};
-	// Cancel discards the working draft (the buffer is untouched) and collapses.
+	// Cancel discards the working draft (the review state is untouched) and collapses.
 	const cancelEdit = () => setEditingHandle(null);
 
 	// Near-match re-point toggles (ADR-0042 amendment, default-to-existing). A
 	// single-near-match create node defaults to reusing its existing entity; these
 	// record the EXPLICIT departures from that default. "Create new instead" sets
 	// `null` (suppress the default → a plain create); "Reuse existing" clears the
-	// override (back to the default re-point) — and discards any edit draft, since a
-	// reused entity is linked-to, not minted/edited (mutually exclusive). (Named
-	// `reuseExisting`, not `use*`, so it is not mistaken for a React hook.)
+	// override (back to the default re-point) — and, in the reducer, discards any edit
+	// draft, since a reused entity is linked-to, not minted/edited (mutually exclusive).
+	// (Named `reuseExisting`, not `use*`, so it is not mistaken for a React hook.)
 	const createNewInstead = (handle: string) => {
 		if (submitting) return;
-		setRepoints((current) => new Map(current).set(handle, null));
+		dispatch({ type: "createNewInstead", handle });
 	};
 	const reuseExisting = (node: ResolvedNode) => {
 		if (submitting) return;
-		// Clear the explicit override so the single-near-match default re-applies, and
-		// drop any edit draft (a re-pointed node is reused, not edited).
-		setRepoints((current) => {
-			const next = new Map(current);
-			next.delete(node.handle);
-			return next;
-		});
-		setDrafts((current) => {
-			const next = new Map(current);
-			next.delete(node.handle);
-			return next;
-		});
-		setBuffer((current) => setStage(current, node, "accept"));
+		dispatch({ type: "reuseExisting", node });
 	};
 
-	// Pick one of an ambiguous node's candidates (the disambiguation picker, #181):
-	// record that candidate's `entity_id` as the node's re-point, which makes the node
-	// acceptable (`isAcceptable` sees the pick) and rides the `entity_id` override Core
-	// collapses ambiguous → reuse. The accept must be forced HERE — `setStage` consults
-	// `isAcceptable(node, repoints)`, and the `repoints` state update is not yet visible
-	// to a sibling `setBuffer`, so pass the post-pick repoint explicitly.
+	// Pick one of an ambiguous node's candidates (the disambiguation picker, #181): the
+	// `pick` transition records that candidate's `entity_id` as the node's re-point AND
+	// stages it accept in ONE step — so the pick is visible to the accept guard and the
+	// node collapses ambiguous → reuse with no sibling-update ordering hazard.
 	const pickCandidate = (node: ResolvedNode, entityId: string) => {
 		if (submitting) return;
-		setRepoints((current) => new Map(current).set(node.handle, entityId));
-		setBuffer((current) =>
-			setStage(current, node, "accept", new Map([[node.handle, entityId]])),
-		);
+		dispatch({ type: "pick", node, entityId });
 	};
 
 	const HeaderGlyph = GRAPH_VIEW.glyph;
@@ -320,29 +305,30 @@ export function IntentGraphReviewCard({
 			</header>
 
 			<ul className="flex flex-col gap-2 border-border border-t pt-3">
-				{plan.map((node) => (
-					<GraphNodeRow
-						key={node.handle}
-						node={node}
-						stage={stageFor(buffer, node, repoints)}
-						explicitStage={buffer.get(node.handle)}
-						disabled={submitting}
-						draft={drafts.get(node.handle)}
-						seed={entities.get(node.handle)}
-						editing={editingHandle === node.handle}
-						repointId={repointFor(repoints, node)}
-						itemsById={itemsById}
-						onStage={(stage) =>
-							setBuffer((current) => setStage(current, node, stage, repoints))
-						}
-						onEdit={() => openEdit(node.handle)}
-						onSave={(draft) => saveEdit(node, draft)}
-						onCancel={cancelEdit}
-						onCreateNew={() => createNewInstead(node.handle)}
-						onReuseExisting={() => reuseExisting(node)}
-						onPickCandidate={(entityId) => pickCandidate(node, entityId)}
-					/>
-				))}
+				{plan.map((node) => {
+					const view = nodeView(review, node);
+					return (
+						<GraphNodeRow
+							key={node.handle}
+							node={node}
+							stage={view.stage}
+							explicitStage={view.explicitStage}
+							disabled={submitting}
+							draft={view.draft}
+							seed={entities.get(node.handle)}
+							editing={editingHandle === node.handle}
+							repointId={view.repointId}
+							itemsById={itemsById}
+							onStage={(stage) => dispatch({ type: "stage", node, stage })}
+							onEdit={() => openEdit(node.handle)}
+							onSave={(draft) => saveEdit(node, draft)}
+							onCancel={cancelEdit}
+							onCreateNew={() => createNewInstead(node.handle)}
+							onReuseExisting={() => reuseExisting(node)}
+							onPickCandidate={(entityId) => pickCandidate(node, entityId)}
+						/>
+					);
+				})}
 			</ul>
 
 			{unresolvedAmbiguous ? (

@@ -1,4 +1,5 @@
 import type { NodeDecision, ResolvedNode } from "@inkstone/protocol";
+import { assertNever } from "@/lib/assertNever";
 import { parseAliases } from "@/lib/entityFields";
 import { readString, readStringArray } from "@/lib/readPayload";
 
@@ -131,6 +132,141 @@ export type GraphNodeDraft =
 /** The per-handle draft buffer (component state), holding a draft for every create
  * node the user has opened for edit. A handle with no entry was never edited. */
 export type DraftBuffer = ReadonlyMap<string, GraphNodeDraft>;
+
+/** The whole client-side review state for one `apply_intent_graph` proposal: the
+ * three per-node buffers that together decide what the commit sends. Opaque to the
+ * card — it dispatches intents ({@link reviewReducer}) and reads through
+ * {@link nodeView}, never touching a buffer directly. The cross-buffer invariants
+ * (a pick sets repoint AND accept; reuse-existing clears repoint+draft AND accepts)
+ * live in the reducer, in one place, rather than scattered across card handlers. */
+export interface ReviewState {
+	readonly stages: StagingBuffer;
+	readonly repoints: RepointBuffer;
+	readonly drafts: DraftBuffer;
+}
+
+/** The empty review state — every node sits at its per-node default (acceptable →
+ * accept, unpicked ambiguous → reject), nothing edited or re-pointed. The reducer's
+ * `reset` returns this, and `useReducer` initializes with it. */
+export const initialReviewState: ReviewState = {
+	stages: new Map(),
+	repoints: new Map(),
+	drafts: new Map(),
+};
+
+/** A user intent against the review state. Each variant names what the user did, not
+ * which buffers move — the reducer owns that mapping so a single action can enforce a
+ * cross-buffer invariant atomically (e.g. `pick` sets the repoint AND the accept in
+ * one transition, which is why the card needs no post-pick repoint hand-off). */
+export type ReviewAction =
+	| { type: "stage"; node: ResolvedNode; stage: NodeStage }
+	| { type: "pick"; node: ResolvedNode; entityId: string }
+	| { type: "createNewInstead"; handle: string }
+	| { type: "reuseExisting"; node: ResolvedNode }
+	| { type: "saveDraft"; node: ResolvedNode; draft: GraphNodeDraft }
+	| { type: "rejectAll"; plan: readonly ResolvedNode[] }
+	| { type: "reset" };
+
+/** The one pure transition for the review state (ADR-0042). Every branch returns a
+ * NEW `ReviewState` with fresh Maps — never mutates `state` — so React sees a new
+ * reference. Each branch owns its whole cross-buffer invariant:
+ *
+ *  - `stage` toggles one node, honoring the ambiguous accept-block ({@link setStage}
+ *    ignores an accept on an unpicked ambiguous node);
+ *  - `pick` records the candidate's `entity_id` as the node's repoint AND stages it
+ *    accept in the SAME transition — the pick is visible to the accept, so there is no
+ *    sibling-setState ordering hazard the card must dodge;
+ *  - `createNewInstead` sets the repoint to `null` (suppress the near-match default);
+ *  - `reuseExisting` clears the explicit repoint AND drops any edit draft AND stages
+ *    accept (a reused entity is linked-to, not minted/edited — mutually exclusive);
+ *  - `saveDraft` records the edit draft AND stages accept (an edit only applies to a
+ *    node you keep);
+ *  - `rejectAll` stages every node in the carried plan `reject`;
+ *  - `reset` returns {@link initialReviewState} (a fresh proposal identity). */
+export function reviewReducer(
+	state: ReviewState,
+	action: ReviewAction,
+): ReviewState {
+	switch (action.type) {
+		case "stage": {
+			const stages = setStage(
+				state.stages,
+				action.node,
+				action.stage,
+				state.repoints,
+			);
+			return stages === state.stages ? state : { ...state, stages };
+		}
+		case "pick": {
+			const repoints = new Map(state.repoints).set(
+				action.node.handle,
+				action.entityId,
+			);
+			// Stage accept against the JUST-computed repoints, not `state.repoints`, so
+			// the picked node reads as acceptable in the same transition.
+			const stages = setStage(state.stages, action.node, "accept", repoints);
+			return { ...state, stages, repoints };
+		}
+		case "createNewInstead": {
+			const repoints = new Map(state.repoints).set(action.handle, null);
+			return { ...state, repoints };
+		}
+		case "reuseExisting": {
+			const repoints = new Map(state.repoints);
+			repoints.delete(action.node.handle);
+			const drafts = new Map(state.drafts);
+			drafts.delete(action.node.handle);
+			// Clear repoint+draft FIRST, then stage accept against the cleared repoints so
+			// the single-near-match default re-applies (an ambiguous node is not reused
+			// here — this affordance is for create nodes, which are always acceptable).
+			const stages = setStage(state.stages, action.node, "accept", repoints);
+			return { stages, repoints, drafts };
+		}
+		case "saveDraft": {
+			const drafts = new Map(state.drafts).set(
+				action.node.handle,
+				action.draft,
+			);
+			const stages = setStage(
+				state.stages,
+				action.node,
+				"accept",
+				state.repoints,
+			);
+			return { ...state, stages, drafts };
+		}
+		case "rejectAll":
+			return { ...state, stages: rejectAll(action.plan) };
+		case "reset":
+			return initialReviewState;
+		default:
+			return assertNever(action, "review action");
+	}
+}
+
+/** The per-node facts a row renders, bundled into one read so the card consults the
+ * state through a single selector instead of four raw buffer reads: the effective
+ * `stage`, the RAW `explicitStage` (undefined when the node sits at its default —
+ * distinguishes an unpicked ambiguous node from an explicitly rejected one), the
+ * effective `repointId`, and the node's edit `draft`. */
+export interface NodeView {
+	readonly stage: NodeStage;
+	readonly explicitStage: NodeStage | undefined;
+	readonly repointId: string | null;
+	readonly draft: GraphNodeDraft | undefined;
+}
+
+/** Project the four per-node facts a row needs out of the opaque {@link ReviewState}
+ * (ADR-0042). Computes the repoint once (via {@link repointFor}) and derives the
+ * effective stage from it, so a row never re-derives the repoint twice. */
+export function nodeView(state: ReviewState, node: ResolvedNode): NodeView {
+	return {
+		stage: stageFor(state.stages, node, state.repoints),
+		explicitStage: state.stages.get(node.handle),
+		repointId: repointFor(state.repoints, node),
+		draft: state.drafts.get(node.handle),
+	};
+}
 
 /** Index the graph payload's `entities[]` by handle, so an edit can seed from — and
  * diff against — a node's ORIGINAL proposed fields. Degrades a malformed payload to
