@@ -16,10 +16,8 @@ use crate::mutation::{
 
 /// Write a new revision of an existing Entity: replace its `data` and append the
 /// next revision snapshot, in the caller's open tx (ADR-0004, ADR-0033). The
-/// composite every in-place write shares — `update_todo`'s merge,
-/// `mark_project_reviewed`'s recompute, the delete-project cascade, the journal
-/// textualize loop, the reference weave, and the generic update arm — so its
-/// rowcount⇒`TargetMissing` guard and monotonic seq allocation live in ONE place.
+/// composite every in-place write shares, so its rowcount⇒`TargetMissing` guard
+/// and monotonic seq allocation live in ONE place.
 ///
 /// The rows-affected guard is the target-gone signal: `update_entity` filters
 /// `WHERE id = ? AND type = ?`, so a vanished OR wrong-type target updates zero
@@ -806,19 +804,20 @@ pub(crate) async fn apply_entity_mutation(
         MutationKind::ApplyIntentGraph => {
             unreachable!("apply_intent_graph is rejected before this seam")
         }
-        // Every remaining kind routes generically by the contract's `write_class`
-        // then `write_op`. A `WriteClass::InTx` kind computes its data inside the
-        // tx and MUST have a named arm above (all three do); reaching here means a
-        // new InTx kind was declared without one, so fail loud rather than write
-        // its un-computed `data_str` down the generic path. `NoData`/`Normalized`
-        // route by `write_op` — an exhaustive inner match, so a new WriteOp variant
-        // must declare its write body here, and a new KIND is forced through
-        // `describe()`'s contract block instead of this dispatch.
-        _ => match desc.write_class {
-            WriteClass::InTx => unreachable!(
-                "a WriteClass::InTx kind must have a named dispatch arm ({mutation_kind})"
-            ),
-            WriteClass::NoData | WriteClass::Normalized => match desc.write_op {
+        // A `WriteClass::InTx` kind computes its data inside the tx and MUST have a
+        // named arm above (all three do). Reaching here means a new InTx kind was
+        // declared without one, so fail loud rather than write its un-computed
+        // `data_str` down the generic path below. This structural guard replaces the
+        // old prose TRAP: a mis-declared InTx kind now stops at a named arm, not at
+        // the generic arm's `data_str` expect.
+        _ if desc.write_class == WriteClass::InTx => unreachable!(
+            "a WriteClass::InTx kind must have a named dispatch arm ({mutation_kind})"
+        ),
+        // Every remaining kind (NoData / Normalized) routes generically by the
+        // contract's `write_op` — an exhaustive inner match, so a new WriteOp
+        // variant must declare its write body here, and a new KIND is forced
+        // through `describe()`'s contract block instead of this dispatch.
+        _ => match desc.write_op {
             // Generic delete (journal_entry, person, todo, media, habit): remove
             // the entity of this `entity_type`. Its revisions/sources and a
             // Person's or Todo's `todo_person_refs` rows cascade away via FK ON
@@ -879,12 +878,9 @@ pub(crate) async fn apply_entity_mutation(
             // Generic update (journal_entry, person, project, media, habit):
             // replace the target entity's data of this `entity_type` + append
             // the next revision snapshot. The journal-entry body-ref check above
-            // is gated to journal kinds; person/project/media carry no body
-            // refs. `reference_existing_entity_from_journal_entry` is a
-            // `WriteOp::Update` too, so it joins this branch (its data_str was
-            // rewritten above to carry the new entity_ref placeholder);
-            // update_todo and mark_project_reviewed took their named in-tx arms
-            // above.
+            // is gated to journal kinds; person/project/media carry no body refs.
+            // The InTx kinds (update_todo, mark_project_reviewed, the reference
+            // weave) took their named in-tx arms above.
             WriteOp::Update => {
                 let data_str = data_str
                     .as_deref()
@@ -939,8 +935,7 @@ pub(crate) async fn apply_entity_mutation(
                     }
                 }
             }
-            },
-        }
+        },
     }
 
     // Write the already-resolved Entity Source row, if any. The run-coupled
