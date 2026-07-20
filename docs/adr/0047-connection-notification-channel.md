@@ -119,6 +119,47 @@ completion (ADR-0049) followed as the second consumer.
   defect this follow-up exists to fix. (The placeholder remains the correct
   *fallback* when the push can't be delivered.)
 
+## Amendment (2026-07-20): client mechanism is a generic Stream member
+
+The **client-side** mechanism named in the Decision — a
+`setNotificationHandler(method, handler)` module-global registry with a swallowed
+`onFrame` fallthrough — is superseded by a generic **Stream member on the
+`WsClient` tag**:
+
+```ts
+readonly notifications: <A, I>(method: string, schema: S.Schema<A, I>) => Stream.Stream<A>
+```
+
+`WsClientLive` backs each method with a lazily-created, refcounted **PubSub**
+(broadcast fan-out): the first subscriber creates the hub, `onFrame` publishes a
+matching frame's raw `params` only to an already-present hub, and the last
+unsubscriber shuts it down and drops the map entry. Decode-drop happens at the
+subscription edge with the **caller-supplied** schema, mirroring the `run/event`
+arm — so the SDK still never decodes a payload or special-cases a method. A
+thin `onNotification(runtime, method, schema, onValue): () => void` sugar wraps a
+single subscription into a `useEffect` cleanup for React route consumers.
+
+**Every ADR-0047 decision above is preserved**: generic by-method dispatch,
+originating-connection reach, best-effort / at-most-once / DB-is-truth (an
+unsubscribed method's frame is dropped — the refcounted PubSub holds no buffer
+while no one is subscribed, matching the old drop-unknown behavior), the flat
+typed surface (no method-per-notification), and "a new run-less message is a
+schema + a subscription, not an interface change."
+
+**The rejected "title-specific SDK stream" still stands** — that alternative
+baked *`title`* into the typed surface, widening `WsClient` per message. This
+member is **generic** (method + schema are runtime arguments), so it keeps the
+surface flat exactly as the registry did; it is not the rejected typed
+`titleNotifications()`.
+
+Why the swap: the module-global registry was a side door around the module's one
+real seam (the `WsClient` Context.Tag) — `stubWsClient` could neither stub nor
+drive it, forcing consumers and tests into hand-rolled decode guards, paired
+disposers, `vi.spyOn` capture, and `afterEach` reset rituals. Folding the channel
+into the tag makes it stubbable and drivable like every other member. Consumers
+now hold a `WsRuntime` (precedent: `startProposalStream`); the method stays
+stringly-typed, as this ADR always intended.
+
 ## Related
 
 - [ADR-0046](./0046-generated-thread-title.md) — the one-shot titler whose lazy

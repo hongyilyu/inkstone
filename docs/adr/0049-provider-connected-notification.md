@@ -25,6 +25,17 @@ connection has no live signal.
 
 ## Decision
 
+> **Client-mechanism amendment (2026-07-20).** The `setNotificationHandler` /
+> `clearNotificationHandler` registry named below is superseded by the generic
+> `WsClient.notifications(method, schema)` Stream member (and the `onNotification`
+> React sugar) — see the **Amendment (2026-07-20)** in
+> [ADR-0047](./0047-connection-notification-channel.md). Every *normative* decision
+> here still holds (reuse the channel unchanged, refetch-not-patch, route-scoped
+> registration/teardown, best-effort): `models.tsx` now registers via
+> `onNotification(runtime, "provider/connected", ProviderConnectedNotification,
+> () => refreshConnected())` and the SDK decode-drops a malformed frame at the
+> subscription edge. Only the function names below are stale.
+
 - **Reuse the ADR-0047 channel unchanged.** Core clones the handler's `out_tx`
   into the drain `tokio::spawn` (exactly as `thread_create` clones it into
   `spawn_title_generation`), and on the `Ok(Some(creds))` branch **after**

@@ -1,8 +1,12 @@
-import type { ThreadListResult } from "@inkstone/protocol";
-import * as sdk from "@inkstone/ui-sdk";
 import {
+	type ThreadListResult,
+	ThreadTitledNotification,
+} from "@inkstone/protocol";
+import {
+	onNotification,
 	type RunEventValue,
 	type RunId,
+	type WsClientService,
 	type WsError,
 	WsRequestError,
 } from "@inkstone/ui-sdk";
@@ -11,7 +15,7 @@ import {
 	makeCoreRuntime,
 	makeQueryClient,
 } from "@test/test-utils/renderWithCore";
-import { Effect, Queue, Stream } from "effect";
+import { Deferred, Effect, Queue, Stream } from "effect";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { WsRuntime } from "@/runtime.js";
 import {
@@ -665,71 +669,139 @@ describe("thread/titled handler (ADR-0047 — patch the threads cache in place)"
 		expect(qc.getQueryData<ThreadListResult>(["threads"])).toBeUndefined();
 	});
 
-	/**
-	 * Capture the closure `registerThreadTitledHandler` registers under
-	 * "thread/titled" by spying the SDK seam, so a test can drive raw (unknown)
-	 * `params` through the REAL decode→applyThreadTitled glue — the load-bearing
-	 * wiring the feature ships on. A gutted/no-op registration leaves `registered`
-	 * undefined (or never patches), failing these tests where a `.not.toThrow()`
-	 * matcher would not.
-	 */
-	function captureRegisteredHandler(
-		qc: QueryClient,
-	): (params: unknown) => void {
-		let registered: ((params: unknown) => void) | undefined;
-		const spy = vi
-			.spyOn(sdk, "setNotificationHandler")
-			.mockImplementation((method, handler) => {
-				if (method === "thread/titled") {
-					registered = handler;
-				}
-			});
-		registerThreadTitledHandler(qc);
-		spy.mockRestore();
-		if (registered === undefined) {
-			throw new Error(
-				'registerThreadTitledHandler did not register a "thread/titled" handler',
-			);
-		}
-		return registered;
-	}
-
-	it("wires the SDK seam so a valid thread/titled frame re-titles the cached row", () => {
+	it("wires the SDK notifications stream so a pushed thread/titled frame re-titles the cached row", async () => {
 		const qc = seedThreads();
-		const handler = captureRegisteredHandler(qc);
-
-		// Drive a raw `unknown` params object through the real registered closure
-		// (decode → applyThreadTitled), exactly as the SDK's onFrame would.
-		handler({ thread_id: "t1", title: "new A" });
-
-		expect(qc.getQueryData<ThreadListResult>(["threads"])).toEqual({
-			threads: [
-				{ id: "t1", title: "new A", last_activity_at: 2 },
-				{ id: "t2", title: "old B", last_activity_at: 1 },
-			],
+		// Drive the channel end-to-end through the real onNotification wiring: a
+		// test-owned queue feeds the stubbed `notifications` stream, so offering a
+		// decoded frame exercises registerThreadTitledHandler → onNotification →
+		// applyThreadTitled exactly as the live SDK's PubSub would (the SDK owns the
+		// raw-frame decode now; the ui-sdk wire suite covers decode-drop).
+		const titled = Effect.runSync(
+			Queue.unbounded<{ thread_id: string; title: string }>(),
+		);
+		// Capture the (method, schema) the bridge subscribes with, so wrong wiring
+		// (subscribing the wrong method, or dropping the schema) fails this test rather
+		// than passing on a method-blind stub. The stub bypasses the SDK's schema
+		// decode — the test offers an already-decoded value — hence the cast.
+		let subscribedMethod: string | undefined;
+		let subscribedSchema: unknown;
+		const runtime = makeCoreRuntime({
+			overrides: {
+				notifications: ((method: string, schema: unknown) => {
+					subscribedMethod = method;
+					subscribedSchema = schema;
+					return Stream.fromQueue(titled);
+				}) as WsClientService["notifications"],
+			},
 		});
+
+		const dispose = registerThreadTitledHandler(runtime, qc);
+		Effect.runSync(Queue.offer(titled, { thread_id: "t1", title: "new A" }));
+
+		await vi.waitFor(() =>
+			expect(qc.getQueryData<ThreadListResult>(["threads"])).toEqual({
+				threads: [
+					{ id: "t1", title: "new A", last_activity_at: 2 },
+					{ id: "t2", title: "old B", last_activity_at: 1 },
+				],
+			}),
+		);
+		// The bridge must subscribe the "thread/titled" method with the protocol schema.
+		expect(subscribedMethod).toBe("thread/titled");
+		expect(subscribedSchema).toBe(ThreadTitledNotification);
+		dispose();
 	});
 
-	it("ignores a malformed thread/titled frame — no throw, cache untouched", () => {
+	it("its disposer stops delivery — a frame pushed after dispose does not patch the cache", async () => {
 		const qc = seedThreads();
-		const handler = captureRegisteredHandler(qc);
-
-		// Missing `title` → the schema decode fails; the Either.isLeft guard must
-		// early-return so the bad frame neither throws nor mutates the cache.
-		expect(() => handler({ thread_id: "t1" })).not.toThrow();
-		expect(() => handler({ nonsense: true })).not.toThrow();
-
-		expect(qc.getQueryData<ThreadListResult>(["threads"])).toEqual({
-			threads: [
-				{ id: "t1", title: "old A", last_activity_at: 2 },
-				{ id: "t2", title: "old B", last_activity_at: 1 },
-			],
+		// A live queue-backed subscription with a FINALIZER: a frame pushed BEFORE
+		// dispose patches the cache; a frame pushed AFTER dispose must NOT — proving the
+		// disposer actually interrupts the subscription fiber, not a vacuous no-op (a
+		// Stream.empty stub could never distinguish a real disposer from a no-op one).
+		// Teardown is synchronized on a Deferred the stream's finalizer completes —
+		// deterministic, not a fixed sleep (which could miss a delayed delivery).
+		const titled = Effect.runSync(
+			Queue.unbounded<{ thread_id: string; title: string }>(),
+		);
+		const tornDown = Effect.runSync(Deferred.make<void>());
+		const runtime = makeCoreRuntime({
+			overrides: {
+				notifications: (() =>
+					Stream.fromQueue(titled).pipe(
+						Stream.ensuring(Deferred.succeed(tornDown, undefined)),
+					)) as WsClientService["notifications"],
+			},
 		});
+
+		const dispose = registerThreadTitledHandler(runtime, qc);
+		Effect.runSync(Queue.offer(titled, { thread_id: "t1", title: "before" }));
+		await vi.waitFor(() =>
+			expect(
+				qc
+					.getQueryData<ThreadListResult>(["threads"])
+					?.threads.find((t) => t.id === "t1")?.title,
+			).toBe("before"),
+		);
+
+		// Dispose, then await the subscription's finalizer — deterministic proof the
+		// fiber was interrupted — before pushing the post-dispose frame. Because the
+		// subscription is provably gone, the offer below has no consumer; a brief
+		// macrotask flush lets any (buggy) resurrected delivery surface before we assert.
+		dispose();
+		await runtime.runPromise(Deferred.await(tornDown));
+		Effect.runSync(
+			Queue.offer(titled, { thread_id: "t1", title: "after-dispose" }),
+		);
+		await new Promise((r) => setTimeout(r, 0));
+
+		// The post-dispose frame must never reach applyThreadTitled: the title stays "before".
+		expect(
+			qc
+				.getQueryData<ThreadListResult>(["threads"])
+				?.threads.find((t) => t.id === "t1")?.title,
+		).toBe("before");
 	});
 
-	it("registers via the SDK seam and its disposer clears without throwing", () => {
-		const qc = makeQueryClient();
-		const dispose = registerThreadTitledHandler(qc);
-		expect(() => dispose()).not.toThrow();
+	it("a throwing onValue is contained per-frame — a later notification still patches the cache", async () => {
+		// Guards the onNotification try/catch (round-1 fix): if the callback throws on
+		// one frame, the subscription must keep running and apply the NEXT frame. Without
+		// per-frame containment the first throw fails the fiber and the second frame is lost.
+		const qc = seedThreads();
+		const titled = Effect.runSync(
+			Queue.unbounded<{ thread_id: string; title: string }>(),
+		);
+		const runtime = makeCoreRuntime({
+			overrides: {
+				notifications: (() =>
+					Stream.fromQueue(titled)) as WsClientService["notifications"],
+			},
+		});
+
+		// Register a handler that THROWS on the first thread_id, then delegates to the
+		// real cache patch — so frame 1 throws inside onValue, frame 2 must still land.
+		let seen = 0;
+		const dispose = onNotification(
+			runtime,
+			"thread/titled",
+			ThreadTitledNotification,
+			(n) => {
+				seen += 1;
+				if (seen === 1) throw new Error("boom on first frame");
+				applyThreadTitled(qc, n);
+			},
+		);
+
+		Effect.runSync(Queue.offer(titled, { thread_id: "t1", title: "boom" }));
+		Effect.runSync(Queue.offer(titled, { thread_id: "t1", title: "survived" }));
+
+		// The second frame patched the cache → the subscription survived the first throw.
+		await vi.waitFor(() =>
+			expect(
+				qc
+					.getQueryData<ThreadListResult>(["threads"])
+					?.threads.find((t) => t.id === "t1")?.title,
+			).toBe("survived"),
+		);
+		dispose();
 	});
 });

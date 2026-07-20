@@ -7,6 +7,7 @@ import {
 import { useEffect } from "react";
 import { CommandPalette } from "@/components/CommandPalette";
 import { EntityCue } from "@/components/EntityCue";
+import { useRuntime } from "@/runtime";
 import { registerThreadTitledHandler, setOnRunSettled } from "@/store/bridge";
 import { noteNonSettingsLocation } from "@/store/settings-origin";
 
@@ -22,6 +23,7 @@ function RootLayout() {
 	// background) — wired once here, at the global mount, to the bridge's terminal
 	// seam so off-screen completions still update the feed (ADR-0028 read side).
 	const queryClient = useQueryClient();
+	const runtime = useRuntime();
 	useEffect(() => {
 		setOnRunSettled(() => {
 			void queryClient.invalidateQueries({ queryKey: ["run-history"] });
@@ -30,9 +32,12 @@ function RootLayout() {
 	}, [queryClient]);
 
 	// Patch the ["threads"] cache in place when Core pushes thread/titled, so the
-	// sidebar row re-titles live without a refetch (ADR-0047). The disposer clears
-	// the handler on unmount.
-	useEffect(() => registerThreadTitledHandler(queryClient), [queryClient]);
+	// sidebar row re-titles live without a refetch (ADR-0047). The disposer
+	// interrupts the notification subscription on unmount.
+	useEffect(
+		() => registerThreadTitledHandler(runtime, queryClient),
+		[runtime, queryClient],
+	);
 
 	return (
 		<>
