@@ -743,17 +743,18 @@ describe("thread/titled handler (ADR-0047 — patch the threads cache in place)"
 			).toBe("before"),
 		);
 
-		// Dispose, then await the subscription's finalizer — proof the fiber was
-		// interrupted — before pushing the post-dispose frame.
+		// Dispose, then await the subscription's finalizer — deterministic proof the
+		// fiber was interrupted — before pushing the post-dispose frame. Because the
+		// subscription is provably gone, the offer below has no consumer; a brief
+		// macrotask flush lets any (buggy) resurrected delivery surface before we assert.
 		dispose();
 		await runtime.runPromise(Deferred.await(tornDown));
 		Effect.runSync(
 			Queue.offer(titled, { thread_id: "t1", title: "after-dispose" }),
 		);
+		await new Promise((r) => setTimeout(r, 0));
 
-		// The post-dispose frame must never reach applyThreadTitled: the title stays
-		// "before". A short settle window lets any (buggy) late delivery surface.
-		await new Promise((r) => setTimeout(r, 50));
+		// The post-dispose frame must never reach applyThreadTitled: the title stays "before".
 		expect(
 			qc
 				.getQueryData<ThreadListResult>(["threads"])

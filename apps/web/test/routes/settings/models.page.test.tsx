@@ -1273,12 +1273,14 @@ describe("Models settings page — provider/connected live push (ADR-0049)", () 
 		// write must keep both.
 		//
 		// The FULL two-provider payload is exposed ONLY AFTER `push()` — gated on an
-		// explicit `pushed` flag, NOT a call count (mount itself makes multiple
-		// provider/status reads: the mount effect + the catalog-generation repoll, so a
-		// count-based gate could flip to the full payload during mount, before any push,
-		// making `push()` incidental). With the flag, the two-provider assertion can pass
-		// ONLY if the push actually drove a refetch; we also assert the call count rose
-		// across the push to pin the causal link.
+		// explicit `pushedFlag`, NOT a call count (mount fires multiple provider/status
+		// reads: the mount effect + the catalog-generation repoll + focus). To make the
+		// causality sound, we flip the flag ONLY after MOUNT QUIESCENCE — i.e. after the
+		// read count has stopped rising for a stable window — so no mount read is still
+		// in flight to resolve full-payload after the flip (the false-causality codex
+		// caught: a pending mount read landing post-flip would populate both providers
+		// without the push). After quiescence, only the push-driven refetch can raise
+		// the count and produce the two-provider payload.
 		let calls = 0;
 		let pushedFlag = false;
 		const { overrides, push } = makeConnectedPush({
@@ -1317,7 +1319,7 @@ describe("Models settings page — provider/connected live push (ADR-0049)", () 
 		await renderPageWithClient(overrides, client);
 
 		// Mount settles on the single-provider snapshot first (all mount reads see
-		// pushedFlag=false), regardless of how many provider/status reads mount fires.
+		// pushedFlag=false).
 		await waitFor(() => {
 			const cached = client.getQueryData<ProviderStatusResult>([
 				"provider-status",
@@ -1325,7 +1327,21 @@ describe("Models settings page — provider/connected live push (ADR-0049)", () 
 			expect(cached?.providers.map((p) => p.id)).toEqual(["openai-codex"]);
 		});
 
-		const callsBeforePush = calls;
+		// Wait for MOUNT QUIESCENCE: the read count must hold steady across a window, so
+		// every mount-triggered provider/status read has resolved (under pushedFlag=false)
+		// before we flip the flag — otherwise a late mount read could produce the full
+		// payload and the test would pass without the push causing it.
+		const stableFor = async (probe: () => number, ms: number) => {
+			let last = probe();
+			for (;;) {
+				await new Promise((r) => setTimeout(r, ms));
+				const now = probe();
+				if (now === last) return now;
+				last = now;
+			}
+		};
+		const callsBeforePush = await stableFor(() => calls, 80);
+
 		pushedFlag = true;
 		push();
 
@@ -1339,7 +1355,8 @@ describe("Models settings page — provider/connected live push (ADR-0049)", () 
 				"openai-codex",
 			]);
 		});
-		// The push causally drove a provider/status refetch (not an incidental mount read).
+		// The push causally drove a provider/status refetch: the count rose only after
+		// mount had gone quiescent, so the increase is attributable to the push alone.
 		expect(calls).toBeGreaterThan(callsBeforePush);
 	});
 

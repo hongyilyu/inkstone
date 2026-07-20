@@ -10,6 +10,7 @@ import {
 	WsClientLive,
 	type WsClientService,
 	type WsError,
+	WsRequestError,
 } from "../src/index.js";
 
 type WireRequest = {
@@ -756,27 +757,26 @@ describe("WsClient", () => {
 
 	it("broadcasts one pushed frame to two concurrent subscribers of the same method (PubSub fan-out, not Queue steal)", async () => {
 		// The refcounted per-method hub is a PubSub: every live subscriber sees every
-		// frame. This test must FAIL under a shared Queue, so the server pushes EXACTLY
-		// ONE `thread/titled` frame — on the first `thread/list` request only. Under a
-		// Queue that single item goes to exactly one taker, so the other collector
-		// would hang and the test would time out; under PubSub both collectors get it.
-		// (An earlier version pushed a frame per `thread/list` re-trigger — that let a
-		// Queue satisfy both takers with DIFFERENT frames, so it couldn't distinguish
-		// the two shapes; cross-engine review caught it.)
-		const title = "shared title";
-		let pushed = false;
+		// frame. This test distinguishes PubSub broadcast from a shared Queue by SET
+		// OVERLAP — robust to subscription-order skew (no readiness sleep to get wrong):
+		// every `thread/list` pushes a `thread/titled` frame with a monotonic sequence
+		// title, and each collector takes SEVERAL frames. Under PubSub, once both are
+		// subscribed they receive the SAME frames, so their sets OVERLAP (share ≥1 seq);
+		// under a Queue each frame goes to exactly ONE taker, so the two sets are
+		// DISJOINT (empty intersection). The assertion is a non-empty intersection,
+		// which a Queue cannot satisfy no matter who subscribed first. A timeout bounds
+		// a genuine hang so it fails cleanly instead of stalling CI.
+		let seq = 0;
 		const server = await makeServer((ws, req) => {
 			if (req.method === "thread/list") {
-				if (!pushed) {
-					pushed = true;
-					ws.send(
-						JSON.stringify({
-							jsonrpc: "2.0",
-							method: "thread/titled",
-							params: { thread_id: "t1", title },
-						}),
-					);
-				}
+				seq += 1;
+				ws.send(
+					JSON.stringify({
+						jsonrpc: "2.0",
+						method: "thread/titled",
+						params: { thread_id: "t1", title: String(seq) },
+					}),
+				);
 				ws.send(
 					JSON.stringify({
 						jsonrpc: "2.0",
@@ -789,37 +789,109 @@ describe("WsClient", () => {
 
 		const program = Effect.gen(function* () {
 			const client = yield* WsClient;
-			// Fork both subscriptions, each taking one value, and wait for both hubs to
-			// be established (acquireHub runs synchronously when the stream is pulled;
-			// the brief sleep lets both forked fibers reach their subscribe point)
-			// BEFORE the single push, so the one frame can't land pre-subscription.
-			const a = yield* Effect.fork(
+			// Each collector takes 3 frames; a repeating trigger keeps pushing
+			// uniquely-tagged frames. `Effect.all` awaits BOTH; raceFirst interrupts the
+			// trigger once both complete; the timeout bounds a genuine hang.
+			const takeThree = () =>
 				Stream.runCollect(
 					client
 						.notifications("thread/titled", ThreadTitledNotification)
-						.pipe(Stream.take(1)),
-				),
+						.pipe(Stream.take(3)),
+				);
+			const both = Effect.all([takeThree(), takeThree()], { concurrency: 2 });
+			const trigger = client
+				.threadList()
+				.pipe(Effect.zipRight(Effect.sleep("10 millis")), Effect.forever);
+			const [ra, rb] = yield* Effect.raceFirst(both, trigger).pipe(
+				Effect.timeoutFail({
+					duration: "10 seconds",
+					onTimeout: () =>
+						new WsRequestError({ reason: "fan-out test timed out" }),
+				}),
 			);
-			const b = yield* Effect.fork(
-				Stream.runCollect(
-					client
-						.notifications("thread/titled", ThreadTitledNotification)
-						.pipe(Stream.take(1)),
-				),
-			);
-			yield* Effect.sleep("50 millis");
-			// Exactly one frame is pushed (server guards with `pushed`), so a Queue
-			// could satisfy only ONE collector — Fiber.join on the other would hang.
-			yield* client.threadList();
-			const ra = yield* Fiber.join(a);
-			const rb = yield* Fiber.join(b);
-			return { a: Array.from(ra), b: Array.from(rb) };
+			return {
+				a: Array.from(ra).map((n) => n.title),
+				b: Array.from(rb).map((n) => n.title),
+			};
 		});
 
 		try {
 			const { a, b } = await Effect.runPromise(provide(server.url)(program));
-			expect(a).toEqual([{ thread_id: "t1", title }]);
-			expect(b).toEqual([{ thread_id: "t1", title }]);
+			expect(a).toHaveLength(3);
+			expect(b).toHaveLength(3);
+			// Non-empty intersection ⇒ at least one frame reached BOTH ⇒ broadcast.
+			// A shared Queue would split every frame to exactly one taker → disjoint.
+			const overlap = a.filter((t) => b.includes(t));
+			expect(overlap.length).toBeGreaterThan(0);
+		} finally {
+			await server.close();
+		}
+	});
+
+	it("a surviving same-method subscriber keeps receiving after the other exits (refcount holds the hub open at refs>0)", async () => {
+		// Two subscribers to one method: the FIRST takes one frame then exits (refs
+		// 2→1). The hub must NOT tear down while the second remains — a later frame must
+		// still reach the survivor. If releaseHub shut the hub at the first exit
+		// (a refcount bug), the survivor's later take would hang → timeout.
+		let seq = 0;
+		const server = await makeServer((ws, req) => {
+			if (req.method === "thread/list") {
+				seq += 1;
+				ws.send(
+					JSON.stringify({
+						jsonrpc: "2.0",
+						method: "thread/titled",
+						params: { thread_id: "t1", title: String(seq) },
+					}),
+				);
+				ws.send(
+					JSON.stringify({
+						jsonrpc: "2.0",
+						id: req.id,
+						result: { threads: [] },
+					}),
+				);
+			}
+		});
+
+		const program = Effect.gen(function* () {
+			const client = yield* WsClient;
+			const stream = client.notifications(
+				"thread/titled",
+				ThreadTitledNotification,
+			);
+			// The survivor stays subscribed for the whole test (takes 2 frames); the
+			// short-lived subscriber takes 1 and exits, dropping refs 2→1.
+			const survivor = yield* Effect.fork(
+				Stream.runCollect(stream.pipe(Stream.take(2))),
+			);
+			const shortLived = yield* Effect.fork(
+				Stream.runCollect(stream.pipe(Stream.take(1))),
+			);
+			const trigger = client
+				.threadList()
+				.pipe(Effect.zipRight(Effect.sleep("10 millis")), Effect.forever);
+			// Await BOTH: the survivor needs 2 frames, so it necessarily outlives the
+			// short-lived subscriber's exit — proving the hub stayed open at refs=1.
+			const both = Effect.all([Fiber.join(survivor), Fiber.join(shortLived)], {
+				concurrency: 2,
+			});
+			const [surv] = yield* Effect.raceFirst(both, trigger).pipe(
+				Effect.timeoutFail({
+					duration: "10 seconds",
+					onTimeout: () =>
+						new WsRequestError({ reason: "refcount survivor test timed out" }),
+				}),
+			);
+			return Array.from(surv).length;
+		});
+
+		try {
+			const survivorCount = await Effect.runPromise(
+				provide(server.url)(program),
+			);
+			// The survivor received its 2nd frame AFTER the short-lived subscriber exited.
+			expect(survivorCount).toBe(2);
 		} finally {
 			await server.close();
 		}
