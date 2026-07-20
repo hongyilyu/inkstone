@@ -20,7 +20,6 @@ import {
 	draftLabel,
 	draftRequiredEmpty,
 	type GraphNodeDraft,
-	getOwn,
 	parseGraphEntities,
 	parseGraphLinks,
 	type RepointBuffer,
@@ -123,19 +122,19 @@ export function IntentGraphReviewCard({
 	// The staging buffer starts at the per-node defaults (acceptable → accept,
 	// ambiguous → reject), so a plain Apply with no toggles accepts everything
 	// resolvable — the common path.
-	const [buffer, setBuffer] = useState<StagingBuffer>({});
+	const [buffer, setBuffer] = useState<StagingBuffer>(new Map());
 	// Per-handle inline edit drafts for create nodes (ADR-0042 `edited_fields`). A
 	// handle gains an entry when its row is opened for edit; the draft survives a
 	// reject→accept toggle so a correction is not lost. `editingHandle` is the ONE
 	// row currently expanded (one open at a time).
-	const [drafts, setDrafts] = useState<DraftBuffer>({});
+	const [drafts, setDrafts] = useState<DraftBuffer>(new Map());
 	const [editingHandle, setEditingHandle] = useState<string | null>(null);
 	// Per-handle near-match re-point choices (ADR-0042 amendment). A create node
 	// with a single near-match DEFAULTS to reusing that existing entity (no entry
 	// needed — `repointFor` derives it); the buffer only records EXPLICIT user
 	// overrides: a string id (a future picker pick) or `null` ("Create new instead",
 	// suppressing the default). Mutually exclusive with an edit draft per node.
-	const [repoints, setRepoints] = useState<RepointBuffer>({});
+	const [repoints, setRepoints] = useState<RepointBuffer>(new Map());
 	const [inFlight, setInFlight] = useState<"commit" | "reject" | null>(null);
 	// Reset the per-node staging when the proposal IDENTITY changes. The card is
 	// keyed by run_id, not proposal_id, so a multi-step Run that parks a SECOND
@@ -145,10 +144,10 @@ export function IntentGraphReviewCard({
 	// graph's toggles could leak into the next and submit an unintended decision.
 	// biome-ignore lint/correctness/useExhaustiveDependencies: reset keyed on the proposal id.
 	useEffect(() => {
-		setBuffer({});
-		setDrafts({});
+		setBuffer(new Map());
+		setDrafts(new Map());
 		setEditingHandle(null);
-		setRepoints({});
+		setRepoints(new Map());
 	}, [proposal.proposal_id]);
 	useEffect(() => {
 		if (proposal.status !== "deciding") setInFlight(null);
@@ -204,14 +203,13 @@ export function IntentGraphReviewCard({
 	// id) nor an EXPLICIT reject — it sits at its reject-only default awaiting a
 	// decision. This drives the dynamic guidance note; once every ambiguous node is
 	// picked or explicitly rejected, the note disappears (no nag). The explicit-reject
-	// check reads the RAW buffer entry via `getOwn` (not `stageFor`, whose default for
-	// an unpicked ambiguous node is already `reject`) — `getOwn` guards the
-	// model-supplied handle against a prototype-key collision (see `repointFor`).
+	// check reads the RAW buffer entry (not `stageFor`, whose default for an unpicked
+	// ambiguous node is already `reject`).
 	const unresolvedAmbiguous = plan.some(
 		(node) =>
 			node.disposition === "ambiguous" &&
 			repointFor(repoints, node) === null &&
-			getOwn(buffer, node.handle) !== "reject",
+			buffer.get(node.handle) !== "reject",
 	);
 
 	const commit = () => {
@@ -243,7 +241,7 @@ export function IntentGraphReviewCard({
 	// Save commits the working draft to the buffer and forces the node ACCEPT (an
 	// edit only applies to a node you keep), then collapses the row.
 	const saveEdit = (node: ResolvedNode, draft: GraphNodeDraft) => {
-		setDrafts((current) => ({ ...current, [node.handle]: draft }));
+		setDrafts((current) => new Map(current).set(node.handle, draft));
 		setBuffer((current) => setStage(current, node, "accept"));
 		setEditingHandle(null);
 	};
@@ -259,19 +257,21 @@ export function IntentGraphReviewCard({
 	// `reuseExisting`, not `use*`, so it is not mistaken for a React hook.)
 	const createNewInstead = (handle: string) => {
 		if (submitting) return;
-		setRepoints((current) => ({ ...current, [handle]: null }));
+		setRepoints((current) => new Map(current).set(handle, null));
 	};
 	const reuseExisting = (node: ResolvedNode) => {
 		if (submitting) return;
 		// Clear the explicit override so the single-near-match default re-applies, and
 		// drop any edit draft (a re-pointed node is reused, not edited).
 		setRepoints((current) => {
-			const { [node.handle]: _drop, ...rest } = current;
-			return rest;
+			const next = new Map(current);
+			next.delete(node.handle);
+			return next;
 		});
 		setDrafts((current) => {
-			const { [node.handle]: _drop, ...rest } = current;
-			return rest;
+			const next = new Map(current);
+			next.delete(node.handle);
+			return next;
 		});
 		setBuffer((current) => setStage(current, node, "accept"));
 	};
@@ -284,9 +284,9 @@ export function IntentGraphReviewCard({
 	// to a sibling `setBuffer`, so pass the post-pick repoint explicitly.
 	const pickCandidate = (node: ResolvedNode, entityId: string) => {
 		if (submitting) return;
-		setRepoints((current) => ({ ...current, [node.handle]: entityId }));
+		setRepoints((current) => new Map(current).set(node.handle, entityId));
 		setBuffer((current) =>
-			setStage(current, node, "accept", { [node.handle]: entityId }),
+			setStage(current, node, "accept", new Map([[node.handle, entityId]])),
 		);
 	};
 
@@ -325,9 +325,9 @@ export function IntentGraphReviewCard({
 						key={node.handle}
 						node={node}
 						stage={stageFor(buffer, node, repoints)}
-						explicitStage={getOwn(buffer, node.handle)}
+						explicitStage={buffer.get(node.handle)}
 						disabled={submitting}
-						draft={getOwn(drafts, node.handle)}
+						draft={drafts.get(node.handle)}
 						seed={entities.get(node.handle)}
 						editing={editingHandle === node.handle}
 						repointId={repointFor(repoints, node)}

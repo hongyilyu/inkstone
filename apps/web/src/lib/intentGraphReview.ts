@@ -22,23 +22,11 @@ import { readString, readStringArray } from "@/lib/readPayload";
 export type NodeStage = "accept" | "reject";
 
 /** The per-node staging buffer, keyed by graph handle. A handle with no entry is
- * "undecided" — the user has not stepped past it yet. */
-export type StagingBuffer = Readonly<Record<string, NodeStage>>;
-
-/** Read a handle-keyed record as an OWN-property lookup, not `record[handle]`.
- * Every buffer here is keyed by `ResolvedNode.handle`, an unvalidated model-supplied
- * wire string (protocol `handle` is a bare string, no `@` pattern), so a handle equal
- * to a prototype key ("toString", "constructor", "__proto__") would make a direct
- * index return an inherited `Object.prototype` member — a function masquerading as a
- * `NodeStage`/draft — rather than `undefined`. `Object.hasOwn` is the same hardening
- * {@link repointFor} already documents; this is the shared helper the other
- * handle-keyed reads route through. */
-export function getOwn<T>(
-	record: Readonly<Record<string, T>>,
-	handle: string,
-): T | undefined {
-	return Object.hasOwn(record, handle) ? record[handle] : undefined;
-}
+ * "undecided" — the user has not stepped past it yet. Every buffer here is keyed by
+ * `ResolvedNode.handle`, an unvalidated model-supplied wire string, so buffers are
+ * `ReadonlyMap`s: `Map.get` returns `undefined` for a missing key by construction,
+ * even one equal to an `Object.prototype` key ("toString", "__proto__"). */
+export type StagingBuffer = ReadonlyMap<string, NodeStage>;
 
 /** Whether a node's disposition permits `accept`. `create`/`reuse` are freely
  * acceptable. An `ambiguous` node has no silent fallback (ADR-0042), so it is
@@ -47,12 +35,12 @@ export function getOwn<T>(
  * collapses the node `ambiguous → reuse` at decide. So an ambiguous node is
  * acceptable iff a candidate has been picked (#181 disambiguation picker).
  *
- * `repoints` defaults to `{}` so a caller that only has a node (no pick context)
- * still reads the pre-pick truth: a create/reuse node is acceptable, an ambiguous
- * one is not. */
+ * `repoints` defaults to an empty Map so a caller that only has a node (no pick
+ * context) still reads the pre-pick truth: a create/reuse node is acceptable, an
+ * ambiguous one is not. */
 export function isAcceptable(
 	node: ResolvedNode,
-	repoints: RepointBuffer = {},
+	repoints: RepointBuffer = new Map(),
 ): boolean {
 	if (node.disposition !== "ambiguous") return true;
 	return repointFor(repoints, node) !== null;
@@ -65,7 +53,7 @@ export function isAcceptable(
  *   - `null` → the user explicitly chose "Create new instead" (suppress the
  *     default re-point a single near-match would otherwise apply);
  *   - absent → no explicit choice; the default applies (see {@link repointFor}). */
-export type RepointBuffer = Readonly<Record<string, string | null>>;
+export type RepointBuffer = ReadonlyMap<string, string | null>;
 
 /** The effective re-point id for a node (ADR-0042 amendment), prioritizing the
  * existing entity: an explicit buffer entry wins (a string id re-points; `null`
@@ -77,11 +65,9 @@ export function repointFor(
 	buffer: RepointBuffer,
 	node: ResolvedNode,
 ): string | null {
-	// Read the explicit entry via `getOwn` (the shared prototype-key guard): a handle
-	// equal to a prototype key ("toString", "__proto__") must not surface an inherited
-	// member. An explicit entry — a string id OR `null` ("create new instead") — wins;
+	// An explicit entry — a string id OR `null` ("create new instead") — wins;
 	// `undefined` means absent, so fall through to the near-match default below.
-	const explicit = getOwn(buffer, node.handle);
+	const explicit = buffer.get(node.handle);
 	if (explicit !== undefined) return explicit;
 	if (node.disposition !== "create") return null;
 	const near = node.near_matches ?? [];
@@ -96,10 +82,10 @@ export function repointFor(
 export function stageFor(
 	buffer: StagingBuffer,
 	node: ResolvedNode,
-	repoints: RepointBuffer = {},
+	repoints: RepointBuffer = new Map(),
 ): NodeStage {
 	return (
-		getOwn(buffer, node.handle) ??
+		buffer.get(node.handle) ??
 		(isAcceptable(node, repoints) ? "accept" : "reject")
 	);
 }
@@ -112,19 +98,19 @@ export function setStage(
 	buffer: StagingBuffer,
 	node: ResolvedNode,
 	stage: NodeStage,
-	repoints: RepointBuffer = {},
+	repoints: RepointBuffer = new Map(),
 ): StagingBuffer {
 	if (stage === "accept" && !isAcceptable(node, repoints)) {
 		return buffer;
 	}
-	return { ...buffer, [node.handle]: stage };
+	return new Map(buffer).set(node.handle, stage);
 }
 
 /** Stage EVERY node `reject` — the "Reject all" affordance. */
 export function rejectAll(plan: readonly ResolvedNode[]): StagingBuffer {
-	const next: Record<string, NodeStage> = {};
+	const next = new Map<string, NodeStage>();
 	for (const node of plan) {
-		next[node.handle] = "reject";
+		next.set(node.handle, "reject");
 	}
 	return next;
 }
@@ -144,7 +130,7 @@ export type GraphNodeDraft =
 
 /** The per-handle draft buffer (component state), holding a draft for every create
  * node the user has opened for edit. A handle with no entry was never edited. */
-export type DraftBuffer = Readonly<Record<string, GraphNodeDraft>>;
+export type DraftBuffer = ReadonlyMap<string, GraphNodeDraft>;
 
 /** Index the graph payload's `entities[]` by handle, so an edit can seed from — and
  * diff against — a node's ORIGINAL proposed fields. Degrades a malformed payload to
@@ -315,9 +301,9 @@ function sameStrings(a: readonly string[], b: readonly string[]): boolean {
 export function buildDecisions(
 	plan: readonly ResolvedNode[],
 	buffer: StagingBuffer,
-	drafts: DraftBuffer = {},
+	drafts: DraftBuffer = new Map(),
 	entities: Map<string, Record<string, unknown>> = new Map(),
-	repoints: RepointBuffer = {},
+	repoints: RepointBuffer = new Map(),
 ): NodeDecision[] {
 	return plan.map((node) => {
 		const decision = stageFor(buffer, node, repoints);
@@ -344,7 +330,7 @@ export function buildDecisions(
 				if (repoint !== null) {
 					return { handle: node.handle, decision, entity_id: repoint };
 				}
-				const draft = getOwn(drafts, node.handle);
+				const draft = drafts.get(node.handle);
 				if (draft !== undefined) {
 					const edited = buildEditedFields(entities.get(node.handle), draft);
 					if (edited !== undefined) {
@@ -454,7 +440,7 @@ export function appendedClauses(
 	plan: readonly ResolvedNode[],
 	links: readonly GraphLink[],
 	buffer: StagingBuffer,
-	repoints: RepointBuffer = {},
+	repoints: RepointBuffer = new Map(),
 ): AppendedClause[] {
 	const byHandle = new Map(plan.map((node) => [node.handle, node]));
 	const out: AppendedClause[] = [];
@@ -487,7 +473,7 @@ export function downgradeNotices(
 	plan: readonly ResolvedNode[],
 	links: readonly GraphLink[],
 	buffer: StagingBuffer,
-	repoints: RepointBuffer = {},
+	repoints: RepointBuffer = new Map(),
 ): DowngradeNotice[] {
 	const byHandle = new Map(plan.map((node) => [node.handle, node]));
 	const isAccepted = (handle: string): boolean => {

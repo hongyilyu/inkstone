@@ -10,9 +10,7 @@ import {
 	draftRequiredEmpty,
 	type GraphLink,
 	type GraphNodeDraft,
-	getOwn,
 	isAcceptable,
-	type NodeStage,
 	parseGraphEntities,
 	parseGraphLinks,
 	type RepointBuffer,
@@ -61,58 +59,25 @@ describe("isAcceptable", () => {
 	it("a PICKED ambiguous node is acceptable; an unpicked one is reject-only (#181)", () => {
 		// The whole feature: a pick (an entity_id recorded in the repoint buffer)
 		// flips the ambiguous node from reject-only to acceptable.
-		expect(isAcceptable(ambiguousPerson, { "@morris": "m1" })).toBe(true);
-		expect(isAcceptable(ambiguousPerson, {})).toBe(false);
+		expect(isAcceptable(ambiguousPerson, new Map([["@morris", "m1"]]))).toBe(
+			true,
+		);
+		expect(isAcceptable(ambiguousPerson, new Map())).toBe(false);
 		// A repoint entry for a DIFFERENT handle does not make THIS node acceptable.
-		expect(isAcceptable(ambiguousPerson, { "@other": "m1" })).toBe(false);
-	});
-
-	it("a create node's acceptability is unaffected by the repoint buffer", () => {
-		expect(isAcceptable(createTodo, {})).toBe(true);
-		expect(isAcceptable(createTodo, { "@rodeo": "x" })).toBe(true);
-	});
-});
-
-// A model-supplied handle equal to an Object.prototype key must NOT make a
-// handle-keyed buffer read surface an inherited member (the `in`/direct-index
-// vs Object.hasOwn hazard the module already guards in `repointFor`). Pins the
-// guard for the staging buffer + draft reads (stageFor / buildDecisions).
-describe("prototype-key handle safety on the staging + draft buffers", () => {
-	const protoTodo: ResolvedNode = {
-		handle: "toString",
-		type: "todo",
-		disposition: "create",
-		label: "toString",
-	};
-
-	it("getOwn returns undefined for an inherited key on an empty record", () => {
-		expect(getOwn<NodeStage>({}, "toString")).toBeUndefined();
-		expect(getOwn<NodeStage>({}, "constructor")).toBeUndefined();
-		// An OWN entry is still returned.
-		expect(getOwn({ toString: "accept" as NodeStage }, "toString")).toBe(
-			"accept",
+		expect(isAcceptable(ambiguousPerson, new Map([["@other", "m1"]]))).toBe(
+			false,
 		);
 	});
 
-	it("stageFor falls back to the node default for a prototype-key handle, never an inherited fn", () => {
-		const stage = stageFor({}, protoTodo);
-		expect(stage).toBe("accept"); // create node default — not Object.prototype.toString
-		expect(typeof stage).not.toBe("function");
-	});
-
-	it("buildDecisions ignores an inherited draft for a prototype-key handle (plain accept)", () => {
-		// Empty drafts: a direct `drafts["toString"]` would surface the inherited
-		// function and ride into buildEditedFields; getOwn must yield undefined → a
-		// plain accept with no edited_fields.
-		const vector = buildDecisions([protoTodo], {}, {}, new Map(), {});
-		expect(vector).toEqual([{ handle: "toString", decision: "accept" }]);
-		expect(vector[0]).not.toHaveProperty("edited_fields");
+	it("a create node's acceptability is unaffected by the repoint buffer", () => {
+		expect(isAcceptable(createTodo, new Map())).toBe(true);
+		expect(isAcceptable(createTodo, new Map([["@rodeo", "x"]]))).toBe(true);
 	});
 });
 
 describe("stageFor defaults", () => {
 	it("acceptable nodes default to accept; an unpicked ambiguous defaults to reject", () => {
-		const empty: StagingBuffer = {};
+		const empty: StagingBuffer = new Map();
 		expect(stageFor(empty, createTodo)).toBe("accept");
 		expect(stageFor(empty, reuseProject)).toBe("accept");
 		expect(stageFor(empty, ambiguousPerson)).toBe("reject");
@@ -121,37 +86,55 @@ describe("stageFor defaults", () => {
 	it("a PICKED ambiguous node defaults to accept (it is now acceptable)", () => {
 		// With a pick recorded, the ambiguous node's default flips to accept, so a
 		// plain Apply (empty staging buffer) sweeps it in like any reuse node.
-		expect(stageFor({}, ambiguousPerson, { "@morris": "m2" })).toBe("accept");
+		expect(
+			stageFor(new Map(), ambiguousPerson, new Map([["@morris", "m2"]])),
+		).toBe("accept");
 		// Without a pick it stays reject by default.
-		expect(stageFor({}, ambiguousPerson, {})).toBe("reject");
+		expect(stageFor(new Map(), ambiguousPerson, new Map())).toBe("reject");
 	});
 
 	it("an explicit entry overrides the default", () => {
-		const buffer: StagingBuffer = { "@rodeo": "reject" };
+		const buffer: StagingBuffer = new Map([["@rodeo", "reject"]]);
 		expect(stageFor(buffer, createTodo)).toBe("reject");
 	});
 });
 
 describe("setStage respects the ambiguous accept-block (#181)", () => {
 	it("ignores an accept request on an UNPICKED ambiguous node", () => {
-		const buffer = setStage({}, ambiguousPerson, "accept");
+		const buffer = setStage(new Map(), ambiguousPerson, "accept");
 		expect(stageFor(buffer, ambiguousPerson)).toBe("reject");
 	});
 
 	it("allows accept on a PICKED ambiguous node", () => {
-		const buffer = setStage({}, ambiguousPerson, "accept", { "@morris": "m1" });
-		expect(buffer["@morris"]).toBe("accept");
+		const buffer = setStage(
+			new Map(),
+			ambiguousPerson,
+			"accept",
+			new Map([["@morris", "m1"]]),
+		);
+		expect(buffer.get("@morris")).toBe("accept");
 	});
 
 	it("accepts a create/reuse node", () => {
-		const buffer = setStage({ "@rodeo": "reject" }, createTodo, "accept");
-		expect(buffer["@rodeo"]).toBe("accept");
+		const buffer = setStage(
+			new Map([["@rodeo", "reject"]]),
+			createTodo,
+			"accept",
+		);
+		expect(buffer.get("@rodeo")).toBe("accept");
 	});
 
 	it("can reject any node, including a picked ambiguous one", () => {
-		expect(setStage({}, ambiguousPerson, "reject")["@morris"]).toBe("reject");
+		expect(setStage(new Map(), ambiguousPerson, "reject").get("@morris")).toBe(
+			"reject",
+		);
 		expect(
-			setStage({}, ambiguousPerson, "reject", { "@morris": "m1" })["@morris"],
+			setStage(
+				new Map(),
+				ambiguousPerson,
+				"reject",
+				new Map([["@morris", "m1"]]),
+			).get("@morris"),
 		).toBe("reject");
 	});
 });
@@ -159,21 +142,21 @@ describe("setStage respects the ambiguous accept-block (#181)", () => {
 describe("rejectAll", () => {
 	it("rejectAll rejects every node", () => {
 		const buffer = rejectAll(PLAN);
-		expect(Object.values(buffer)).toEqual(["reject", "reject", "reject"]);
+		expect([...buffer.values()]).toEqual(["reject", "reject", "reject"]);
 	});
 });
 
 describe("buildDecisions", () => {
 	it("builds a vector of all-accepts for an unchanged ambiguous-free plan", () => {
 		const plan = [createTodo, reuseProject];
-		expect(buildDecisions(plan, {})).toEqual([
+		expect(buildDecisions(plan, new Map())).toEqual([
 			{ handle: "@rodeo", decision: "accept" },
 			{ handle: "@leadads", decision: "accept" },
 		]);
 	});
 
 	it("reflects a rejected node in the vector", () => {
-		const buffer = setStage({}, reuseProject, "reject");
+		const buffer = setStage(new Map(), reuseProject, "reject");
 		expect(buildDecisions([createTodo, reuseProject], buffer)).toEqual([
 			{ handle: "@rodeo", decision: "accept" },
 			{ handle: "@leadads", decision: "reject" },
@@ -181,7 +164,7 @@ describe("buildDecisions", () => {
 	});
 
 	it("rejects an ambiguous node by default (it cannot be accepted)", () => {
-		const vector = buildDecisions(PLAN, {});
+		const vector = buildDecisions(PLAN, new Map());
 		expect(vector.find((d) => d.handle === "@morris")?.decision).toBe("reject");
 	});
 
@@ -196,8 +179,8 @@ describe("buildDecisions resolves a picked ambiguous node (the disambiguation pi
 		// Default staging + a pick → the ambiguous node accepts WITH the chosen
 		// entity_id (the override Core collapses ambiguous → reuse). The whole graph
 		// is now applicable.
-		const repoints: RepointBuffer = { "@morris": "m1" };
-		const vector = buildDecisions(PLAN, {}, {}, new Map(), repoints);
+		const repoints: RepointBuffer = new Map([["@morris", "m1"]]);
+		const vector = buildDecisions(PLAN, new Map(), new Map(), new Map(), repoints);
 		expect(vector.find((d) => d.handle === "@morris")).toEqual({
 			handle: "@morris",
 			decision: "accept",
@@ -209,18 +192,24 @@ describe("buildDecisions resolves a picked ambiguous node (the disambiguation pi
 	// ride a bare accept — Core fails the whole atomic apply on an unresolved
 	// ambiguous accept. It must stay a plain reject, carrying no entity_id.
 	it("an unpicked ambiguous node stays a plain reject — never a bare accept", () => {
-		const morris = buildDecisions(PLAN, {}).find((d) => d.handle === "@morris");
+		const morris = buildDecisions(PLAN, new Map()).find(
+			(d) => d.handle === "@morris",
+		);
 		expect(morris).toEqual({ handle: "@morris", decision: "reject" });
 		expect(morris).not.toHaveProperty("entity_id");
 	});
 
 	it("a rejected pick drops the entity_id (a rejected node is not reused)", () => {
-		const repoints: RepointBuffer = { "@morris": "m1" };
+		const repoints: RepointBuffer = new Map([["@morris", "m1"]]);
 		// The user picked, then rejected the node anyway.
-		const buffer = setStage({}, ambiguousPerson, "reject", repoints);
-		const morris = buildDecisions(PLAN, buffer, {}, new Map(), repoints).find(
-			(d) => d.handle === "@morris",
-		);
+		const buffer = setStage(new Map(), ambiguousPerson, "reject", repoints);
+		const morris = buildDecisions(
+			PLAN,
+			buffer,
+			new Map(),
+			new Map(),
+			repoints,
+		).find((d) => d.handle === "@morris");
 		expect(morris).toEqual({ handle: "@morris", decision: "reject" });
 		expect(morris).not.toHaveProperty("entity_id");
 	});
@@ -229,10 +218,14 @@ describe("buildDecisions resolves a picked ambiguous node (the disambiguation pi
 		// A picked ambiguous node reuses an existing entity, so it can NEVER carry an
 		// edited_fields correction (Core rejects both — mutually exclusive). Structural,
 		// but pinned so a refactor can't leak an edit onto a reuse.
-		const repoints: RepointBuffer = { "@morris": "m1" };
-		const morris = buildDecisions(PLAN, {}, {}, new Map(), repoints).find(
-			(d) => d.handle === "@morris",
-		);
+		const repoints: RepointBuffer = new Map([["@morris", "m1"]]);
+		const morris = buildDecisions(
+			PLAN,
+			new Map(),
+			new Map(),
+			new Map(),
+			repoints,
+		).find((d) => d.handle === "@morris");
 		expect(morris).not.toHaveProperty("edited_fields");
 	});
 
@@ -242,10 +235,14 @@ describe("buildDecisions resolves a picked ambiguous node (the disambiguation pi
 	// future "clear pick" UI could produce — buildDecisions must NOT emit a bare
 	// ambiguous accept (Core fails the whole atomic apply). It coerces to reject.
 	it("coerces a stale-accept ambiguous node with no pick to reject (never a bare accept)", () => {
-		const staleBuffer: StagingBuffer = { "@morris": "accept" };
-		const morris = buildDecisions(PLAN, staleBuffer, {}, new Map(), {}).find(
-			(d) => d.handle === "@morris",
-		);
+		const staleBuffer: StagingBuffer = new Map([["@morris", "accept"]]);
+		const morris = buildDecisions(
+			PLAN,
+			staleBuffer,
+			new Map(),
+			new Map(),
+			new Map(),
+		).find((d) => d.handle === "@morris");
 		expect(morris).toEqual({ handle: "@morris", decision: "reject" });
 		expect(morris).not.toHaveProperty("entity_id");
 	});
@@ -253,7 +250,7 @@ describe("buildDecisions resolves a picked ambiguous node (the disambiguation pi
 
 describe("summarizeDecisions — count/decision derived from the built vector", () => {
 	it("counts accepts and detects an all-reject vector", () => {
-		expect(summarizeDecisions(buildDecisions(PLAN, {}))).toEqual({
+		expect(summarizeDecisions(buildDecisions(PLAN, new Map()))).toEqual({
 			acceptedCount: 2, // @rodeo + @leadads accept; @morris (ambiguous) rejects
 			allRejected: false,
 		});
@@ -276,8 +273,14 @@ describe("summarizeDecisions — count/decision derived from the built vector", 
 	// parallel stageFor pass would disagree with the vector actually sent.
 	it("agrees with the coerced vector for a stale-accept ambiguous-only plan", () => {
 		const plan = [ambiguousPerson];
-		const staleBuffer: StagingBuffer = { "@morris": "accept" };
-		const decisions = buildDecisions(plan, staleBuffer, {}, new Map(), {});
+		const staleBuffer: StagingBuffer = new Map([["@morris", "accept"]]);
+		const decisions = buildDecisions(
+			plan,
+			staleBuffer,
+			new Map(),
+			new Map(),
+			new Map(),
+		);
 		expect(decisions).toEqual([{ handle: "@morris", decision: "reject" }]);
 		expect(summarizeDecisions(decisions)).toEqual({
 			acceptedCount: 0,
@@ -286,9 +289,13 @@ describe("summarizeDecisions — count/decision derived from the built vector", 
 	});
 
 	it("a picked ambiguous node counts as accepted", () => {
-		const decisions = buildDecisions([ambiguousPerson], {}, {}, new Map(), {
-			"@morris": "m1",
-		});
+		const decisions = buildDecisions(
+			[ambiguousPerson],
+			new Map(),
+			new Map(),
+			new Map(),
+			new Map([["@morris", "m1"]]),
+		);
 		expect(summarizeDecisions(decisions)).toEqual({
 			acceptedCount: 1,
 			allRejected: false,
@@ -343,79 +350,72 @@ const multiNearMatchProject: ResolvedNode = {
 
 describe("repointFor — default-to-existing on a single near-match", () => {
 	it("a single-near-match create node defaults to its existing entity_id", () => {
-		expect(repointFor({}, nearMatchProject)).toBe("existing-leadads");
+		expect(repointFor(new Map(), nearMatchProject)).toBe("existing-leadads");
 	});
 
 	it("a create node with NO near-matches has no default re-point", () => {
-		expect(repointFor({}, createTodo)).toBeNull();
+		expect(repointFor(new Map(), createTodo)).toBeNull();
 	});
 
 	it("a create node with 2+ near-matches does NOT auto-pick (defers to the picker)", () => {
-		expect(repointFor({}, multiNearMatchProject)).toBeNull();
+		expect(repointFor(new Map(), multiNearMatchProject)).toBeNull();
 	});
 
 	it("an explicit 'create new instead' choice clears the default re-point", () => {
-		const buffer: RepointBuffer = { "@leadads": null };
+		const buffer: RepointBuffer = new Map([["@leadads", null]]);
 		expect(repointFor(buffer, nearMatchProject)).toBeNull();
 	});
 
 	it("an explicit re-point id overrides (picker future-proofing)", () => {
-		const buffer: RepointBuffer = { "@leadads": "existing-leadads" };
+		const buffer: RepointBuffer = new Map([["@leadads", "existing-leadads"]]);
 		expect(repointFor(buffer, nearMatchProject)).toBe("existing-leadads");
 	});
 
-	// A model-supplied handle equal to an Object.prototype key must NOT make the
-	// empty-buffer lookup return an inherited function (the `in` vs Object.hasOwn
-	// hazard). Such a handle has no explicit entry → falls through to the near-match
-	// default (here: none, so null), never `Object.prototype.toString`.
-	it("a prototype-key handle does not leak an inherited function from an empty buffer", () => {
-		const protoHandleNoNear: ResolvedNode = {
+	it("the single-near-match default applies whatever string the handle happens to be", () => {
+		// The handle is an unvalidated model-supplied string; its content is irrelevant
+		// to the default — one near-match still defaults to that entity_id.
+		const oddHandleProject: ResolvedNode = {
 			handle: "toString",
 			type: "project",
 			disposition: "create",
 			label: "toString",
-		};
-		const result = repointFor({}, protoHandleNoNear);
-		expect(result).toBeNull();
-		expect(typeof result).not.toBe("function");
-		// With a single near-match it falls through to that default, not the prototype fn.
-		const protoHandleWithNear: ResolvedNode = {
-			...protoHandleNoNear,
 			near_matches: [{ entity_id: "real-id", label: "toString" }],
 		};
-		expect(repointFor({}, protoHandleWithNear)).toBe("real-id");
+		expect(repointFor(new Map(), oddHandleProject)).toBe("real-id");
 	});
 });
 
 describe("buildDecisions with near-match re-point", () => {
 	it("defaults a single-near-match create node to accept WITH the existing entity_id", () => {
 		const plan = [nearMatchProject];
-		expect(buildDecisions(plan, {}, {}, new Map(), {})).toEqual([
+		expect(
+			buildDecisions(plan, new Map(), new Map(), new Map(), new Map()),
+		).toEqual([
 			{ handle: "@leadads", decision: "accept", entity_id: "existing-leadads" },
 		]);
 	});
 
 	it("a 'create new instead' choice commits a plain create accept (no entity_id)", () => {
 		const plan = [nearMatchProject];
-		const repoints: RepointBuffer = { "@leadads": null };
-		expect(buildDecisions(plan, {}, {}, new Map(), repoints)).toEqual([
-			{ handle: "@leadads", decision: "accept" },
-		]);
+		const repoints: RepointBuffer = new Map([["@leadads", null]]);
+		expect(
+			buildDecisions(plan, new Map(), new Map(), new Map(), repoints),
+		).toEqual([{ handle: "@leadads", decision: "accept" }]);
 	});
 
 	it("a multi-near-match node defaults to a plain create accept (no auto entity_id)", () => {
 		const plan = [multiNearMatchProject];
-		expect(buildDecisions(plan, {}, {}, new Map(), {})).toEqual([
-			{ handle: "@leadads2", decision: "accept" },
-		]);
+		expect(
+			buildDecisions(plan, new Map(), new Map(), new Map(), new Map()),
+		).toEqual([{ handle: "@leadads2", decision: "accept" }]);
 	});
 
 	it("a rejected near-match node commits a plain reject (no entity_id)", () => {
 		const plan = [nearMatchProject];
-		const buffer = setStage({}, nearMatchProject, "reject");
-		expect(buildDecisions(plan, buffer, {}, new Map(), {})).toEqual([
-			{ handle: "@leadads", decision: "reject" },
-		]);
+		const buffer = setStage(new Map(), nearMatchProject, "reject");
+		expect(
+			buildDecisions(plan, buffer, new Map(), new Map(), new Map()),
+		).toEqual([{ handle: "@leadads", decision: "reject" }]);
 	});
 
 	// Mutual exclusion (ADR-0042): a re-point WINS over an edit draft on the same node
@@ -423,16 +423,21 @@ describe("buildDecisions with near-match re-point", () => {
 	// early-return precedence so a branch reorder (draft-first) is caught.
 	it("re-point wins over an edit draft on the same node (entity_id, no edited_fields)", () => {
 		const plan = [nearMatchProject];
-		const drafts = {
-			"@leadads": {
-				type: "project",
-				name: "Lead Ads testing — renamed",
-				outcome: "",
-				note: "",
-			} as GraphNodeDraft,
-		};
+		const drafts = new Map<string, GraphNodeDraft>([
+			[
+				"@leadads",
+				{
+					type: "project",
+					name: "Lead Ads testing — renamed",
+					outcome: "",
+					note: "",
+				},
+			],
+		]);
 		// Default buffer → single near-match re-point active; the draft must be ignored.
-		expect(buildDecisions(plan, {}, drafts, new Map(), {})).toEqual([
+		expect(
+			buildDecisions(plan, new Map(), drafts, new Map(), new Map()),
+		).toEqual([
 			{ handle: "@leadads", decision: "accept", entity_id: "existing-leadads" },
 		]);
 	});
@@ -445,7 +450,7 @@ describe("downgradeNotices", () => {
 	];
 
 	it("warns when an accepted Todo's rejected project link drops", () => {
-		const buffer = setStage({}, reuseProject, "reject"); // todo accept (default)
+		const buffer = setStage(new Map(), reuseProject, "reject"); // todo accept (default)
 		const notices = downgradeNotices(PLAN, links, buffer);
 		expect(notices).toHaveLength(1);
 		expect(notices[0].todoHandle).toBe("@rodeo");
@@ -454,7 +459,7 @@ describe("downgradeNotices", () => {
 
 	it("no notice when both endpoints are accepted", () => {
 		const plan = [createTodo, reuseProject];
-		expect(downgradeNotices(plan, links, {})).toEqual([]);
+		expect(downgradeNotices(plan, links, new Map())).toEqual([]);
 	});
 
 	// A Todo linked to an AMBIGUOUS person/project target: once the user picks a
@@ -467,15 +472,15 @@ describe("downgradeNotices", () => {
 			{ kind: "todo_person", from: "@rodeo", to: "@morris" },
 		];
 		// Unpicked: @morris sits at its reject default → the link genuinely drops.
-		expect(downgradeNotices(PLAN, personLinks, {})).toHaveLength(1);
+		expect(downgradeNotices(PLAN, personLinks, new Map())).toHaveLength(1);
 		// Picked: @morris is acceptable (default accept) → the link is kept, no notice.
 		expect(
-			downgradeNotices(PLAN, personLinks, {}, { "@morris": "m1" }),
+			downgradeNotices(PLAN, personLinks, new Map(), new Map([["@morris", "m1"]])),
 		).toEqual([]);
 	});
 
 	it("no notice when the Todo itself is rejected", () => {
-		let buffer = setStage({}, reuseProject, "reject");
+		let buffer = setStage(new Map(), reuseProject, "reject");
 		buffer = setStage(buffer, createTodo, "reject");
 		expect(downgradeNotices(PLAN, links, buffer)).toEqual([]);
 	});
@@ -484,7 +489,7 @@ describe("downgradeNotices", () => {
 		const onlyJournalRef: GraphLink[] = [
 			{ kind: "journal_ref", from: "@je", to: "@leadads" },
 		];
-		const buffer = setStage({}, reuseProject, "reject");
+		const buffer = setStage(new Map(), reuseProject, "reject");
 		expect(downgradeNotices(PLAN, onlyJournalRef, buffer)).toEqual([]);
 	});
 
@@ -500,7 +505,7 @@ describe("downgradeNotices", () => {
 		const personLinks: GraphLink[] = [
 			{ kind: "todo_person", from: "@rodeo", to: "@alice" },
 		];
-		const buffer = setStage({}, reusePerson, "reject"); // todo accept (default)
+		const buffer = setStage(new Map(), reusePerson, "reject"); // todo accept (default)
 		const notices = downgradeNotices(plan, personLinks, buffer);
 		expect(notices).toHaveLength(1);
 		expect(notices[0].todoHandle).toBe("@rodeo");
@@ -525,7 +530,7 @@ describe("downgradeNotices", () => {
 			{ kind: "todo_project", from: "@rodeo", to: "@leadads" },
 			{ kind: "todo_person", from: "@rodeo", to: "@morris" },
 		];
-		let buffer = setStage({}, reuseProject, "reject");
+		let buffer = setStage(new Map(), reuseProject, "reject");
 		buffer = setStage(buffer, reusePerson, "reject"); // @rodeo stays accepted (default)
 		const notices = downgradeNotices(plan, bothLinks, buffer);
 		expect(notices).toHaveLength(2);
@@ -609,7 +614,7 @@ describe("appendedClauses", () => {
 			},
 		];
 		// @priya is a create node — accept by default.
-		expect(appendedClauses(plan, links, {})).toEqual([
+		expect(appendedClauses(plan, links, new Map())).toEqual([
 			{
 				targetHandle: "@priya",
 				text: "Followed up with Priya.",
@@ -622,7 +627,7 @@ describe("appendedClauses", () => {
 		const links: GraphLink[] = [
 			{ kind: "journal_ref", from: "@je", to: "@priya", appendText: "x." },
 		];
-		const buffer = setStage({}, reusePerson, "reject");
+		const buffer = setStage(new Map(), reusePerson, "reject");
 		expect(appendedClauses(plan, links, buffer)).toEqual([]);
 	});
 
@@ -630,7 +635,7 @@ describe("appendedClauses", () => {
 		const links: GraphLink[] = [
 			{ kind: "journal_ref", from: "@je", to: "@priya" },
 		];
-		expect(appendedClauses(plan, links, {})).toEqual([]);
+		expect(appendedClauses(plan, links, new Map())).toEqual([]);
 	});
 
 	it("emits one clause per link, even for two journal_refs to the SAME entity", () => {
@@ -647,7 +652,7 @@ describe("appendedClauses", () => {
 		];
 		// Distinct keys even though targetHandle + (potentially) text repeat — the link
 		// index disambiguates, so the card never collides on duplicate clauses.
-		expect(appendedClauses(plan, links, {})).toEqual([
+		expect(appendedClauses(plan, links, new Map())).toEqual([
 			{ targetHandle: "@priya", text: "Saw P.", key: "@priya:0" },
 			{ targetHandle: "@priya", text: "And P. left.", key: "@priya:1" },
 		]);
@@ -853,10 +858,10 @@ describe("buildDecisions with edits", () => {
 	const plan = [createTodo, reuseProject];
 
 	it("folds edited_fields into an accepted create node's decision", () => {
-		const drafts = {
-			"@rodeo": { type: "todo", title: "Renamed", note: "" } as GraphNodeDraft,
-		};
-		expect(buildDecisions(plan, {}, drafts, entities)).toEqual([
+		const drafts = new Map<string, GraphNodeDraft>([
+			["@rodeo", { type: "todo", title: "Renamed", note: "" }],
+		]);
+		expect(buildDecisions(plan, new Map(), drafts, entities)).toEqual([
 			{
 				handle: "@rodeo",
 				decision: "accept",
@@ -867,24 +872,20 @@ describe("buildDecisions with edits", () => {
 	});
 
 	it("omits edited_fields for an unchanged draft (plain accept)", () => {
-		const drafts = {
-			"@rodeo": {
-				type: "todo",
-				title: "Figure out the Rodeo side",
-				note: "",
-			} as GraphNodeDraft,
-		};
-		expect(buildDecisions(plan, {}, drafts, entities)).toEqual([
+		const drafts = new Map<string, GraphNodeDraft>([
+			["@rodeo", { type: "todo", title: "Figure out the Rodeo side", note: "" }],
+		]);
+		expect(buildDecisions(plan, new Map(), drafts, entities)).toEqual([
 			{ handle: "@rodeo", decision: "accept" },
 			{ handle: "@leadads", decision: "accept" },
 		]);
 	});
 
 	it("drops the edit when the node is rejected (a rejected node is not minted)", () => {
-		const drafts = {
-			"@rodeo": { type: "todo", title: "Renamed", note: "" } as GraphNodeDraft,
-		};
-		const buffer = setStage({}, createTodo, "reject");
+		const drafts = new Map<string, GraphNodeDraft>([
+			["@rodeo", { type: "todo", title: "Renamed", note: "" }],
+		]);
+		const buffer = setStage(new Map(), createTodo, "reject");
 		expect(buildDecisions(plan, buffer, drafts, entities)).toEqual([
 			{ handle: "@rodeo", decision: "reject" },
 			{ handle: "@leadads", decision: "accept" },
@@ -892,7 +893,7 @@ describe("buildDecisions with edits", () => {
 	});
 
 	it("is back-compatible: no drafts → plain decisions", () => {
-		expect(buildDecisions(plan, {})).toEqual([
+		expect(buildDecisions(plan, new Map())).toEqual([
 			{ handle: "@rodeo", decision: "accept" },
 			{ handle: "@leadads", decision: "accept" },
 		]);
