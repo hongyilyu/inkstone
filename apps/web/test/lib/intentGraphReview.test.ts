@@ -1023,13 +1023,18 @@ describe("reviewReducer — cross-buffer invariants live in one transition", () 
 		expect([...next.stages.values()]).toEqual(["reject", "reject", "reject"]);
 	});
 
-	it("reset returns the initial state", () => {
+	it("reset clears every buffer back to empty", () => {
 		const dirtied = reviewReducer(initialReviewState, {
 			type: "pick",
 			node: ambiguousPerson,
 			entityId: "m1",
 		});
-		expect(reviewReducer(dirtied, { type: "reset" })).toBe(initialReviewState);
+		expect(dirtied.repoints.size).toBeGreaterThan(0);
+		const reset = reviewReducer(dirtied, { type: "reset" });
+		// Behaviorally empty: no staged/repointed/drafted node survives the reset.
+		expect(reset.stages.size).toBe(0);
+		expect(reset.repoints.size).toBe(0);
+		expect(reset.drafts.size).toBe(0);
 	});
 
 	it("returns a NEW state and never mutates the input (referential purity)", () => {

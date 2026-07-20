@@ -261,19 +261,16 @@ export interface NodeView {
 	readonly draft: GraphNodeDraft | undefined;
 }
 
-/** Project the four per-node facts a row needs out of the opaque {@link ReviewState}
- * (ADR-0042). Resolves the repoint ONCE and derives the effective stage from it (rather
- * than calling {@link stageFor}, which would resolve it again via {@link isAcceptable}):
- * a node's explicit stage wins, else it defaults to `accept` unless it is an unpicked
- * ambiguous node (no repoint) — the same rule {@link stageFor} encodes. */
+/** Project the four per-node facts a row needs out of the {@link ReviewState}
+ * (ADR-0042): the effective `stage`, the RAW `explicitStage`, the effective
+ * `repointId`, and the edit `draft`. Delegates to {@link stageFor}/{@link repointFor}
+ * so the effective-stage rule lives in ONE place — the row and the decision vector
+ * (via {@link buildDecisions}, which also calls `stageFor`) can never drift. */
 export function nodeView(state: ReviewState, node: ResolvedNode): NodeView {
-	const explicitStage = state.stages.get(node.handle);
-	const repointId = repointFor(state.repoints, node);
-	const acceptable = node.disposition !== "ambiguous" || repointId !== null;
 	return {
-		stage: explicitStage ?? (acceptable ? "accept" : "reject"),
-		explicitStage,
-		repointId,
+		stage: stageFor(state.stages, node, state.repoints),
+		explicitStage: state.stages.get(node.handle),
+		repointId: repointFor(state.repoints, node),
 		draft: state.drafts.get(node.handle),
 	};
 }
