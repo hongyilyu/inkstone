@@ -275,11 +275,14 @@ async fn fresh_manifest_line(
         })
         .collect();
     let access_token = resolve_token(run_id, workflow).await?;
-    // Scan the skills dir and inject the <available_skills> block per spawn
-    // (ADR-0036): fresh AND resume both build the manifest here, so both see the
-    // current skill set without snapshotting a stale one. The augmented String
-    // must outlive the borrowing manifest, so it is bound here.
-    let system_prompt = crate::skills::augmented_system_prompt(workflow);
+    // Scan the skills dir once and build the effective system prompt (ADR-0036 +
+    // ADR-0063): the <available_skills> block plus — on a trigger match against
+    // the current prompt — a Core-authored directive naming the matched skill.
+    // ONE scan feeds both, so the advertised set is exactly the matchable set.
+    // The augmented String must outlive the borrowing manifest, so it is bound
+    // here. Resume uses the plain `augmented_system_prompt` (no fresh prompt to
+    // match), so the directive is fresh-dispatch-only.
+    let system_prompt = crate::skills::augmented_system_prompt_with_trigger(workflow, prompt);
     let manifest = WorkerManifest {
         run_id,
         workflow: workflow_manifest(workflow, &system_prompt),
@@ -537,5 +540,85 @@ mod tests {
             tool_names.contains(&"load_skill"),
             "load_skill stays ambient"
         );
+    }
+
+    /// Seed a `weekly-review` skill with a `triggers` phrase in a temp skills dir
+    /// and return the config guard keeping it active for the test.
+    fn seed_triggered_skill(tmp: &std::path::Path) -> crate::config::test_override::ConfigGuard {
+        std::fs::create_dir_all(tmp.join("weekly-review")).expect("mk skill dir");
+        std::fs::write(
+            tmp.join("weekly-review").join("SKILL.md"),
+            "---\nname: weekly-review\ndescription: Guide a GTD weekly review.\ntriggers:\n  - weekly review\n---\n\n# Weekly review\n",
+        )
+        .expect("write SKILL.md");
+        crate::skills::test_skills_dir(tmp)
+    }
+
+    /// ADR-0063: a fresh prompt containing a skill's trigger phrase appends the
+    /// Core-authored directive naming that skill AFTER the `<available_skills>`
+    /// block. The `<available_skills>` block itself is unchanged (disclosure).
+    #[test]
+    fn fresh_prompt_matching_a_trigger_appends_the_directive() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let _config = seed_triggered_skill(tmp.path());
+        let wf = workflow(&["search_entities"]);
+
+        let sp = crate::skills::augmented_system_prompt_with_trigger(&wf, "let's do my weekly review");
+
+        assert!(sp.contains("<available_skills>"), "disclosure block still present");
+        let directive = crate::skills::render_trigger_directive("weekly-review");
+        assert!(sp.contains(&directive), "directive appended — got {sp:?}");
+        // Directive comes AFTER the closing tag (append order), never inside the block.
+        let block_end = sp.find("</available_skills>").expect("block closes");
+        let dir_at = sp.find(&directive).expect("directive present");
+        assert!(dir_at > block_end, "directive sits after the block");
+    }
+
+    /// A fresh prompt that matches no trigger gets the plain `<available_skills>`
+    /// block and NO directive — byte-identical to the pre-ADR-0063 fresh prompt.
+    #[test]
+    fn fresh_prompt_without_a_match_has_no_directive() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let _config = seed_triggered_skill(tmp.path());
+        let wf = workflow(&["search_entities"]);
+
+        let sp = crate::skills::augmented_system_prompt_with_trigger(&wf, "something unrelated");
+
+        assert!(sp.contains("<available_skills>"), "block still present");
+        assert!(
+            !sp.contains("Call load_skill(\"weekly-review\")"),
+            "no directive without a match — got {sp:?}"
+        );
+        // Identical to the plain (resume) augmenter when nothing matches.
+        assert_eq!(
+            sp,
+            crate::skills::augmented_system_prompt(&wf),
+            "no-match fresh prompt equals the plain augmented prompt"
+        );
+    }
+
+    /// The RESUME manifest builder never adds a directive — it uses the plain
+    /// augmenter (no fresh prompt to match, ADR-0025/0063), even when a triggering
+    /// skill is present and the reconstructed transcript's user turn would match.
+    #[tokio::test]
+    async fn resume_manifest_never_carries_a_directive() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let _config = seed_triggered_skill(tmp.path());
+        let wf = workflow(&[]);
+        // A reconstructed transcript whose user turn literally contains the trigger.
+        let transcript = vec![crate::resume::Block::User {
+            text: "let's do my weekly review".to_string(),
+        }];
+
+        let line = resume_manifest_line(Uuid::now_v7(), &wf, &transcript)
+            .await
+            .expect("resume manifest builds");
+
+        assert!(
+            !line.contains("Call load_skill(\"weekly-review\")"),
+            "resume must not inject the directive — got {line}"
+        );
+        // Disclosure still happens on resume (the block is present).
+        assert!(line.contains("available_skills"), "resume keeps the block");
     }
 }

@@ -506,7 +506,9 @@ fn is_contiguous_subslice(haystack: &[String], needle: &[String]) -> bool {
 /// The effective system prompt for a Run: the Workflow's `system_prompt` with
 /// the current skills' `<available_skills>` block appended (ADR-0036). Scans
 /// per call — drop a skill in and the next Run sees it. A skills-dir resolution
-/// failure degrades to the bare prompt (no skills), never failing the Run.
+/// failure degrades to the bare prompt (no skills), never failing the Run. Used
+/// by the RESUME path (no fresh prompt to match); the fresh path uses
+/// [`augmented_system_prompt_with_trigger`].
 pub fn augmented_system_prompt(workflow: &Workflow) -> String {
     match skills_dir() {
         Ok(dir) => augment(&workflow.system_prompt, &dir),
@@ -515,6 +517,60 @@ pub fn augmented_system_prompt(workflow: &Workflow) -> String {
             workflow.system_prompt.clone()
         }
     }
+}
+
+/// The FRESH-dispatch effective system prompt (ADR-0036 + ADR-0063). ONE scan
+/// feeds both the `<available_skills>` block and the trigger matcher, so the
+/// advertised set is exactly the matchable set. On a trigger match against
+/// `prompt`, a Core-authored directive naming the matched skill is appended after
+/// the block; the model still LOADS the skill via `load_skill` (deterministic
+/// matching, model-mediated loading). A skills-dir resolution failure degrades to
+/// the bare prompt, like [`augmented_system_prompt`]. Resume never calls this — a
+/// resume manifest carries no fresh prompt (ADR-0025), so there is nothing to
+/// match and no directive is added.
+pub fn augmented_system_prompt_with_trigger(workflow: &Workflow, prompt: &str) -> String {
+    let dir = match skills_dir() {
+        Ok(dir) => dir,
+        Err(e) => {
+            tracing::warn!(event = "skills.dir_unresolved", error = ?e);
+            return workflow.system_prompt.clone();
+        }
+    };
+    let scanned = scan(&dir);
+    let mut out = augment_with(&workflow.system_prompt, &scanned);
+    if let Some(skill) = match_trigger(prompt, &scanned) {
+        let phrase = matched_phrase(prompt, skill).unwrap_or_default();
+        tracing::info!(event = "skills.trigger_matched", skill = %skill.meta.name, phrase = %phrase);
+        out.push_str("\n\n");
+        out.push_str(&render_trigger_directive(&skill.meta.name));
+    }
+    out
+}
+
+/// The Core-authored directive appended after `<available_skills>` when a trigger
+/// matches (ADR-0063). Interpolates ONLY the skill `name` — already screened by
+/// [`eligible`] for the block delimiter and control chars — never trigger text and
+/// never body text. Balanced strength: it directs the load but leaves the model an
+/// explicit veto ("unless it is clearly inapplicable") for a clear mismatch.
+pub fn render_trigger_directive(name: &str) -> String {
+    format!(
+        "This request matches the `{name}` skill. Call load_skill(\"{name}\") \
+         before responding and follow it, unless it is clearly inapplicable."
+    )
+}
+
+/// The matched skill's longest trigger phrase for `prompt`, space-joined — for the
+/// `skills.trigger_matched` diagnostic event only. Recomputed (cheaply, only on a
+/// match) rather than threaded out of [`match_trigger`], which keeps that matcher's
+/// signature a clean `Option<&ScannedSkill>`.
+fn matched_phrase(prompt: &str, skill: &ScannedSkill) -> Option<String> {
+    let tokens = normalize_tokens(prompt);
+    skill
+        .triggers
+        .iter()
+        .filter(|phrase| is_contiguous_subslice(&tokens, phrase))
+        .max_by_key(|phrase| phrase.len())
+        .map(|phrase| phrase.join(" "))
 }
 
 /// On first run, write the bundled example Skills into the skills dir — but
