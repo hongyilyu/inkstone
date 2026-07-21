@@ -89,6 +89,18 @@ cargo test --manifest-path crates/core/Cargo.toml
 - **Format normalizes; it does not reason.** Confirm the only non-comment, non-whitespace edits trace to your task — `git diff -w` should show just your real changes.
 - Pre-existing failures unrelated to your change: name them, don't silently absorb them into your diff.
 
+### 7. Comments defend code; they don't excuse it
+
+If you need a paragraph-long comment to justify why a workaround is OK, the code is wrong — fix the code. The same holds when the workaround needs *new docs* to explain it.
+
+A long justification is a signal the invariant lives in prose instead of in code shape. Prose rots; code shape doesn't. So when you catch yourself writing (or reviewing) a comment that *argues an awkward shape is acceptable*, treat it as a defect, not documentation:
+
+- "safe because…", "we do X not Y because Y would break Z", "defensive:", "can't happen / just in case" — the invariant is in the comment, not the types. Restructure so the code makes the bad state unrepresentable (a chokepoint, a narrower type, a descriptor fact instead of a hand-synced list), then the paragraph is unnecessary.
+- A redundant guard/dedupe/branch whose necessity is argued while another mechanism (a UNIQUE constraint, an exhaustive match, an upstream validator) already guarantees it → delete the guard, not the argument.
+- A dead field/param kept alive by a comment + `#[allow(dead_code)]` → delete it (when it's in your change's scope; a pre-existing unrelated one is §3's rule — mention it, don't delete).
+
+Then shrink the comment to ≤2 lines of what the code *can't* show. This does **not** target legitimate documentation — domain rules, ADR/wire-contract references, or a real external constraint (SQLite/serde/browser behavior, a genuine concurrency truth) that no restructure removes. Those stay. The distinction: does the comment *defend* a shape a restructure could make self-evident (smell), or *document* intrinsic/external truth (keep)? When unsure, it's the latter — churning good code is worse than a long comment.
+
 ## Subagent workflows
 
 Rules for every `Agent`/`Workflow` spawn. 429s and stalls are routine here — a failed run is an unfinished run, not a result.

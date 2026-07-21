@@ -174,7 +174,7 @@ pub(crate) fn render_accept_update_project(payload: &Value, _entity_id: Option<&
 
 pub(crate) fn render_accept_create_todo(payload: &Value, entity_id: Option<&str>) -> String {
     let entity_id = entity_id.expect("create accept rendering requires entity_id");
-    let todo = todo_envelope(payload);
+    let todo = payload.get("todo");
     let title = todo
         .and_then(|t| t.get("title"))
         .and_then(Value::as_str)
@@ -834,20 +834,6 @@ fn validate_recurrence_end(value: &Value) -> Result<(), String> {
     Ok(())
 }
 
-/// The `todo` value of a `{todo, person_refs?}` envelope (ADR-0031) — the ONE
-/// owner of the where-does-`todo`-live shape question. Returns the RAW value —
-/// a present non-object is `Some(raw)`, NOT filtered to `None` — because the
-/// sites disagree on non-object/absent handling and each keeps its own
-/// semantics: the validators must see the raw value to emit the exact "todo
-/// must be a JSON object" text, the create normalization filters non-objects
-/// locally, the update overlay `as_object`s it away, and the
-/// renderer/ref-checkers read fields defensively (a `get` on a non-object is
-/// `None`). Absence semantics likewise stay per-site (`validate_todo` requires
-/// it; the overlay treats absence as a no-op).
-pub(crate) fn todo_envelope(payload: &Value) -> Option<&Value> {
-    payload.get("todo")
-}
-
 /// Validate a `create_todo` payload: an ENVELOPE `{todo: TodoData, person_refs?}`
 /// (ADR-0031). `todo` is required and validated as `TodoData`; `person_refs`, when
 /// present, must be an array of refs, each an object with a required non-empty
@@ -860,7 +846,7 @@ pub(crate) fn validate_todo(payload: &Value) -> Result<(), String> {
     // then the TodoData hook validates the `todo` value (its cross-field
     // invariants exceed a flat walk).
     MutationKind::CreateTodo.payload_spec().check(payload)?;
-    let todo = todo_envelope(payload).ok_or_else(|| "todo is required".to_string())?;
+    let todo = payload.get("todo").ok_or_else(|| "todo is required".to_string())?;
     validate_todo_data(todo)
 }
 
@@ -923,7 +909,7 @@ pub(crate) fn validate_update_todo(payload: &Value) -> Result<(), String> {
     // the single source; the partial `todo` value's recurrence rule (a non-null
     // value validated in isolation) is the one cross-field bit the spec defers.
     MutationKind::UpdateTodo.payload_spec().check(payload)?;
-    if let Some(todo) = todo_envelope(payload) {
+    if let Some(todo) = payload.get("todo") {
         validate_partial_todo_data(todo)?;
     }
     Ok(())
@@ -1896,30 +1882,8 @@ mod tests {
     }
 
     #[test]
-    fn todo_envelope_exposes_the_raw_shape() {
-        // Present object → Some(&object): the common envelope.
-        let payload = json!({ "todo": { "title": "x" }, "person_refs": [] });
-        assert_eq!(todo_envelope(&payload), Some(&json!({ "title": "x" })));
-        // Absent → None: each site keeps its own absence semantics
-        // (validate_todo errors "todo is required"; the update overlay no-ops).
-        assert_eq!(todo_envelope(&json!({ "person_refs": [] })), None);
-        // Present NON-object → Some(raw), NOT filtered to None: the validators
-        // must see the raw value to emit the exact "todo must be a JSON object"
-        // text; the one filtering site (mutation.rs's todo_envelope_extract)
-        // filters locally.
-        assert_eq!(
-            todo_envelope(&json!({ "todo": "not-an-object" })),
-            Some(&json!("not-an-object"))
-        );
-    }
-
-    #[test]
     fn non_object_todo_envelope_keeps_exact_validator_error_text() {
-        // Pins the error path [`todo_envelope`]'s doc cites for its RAW
-        // (non-filtering) semantics: the validators must SEE a non-object
-        // `todo` to emit this exact text. A future `.filter(is_object)` inside
-        // the accessor would silently change these outcomes — this test breaks
-        // first.
+        // Pins the exact non-object `todo` error text for both validators.
         assert_eq!(
             validate_todo(&json!({ "todo": "x" })),
             Err("todo must be a JSON object".to_string())

@@ -187,11 +187,10 @@ pub fn scan(dir: &Path) -> Vec<SkillMeta> {
             if !path.is_dir() {
                 return None;
             }
-            // `file_name()` is never None for a `read_dir` entry; a non-UTF-8 dir
-            // name (`to_str() == None`) is logged before skipping, so it is
-            // "skipped AND logged" like every other ineligible case — not dropped
-            // silently.
-            let Some(dir_name) = path.file_name().and_then(|n| n.to_str()) else {
+            // A non-UTF-8 dir name is logged before skipping — "skipped AND
+            // logged" like every other ineligible case, not dropped silently.
+            let file_name = entry.file_name();
+            let Some(dir_name) = file_name.to_str() else {
                 tracing::warn!(event = "skills.skill_non_utf8_dir", path = %path.display());
                 return None;
             };

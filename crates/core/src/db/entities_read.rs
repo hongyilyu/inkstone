@@ -181,24 +181,21 @@ pub async fn backlinks_for_entity(pool: &SqlitePool, entity_id: &str) -> sqlx::R
     })
 }
 
-/// Build the DISTINCT-Journal-Entry "Mentioned in" set for `target_entity_id`,
-/// reusing the `entity/list` JE-row assembly so each row carries its `refs` +
-/// `source`. `journal_entry_refs_targeting` returns one row per `entity_ref`; the
-/// `(source_entity_id, target_entity_id)` UNIQUE constraint already caps that at
-/// one row per JE for a given target, but the collapse is kept so a JE can never
-/// list twice. Ordered newest-occurred first by the JE's `data.occurred_at` (an
-/// ISO-8601 string, so lexical order is chronological), tie-broken by JE id.
+/// Build the "Mentioned in" set for `target_entity_id`, reusing the `entity/list`
+/// JE-row assembly so each row carries its `refs` + `source`. The
+/// `(source_entity_id, target_entity_id)` UNIQUE constraint gives one `entity_ref`
+/// row per JE, so the source ids are already distinct. Ordered newest-occurred
+/// first by the JE's `data.occurred_at` (an ISO-8601 string, so lexical order is
+/// chronological), tie-broken by JE id.
 async fn mentioned_in_journal_entries(
     pool: &SqlitePool,
     target_entity_id: &str,
 ) -> sqlx::Result<Vec<EntityRow>> {
     let refs = queries::journal_entry_refs_targeting(pool, target_entity_id).await?;
-    let mut je_ids = Vec::<String>::new();
-    for (_ref_id, source_entity_id, _source_data, _label) in &refs {
-        if !je_ids.contains(source_entity_id) {
-            je_ids.push(source_entity_id.clone());
-        }
-    }
+    let je_ids: Vec<String> = refs
+        .into_iter()
+        .map(|(_ref_id, source_entity_id, _source_data, _label)| source_entity_id)
+        .collect();
 
     let mut rows = queries::journal_entries_by_ids(pool, &je_ids)
         .await?
@@ -802,9 +799,8 @@ mod tests {
         seed_entity(&pool, "person-zero", "person", r#"{"name":"Nobody"}"#).await;
 
         // Journal Entries with refs. JE-older and JE-newer both reference Alice;
-        // JE-newer occurred later. JE-newer references Alice via TWO ref rows would
-        // be blocked by the (source,target) UNIQUE constraint, so dedupe is proven
-        // by asserting each distinct JE appears exactly ONCE.
+        // JE-newer occurred later. The (source,target) UNIQUE constraint gives one
+        // ref row per JE, so each distinct JE appears exactly ONCE below.
         seed_entity_at(
             &pool,
             "je-older",

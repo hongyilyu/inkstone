@@ -12,7 +12,7 @@ use sqlx::SqlitePool;
 
 use crate::db;
 use crate::entities;
-use crate::mutation::{MutationKind, WriteOp};
+use crate::mutation::{MutationKind, TargetRefs, WriteOp};
 use crate::mutation_target::{self, TargetError};
 
 /// A successful user mutation: the affected Entity id, present on create/update
@@ -55,12 +55,12 @@ pub async fn apply(
 
     // A direct Library create is anchor-less by design (ADR-0033: "source row iff
     // a real source" — the user path has no Run, user Message, or Journal-Entry
-    // anchor). `entities::validate` accepts `source_journal_entry_id` for the
-    // shared agent path, but the user path must REJECT it rather than silently
-    // validate provenance and persist no entity_sources row.
+    // anchor). The anchor-bearing creates are exactly the kinds that resolve a
+    // source anchor; reject the directive rather than validate provenance and
+    // persist no entity_sources row.
     if matches!(
-        kind,
-        MutationKind::CreatePerson | MutationKind::CreateProject | MutationKind::CreateTodo
+        desc.target_refs,
+        TargetRefs::SourceAnchor | TargetRefs::SourceAnchorAndTodoCreateRefs
     ) && entities::source_journal_entry_id(payload).is_some()
     {
         return Err(MutateError::Invalid(
@@ -477,12 +477,8 @@ mod tests {
         }
     }
 
-    // FIX #10: a direct user create carrying `source_journal_entry_id` is REJECTED
-    // as `Invalid` (ADR-0033). The shared `entities::validate` accepts the field
-    // for the agent path, but the Library is anchor-less (no Run, no user Message,
-    // no Journal-Entry anchor), so the user path must reject it rather than
-    // validate provenance and then silently persist no entity_sources row. Covers
-    // all three create kinds.
+    // A direct user create carrying `source_journal_entry_id` is REJECTED as
+    // `Invalid` (ADR-0033): the Library is anchor-less. Covers all three create kinds.
     #[tokio::test]
     async fn create_with_source_journal_entry_id_is_rejected() {
         let pool = memory_pool().await;
@@ -799,12 +795,10 @@ mod tests {
     }
 
     // update_media / delete_media against a wrong-type or missing entity_id is
-    // rejected by the run-independent target-ref probe BEFORE any write. The probe
-    // names the target type ("Accepted media") in its message — distinct from the
-    // generic apply-time "target entity no longer exists" fallback — so these
-    // assertions prove `update_media`/`delete_media` are still in the
-    // `generic_type_check` `matches!` set after the rename (the non-total match the
-    // compiler can't flag). Mirrors `mark_project_reviewed_wrong_type_is_invalid`.
+    // rejected by the run-independent target-ref probe (`TargetRefs::GenericTarget`)
+    // BEFORE any write. The assertions pin that the probe fired — its message names
+    // the target type ("Accepted media") — not the apply-time "target entity no
+    // longer exists" fallback. Mirrors `mark_project_reviewed_wrong_type_is_invalid`.
     #[tokio::test]
     async fn media_mutations_against_wrong_type_or_missing_target_are_rejected() {
         let pool = memory_pool().await;

@@ -4,7 +4,8 @@ import type {
 } from "@inkstone/protocol";
 import { WsClient } from "@inkstone/ui-sdk";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Cause, Effect, Exit } from "effect";
+import { Effect } from "effect";
+import { runSquashed } from "@/lib/runSquashed";
 import { useRuntime } from "@/runtime";
 import { showEntityCue } from "@/store/entityCue";
 
@@ -18,25 +19,20 @@ import { showEntityCue } from "@/store/entityCue";
  * carries no `schema_key` and no `source` (provenance is immutable). A `WsError` rejects
  * the mutation (React Query's `error`); callers render it. `onSuccess` invalidates the
  * `["observations"]` read so the corrected value shows, then fires the "Saved" cue.
- *
- * We run via `runPromiseExit` and reject with the SQUASHED cause rather than letting
- * `runPromise` wrap the failure in Effect's `FiberFailure` (same rationale as
- * {@link useEntityMutation}: a `FiberFailure` would mask the real `WsError`).
+ * A `WsError` rejects via {@link runSquashed}.
  */
 export function useObservationUpdate() {
 	const runtime = useRuntime();
 	const queryClient = useQueryClient();
 	return useMutation<ObservationUpdateResult, unknown, ObservationUpdateParams>(
 		{
-			mutationFn: async (params) => {
-				const exit = await runtime.runPromiseExit(
+			mutationFn: (params) =>
+				runSquashed(
+					runtime,
 					Effect.flatMap(WsClient, (client) =>
 						client.observationUpdate(params),
 					),
-				);
-				if (Exit.isSuccess(exit)) return exit.value;
-				throw Cause.squash(exit.cause);
-			},
+				),
 			// Refetch the Health stream so the corrected value shows, then fire the
 			// success cue. The cue lives ONLY here: a thrown mutationFn routes to error,
 			// so onSuccess (and the cue) never run on failure.

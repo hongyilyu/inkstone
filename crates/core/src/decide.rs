@@ -83,9 +83,9 @@ pub enum DecideError {
 
 /// The `ApplyError → DecideError` vocabulary, owned once. `TargetMissing →
 /// NotDecidable` is ADR-0033 (a user deleted the target out from under a parked
-/// Proposal → resolve cleanly as -32002, not an opaque Internal). The reject
-/// path in `apply_or_reject` pre-empts `TargetMissing` with `unreachable!()`
-/// before delegating here, so this arm only ever fires for accept/graph.
+/// Proposal → resolve cleanly as -32002, not an opaque Internal). A reject never
+/// touches an entity store, so its delegation here only ever carries
+/// `NotPending`/`Sql`.
 impl From<db::ApplyError> for DecideError {
     fn from(e: db::ApplyError) -> Self {
         match e {
@@ -326,18 +326,8 @@ async fn apply_or_reject(
         .await
         {
             Ok(()) => Ok(DecideOutcome::Rejected { run_id }),
-            // `decide_proposal::reject` touches no entity store (it only flips
-            // the proposal status + resolves the tool_call), so it can NEVER
-            // return TargetMissing — a reject is never wedged by a deleted target.
-            Err(db::ApplyError::TargetMissing) => {
-                unreachable!("reject never touches an entity, so cannot miss a target")
-            }
-            // The remaining arms share the one mapping (impl From above). Named
-            // (not a bare `_`) so a future ApplyError variant breaks compilation
-            // HERE, forcing a "can reject reach this?" reconsideration.
-            Err(e @ (db::ApplyError::InvalidMutation(_)
-                | db::ApplyError::NotPending
-                | db::ApplyError::Sql(_))) => Err(e.into()),
+            // Mapped through the exhaustive `From<ApplyError>` chokepoint.
+            Err(e) => Err(e.into()),
         };
     }
 
@@ -348,22 +338,21 @@ async fn apply_or_reject(
     // branch so a corrupt proposal can still be rejected.
     let proposable = kind.proposable()?;
 
-    // The intent graph (ADR-0042) is not a single-entity mutation, so it takes a
-    // SIBLING apply path (`db::apply_intent_graph_proposal`) rather than
-    // `db::apply_proposal`. It does not support the whole-payload `edit` verb
-    // (`supports_edit` is false) — corrections ride the per-node decision vector
-    // (slice 5). An `edit` decision is rejected loud HERE: the generic
-    // `supports_edit` gate sits below this early return, so without this check an
-    // edit would silently degrade to a plain accept with the `edited_payload`
-    // dropped. The structural validate gate (graph shape) still runs inside
-    // `apply_intent_graph`; the run-independent target check is a no-op for the
-    // graph in slice 2 (links land in slice 4).
+    // An `edit` decision needs a kind that supports the whole-payload edit verb;
+    // apply_intent_graph does not (corrections ride the per-node decision vector,
+    // ADR-0042). Rejected before the accept/edit split so no edit silently degrades
+    // to a plain accept with the `edited_payload` dropped.
+    if matches!(decision, Decision::Edit) && !proposable.supports_edit() {
+        return Err(DecideError::Invalid(format!(
+            "{} does not support edit",
+            proposal.mutation_kind
+        )));
+    }
+
+    // The intent graph (ADR-0042) is not a single-entity mutation: it takes a
+    // SIBLING apply path (`apply_intent_graph`), which runs the graph's structural
+    // gate and per-node resolution.
     if proposable == ProposableMutation::ApplyIntentGraph {
-        if matches!(decision, Decision::Edit) {
-            return Err(DecideError::Invalid(
-                "apply_intent_graph does not support edit".to_string(),
-            ));
-        }
         return apply_intent_graph(
             pool,
             proposal,
@@ -378,13 +367,6 @@ async fn apply_or_reject(
     // a payload-less retry replays via the branches above); a plain accept ignores
     // any wire payload. The applied payload is the edited one for an edit, else the
     // proposed payload; validate it first.
-    if matches!(decision, Decision::Edit) && !proposable.supports_edit() {
-        return Err(DecideError::Invalid(format!(
-            "{} does not support edit",
-            proposal.mutation_kind
-        )));
-    }
-
     let edited_payload = match decision {
         Decision::Edit => match edited_payload {
             Some(payload) => match proposable.entity_kind() {
@@ -543,10 +525,6 @@ async fn apply_intent_graph(
     // references, duplicate handles, journal_ref-without-journal_entry) are the
     // resolver's pre-checks.
     (kind.describe().validate)(&proposal.payload).map_err(DecideError::Invalid)?;
-    // Run-independent target-ref check — a no-op for the graph (it has no single
-    // target; link endpoints are validated inside the resolver against the
-    // surviving node set, see the cascade below).
-    validate_mutation_target(pool, run_id, kind, &proposal.payload).await?;
 
     match db::apply_intent_graph_proposal(
         pool,
@@ -680,29 +658,14 @@ fn preserve_update_target_entity_id(
     proposal_payload: &serde_json::Value,
     edited_payload: &serde_json::Value,
 ) -> Result<serde_json::Value, DecideError> {
-    // Only the editable update kinds carry a target id to preserve. This gate is
-    // the editable-UPDATE set (not merely `target_key.is_some()`, which would also
-    // catch deletes, the reference weave, mark_project_reviewed, media, and
-    // habits — none of which take an edit). Reference/deletes were already
-    // rejected by the edit-guard upstream; this stays explicit so the set cannot
-    // silently widen.
-    if !matches!(
-        kind,
-        MutationKind::UpdateJournalEntry
-            | MutationKind::UpdatePerson
-            | MutationKind::UpdateProject
-            | MutationKind::UpdateTodo
-    ) {
-        return Ok(edited_payload.clone());
-    }
-
-    // The target key (`todo_id` for update_todo, `entity_id` for the others) is a
-    // pure function of the kind — taken from the descriptor, not hand-rolled.
+    // A create carries no target id to preserve; only an update does. The target
+    // key (`todo_id` for update_todo, `entity_id` for the others) is a pure
+    // function of the kind — the descriptor's `target_key`, which is `None` for
+    // every create and `Some` for every update.
     let desc = kind.describe();
-    let target_key = desc
-        .target_key
-        .map(|k| k.as_str())
-        .expect("an update kind always has a target key");
+    let Some(target_key) = desc.target_key.map(|k| k.as_str()) else {
+        return Ok(edited_payload.clone());
+    };
     let wire = kind.as_wire();
 
     let Some(target_id) = mutation::target_entity_id(desc, proposal_payload) else {

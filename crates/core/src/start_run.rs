@@ -205,11 +205,6 @@ pub struct StartRunParams {
 /// A successfully started Run.
 pub struct StartedRun {
     pub run_id: Uuid,
-    /// The assistant Message id the Worker streams into. Unread by the shells
-    /// today (retry reads its own copy back from the DB before calling the
-    /// verb); kept on the result because it is part of "what was started".
-    #[allow(dead_code)]
-    pub assistant_message_id: Uuid,
     /// The resolved Workflow's provider id — GUARANTEED connected (the verb's
     /// ADR-0062 gate rejects a disconnected one before this point).
     /// `thread/create`'s shell hands it to the titler (ADR-0046).
@@ -335,7 +330,6 @@ where
 
     Ok(StartedRun {
         run_id,
-        assistant_message_id,
         provider,
         deferred_spawn: deferred,
     })
