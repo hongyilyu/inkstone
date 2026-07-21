@@ -275,13 +275,9 @@ async fn fresh_manifest_line(
         })
         .collect();
     let access_token = resolve_token(run_id, workflow).await?;
-    // Scan the skills dir once and build the effective system prompt (ADR-0036 +
-    // ADR-0063): the <available_skills> block plus — on a trigger match against
-    // the current prompt — a Core-authored directive naming the matched skill.
-    // ONE scan feeds both, so the advertised set is exactly the matchable set.
-    // The augmented String must outlive the borrowing manifest, so it is bound
-    // here. Resume uses the plain `augmented_system_prompt` (no fresh prompt to
-    // match), so the directive is fresh-dispatch-only.
+    // Fresh-only (ADR-0063): appends a trigger directive when `prompt` matches a
+    // skill; resume uses the plain `augmented_system_prompt`. Bound here to outlive
+    // the borrowing manifest.
     let system_prompt = crate::skills::augmented_system_prompt_with_trigger(workflow, prompt);
     let manifest = WorkerManifest {
         run_id,
@@ -614,9 +610,8 @@ mod tests {
             .await
             .expect("resume manifest builds");
 
-        // Deserialize and inspect the ACTUAL system_prompt string — searching the
-        // serialized line for `load_skill("…")` would be tautological, since JSON
-        // escapes the `"` to `\"` and the unescaped needle never appears regardless.
+        // Inspect the deserialized system_prompt, not the serialized line: JSON
+        // escapes the directive's `"`, so a raw-line search would be tautological.
         let manifest: serde_json::Value =
             serde_json::from_str(line.trim_end()).expect("manifest line is JSON");
         let system_prompt = manifest["workflow"]["system_prompt"]

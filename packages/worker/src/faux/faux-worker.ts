@@ -1142,16 +1142,10 @@ export function fauxDepsFor(manifest: WorkerManifest): InterpreterDeps {
 			},
 		]);
 	} else if (process.env.INKSTONE_FAUX_LOAD_SKILL !== undefined) {
-		// Load-skill mode (e2e, ADR-0036 + ADR-0063): turn 1 calls the AMBIENT
-		// load_skill tool by name (the name rides in INKSTONE_FAUX_LOAD_SKILL),
-		// turn 2 echoes the returned skill body. Proves the Skills activation
-		// round-trip surfaces a tool-call row in the real UI even though no
-		// Workflow allowlists load_skill. When the same name appears in
-		// INKSTONE_FAUX_EXPECT_DIRECTIVE, turn 1's reply also reports whether the
-		// ADR-0063 trigger directive naming that skill reached the manifest's
-		// system_prompt — so the e2e can assert deterministic matching drove the
-		// injection (the faux worker proves the directive REACHED the model's
-		// context; live-model compliance is a separate manual smoke).
+		// Load-skill mode (e2e, ADR-0036): turn 1 calls the ambient load_skill by
+		// INKSTONE_FAUX_LOAD_SKILL name, turn 2 echoes the body. With
+		// INKSTONE_FAUX_EXPECT_DIRECTIVE set, turn 1 instead reports whether that
+		// name's ADR-0063 trigger directive reached the manifest system_prompt.
 		const skillName = process.env.INKSTONE_FAUX_LOAD_SKILL;
 		const expectDirective = process.env.INKSTONE_FAUX_EXPECT_DIRECTIVE;
 		if (expectDirective !== undefined) {
