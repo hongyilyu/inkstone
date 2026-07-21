@@ -21,8 +21,11 @@ after the closing `</available_skills>` tag:
 > responding and follow it, unless it is clearly inapplicable.
 
 Only the skill **name** is interpolated — a value that already passed ADR-0036's
-`eligible()` delimiter/control-char screen. Trigger text and body text are **never**
-rendered into any prompt.
+`eligible()` delimiter/control-char screen, extended here to also reject the `"`
+and backtick that would let a name break out of the directive's `load_skill("…")`
+quoted-call and `` `…` `` code-span framing (a name is `== dir_name`, and those are
+legal POSIX filename bytes). Trigger text and body text are **never** rendered into
+any prompt.
 
 The stance in one line: **deterministic matching, model-mediated loading.** The match
 is a pure string computation Core runs before the model; the *load* stays a real,

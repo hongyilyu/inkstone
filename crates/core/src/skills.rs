@@ -321,9 +321,17 @@ pub(crate) fn eligible<'a>(
     // would break the `name == dir_name` round-trip — so its check matters too.)
     // Drop any skill whose advertised metadata carries the delimiter token
     // (`available_skills`, the distinctive substring of both `<available_skills>`
-    // and its close) or a control char.
+    // and its close) or a control char. The name gets a stricter screen than the
+    // description: on a trigger match it is ALSO interpolated into a Core-authored
+    // directive — `Call load_skill("<name>")` inside a `<name>` code span (ADR-0063,
+    // render_trigger_directive) — so a `"` or backtick in the name would break out
+    // of that trusted-class framing and forge Core-voiced text. The description
+    // never reaches the directive (only the block's `- name: desc` line, where
+    // those chars are inert), so it needs only the delimiter/control screen.
     if name.contains("available_skills")
         || description.contains("available_skills")
+        || name.contains('"')
+        || name.contains('`')
         || name.chars().any(char::is_control)
         || description.chars().any(char::is_control)
     {
@@ -549,9 +557,10 @@ pub fn augmented_system_prompt_with_trigger(workflow: &Workflow, prompt: &str) -
 
 /// The Core-authored directive appended after `<available_skills>` when a trigger
 /// matches (ADR-0063). Interpolates ONLY the skill `name` — already screened by
-/// [`eligible`] for the block delimiter and control chars — never trigger text and
-/// never body text. Balanced strength: it directs the load but leaves the model an
-/// explicit veto ("unless it is clearly inapplicable") for a clear mismatch.
+/// [`eligible`] for the block delimiter, control chars, AND the `"`/backtick that
+/// would break out of this directive's quoted-call + code-span framing — never
+/// trigger text and never body text. Balanced strength: it directs the load but
+/// leaves the model an explicit veto ("unless it is clearly inapplicable").
 pub fn render_trigger_directive(name: &str) -> String {
     format!(
         "This request matches the `{name}` skill. Call load_skill(\"{name}\") \
@@ -767,6 +776,32 @@ mod tests {
                 .filter(|l| l.starts_with("- "))
                 .all(|l| !l.contains('\n')),
             "every skill is one block line"
+        );
+    }
+
+    #[test]
+    fn scan_drops_names_that_would_break_out_of_the_trigger_directive() {
+        // A skill NAME is interpolated into the ADR-0063 directive as
+        // `load_skill("<name>")` inside a `<name>` code span (Core-authored,
+        // trusted class). A `"` or backtick in the name would escape that framing
+        // and forge Core-voiced text, so such names are dropped at scan — the same
+        // "reads as Core-authored framing" defense as the delimiter/control screen.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        // dir name == frontmatter name (clears the name-mismatch gate), so ONLY the
+        // quote/backtick screen can stop these.
+        seed(
+            tmp.path(),
+            "quote\"break",
+            "---\nname: \"quote\\\"break\"\ndescription: Looks fine.\n---\n\n# x\n",
+        );
+        seed(
+            tmp.path(),
+            "tick`break",
+            "---\nname: \"tick`break\"\ndescription: Looks fine.\n---\n\n# x\n",
+        );
+        assert!(
+            scan(tmp.path()).is_empty(),
+            "a name containing a directive-breaking char is dropped"
         );
     }
 
