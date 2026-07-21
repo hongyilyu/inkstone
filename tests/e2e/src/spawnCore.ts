@@ -163,6 +163,8 @@ export interface SpawnCoreOptions {
 	readonly fauxToolCall?: boolean;
 	/** Drive the faux provider to call the ambient `load_skill` tool by this name (`INKSTONE_FAUX_LOAD_SKILL`, ADR-0036), exercising Skills activation end-to-end. */
 	readonly fauxLoadSkill?: string;
+	/** Assert (via the faux provider, in `fauxLoadSkill` mode) whether the ADR-0063 trigger directive naming this skill reached the manifest `system_prompt` (`INKSTONE_FAUX_EXPECT_DIRECTIVE`); turn 1's reply is `trigger directive present: <bool>`. */
+	readonly fauxExpectDirective?: string;
 	/** Higher-level faux interpreter mode: `propose` (Journal Entry mutations, ADR-0025), `extract` (Person/Project/Todo extraction from an accepted Journal Entry), or `capture` (direct GTD capture sourced from the user Message — no Journal Entry). Drives the park -> decide -> resume loop. */
 	readonly faux?: "propose" | "extract" | "capture";
 	/** Direct propose-worker fixture knob. Emits params loaded from this JSON file. */
@@ -332,6 +334,7 @@ export async function spawnCore(
 		"INKSTONE_FAUX_ERROR",
 		"INKSTONE_FAUX_TOOL_CALL",
 		"INKSTONE_FAUX_LOAD_SKILL",
+		"INKSTONE_FAUX_EXPECT_DIRECTIVE",
 		"INKSTONE_FAUX_PROPOSE",
 		"INKSTONE_FAUX_PROPOSE_PARAMS",
 		"INKSTONE_FAUX_EXTRACT",
@@ -475,6 +478,9 @@ export async function spawnCore(
 			env.INKSTONE_FAUX_TOOL_CALL = "1";
 		} else if (opts.fauxLoadSkill !== undefined) {
 			env.INKSTONE_FAUX_LOAD_SKILL = opts.fauxLoadSkill;
+			if (opts.fauxExpectDirective !== undefined) {
+				env.INKSTONE_FAUX_EXPECT_DIRECTIVE = opts.fauxExpectDirective;
+			}
 		} else if (opts.faux === "propose") {
 			env.INKSTONE_FAUX_PROPOSE = "1";
 			if (opts.proposeParamsFile !== undefined) {
