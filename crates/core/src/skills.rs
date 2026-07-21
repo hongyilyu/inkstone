@@ -54,6 +54,19 @@ pub struct SkillMeta {
     pub description: String,
 }
 
+/// An eligible Skill paired with its normalized trigger phrases (ADR-0063). The
+/// `triggers` live here, on the scan-result wrapper, *not* on [`SkillMeta`] —
+/// so `SkillMeta` stays exactly "the only fields that reach the system prompt".
+/// Each inner `Vec<String>` is one phrase's token sequence (lowercased, split on
+/// non-alphanumeric boundaries); [`match_trigger`] tests these against the
+/// identically-normalized prompt. A skill with no valid triggers has an empty
+/// `triggers` and simply never matches.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScannedSkill {
+    pub meta: SkillMeta,
+    pub triggers: Vec<Vec<String>>,
+}
+
 /// A `SKILL.md` split into its frontmatter (text between the `---` fences, or
 /// `None` when there is no leading fence) and its body (everything after the
 /// closing fence, trimmed). Borrows from the source string.
@@ -80,6 +93,30 @@ pub enum MalformedSkill {
 struct Frontmatter {
     name: Option<String>,
     description: Option<String>,
+    /// Optional trigger phrases (ADR-0063). Absent for most skills. A YAML type
+    /// error here (e.g. a scalar where a sequence is expected) is a serde error
+    /// like any other, so the whole skill is dropped via the same
+    /// `skill_frontmatter_invalid` path — keeping the format a strict subset of
+    /// the Agent Skills standard (unknown fields still ignored).
+    triggers: Option<Vec<String>>,
+}
+
+/// The minimum token count a trigger phrase must normalize to (ADR-0063). A
+/// phrase below this floor is dropped-and-logged (the phrase, not the skill) —
+/// it kills single-word squatting (`help`, `email`) and is the empty-phrase
+/// guard.
+const MIN_TRIGGER_TOKENS: usize = 2;
+
+/// Normalize text into its trigger-matching token sequence (ADR-0063, normative):
+/// lowercase, then split on every non-alphanumeric boundary (`char::is_alphanumeric`).
+/// The SAME function normalizes both a phrase and the prompt, so `weekly-review`
+/// (hyphenated prose) and `weekly review` both yield `["weekly", "review"]`.
+/// Matching is over these token sequences, never raw substrings.
+fn normalize_tokens(text: &str) -> Vec<String> {
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .map(|t| t.to_lowercase())
+        .collect()
 }
 
 /// Resolve the skills base directory: the boot-resolved `INKSTONE_SKILLS_DIR`
@@ -157,7 +194,7 @@ fn split_first_line(s: &str) -> Option<(&str, &str)> {
 /// directory name (so the advertised name is the loadable `load_skill` key).
 /// Every other case — missing dir, unreadable file, malformed frontmatter,
 /// missing field, name mismatch — is skipped and logged, never fatal.
-pub fn scan(dir: &Path) -> Vec<SkillMeta> {
+pub fn scan(dir: &Path) -> Vec<ScannedSkill> {
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(e) => {
@@ -171,7 +208,7 @@ pub fn scan(dir: &Path) -> Vec<SkillMeta> {
         }
     };
 
-    let mut skills: Vec<SkillMeta> = entries
+    let mut skills: Vec<ScannedSkill> = entries
         .filter_map(|entry| match entry {
             Ok(entry) => Some(entry),
             // A per-entry stat/I-O fault mid-enumeration (e.g. a racing delete).
@@ -197,7 +234,7 @@ pub fn scan(dir: &Path) -> Vec<SkillMeta> {
             parse_skill(dir_name, &path.join("SKILL.md"))
         })
         .collect();
-    skills.sort_by(|a, b| a.name.cmp(&b.name));
+    skills.sort_by(|a, b| a.meta.name.cmp(&b.meta.name));
     skills
 }
 
@@ -205,7 +242,7 @@ pub fn scan(dir: &Path) -> Vec<SkillMeta> {
 /// is ineligible (skipped + logged). The advertised `name` is `dir_name` (the
 /// `load_skill` key); the frontmatter `name` must match it, guaranteeing every
 /// advertised name round-trips through `load_skill`.
-fn parse_skill(dir_name: &str, skill_md: &Path) -> Option<SkillMeta> {
+fn parse_skill(dir_name: &str, skill_md: &Path) -> Option<ScannedSkill> {
     let content = match std::fs::read_to_string(skill_md) {
         Ok(content) => content,
         Err(e) => {
@@ -219,7 +256,7 @@ fn parse_skill(dir_name: &str, skill_md: &Path) -> Option<SkillMeta> {
     };
 
     match eligible(dir_name, skill_md, &content) {
-        Ok(Some((meta, _body))) => Some(meta),
+        Ok(Some((meta, triggers, _body))) => Some(ScannedSkill { meta, triggers }),
         Ok(None) => None,
         Err(MalformedSkill::UnclosedFrontmatter) => {
             tracing::warn!(event = "skills.skill_malformed", path = %skill_md.display(), reason = "unclosed_frontmatter");
@@ -240,7 +277,7 @@ pub(crate) fn eligible<'a>(
     dir_name: &str,
     skill_md: &Path,
     content: &'a str,
-) -> Result<Option<(SkillMeta, &'a str)>, MalformedSkill> {
+) -> Result<Option<(SkillMeta, Vec<Vec<String>>, &'a str)>, MalformedSkill> {
     let parts = split_frontmatter(content)?;
     let Some(frontmatter) = parts.frontmatter else {
         tracing::warn!(event = "skills.skill_no_frontmatter", path = %skill_md.display());
@@ -304,11 +341,36 @@ pub(crate) fn eligible<'a>(
         return Ok(None);
     }
 
+    // Trigger phrases (ADR-0063). Each is normalized to a token sequence; a phrase
+    // below the min-token floor is dropped-and-logged (the PHRASE, not the skill —
+    // triggers are optional enhancement). Trigger text never reaches any prompt, so
+    // it needs no delimiter/control-char screen: matching is over tokens.
+    let triggers: Vec<Vec<String>> = parsed
+        .triggers
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|phrase| {
+            let tokens = normalize_tokens(&phrase);
+            if tokens.len() < MIN_TRIGGER_TOKENS {
+                tracing::warn!(
+                    event = "skills.trigger_dropped",
+                    path = %skill_md.display(),
+                    phrase = %phrase,
+                    reason = "below_min_tokens",
+                );
+                None
+            } else {
+                Some(tokens)
+            }
+        })
+        .collect();
+
     Ok(Some((
         SkillMeta {
             name: dir_name.to_string(),
             description,
         },
+        triggers,
         parts.body,
     )))
 }
@@ -352,7 +414,7 @@ pub(crate) fn load_body(name: &str) -> LoadOutcome {
     };
 
     match eligible(name, &skill_md, &content) {
-        Ok(Some((_meta, body))) => LoadOutcome::Body(body.to_string()),
+        Ok(Some((_meta, _triggers, body))) => LoadOutcome::Body(body.to_string()),
         // Present but discovery would drop it — by contract not a loadable skill.
         Ok(None) => LoadOutcome::Unknown,
         Err(MalformedSkill::UnclosedFrontmatter) => LoadOutcome::Malformed,
@@ -379,14 +441,66 @@ pub fn render_available_skills(skills: &[SkillMeta]) -> Option<String> {
     Some(block)
 }
 
+/// Append the `<available_skills>` block for an already-scanned skill set to
+/// `base` (ADR-0036 §Disclosure). Pure over `scanned` — the single render path,
+/// so the advertised set is exactly the scanned set. With no eligible skills,
+/// `base` is returned unchanged. The `<available_skills>` block lists names +
+/// descriptions only; triggers never appear here (ADR-0063).
+pub fn augment_with(base: &str, scanned: &[ScannedSkill]) -> String {
+    let metas: Vec<SkillMeta> = scanned.iter().map(|s| s.meta.clone()).collect();
+    match render_available_skills(&metas) {
+        Some(block) => format!("{base}\n\n{block}"),
+        None => base.to_string(),
+    }
+}
+
 /// Append the `<available_skills>` block for the skills in `dir` to `base`. With
 /// no eligible skills, `base` is returned unchanged. Pure over `dir` (no env) so
 /// it is unit-testable; production calls [`augmented_system_prompt`].
 pub fn augment(base: &str, dir: &Path) -> String {
-    match render_available_skills(&scan(dir)) {
-        Some(block) => format!("{base}\n\n{block}"),
-        None => base.to_string(),
+    augment_with(base, &scan(dir))
+}
+
+/// Find the single skill whose trigger phrase best matches `prompt` (ADR-0063,
+/// normative). `prompt` is normalized with the SAME tokenizer as the phrases; a
+/// phrase matches iff its token sequence occurs as a CONTIGUOUS subslice of the
+/// prompt's tokens. Per-skill score is the token count of its longest matched
+/// phrase; the highest score wins, ties broken by `scanned` order (which [`scan`]
+/// sorts by name, so the first match wins deterministically). Returns the single
+/// winner or `None` (empty prompt, no triggers, or no contiguous match). Cap 1 by
+/// construction — other relevant skills remain advertised in `<available_skills>`.
+pub fn match_trigger<'a>(prompt: &str, scanned: &'a [ScannedSkill]) -> Option<&'a ScannedSkill> {
+    let prompt_tokens = normalize_tokens(prompt);
+    if prompt_tokens.is_empty() {
+        return None;
     }
+    let mut best: Option<(&ScannedSkill, usize)> = None;
+    for skill in scanned {
+        let score = skill
+            .triggers
+            .iter()
+            .filter(|phrase| is_contiguous_subslice(&prompt_tokens, phrase))
+            .map(|phrase| phrase.len())
+            .max()
+            .unwrap_or(0);
+        if score == 0 {
+            continue;
+        }
+        // Strictly-greater keeps the first (name-sorted) skill on a tie.
+        if best.is_none_or(|(_, b)| score > b) {
+            best = Some((skill, score));
+        }
+    }
+    best.map(|(skill, _)| skill)
+}
+
+/// True iff `needle` occurs as a contiguous run inside `haystack`. An empty
+/// `needle` never reaches here (the min-token floor rejects <2-token phrases).
+fn is_contiguous_subslice(haystack: &[String], needle: &[String]) -> bool {
+    if needle.is_empty() || needle.len() > haystack.len() {
+        return false;
+    }
+    haystack.windows(needle.len()).any(|w| w == needle)
 }
 
 /// The effective system prompt for a Run: the Workflow's `system_prompt` with
@@ -515,9 +629,9 @@ mod tests {
         );
         seed(tmp.path(), "bad-yaml", "---\nname: bad-yaml\n: : bad\n---\n\n# x\n");
 
-        let skills = scan(tmp.path());
+        let metas: Vec<SkillMeta> = scan(tmp.path()).into_iter().map(|s| s.meta).collect();
         assert_eq!(
-            skills,
+            metas,
             vec![
                 SkillMeta {
                     name: "inbox-triage".to_string(),
@@ -572,9 +686,9 @@ mod tests {
             "---\nname: esc-desc\ndescription: \"a\\u001bb\"\n---\n\n# x\n",
         );
 
-        let skills = scan(tmp.path());
+        let metas: Vec<SkillMeta> = scan(tmp.path()).into_iter().map(|s| s.meta).collect();
         assert_eq!(
-            skills,
+            metas,
             vec![SkillMeta {
                 name: "multiline".to_string(),
                 // Interior newlines collapsed to single spaces — exactly one line.
@@ -585,7 +699,7 @@ mod tests {
 
         // Belt-and-suspenders: the rendered block has no stray line and no second
         // <available_skills> token, so it cannot be broken out of.
-        let block = render_available_skills(&skills).expect("a block");
+        let block = render_available_skills(&metas).expect("a block");
         assert_eq!(
             block.matches("available_skills").count(),
             2,
@@ -653,7 +767,7 @@ mod tests {
         // Guards the shipped `crates/core/skills/*/SKILL.md` against a frontmatter
         // typo: each seed must parse and advertise its directory name.
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("skills");
-        let names: Vec<String> = scan(&dir).into_iter().map(|s| s.name).collect();
+        let names: Vec<String> = scan(&dir).into_iter().map(|s| s.meta.name).collect();
         assert!(
             names.contains(&"weekly-review".to_string()),
             "weekly-review seed is eligible — got {names:?}"
@@ -678,6 +792,194 @@ mod tests {
         );
     }
 
+    /// Build a `ScannedSkill` from a name and raw phrase strings, normalizing the
+    /// phrases exactly as `eligible()` does — the unit-test shortcut for
+    /// `match_trigger` cases that don't need a on-disk `SKILL.md`.
+    fn scanned(name: &str, phrases: &[&str]) -> ScannedSkill {
+        ScannedSkill {
+            meta: SkillMeta {
+                name: name.to_string(),
+                description: format!("{name} description"),
+            },
+            triggers: phrases
+                .iter()
+                .map(|p| normalize_tokens(p))
+                .filter(|t| t.len() >= MIN_TRIGGER_TOKENS)
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn triggers_parse_into_normalized_token_sequences() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        seed(
+            tmp.path(),
+            "weekly-review",
+            "---\nname: weekly-review\ndescription: A review.\ntriggers:\n  - Weekly Review\n  - review my projects\n---\n\n# x\n",
+        );
+        let skills = scan(tmp.path());
+        assert_eq!(skills.len(), 1);
+        assert_eq!(
+            skills[0].triggers,
+            vec![
+                vec!["weekly".to_string(), "review".to_string()],
+                vec![
+                    "review".to_string(),
+                    "my".to_string(),
+                    "projects".to_string()
+                ],
+            ],
+            "phrases are lowercased + tokenized on non-alphanumeric boundaries"
+        );
+    }
+
+    #[test]
+    fn below_floor_phrase_is_dropped_but_skill_kept() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        // "help" is a single token (below the 2-token floor); "weekly review" is valid.
+        seed(
+            tmp.path(),
+            "weekly-review",
+            "---\nname: weekly-review\ndescription: A review.\ntriggers:\n  - help\n  - weekly review\n---\n\n# x\n",
+        );
+        let skills = scan(tmp.path());
+        assert_eq!(skills.len(), 1, "the skill survives a dropped phrase");
+        assert_eq!(
+            skills[0].triggers,
+            vec![vec!["weekly".to_string(), "review".to_string()]],
+            "the sub-floor phrase is dropped, the valid one kept"
+        );
+    }
+
+    #[test]
+    fn only_invalid_triggers_leaves_skill_eligible_with_empty_set() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        seed(
+            tmp.path(),
+            "weekly-review",
+            "---\nname: weekly-review\ndescription: A review.\ntriggers:\n  - help\n  - \"!!!\"\n---\n\n# x\n",
+        );
+        let skills = scan(tmp.path());
+        assert_eq!(skills.len(), 1, "skill is still eligible");
+        assert!(
+            skills[0].triggers.is_empty(),
+            "every phrase was below the floor → empty trigger set, never a match"
+        );
+    }
+
+    #[test]
+    fn scalar_triggers_value_drops_the_skill_as_invalid_frontmatter() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        // `triggers: foo` is a scalar where a sequence is required → serde type
+        // error → the whole skill is dropped via the existing invalid-frontmatter
+        // path, exactly like any other malformed YAML.
+        seed(
+            tmp.path(),
+            "weekly-review",
+            "---\nname: weekly-review\ndescription: A review.\ntriggers: foo\n---\n\n# x\n",
+        );
+        assert!(
+            scan(tmp.path()).is_empty(),
+            "a type-mismatched triggers value drops the skill"
+        );
+    }
+
+    #[test]
+    fn match_trigger_requires_contiguous_ordered_tokens() {
+        let skills = vec![scanned("weekly-review", &["weekly review"])];
+        assert_eq!(
+            match_trigger("let's do my weekly review", &skills).map(|s| s.meta.name.as_str()),
+            Some("weekly-review"),
+            "a contiguous occurrence matches"
+        );
+        assert_eq!(
+            match_trigger("review the weekly plan", &skills),
+            None,
+            "wrong order does not match"
+        );
+        assert_eq!(
+            match_trigger("weekly big review", &skills),
+            None,
+            "non-contiguous does not match"
+        );
+    }
+
+    #[test]
+    fn match_trigger_normalizes_hyphens_like_phrases() {
+        let skills = vec![scanned("weekly-review", &["weekly review"])];
+        assert_eq!(
+            match_trigger("do the weekly-review now", &skills).map(|s| s.meta.name.as_str()),
+            Some("weekly-review"),
+            "hyphenated prose tokenizes to the same sequence as the spaced phrase"
+        );
+    }
+
+    #[test]
+    fn match_trigger_prefers_the_longest_matched_phrase() {
+        // Both match the prompt; the skill with the longer matched phrase wins,
+        // regardless of scan order (broad is name-sorted first).
+        let skills = vec![
+            scanned("broad", &["my projects"]),
+            scanned("specific", &["review my projects"]),
+        ];
+        assert_eq!(
+            match_trigger("please review my projects today", &skills)
+                .map(|s| s.meta.name.as_str()),
+            Some("specific"),
+            "longest matched phrase wins over an earlier, shorter match"
+        );
+    }
+
+    #[test]
+    fn match_trigger_breaks_equal_length_ties_by_scan_order() {
+        // Equal-length matches → the first in scan order (name-sorted) wins.
+        let skills = vec![
+            scanned("aaa", &["weekly review"]),
+            scanned("bbb", &["weekly review"]),
+        ];
+        assert_eq!(
+            match_trigger("my weekly review", &skills).map(|s| s.meta.name.as_str()),
+            Some("aaa"),
+            "a same-length tie resolves to scan order"
+        );
+    }
+
+    #[test]
+    fn match_trigger_returns_none_for_empty_prompt_or_no_match() {
+        let skills = vec![scanned("weekly-review", &["weekly review"])];
+        assert_eq!(match_trigger("", &skills), None, "empty prompt");
+        assert_eq!(
+            match_trigger("something unrelated entirely", &skills),
+            None,
+            "no phrase occurs"
+        );
+        assert_eq!(
+            match_trigger("anything", &[]),
+            None,
+            "no skills → no match"
+        );
+    }
+
+    #[test]
+    fn discovery_dropped_skill_contributes_no_triggers() {
+        // A skill whose frontmatter name disagrees with its dir is discovery-
+        // dropped, so it never reaches match_trigger even with a would-be trigger:
+        // matchable == advertised == loadable (ADR-0036/0063).
+        let tmp = tempfile::tempdir().expect("tempdir");
+        seed(
+            tmp.path(),
+            "mislabeled",
+            "---\nname: other-name\ndescription: A review.\ntriggers:\n  - weekly review\n---\n\n# x\n",
+        );
+        let skills = scan(tmp.path());
+        assert!(skills.is_empty(), "the mislabeled skill is dropped by scan");
+        assert_eq!(
+            match_trigger("my weekly review", &skills),
+            None,
+            "a dropped skill's trigger cannot fire"
+        );
+    }
+
     #[test]
     fn seed_if_absent_populates_then_respects_user_deletes() {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -686,14 +988,14 @@ mod tests {
 
         // First run: the dir is absent → seed both bundled skills.
         seed_if_absent();
-        let mut names: Vec<String> = scan(&dir).into_iter().map(|s| s.name).collect();
+        let mut names: Vec<String> = scan(&dir).into_iter().map(|s| s.meta.name).collect();
         names.sort();
         assert_eq!(names, vec!["inbox-triage", "weekly-review"]);
 
         // User deletes a skill; the dir still exists → no re-seed.
         std::fs::remove_dir_all(dir.join("weekly-review")).expect("remove a seeded skill");
         seed_if_absent();
-        let remaining: Vec<String> = scan(&dir).into_iter().map(|s| s.name).collect();
+        let remaining: Vec<String> = scan(&dir).into_iter().map(|s| s.meta.name).collect();
         assert_eq!(
             remaining,
             vec!["inbox-triage"],
