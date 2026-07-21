@@ -614,11 +614,23 @@ mod tests {
             .await
             .expect("resume manifest builds");
 
+        // Deserialize and inspect the ACTUAL system_prompt string — searching the
+        // serialized line for `load_skill("…")` would be tautological, since JSON
+        // escapes the `"` to `\"` and the unescaped needle never appears regardless.
+        let manifest: serde_json::Value =
+            serde_json::from_str(line.trim_end()).expect("manifest line is JSON");
+        let system_prompt = manifest["workflow"]["system_prompt"]
+            .as_str()
+            .expect("system_prompt is a string");
+
         assert!(
-            !line.contains("Call load_skill(\"weekly-review\")"),
-            "resume must not inject the directive — got {line}"
+            !system_prompt.contains("Call load_skill(\"weekly-review\")"),
+            "resume must not inject the directive — got {system_prompt:?}"
         );
         // Disclosure still happens on resume (the block is present).
-        assert!(line.contains("available_skills"), "resume keeps the block");
+        assert!(
+            system_prompt.contains("<available_skills>"),
+            "resume keeps the block — got {system_prompt:?}"
+        );
     }
 }

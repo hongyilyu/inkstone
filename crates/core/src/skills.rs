@@ -108,14 +108,19 @@ struct Frontmatter {
 const MIN_TRIGGER_TOKENS: usize = 2;
 
 /// Normalize text into its trigger-matching token sequence (ADR-0063, normative):
-/// lowercase, then split on every non-alphanumeric boundary (`char::is_alphanumeric`).
-/// The SAME function normalizes both a phrase and the prompt, so `weekly-review`
-/// (hyphenated prose) and `weekly review` both yield `["weekly", "review"]`.
-/// Matching is over these token sequences, never raw substrings.
+/// lowercase, THEN split on every non-alphanumeric boundary (`char::is_alphanumeric`).
+/// The order matters for the normative spec and for Unicode: a lowercase expansion
+/// can introduce a non-alphanumeric char (e.g. `İ` → `i` + U+0307 combining dot), so
+/// lowercasing first and splitting after applies the boundary rule to the final,
+/// lowercased text. The SAME function normalizes both a phrase and the prompt, so
+/// `weekly-review` (hyphenated prose) and `weekly review` both yield
+/// `["weekly", "review"]`. Matching is over these token sequences, never raw
+/// substrings.
 fn normalize_tokens(text: &str) -> Vec<String> {
-    text.split(|c: char| !c.is_alphanumeric())
+    text.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
         .filter(|t| !t.is_empty())
-        .map(|t| t.to_lowercase())
+        .map(str::to_owned)
         .collect()
 }
 
@@ -1005,6 +1010,16 @@ mod tests {
             None,
             "non-contiguous does not match"
         );
+    }
+
+    #[test]
+    fn normalize_lowercases_before_splitting() {
+        // Lowercase-first matters: the Turkish dotted capital `İ` lowercases to
+        // `i` + U+0307 (combining dot above), a non-alphanumeric char. Splitting
+        // first would keep `İ` as one token; lowercasing first then splitting
+        // yields `["i"]` — the normative order. ASCII is unaffected either way.
+        assert_eq!(normalize_tokens("WEEKLY Review"), vec!["weekly", "review"]);
+        assert_eq!(normalize_tokens("\u{0130}"), vec!["i"]);
     }
 
     #[test]
