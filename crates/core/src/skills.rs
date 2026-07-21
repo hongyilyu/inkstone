@@ -823,7 +823,8 @@ mod tests {
         // Guards the shipped `crates/core/skills/*/SKILL.md` against a frontmatter
         // typo: each seed must parse and advertise its directory name.
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("skills");
-        let names: Vec<String> = scan(&dir).into_iter().map(|s| s.meta.name).collect();
+        let scanned = scan(&dir);
+        let names: Vec<String> = scanned.iter().map(|s| s.meta.name.clone()).collect();
         assert!(
             names.contains(&"weekly-review".to_string()),
             "weekly-review seed is eligible — got {names:?}"
@@ -831,6 +832,17 @@ mod tests {
         assert!(
             names.contains(&"inbox-triage".to_string()),
             "inbox-triage seed is eligible — got {names:?}"
+        );
+        // The seeds ship trigger phrases (ADR-0063), so a natural prompt routes.
+        assert_eq!(
+            match_trigger("let's do my weekly review", &scanned).map(|s| s.meta.name.as_str()),
+            Some("weekly-review"),
+            "the weekly-review seed's trigger fires"
+        );
+        assert_eq!(
+            match_trigger("time to triage my inbox", &scanned).map(|s| s.meta.name.as_str()),
+            Some("inbox-triage"),
+            "the inbox-triage seed's trigger fires"
         );
     }
 

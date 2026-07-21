@@ -4,6 +4,9 @@ description: >-
   Guide a GTD weekly review — surface active and on-hold Projects, walk the user
   through each, and propose status or next-action updates one at a time. Use
   when the user asks to do their weekly review or to review their projects.
+triggers:
+  - weekly review
+  - review my projects
 ---
 
 # Weekly review

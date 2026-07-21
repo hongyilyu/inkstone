@@ -4,6 +4,9 @@ description: >-
   Triage loosely-captured Todos — find active Todos with no Project, no dates,
   or a vague title, and propose clarifying updates one at a time. Use when the
   user asks to triage, clean up, clarify, or process their todos or inbox.
+triggers:
+  - triage my inbox
+  - process my inbox
 ---
 
 # Inbox triage
