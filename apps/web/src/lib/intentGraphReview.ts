@@ -75,20 +75,20 @@ export function repointFor(
 	return near.length === 1 ? near[0].entity_id : null;
 }
 
-/** The effective stage for a node: its explicit entry, else its default — every
- * acceptable node defaults to `accept` (the common path is accept-everything),
- * while an UNPICKED `ambiguous` node defaults to `reject` (it cannot be accepted
- * yet). A picked ambiguous node is acceptable, so it defaults to `accept` and a
- * plain Apply sweeps it in like any reuse — hence `repoints` is consulted. */
+/** The effective stage for a node — the ONE place the ambiguous accept-block is
+ * enforced on reads, so rows, notices, and the decision vector can never drift. An
+ * unacceptable node (an UNPICKED `ambiguous` one, ADR-0042) is always `reject`,
+ * even if a stale buffer entry says accept. Otherwise its explicit entry wins, else
+ * the default: every acceptable node defaults to `accept` (the common path is
+ * accept-everything). A picked ambiguous node is acceptable — hence `repoints` is
+ * consulted. */
 export function stageFor(
 	buffer: StagingBuffer,
 	node: ResolvedNode,
 	repoints: RepointBuffer = new Map(),
 ): NodeStage {
-	return (
-		buffer.get(node.handle) ??
-		(isAcceptable(node, repoints) ? "accept" : "reject")
-	);
+	if (!isAcceptable(node, repoints)) return "reject";
+	return buffer.get(node.handle) ?? "accept";
 }
 
 /** Toggle one node's stage, respecting the ambiguous accept-block: a request to
@@ -454,14 +454,9 @@ export function buildDecisions(
 		const decision = stageFor(buffer, node, repoints);
 		if (decision === "accept") {
 			const repoint = repointFor(repoints, node);
-			// An accepted `ambiguous` node is reuse-only: it is acceptable SOLELY
-			// because a candidate was picked, and that pick rides as the `entity_id`
-			// override Core collapses ambiguous → reuse (#181). Self-defend the
-			// no-bare-ambiguous-accept invariant HERE, in the module, rather than
-			// trusting the caller: if an accept survived in the buffer but the pick was
-			// since cleared (a stale-buffer desync a future "clear pick" UI could
-			// produce), `repoint` is null — emit a plain reject, NEVER a bare ambiguous
-			// accept (Core fails the whole atomic apply on one).
+			// An accepted `ambiguous` node rides its picked candidate as the
+			// `entity_id` override Core collapses ambiguous → reuse (#181). `stageFor`
+			// only reads `accept` when the pick (a non-null repoint) is present.
 			if (node.disposition === "ambiguous") {
 				return repoint !== null
 					? { handle: node.handle, decision, entity_id: repoint }
@@ -489,12 +484,10 @@ export function buildDecisions(
 }
 
 /** The commit summary derived from the BUILT decision vector — the single source of
- * truth for what Apply sends. The card's accepted-count label and reject-all path
- * MUST come from here, not a parallel `stageFor` pass: `buildDecisions` is the only
- * place the `ambiguous-without-pick → reject` coercion runs, so deriving the count
- * anywhere else can disagree with the vector actually sent (show "Apply 1 item" while
- * the vector is all-rejects). `acceptedCount` counts `accept` decisions; `allRejected`
- * is true iff the vector has ≥1 node and every one is `reject`. */
+ * truth for what Apply sends. `acceptedCount` counts `accept` decisions; `allRejected`
+ * is true iff the vector has ≥1 node and every one is `reject`. (The
+ * `ambiguous-without-pick → reject` coercion lives in `stageFor`, so a count taken
+ * from either the vector or a direct `stageFor` pass agrees.) */
 export interface DecisionSummary {
 	readonly acceptedCount: number;
 	readonly allRejected: boolean;
@@ -537,15 +530,15 @@ export function candidateSubtitle(
 export interface DowngradeNotice {
 	/** The handle of the Todo that loses a link. */
 	readonly todoHandle: string;
-	/** The handle of the rejected target whose link drops. A single Todo can lose
-	 * MORE than one link (its project AND a person), so a stable render key must
-	 * combine this with `todoHandle` — `todoHandle` alone collides when two notices
-	 * share one Todo and React would drop the second. */
+	/** The handle of the rejected target whose link drops. */
 	readonly targetHandle: string;
 	/** The Todo's label, for display. */
 	readonly todoLabel: string;
 	/** A human sentence describing the dropped link. */
 	readonly message: string;
+	/** A stable render key, unique per dropped (todo, target) link — a Todo can lose
+	 * more than one link, so `todoHandle` alone would collide. */
+	readonly key: string;
 }
 
 /** One intended link between two graph handles, parsed from the proposal payload
@@ -643,6 +636,7 @@ export function downgradeNotices(
 			todoHandle: link.from,
 			targetHandle: link.to,
 			todoLabel,
+			key: `${link.from}:${link.to}`,
 			message:
 				link.kind === "todo_project"
 					? `“${todoLabel}” will be created without its project link to “${targetLabel}”.`

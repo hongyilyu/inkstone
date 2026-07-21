@@ -99,7 +99,8 @@ async fn check_create_todo_refs(
     pool: &SqlitePool,
     payload: &serde_json::Value,
 ) -> Result<(), TargetError> {
-    let project_id = entities::todo_envelope(payload)
+    let project_id = payload
+        .get("todo")
         .and_then(|todo| todo.get("project_id"))
         .and_then(serde_json::Value::as_str)
         .filter(|id| !id.is_empty());
@@ -195,7 +196,8 @@ async fn check_update_todo_refs(
         }
     }
 
-    let project_id = entities::todo_envelope(payload)
+    let project_id = payload
+        .get("todo")
         .and_then(|todo| todo.get("project_id"))
         .and_then(serde_json::Value::as_str)
         .filter(|id| !id.is_empty());

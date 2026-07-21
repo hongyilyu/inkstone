@@ -177,7 +177,8 @@ fn todo_create_defaults(
 /// `payload.todo` (the TodoData); `person_refs` persist separately in
 /// `todo_person_refs`, never in `entities.data`.
 fn todo_envelope_extract(payload: &Value) -> Option<Value> {
-    crate::entities::todo_envelope(payload)
+    payload
+        .get("todo")
         .filter(|todo| todo.is_object())
         .cloned()
 }

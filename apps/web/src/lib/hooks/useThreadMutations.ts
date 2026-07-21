@@ -1,15 +1,15 @@
 import type { ThreadMutateResult } from "@inkstone/protocol";
 import { WsClient } from "@inkstone/ui-sdk";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Cause, Effect, Exit } from "effect";
+import { Effect } from "effect";
+import { runSquashed } from "@/lib/runSquashed";
 import { useRuntime } from "@/runtime";
 
 /**
  * The Thread-lifecycle mutations (ADR-0052): `rename`, `archive`, `unarchive`,
  * each a `useMutation` over the slice-3 `WsClient` verbs. Mirrors
- * {@link useEntityMutation} — run via `runtime.runPromiseExit` and reject with the
- * SQUASHED cause (so callers reading `error.message` get the real `WsError`, not
- * Effect's `FiberFailure` "An error has occurred" fallback) — and on success
+ * {@link useEntityMutation} — reject with the real `WsError` via {@link runSquashed}
+ * — and on success
  * invalidates the `["threads"]` read so the sidebar list re-reads (the renamed row
  * shows its new title; the archived row drops out, since slice-1 `thread/list`
  * filters `archived_at IS NULL`).
@@ -37,37 +37,31 @@ export function useThreadMutations() {
 		unknown,
 		{ threadId: string; title: string }
 	>({
-		mutationFn: async ({ threadId, title }) => {
-			const exit = await runtime.runPromiseExit(
+		mutationFn: ({ threadId, title }) =>
+			runSquashed(
+				runtime,
 				Effect.flatMap(WsClient, (client) =>
 					client.threadRename(threadId, title),
 				),
-			);
-			if (Exit.isSuccess(exit)) return exit.value;
-			throw Cause.squash(exit.cause);
-		},
+			),
 		onSuccess: invalidate,
 	});
 
 	const archive = useMutation<ThreadMutateResult, unknown, string>({
-		mutationFn: async (threadId) => {
-			const exit = await runtime.runPromiseExit(
+		mutationFn: (threadId) =>
+			runSquashed(
+				runtime,
 				Effect.flatMap(WsClient, (client) => client.threadArchive(threadId)),
-			);
-			if (Exit.isSuccess(exit)) return exit.value;
-			throw Cause.squash(exit.cause);
-		},
+			),
 		onSuccess: invalidate,
 	});
 
 	const unarchive = useMutation<ThreadMutateResult, unknown, string>({
-		mutationFn: async (threadId) => {
-			const exit = await runtime.runPromiseExit(
+		mutationFn: (threadId) =>
+			runSquashed(
+				runtime,
 				Effect.flatMap(WsClient, (client) => client.threadUnarchive(threadId)),
-			);
-			if (Exit.isSuccess(exit)) return exit.value;
-			throw Cause.squash(exit.cause);
-		},
+			),
 		onSuccess: invalidate,
 	});
 
