@@ -44,19 +44,7 @@ When your changes create orphans:
 
 The test: every changed line should trace directly to the user's request.
 
-### 4. Comments defend code; they don't excuse it
-
-If you need a paragraph-long comment to justify why a workaround is OK, the code is wrong — fix the code. The same holds when the workaround needs *new docs* to explain it.
-
-A long justification is a signal the invariant lives in prose instead of in code shape. Prose rots; code shape doesn't. So when you catch yourself writing (or reviewing) a comment that *argues an awkward shape is acceptable*, treat it as a defect, not documentation:
-
-- "safe because…", "we do X not Y because Y would break Z", "defensive:", "can't happen / just in case" — the invariant is in the comment, not the types. Restructure so the code makes the bad state unrepresentable (a chokepoint, a narrower type, a descriptor fact instead of a hand-synced list), then the paragraph is unnecessary.
-- A redundant guard/dedupe/branch whose necessity is argued while another mechanism (a UNIQUE constraint, an exhaustive match, an upstream validator) already guarantees it → delete the guard, not the argument.
-- A dead field/param kept alive by a comment + `#[allow(dead_code)]` → delete it (when it's in your change's scope; a pre-existing unrelated one is §3's rule — mention it, don't delete).
-
-Then shrink the comment to ≤2 lines of what the code *can't* show. This does **not** target legitimate documentation — domain rules, ADR/wire-contract references, or a real external constraint (SQLite/serde/browser behavior, a genuine concurrency truth) that no restructure removes. Those stay. The distinction: does the comment *defend* a shape a restructure could make self-evident (smell), or *document* intrinsic/external truth (keep)? When unsure, it's the latter — churning good code is worse than a long comment.
-
-### 5. Goal-driven execution
+### 4. Goal-driven execution
 
 Define success criteria. Loop until verified.
 
@@ -75,7 +63,7 @@ For multi-step tasks, state a brief plan:
 
 Strong success criteria let you loop independently. Weak criteria ("make it work") force constant clarification.
 
-### 6. Early-stage: destructive changes welcome
+### 5. Early-stage: destructive changes welcome
 
 Inkstone is pre-release. There are no users, no production data, nothing to preserve. Optimize for the cleanest end state, not backward compatibility — and proactively propose incompatible changes when they buy a better design.
 
@@ -85,7 +73,7 @@ Inkstone is pre-release. There are no users, no production data, nothing to pres
 
 This holds until the first real user/data exists. Re-introduce migration discipline (append-only; never edit an applied migration) at that point — supersede this section then.
 
-### 7. Finish clean: format, lint, build, test
+### 6. Finish clean: format, lint, build, test
 
 Every task ends with the CI gate green. Before calling a task done, run — and fix what they surface:
 
@@ -100,6 +88,18 @@ cargo test --manifest-path crates/core/Cargo.toml
 - **Never run repo-wide formatters by hand** (`biome format .` over arbitrary paths, blanket `cargo fmt`). Use `pnpm format` — its scope lives in `biome.json`. If you must format a subset, pass explicit changed files. A formatting pass that reflows files your change never touched is scope-creep (violates §3).
 - **Format normalizes; it does not reason.** Confirm the only non-comment, non-whitespace edits trace to your task — `git diff -w` should show just your real changes.
 - Pre-existing failures unrelated to your change: name them, don't silently absorb them into your diff.
+
+### 7. Comments defend code; they don't excuse it
+
+If you need a paragraph-long comment to justify why a workaround is OK, the code is wrong — fix the code. The same holds when the workaround needs *new docs* to explain it.
+
+A long justification is a signal the invariant lives in prose instead of in code shape. Prose rots; code shape doesn't. So when you catch yourself writing (or reviewing) a comment that *argues an awkward shape is acceptable*, treat it as a defect, not documentation:
+
+- "safe because…", "we do X not Y because Y would break Z", "defensive:", "can't happen / just in case" — the invariant is in the comment, not the types. Restructure so the code makes the bad state unrepresentable (a chokepoint, a narrower type, a descriptor fact instead of a hand-synced list), then the paragraph is unnecessary.
+- A redundant guard/dedupe/branch whose necessity is argued while another mechanism (a UNIQUE constraint, an exhaustive match, an upstream validator) already guarantees it → delete the guard, not the argument.
+- A dead field/param kept alive by a comment + `#[allow(dead_code)]` → delete it (when it's in your change's scope; a pre-existing unrelated one is §3's rule — mention it, don't delete).
+
+Then shrink the comment to ≤2 lines of what the code *can't* show. This does **not** target legitimate documentation — domain rules, ADR/wire-contract references, or a real external constraint (SQLite/serde/browser behavior, a genuine concurrency truth) that no restructure removes. Those stay. The distinction: does the comment *defend* a shape a restructure could make self-evident (smell), or *document* intrinsic/external truth (keep)? When unsure, it's the latter — churning good code is worse than a long comment.
 
 ## Subagent workflows
 

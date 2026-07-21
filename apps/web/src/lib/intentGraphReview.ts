@@ -536,8 +536,8 @@ export interface DowngradeNotice {
 	readonly todoLabel: string;
 	/** A human sentence describing the dropped link. */
 	readonly message: string;
-	/** A stable render key, unique per dropped (todo, target) link — a Todo can lose
-	 * more than one link, so `todoHandle` alone would collide. */
+	/** A stable render key, unique per dropped (todo, target, kind) link — a Todo
+	 * can lose more than one link, so `todoHandle` alone would collide. */
 	readonly key: string;
 }
 
@@ -636,7 +636,7 @@ export function downgradeNotices(
 			todoHandle: link.from,
 			targetHandle: link.to,
 			todoLabel,
-			key: `${link.from}:${link.to}`,
+			key: `${link.from}:${link.to}:${link.kind}`,
 			message:
 				link.kind === "todo_project"
 					? `“${todoLabel}” will be created without its project link to “${targetLabel}”.`
