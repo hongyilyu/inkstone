@@ -33,10 +33,11 @@ mod workflow;
 use anyhow::Result;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, State};
-use axum::http::{StatusCode, header};
+use axum::http::{HeaderMap, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use axum::{Router, routing::get};
 use sqlx::SqlitePool;
+use std::net::IpAddr;
 use std::path::PathBuf;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
@@ -161,8 +162,64 @@ fn web_dir_for_serving() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
+async fn ws_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    ws: WebSocketUpgrade,
+) -> Response {
+    if !websocket_origin_allowed(&headers) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
     ws.on_upgrade(move |socket| handle_socket(socket, state))
+        .into_response()
+}
+
+fn websocket_origin_allowed(headers: &HeaderMap) -> bool {
+    let mut origins = headers.get_all(header::ORIGIN).iter();
+    let Some(origin) = origins.next() else {
+        return true;
+    };
+    if origins.next().is_some() {
+        return false;
+    }
+    let Ok(origin) = origin.to_str() else {
+        return false;
+    };
+    let Ok(uri) = origin.parse::<Uri>() else {
+        return false;
+    };
+    let Some(scheme) = uri.scheme_str() else {
+        return false;
+    };
+    if scheme != "http" && scheme != "https" {
+        return false;
+    }
+    let Some(authority) = uri.authority() else {
+        return false;
+    };
+    if authority.as_str().contains('@')
+        || origin.len() != scheme.len() + 3 + authority.as_str().len()
+    {
+        return false;
+    }
+
+    if scheme == "https" && config::get().public_origin.as_deref() == Some(origin) {
+        return true;
+    }
+
+    let Some(host) = headers
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok())
+    else {
+        return false;
+    };
+    scheme == "http"
+        && authority.as_str().eq_ignore_ascii_case(host)
+        && (authority.host().eq_ignore_ascii_case("localhost")
+            || authority
+                .host()
+                .parse::<IpAddr>()
+                .is_ok_and(|ip| ip.is_loopback()))
 }
 
 /// `GET /media/{id}` (ADR-0058): serve a stored media blob's bytes with the
