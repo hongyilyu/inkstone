@@ -171,17 +171,23 @@ async fn ws_handler(
     ws: WebSocketUpgrade,
 ) -> Response {
     if !ws_origin::allowed(&headers, config::get().public_origin.as_deref()) {
-        // BOUNDED preview field, never interpolated into the message
-        // (ADR-0038): the value is attacker-supplied.
-        tracing::warn!(
-            event = "core.ws_origin_rejected",
-            origin = %headers
-                .get(header::ORIGIN)
+        // BOUNDED preview fields, never interpolated into the message
+        // (ADR-0038): both values are attacker-supplied. Host is logged too —
+        // a loopback rejection is usually an Origin/Host mismatch (e.g. a
+        // Host-rewriting proxy), invisible from the Origin alone.
+        let preview = |name: header::HeaderName| {
+            headers
+                .get(name)
                 .and_then(|value| value.to_str().ok())
                 .unwrap_or("<non-ascii>")
                 .chars()
                 .take(200)
-                .collect::<String>(),
+                .collect::<String>()
+        };
+        tracing::warn!(
+            event = "core.ws_origin_rejected",
+            origin = %preview(header::ORIGIN),
+            host = %preview(header::HOST),
         );
         return StatusCode::FORBIDDEN.into_response();
     }

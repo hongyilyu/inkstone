@@ -74,25 +74,11 @@ fn configured_public_origin_is_the_only_remote_browser_origin() {
             .await
             .expect("the embedded web client's own-listener origin upgrades");
 
-        for origin in [
-            "https://other.example.com",
-            "https://inkstone.example.com.evil.test",
-            "not-an-origin",
-            "null",
-        ] {
-            assert_forbidden(connect_with_origin(&core, Some(origin)).await, origin);
-        }
-
-        // DNS rebinding: Origin and Host agree on a non-loopback host — the
-        // "trust Origin when it matches Host" policy ADR-0007 rejects.
+        // One representative cross-site 403 proves rejection lands before
+        // upgrade; the policy matrix itself is unit-tested in ws_origin.rs.
         assert_forbidden(
-            connect_with_origin_and_host(
-                &core,
-                Some("http://evil.test:8765"),
-                Some("evil.test:8765"),
-            )
-            .await,
-            "http://evil.test:8765",
+            connect_with_origin(&core, Some("https://other.example.com")).await,
+            "https://other.example.com",
         );
         // A loopback origin whose Host doesn't match (default Host is the
         // 127.0.0.1:<port> connect address) is rejected: same-host required.

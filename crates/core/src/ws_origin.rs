@@ -2,7 +2,7 @@
 //! remote ingress).
 
 use axum::http::{HeaderMap, Uri, header};
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv6Addr};
 
 /// Whether this handshake's `Origin` may open the WebSocket. `public_origin`
 /// is the operator-configured remote origin (`INKSTONE_PUBLIC_ORIGIN`).
@@ -52,17 +52,18 @@ pub fn allowed(headers: &HeaderMap, public_origin: Option<&str>) -> bool {
     }
 }
 
-/// `localhost` or a loopback IP literal, with IPv6 hosts unbracketed for
-/// `IpAddr` parsing (`Authority::host` keeps the RFC 3986 brackets).
+/// `localhost` or a loopback IP literal. Brackets are IPv6-only syntax
+/// (`Authority::host` keeps them), so bracketed content parses as `Ipv6Addr`
+/// specifically — `Uri` accepts shapes like `[127.0.0.1]`, which no browser
+/// serializes and which must not count as loopback.
 fn is_loopback_host(host: &str) -> bool {
     if host.eq_ignore_ascii_case("localhost") {
         return true;
     }
-    let bare = host
-        .strip_prefix('[')
-        .and_then(|h| h.strip_suffix(']'))
-        .unwrap_or(host);
-    bare.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
+    match host.strip_prefix('[').and_then(|h| h.strip_suffix(']')) {
+        Some(v6) => v6.parse::<Ipv6Addr>().is_ok_and(|ip| ip.is_loopback()),
+        None => host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback()),
+    }
 }
 
 #[cfg(test)]
@@ -154,6 +155,9 @@ mod tests {
                 "localhost.evil.test:8765",
             ),
             ("http://192.168.1.7:8765", "192.168.1.7:8765"),
+            // Bracketed IPv4: RFC 3986-invalid (brackets are IPv6-only), but
+            // `Uri` parses it — it must not count as a loopback literal.
+            ("http://[127.0.0.1]:8765", "[127.0.0.1]:8765"),
         ] {
             assert!(
                 !allowed(&headers(Some(origin), Some(host)), None),
@@ -204,9 +208,13 @@ mod tests {
     }
 
     #[test]
-    fn non_utf8_origin_is_rejected() {
-        let mut headers = headers(None, Some("localhost:5173"));
-        headers.insert(header::ORIGIN, HeaderValue::from_bytes(&[0xff]).unwrap());
-        assert!(!allowed(&headers, None));
+    fn non_ascii_origin_is_rejected() {
+        // `HeaderValue::to_str` fails on any 0x80..=0xFF byte — the boundary
+        // is ASCII-ness, not UTF-8 validity, so valid UTF-8 rejects too.
+        for bytes in [&[0xff][..], &[0xc3, 0xa9][..]] {
+            let mut headers = headers(None, Some("localhost:5173"));
+            headers.insert(header::ORIGIN, HeaderValue::from_bytes(bytes).unwrap());
+            assert!(!allowed(&headers, None), "{bytes:x?} must be rejected");
+        }
     }
 }
