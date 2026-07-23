@@ -17,7 +17,7 @@ Core continues binding only to `127.0.0.1`. The reverse proxy must run where it 
 
 ### Browser WebSocket origin policy
 
-`INKSTONE_PUBLIC_ORIGIN` names the one exact browser origin allowed to open Core's WebSocket remotely, including scheme and any non-default port, with no path. For example:
+`INKSTONE_PUBLIC_ORIGIN` names the one exact browser origin allowed to open Core's WebSocket remotely — an `https` origin, including any non-default port, with no path. For example:
 
 ```text
 INKSTONE_PUBLIC_ORIGIN=https://inkstone.hongy.io
@@ -25,7 +25,7 @@ INKSTONE_PUBLIC_ORIGIN=https://inkstone.hongy.io
 
 The WebSocket handshake follows these rules before upgrade:
 
-- A browser `Origin` exactly matching `INKSTONE_PUBLIC_ORIGIN` is accepted.
+- A browser `Origin` exactly matching `INKSTONE_PUBLIC_ORIGIN` is accepted. The configured origin must be `https`; a non-https value never matches and fails closed.
 - A same-host loopback HTTP origin is accepted for direct local use and Vite development.
 - A missing `Origin` is accepted because non-browser Clients do not necessarily send one.
 - Every other present `Origin`, including malformed and opaque origins, is rejected with HTTP 403.

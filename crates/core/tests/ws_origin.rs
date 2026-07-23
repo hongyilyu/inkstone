@@ -10,16 +10,13 @@ use tokio_tungstenite::tungstenite::{Error, Result};
 
 const PUBLIC_ORIGIN: &str = "https://inkstone.example.com";
 
-fn ws_url(core: &CoreHandle) -> String {
-    format!("ws://{}/ws", core.http_url().trim_start_matches("http://"))
-}
-
 async fn connect_with_origin_and_host(
     core: &CoreHandle,
     origin: Option<&str>,
     host: Option<&str>,
 ) -> Result<()> {
-    let mut request = ws_url(core)
+    let mut request = core
+        .ws_url()
         .into_client_request()
         .expect("WebSocket request builds");
     if let Some(origin) = origin {
@@ -71,6 +68,11 @@ fn configured_public_origin_is_the_only_remote_browser_origin() {
         connect_with_origin_and_host(&core, Some("http://localhost:5173"), Some("localhost:5173"))
             .await
             .expect("a same-host Vite development origin upgrades");
+        // The embedded Web Client's shape: Origin is Core's own announced
+        // http://127.0.0.1:<port>, Host derived from the connect URL matches.
+        connect_with_origin(&core, Some(core.http_url()))
+            .await
+            .expect("the embedded web client's own-listener origin upgrades");
 
         for origin in [
             "https://other.example.com",
@@ -80,13 +82,33 @@ fn configured_public_origin_is_the_only_remote_browser_origin() {
         ] {
             assert_forbidden(connect_with_origin(&core, Some(origin)).await, origin);
         }
+
+        // DNS rebinding: Origin and Host agree on a non-loopback host — the
+        // "trust Origin when it matches Host" policy ADR-0007 rejects.
+        assert_forbidden(
+            connect_with_origin_and_host(
+                &core,
+                Some("http://evil.test:8765"),
+                Some("evil.test:8765"),
+            )
+            .await,
+            "http://evil.test:8765",
+        );
+        // A loopback origin whose Host doesn't match (default Host is the
+        // 127.0.0.1:<port> connect address) is rejected: same-host required.
+        assert_forbidden(
+            connect_with_origin(&core, Some("http://localhost:5173")).await,
+            "http://localhost:5173",
+        );
     });
 }
 
 #[test]
 fn remote_browser_origins_fail_closed_when_unconfigured() {
     let workspace = Workspace::new();
-    let core = workspace.core().spawn();
+    // Empty is unset (config contract) — pins "unconfigured" against any
+    // ambient INKSTONE_PUBLIC_ORIGIN the spawned Core would inherit.
+    let core = workspace.core().env("INKSTONE_PUBLIC_ORIGIN", "").spawn();
 
     rt().block_on(async {
         assert_forbidden(

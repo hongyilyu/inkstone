@@ -29,6 +29,8 @@ pub struct Config {
     pub provider_test_timeout: Duration,
     pub worker_pre_spawn_delay: Option<Duration>,
     pub worker_log_path: Option<PathBuf>,
+    /// The one browser origin allowed to open `/ws` remotely (ADR-0007).
+    /// Empty is unset; unset keeps remote browser origins closed.
     pub public_origin: Option<String>,
 }
 
@@ -230,7 +232,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_string_skills_and_media_treated_as_unset() {
+    fn empty_string_overrides_treated_as_unset() {
         let mut env = HashMap::new();
         env.insert("INKSTONE_SKILLS_DIR", "");
         env.insert("INKSTONE_MEDIA_DIR", "");
