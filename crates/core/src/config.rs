@@ -29,6 +29,9 @@ pub struct Config {
     pub provider_test_timeout: Duration,
     pub worker_pre_spawn_delay: Option<Duration>,
     pub worker_log_path: Option<PathBuf>,
+    /// The one browser origin allowed to open `/ws` remotely (ADR-0007).
+    /// Empty is unset; unset keeps remote browser origins closed.
+    pub public_origin: Option<String>,
 }
 
 impl Default for Config {
@@ -67,6 +70,9 @@ impl Config {
                 .filter(|ms| *ms > 0)
                 .map(Duration::from_millis),
             worker_log_path: get("INKSTONE_WORKER_LOG_PATH").map(PathBuf::from),
+            public_origin: get("INKSTONE_PUBLIC_ORIGIN")
+                .and_then(|value| value.into_string().ok())
+                .filter(|value| !value.is_empty()),
         }
     }
 }
@@ -178,6 +184,7 @@ mod tests {
         env.insert("INKSTONE_PROVIDER_TEST_TIMEOUT_MS", "3000");
         env.insert("INKSTONE_WORKER_PRE_SPAWN_DELAY_MS", "100");
         env.insert("INKSTONE_WORKER_LOG_PATH", "/tmp/worker.jsonl");
+        env.insert("INKSTONE_PUBLIC_ORIGIN", "https://inkstone.example.com");
 
         let cfg = Config::from_lookup(lookup(&env));
 
@@ -200,6 +207,10 @@ mod tests {
             cfg.worker_log_path,
             Some(PathBuf::from("/tmp/worker.jsonl"))
         );
+        assert_eq!(
+            cfg.public_origin.as_deref(),
+            Some("https://inkstone.example.com")
+        );
     }
 
     #[test]
@@ -217,18 +228,21 @@ mod tests {
         assert_eq!(cfg.provider_test_timeout, Duration::from_millis(15_000));
         assert_eq!(cfg.worker_pre_spawn_delay, None);
         assert_eq!(cfg.worker_log_path, None);
+        assert_eq!(cfg.public_origin, None);
     }
 
     #[test]
-    fn empty_string_skills_and_media_treated_as_unset() {
+    fn empty_string_overrides_treated_as_unset() {
         let mut env = HashMap::new();
         env.insert("INKSTONE_SKILLS_DIR", "");
         env.insert("INKSTONE_MEDIA_DIR", "");
+        env.insert("INKSTONE_PUBLIC_ORIGIN", "");
 
         let cfg = Config::from_lookup(lookup(&env));
 
         assert_eq!(cfg.skills_dir_override, None, "empty skills dir is unset");
         assert_eq!(cfg.media_dir_override, None, "empty media dir is unset");
+        assert_eq!(cfg.public_origin, None, "empty public origin is unset");
     }
 
     #[test]

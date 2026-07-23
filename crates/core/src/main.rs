@@ -29,11 +29,12 @@ mod tools;
 mod web_embed;
 mod worker;
 mod workflow;
+mod ws_origin;
 
 use anyhow::Result;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, State};
-use axum::http::{StatusCode, header};
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::{Router, routing::get};
 use sqlx::SqlitePool;
@@ -161,8 +162,37 @@ fn web_dir_for_serving() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
+/// `GET /ws`: the browser-Origin gate (ADR-0007, authenticated remote
+/// ingress) answers 403 before upgrade; allowed handshakes proceed to
+/// [`handle_socket`].
+async fn ws_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    ws: WebSocketUpgrade,
+) -> Response {
+    if !ws_origin::allowed(&headers, config::get().public_origin.as_deref()) {
+        // BOUNDED preview fields, never interpolated into the message
+        // (ADR-0038): both values are attacker-supplied. Host is logged too —
+        // a loopback rejection is usually an Origin/Host mismatch (e.g. a
+        // Host-rewriting proxy), invisible from the Origin alone.
+        let preview = |name: header::HeaderName| {
+            headers
+                .get(name)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or("<non-ascii>")
+                .chars()
+                .take(200)
+                .collect::<String>()
+        };
+        tracing::warn!(
+            event = "core.ws_origin_rejected",
+            origin = %preview(header::ORIGIN),
+            host = %preview(header::HOST),
+        );
+        return StatusCode::FORBIDDEN.into_response();
+    }
     ws.on_upgrade(move |socket| handle_socket(socket, state))
+        .into_response()
 }
 
 /// `GET /media/{id}` (ADR-0058): serve a stored media blob's bytes with the

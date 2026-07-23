@@ -394,6 +394,11 @@ impl CoreHandle {
         &self.http_url
     }
 
+    /// The `ws://127.0.0.1:<port>/ws` endpoint URL [`Self::connect`] uses.
+    pub fn ws_url(&self) -> &str {
+        &self.ws_url
+    }
+
     /// The resolved listening port parsed from the announced URL.
     pub fn port(&self) -> u16 {
         self.http_url
@@ -860,11 +865,7 @@ pub async fn max_revision_seq(pool: &SqlitePool, entity_id: &str) -> i64 {
 
 /// How many `updated_from` Entity Sources link `entity_id` to `run_id`'s user
 /// Message.
-pub async fn updated_from_count_for_run(
-    pool: &SqlitePool,
-    entity_id: &str,
-    run_id: &str,
-) -> i64 {
+pub async fn updated_from_count_for_run(pool: &SqlitePool, entity_id: &str, run_id: &str) -> i64 {
     sqlx::query_scalar(
         "SELECT COUNT(*) FROM entity_sources es \
          JOIN runs r ON r.user_message_id = es.source_message_id \
