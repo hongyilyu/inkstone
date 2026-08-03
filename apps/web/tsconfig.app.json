@@ -22,8 +22,8 @@
 		"noFallthroughCasesInSwitch": true,
 
 		/* Path alias for shadcn-style imports.
-		   `paths` resolves against this tsconfig's directory (TS 5.0+), so no
-		   `baseUrl` is needed — `baseUrl` is deprecated in TS 6.0 and removed in 7.0. */
+		   `paths` resolves against this tsconfig's directory, so no `baseUrl` is
+		   needed — `baseUrl` is removed in TS 7 (TS5102 if set). */
 		"paths": { "@/*": ["./src/*"], "@test/*": ["./test/*"] }
 	},
 	"include": ["src", "test"]
