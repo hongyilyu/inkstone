@@ -3,6 +3,9 @@
 
 import { Schema as S } from "effect";
 
+import { Segment } from "./thread.js";
+import { TranscriptToolResult } from "./transcript.js";
+
 /** `run/post_message` params: the target Thread + `prompt`, plus optional
  * `attachment_ids` — ids from prior `media/upload` calls to link to the user
  * Message (ADR-0058); omitted = no attachments. */
@@ -35,9 +38,15 @@ export const RunCancelParams = S.Struct({ run_id: S.String });
 
 export type RunCancelParams = S.Schema.Type<typeof RunCancelParams>;
 
-/** `run/cancel` result (ADR-0014): whether Core accepted the cancel command. */
+/** `run/cancel` result (ADR-0014): whether Core accepted the cancel command.
+ * `live_tail` (external-task-views A4): whether a terminal `cancelled` (plus any
+ * interrupted `tool_call` events) WILL arrive on the live subscribe stream —
+ * true only for a won running-cancel with a live hub. When false on an
+ * `accepted` cancel, the Client settles the bubble off this response (no stream
+ * event follows), instead of guessing with a timer. */
 export const RunCancelResult = S.Struct({
 	outcome: S.Literal("accepted", "already_terminal", "unknown_run"),
+	live_tail: S.Boolean,
 });
 
 export type RunCancelResult = S.Schema.Type<typeof RunCancelResult>;
@@ -125,8 +134,19 @@ export const RunEvent = S.Union(
 		name: S.String,
 		status: S.Literal("started", "completed", "error"),
 		arg: S.optional(S.String),
+		/** The normalized result the model received (external-task-views A4):
+		 * carried on TERMINAL events of external (`ticktick_*`) calls so the live
+		 * expandable row matches reload; started events (and Core-tool rows in v1)
+		 * omit it. */
+		result: S.optional(TranscriptToolResult),
 	}),
 	S.Struct({ kind: S.Literal("cancelled") }),
+	// The full ordered timeline as of the subscribe instant (external-task-views,
+	// review P1 #2): text / reasoning / tool_call / proposal segments in run_steps
+	// order, incl. a still-running call. Emitted ONCE as the snapshot; the Client
+	// ATOMICALLY REPLACES its segments with this list, so a reconnect renders the
+	// true interleaved order and never drops reasoning.
+	S.Struct({ kind: S.Literal("snapshot"), segments: S.Array(Segment) }),
 );
 
 export type RunEvent = S.Schema.Type<typeof RunEvent>;

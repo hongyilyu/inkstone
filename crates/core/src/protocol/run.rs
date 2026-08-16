@@ -3,6 +3,9 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::thread::Segment;
+use super::worker::TranscriptToolResult;
+
 /// `run/post_message` params: add a message (and its Run) to an existing Thread
 /// (ADR-0022). Minting a new Thread is `thread/create`'s job, so `thread_id` is
 /// required; malformed → `invalid_params` (-32602), unknown → `unknown_thread`
@@ -44,9 +47,16 @@ pub struct RunCancelParams {
 
 /// `run/cancel` result (ADR-0014): `accepted` (live/parked, now cancelling),
 /// `already_terminal` (finished before the cancel arrived), or `unknown_run`.
+/// `live_tail` (external-task-views A4) tells the Client whether a terminal
+/// `cancelled` (plus any interrupted `tool_call` events) WILL arrive on the
+/// live subscribe stream: true only for a won running-cancel with a live hub.
+/// When false on an `accepted` cancel (parked, or the running-without-hub
+/// resume window), NO stream event follows, so the Client settles the bubble
+/// off this response — no timer guess.
 #[derive(Debug, Serialize)]
 pub struct RunCancelResult {
     pub outcome: String,
+    pub live_tail: bool,
 }
 
 /// `run/retry` params (ADR-0028 retry amendment, #230): the errored Run to
@@ -132,6 +142,12 @@ pub enum RunEvent {
         /// it matches the rehydrated `ToolCallView`.
         #[serde(skip_serializing_if = "Option::is_none", default)]
         arg: Option<String>,
+        /// The normalized result the model received (external-task-views A4):
+        /// carried on TERMINAL events of external (`ticktick_*`) calls so the
+        /// live expandable row matches reload; started events (and Core-tool
+        /// rows in v1) omit it.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        result: Option<TranscriptToolResult>,
     },
     Done,
     Cancelled,
@@ -143,6 +159,17 @@ pub enum RunEvent {
     /// segment boundary is inferred from the interleaved stream — no position field.
     ReasoningDelta {
         delta: String,
+    },
+    /// The full ordered timeline of the Run as of the subscribe instant
+    /// (external-task-views, review P1 #2): text / reasoning / tool_call / proposal
+    /// segments in `run_steps` order (the same assembly `thread/get` uses),
+    /// INCLUDING a still-`running` external call. Emitted ONCE as the
+    /// snapshot-then-attach snapshot; the Client ATOMICALLY REPLACES its segments
+    /// for the Run with this list, so a reconnect renders the true interleaved
+    /// order and never drops reasoning — superseding the prior text-then-tools
+    /// projection that emitted cumulative text before all calls.
+    Snapshot {
+        segments: Vec<Segment>,
     },
 }
 
@@ -160,16 +187,25 @@ mod mirror_tests {
     const UUID_A: &str = "0190d3c1-0000-7000-8000-000000000001";
 
     #[test]
-    fn run_cancel_result_encodes_outcome() {
+    fn run_cancel_result_encodes_outcome_and_live_tail() {
         for outcome in ["accepted", "already_terminal", "unknown_run"] {
             let r = RunCancelResult {
                 outcome: outcome.to_string(),
+                live_tail: false,
             };
             assert_eq!(
                 serde_json::to_value(&r).unwrap(),
-                json!({ "outcome": outcome }),
+                json!({ "outcome": outcome, "live_tail": false }),
             );
         }
+        let live = RunCancelResult {
+            outcome: "accepted".to_string(),
+            live_tail: true,
+        };
+        assert_eq!(
+            serde_json::to_value(&live).unwrap(),
+            json!({ "outcome": "accepted", "live_tail": true }),
+        );
     }
 
     #[test]
@@ -252,17 +288,46 @@ mod mirror_tests {
                     name,
                     status: got,
                     arg,
+                    result,
                 } => {
                     assert_eq!(tool_call_id, "tc_01");
                     assert_eq!(name, "read_thread");
                     assert_eq!(*got, status);
                     assert_eq!(*arg, None, "argless tool omits arg");
+                    assert_eq!(*result, None, "a Core-tool row carries no result");
                 }
                 other => panic!("expected ToolCall, got {other:?}"),
             }
-            // No `arg` key when absent (skip_serializing_if).
+            // No `arg`/`result` key when absent (skip_serializing_if).
             assert_eq!(serde_json::to_value(&ev).unwrap(), wire);
         }
+    }
+
+    /// A terminal external-call event carries the normalized result the model
+    /// received (external-task-views A4), round-tripping the whole shape.
+    #[test]
+    fn run_event_tool_call_round_trips_with_result() {
+        let wire = json!({
+            "kind": "tool_call",
+            "tool_call_id": "tc_ext",
+            "name": "ticktick_filter_tasks",
+            "status": "completed",
+            "result": {
+                "content": [{ "type": "text", "text": "1 task found" }],
+                "is_error": false
+            },
+        });
+        let ev: RunEvent = serde_json::from_value(wire.clone()).unwrap();
+        match &ev {
+            RunEvent::ToolCall { result, .. } => {
+                assert_eq!(
+                    *result,
+                    Some(TranscriptToolResult::text("1 task found", false))
+                );
+            }
+            other => panic!("expected ToolCall, got {other:?}"),
+        }
+        assert_eq!(serde_json::to_value(&ev).unwrap(), wire);
     }
 
     #[test]

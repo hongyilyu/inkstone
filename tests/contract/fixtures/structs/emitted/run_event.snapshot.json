@@ -1,0 +1,29 @@
+{
+  "kind": "snapshot",
+  "segments": [
+    {
+      "kind": "text",
+      "text": "Bought milk. "
+    },
+    {
+      "kind": "tool_call",
+      "name": "ticktick_filter_tasks",
+      "result": {
+        "content": [
+          {
+            "text": "1 task found",
+            "type": "text"
+          }
+        ],
+        "is_error": false
+      },
+      "status": "completed",
+      "tool_call_id": "tc_06"
+    },
+    {
+      "duration_ms": 1500,
+      "kind": "reasoning",
+      "text": "Checking the list…"
+    }
+  ]
+}

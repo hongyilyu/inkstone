@@ -15,6 +15,20 @@ use crate::protocol::{
     RunEvent, ToolCallStatus, ToolErrorWire, ToolOutcome, ToolResult, WorkerStdout,
 };
 use crate::workflow::Workflow;
+use super::external::{
+    begin_external_and_publish, finish_external_and_publish, publish_interrupted,
+};
+
+/// The live `RunEvent::Error` message published when the Worker's stdout closed
+/// without a `done` (it died/was killed/hung up). Mirrors the persisted
+/// `error_message` (`error_run`) so a live tail and a reload agree.
+pub(crate) const WORKER_DISCONNECTED_MESSAGE: &str = "worker exited without emitting done event";
+
+/// Terminal `error` message when Core could not PERSIST an external call's
+/// lifecycle row (review R12 #2): the Worker is stopped rather than letting the
+/// model run ahead of the durable transcript.
+pub(crate) const EXTERNAL_PERSIST_FAILED_MESSAGE: &str =
+    "core could not persist an external tool call";
 
 /// Drive a spawned Worker to a terminal state. Appends each `text_delta` under
 /// the per-run gate (ADR-0022), executes or parks `tool_request`s
@@ -46,7 +60,6 @@ pub(super) async fn run_loop<P: WorkerPort + Send>(
     // both at `None`, so the post-resume reply opens its own segment.
     let mut open_text_part: Option<i64> = None;
     let mut open_reasoning_part: Option<i64> = None;
-
     if *cancel_rx.borrow() {
         worker.shutdown().await;
         cancelled_by_core = true;
@@ -144,6 +157,13 @@ pub(super) async fn run_loop<P: WorkerPort + Send>(
                     }
                     let guard = run_hub.gate().await;
                     parked = park_on_proposal(&pool, run_id, &tool_call_id, &name, &params).await;
+                    if parked {
+                        // Drain atomically (review R9 #1): the park commit and the
+                        // hub removal are ONE gated section, so a decide-driven
+                        // resume activating in this instant waits on this gate and
+                        // then finds the slot drained — never a half-parked zombie.
+                        crate::hub::remove_own(&hubs, run_id, &run_hub);
+                    }
                     drop(guard);
                     worker.shutdown().await;
                     break;
@@ -166,6 +186,7 @@ pub(super) async fn run_loop<P: WorkerPort + Send>(
                     name: name.clone(),
                     status: ToolCallStatus::Started,
                     arg: arg.clone(),
+                    result: None,
                 });
                 drop(guard);
 
@@ -187,6 +208,7 @@ pub(super) async fn run_loop<P: WorkerPort + Send>(
                         ToolOutcome::Err { .. } => ToolCallStatus::Error,
                     },
                     arg,
+                    result: None,
                 });
                 drop(guard);
 
@@ -203,6 +225,83 @@ pub(super) async fn run_loop<P: WorkerPort + Send>(
                 }
                 worker.send_tool_result(result).await;
             }
+            // External-call lifecycle frames (external-task-views A4): the
+            // Worker executed an MCP tool itself; Core only observes. The
+            // started frame persists the pending row (same seq machinery as a
+            // Core tool) and publishes the started event; the finished frame
+            // resolves the row — `tool_calls.status` derives from
+            // `result.is_error` — and publishes the terminal event CARRYING the
+            // result, so the live expandable row matches reload.
+            WorkerStdout::ExternalToolStarted {
+                tool_call_id,
+                name,
+                arguments,
+            } => {
+                // Seal both open segments (ADR-0045): the call's own run_steps
+                // row lands at the next seq, exactly like a Core tool boundary.
+                open_text_part = None;
+                open_reasoning_part = None;
+                if !crate::tools::is_external(&name) {
+                    // Only the reserved prefix marks a call external at every
+                    // consumer; an unprefixed name here is a Worker bug.
+                    tracing::error!(
+                        event = "worker.external_frame_name_unreserved",
+                        %run_id, tool_call_id, name
+                    );
+                    continue;
+                }
+                let request_payload = arguments.to_string();
+                // Guarded begin+publish (external-task-views A4, review #1): the
+                // row lands and the started event publishes as ONE gated critical
+                // section, so a concurrent cancel cannot interleave between them;
+                // the insert wins only while the Run is still `running`. A DB
+                // fault STOPS the Worker (review R12 #2) — the model must not
+                // proceed on a call Core could not persist.
+                if let Err(e) = begin_external_and_publish(
+                    &pool,
+                    run_id,
+                    &run_hub,
+                    &tool_call_id,
+                    &name,
+                    &request_payload,
+                )
+                .await
+                {
+                    tracing::error!(
+                        event = "worker.begin_external_tool_call_failed",
+                        %run_id, tool_call_id, error = ?e
+                    );
+                    worker_error = Some(EXTERNAL_PERSIST_FAILED_MESSAGE.to_string());
+                    worker.shutdown().await;
+                    break;
+                }
+            }
+            WorkerStdout::ExternalToolFinished {
+                tool_call_id,
+                result,
+            } => {
+                // Guarded finish+publish (external-task-views A4, review #1): the
+                // resolve and the terminal event are ONE gated critical section
+                // (see `finish_external_and_publish`) — the `status='pending'`
+                // guard re-pairs the finished frame with its row and hands back
+                // its name (review M1), so a finish that races a cancel/EOF settle
+                // loses and emits nothing, and a won finish is ordered before
+                // `Cancelled`. A DB fault STOPS the Worker (review R12 #2) — a
+                // consumed result whose row stayed `pending` would reload as
+                // "not executed".
+                if let Err(e) =
+                    finish_external_and_publish(&pool, run_id, &run_hub, &tool_call_id, result)
+                        .await
+                {
+                    tracing::error!(
+                        event = "worker.finish_external_tool_call_failed",
+                        %run_id, tool_call_id, error = ?e
+                    );
+                    worker_error = Some(EXTERNAL_PERSIST_FAILED_MESSAGE.to_string());
+                    worker.shutdown().await;
+                    break;
+                }
+            }
         }
     }
 
@@ -210,6 +309,15 @@ pub(super) async fn run_loop<P: WorkerPort + Send>(
     // takes precedence over EOF-without-done and carries its message. Park
     // (ADR-0025) short-circuits this entirely (it is non-terminal).
     if !parked && !cancelled_by_core {
+        // The terminal tx, the interrupted-settlement publications, and the
+        // terminal event are ONE gated critical section (review P1 #3). Holding
+        // the gate across the commit AND the raw `send`s makes a subscriber's
+        // `snapshot_then_attach` atomic w.r.t. the whole sequence — it either
+        // snapshots the pre-terminal state and then receives every event on its
+        // tail, or snapshots the settled/terminal state; it can never snapshot a
+        // pending call, miss the raw interrupted event, then see only the
+        // terminal one. (Raw `send` under the held gate — it is not re-entrant.)
+        let guard = run_hub.gate().await;
         let now_ms = db::now_ms();
         let result = if let Some(ref message) = worker_error {
             db::error_run_with_message(
@@ -226,36 +334,95 @@ pub(super) async fn run_loop<P: WorkerPort + Send>(
         } else {
             db::error_run(&pool, run_id, now_ms).await
         };
-        if let Err(ref e) = result {
-            tracing::error!(event = "worker.terminal_tx_failed", %run_id, error = ?e);
-        }
+        // A terminal-persist fault must not strand a durable `running` row with
+        // no producer and no retry path (review R12 #2): retry once, then fall
+        // back to the simplest durable transition (`error_run`) so the Run lands
+        // `errored` — the state retry can act on. Only if even that fails does
+        // the drain proceed with the row still `running` (the bounded zombie
+        // paths + the boot sweep own that residue).
+        let result = match result {
+            Err(first) => {
+                tracing::error!(event = "worker.terminal_tx_failed", %run_id, error = ?first);
+                let retried = if let Some(ref message) = worker_error {
+                    db::error_run_with_message(
+                        &pool,
+                        run_id,
+                        TerminalReason::Errored,
+                        "worker_error",
+                        message,
+                        now_ms,
+                    )
+                    .await
+                } else if saw_done {
+                    db::complete_run(&pool, run_id, now_ms).await
+                } else {
+                    db::error_run(&pool, run_id, now_ms).await
+                };
+                match retried {
+                    Err(second) => {
+                        tracing::error!(
+                            event = "worker.terminal_tx_retry_failed",
+                            %run_id, error = ?second
+                        );
+                        db::error_run(&pool, run_id, now_ms).await.map_err(|e| {
+                            tracing::error!(
+                                event = "worker.terminal_persist_lost",
+                                %run_id, error = ?e
+                            );
+                            e
+                        })
+                    }
+                    ok => ok,
+                }
+            }
+            ok => ok,
+        };
 
         // Publish the terminal Run Event ONLY AFTER this loop's terminal tx
         // wins. If cancellation already committed, the guarded transition loses
-        // and `run/cancel` owns the terminal `cancelled` event. Ungated
-        // `RunHub::send`: the commit itself orders this publish (a subscriber
-        // snapshotting concurrently reads the terminal status from tier 2).
-        match result {
-            Ok(moved) if moved.won() => match (&worker_error, saw_done) {
-                (Some(message), _) => {
-                    run_hub.send(RunEvent::Error {
-                        message: message.clone(),
-                    });
+        // and `run/cancel` owns the terminal `cancelled` event.
+        if let Ok(db::Terminal::Won { interrupted }) = result {
+            {
+                // External calls the settle interrupted (external-task-views
+                // A4) publish BEFORE the terminal event, so the live tab
+                // settles each row with the same result reload will render.
+                publish_interrupted(&run_hub, interrupted);
+                match (&worker_error, saw_done) {
+                    (Some(message), _) => {
+                        run_hub.send(RunEvent::Error {
+                            message: message.clone(),
+                        });
+                    }
+                    (None, true) => {
+                        run_hub.send(RunEvent::Done);
+                    }
+                    // EOF without `done` (the Worker died/hung up) settled the
+                    // Run `errored` above — publish `Error`, NOT nothing, so a
+                    // live tail sees the failure. Previously this published no
+                    // event and `run/subscribe` mis-reported it as `done`.
+                    (None, false) => {
+                        run_hub.send(RunEvent::Error {
+                            message: WORKER_DISCONNECTED_MESSAGE.to_string(),
+                        });
+                    }
                 }
-                (None, true) => {
-                    run_hub.send(RunEvent::Done);
-                }
-                (None, false) => {}
-            },
-            _ => {}
+            }
         }
+        // Drain atomically (review R9 #1): the terminal commit, its publishes,
+        // AND the hub removal are ONE gated section — a retry activating in this
+        // instant waits on this gate, then finds the slot drained and runs its
+        // errored→running CAS against the committed status (registry occupancy
+        // never substitutes for the CAS). Attached subscribers still observe the
+        // channel close only after draining the tail: removal drops the MAP's
+        // sender clone; this loop's own clone drops on return.
+        crate::hub::remove_own(&hubs, run_id, &run_hub);
+        drop(guard);
     }
 
-    // Remove the hub after publishing the terminal event so attached
-    // subscribers observe the channel close once they have drained the tail.
-    // `worker` drops on return; the child is `kill_on_drop`, so no orphan
-    // outlives the Run.
-    crate::hub::remove(&hubs, run_id);
+    // Catch-all for the exits whose drain someone else owns (a cancel's gated
+    // section removed the hub; a park removed it above): identity-checked, so
+    // this is a no-op when already drained and never deletes a newer activation.
+    crate::hub::remove_own(&hubs, run_id, &run_hub);
 
     if cancelled_by_core {
         Exit::Cancelled
@@ -269,6 +436,7 @@ pub(super) async fn run_loop<P: WorkerPort + Send>(
         Exit::Disconnected
     }
 }
+
 
 /// Handle one Tool Request (ADR-0018): enforce the Workflow's allowlist,
 /// persist the call, dispatch to the tool registry, persist the outcome, and
@@ -468,149 +636,9 @@ async fn park_on_proposal(
 #[cfg(test)]
 mod tests {
     use crate::db::test_support::memory_pool;
-    use std::collections::VecDeque;
-    use std::sync::{Arc, Mutex};
-    use tokio::sync::broadcast;
 
     use super::*;
-
-    fn test_workflow(tools: &[&str]) -> Workflow {
-        Workflow {
-            name: "test".to_string(),
-            version: "1".to_string(),
-            provider: "faux".to_string(),
-            model: Some("m".to_string()),
-            system_prompt: "sp".to_string(),
-            thinking_level: Some("off".to_string()),
-            tools: tools.iter().map(|s| s.to_string()).collect(),
-        }
-    }
-
-    /// Seed a Thread + initial Run (so an assistant row at seq 0 exists for
-    /// `run_loop` to append into). Returns `(run_id, thread_id, assistant_id)`.
-    async fn seed_run(pool: &SqlitePool, workflow: &Workflow) -> (Uuid, Uuid, Uuid) {
-        let thread_id = Uuid::now_v7();
-        let run_id = Uuid::now_v7();
-        let user_message_id = Uuid::now_v7();
-        let assistant_message_id = Uuid::now_v7();
-        db::persist_thread_with_first_run(
-            pool,
-            thread_id,
-            run_id,
-            user_message_id,
-            assistant_message_id,
-            workflow,
-            "prompt",
-            &[],
-            "t",
-            1,
-        )
-        .await
-        .expect("seed run");
-        (run_id, thread_id, assistant_message_id)
-    }
-
-    /// In-memory [`WorkerPort`]: yields scripted frames in order and records
-    /// the `tool_call_id` of every Tool Result sent back. `sent`/`shutdowns`
-    /// are shared so the test can inspect them after `run_loop` consumes it.
-    struct ScriptedWorker {
-        inbound: VecDeque<WorkerStdout>,
-        sent: Arc<Mutex<Vec<String>>>,
-        shutdowns: Arc<Mutex<u32>>,
-    }
-
-    impl ScriptedWorker {
-        fn new(frames: Vec<WorkerStdout>) -> (Self, Arc<Mutex<Vec<String>>>, Arc<Mutex<u32>>) {
-            let sent = Arc::new(Mutex::new(Vec::new()));
-            let shutdowns = Arc::new(Mutex::new(0));
-            let worker = Self {
-                inbound: frames.into(),
-                sent: sent.clone(),
-                shutdowns: shutdowns.clone(),
-            };
-            (worker, sent, shutdowns)
-        }
-    }
-
-    impl WorkerPort for ScriptedWorker {
-        async fn recv(&mut self) -> Option<WorkerStdout> {
-            self.inbound.pop_front()
-        }
-
-        async fn send_tool_result(&mut self, result: ToolResult) {
-            self.sent.lock().unwrap().push(result.tool_call_id);
-        }
-
-        async fn shutdown(&mut self) {
-            *self.shutdowns.lock().unwrap() += 1;
-        }
-    }
-
-    /// A [`WorkerPort`] that flips the run's cancel signal just before yielding
-    /// the frame at index `cancel_before`, forcing the loop's post-recv cancel
-    /// check to trip — the live-cancel-mid-stream race. Otherwise behaves like
-    /// [`ScriptedWorker`].
-    struct CancelingWorker {
-        inbound: VecDeque<WorkerStdout>,
-        hub: crate::hub::RunHub,
-        cancel_before: usize,
-        idx: usize,
-        sent: Arc<Mutex<Vec<String>>>,
-        shutdowns: Arc<Mutex<u32>>,
-    }
-
-    impl CancelingWorker {
-        fn new(
-            frames: Vec<WorkerStdout>,
-            hub: crate::hub::RunHub,
-            cancel_before: usize,
-        ) -> (Self, Arc<Mutex<Vec<String>>>, Arc<Mutex<u32>>) {
-            let sent = Arc::new(Mutex::new(Vec::new()));
-            let shutdowns = Arc::new(Mutex::new(0));
-            let worker = Self {
-                inbound: frames.into(),
-                hub,
-                cancel_before,
-                idx: 0,
-                sent: sent.clone(),
-                shutdowns: shutdowns.clone(),
-            };
-            (worker, sent, shutdowns)
-        }
-    }
-
-    impl WorkerPort for CancelingWorker {
-        async fn recv(&mut self) -> Option<WorkerStdout> {
-            if self.idx == self.cancel_before {
-                self.hub.cancel();
-            }
-            self.idx += 1;
-            self.inbound.pop_front()
-        }
-
-        async fn send_tool_result(&mut self, result: ToolResult) {
-            self.sent.lock().unwrap().push(result.tool_call_id);
-        }
-
-        async fn shutdown(&mut self) {
-            *self.shutdowns.lock().unwrap() += 1;
-        }
-    }
-
-    /// Drain a broadcast receiver into a Vec without blocking.
-    fn drain(rx: &mut broadcast::Receiver<RunEvent>) -> Vec<RunEvent> {
-        let mut events = Vec::new();
-        while let Ok(event) = rx.try_recv() {
-            events.push(event);
-        }
-        events
-    }
-
-    fn fixtures(run_id: Uuid) -> (Hubs, crate::hub::RunHub) {
-        let hubs = crate::hub::new_hubs();
-        let run_hub = crate::hub::create(&hubs, run_id);
-        (hubs, run_hub)
-    }
+    use crate::worker::test_support::*;
 
     #[tokio::test]
     async fn done_marks_completed_and_persists_text() {
@@ -644,11 +672,7 @@ mod tests {
                 .map(db::RunStatus::as_str),
             Some("completed")
         );
-        let snap = db::select_run_snapshot(&pool, run_id)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(snap.text, "hi");
+        assert_eq!(run_text(&pool, run_id).await, "hi");
     }
 
     #[tokio::test]
@@ -688,6 +712,7 @@ mod tests {
         let wf = test_workflow(&[]);
         let (run_id, _t, amid) = seed_run(&pool, &wf).await;
         let (hubs, run_hub) = fixtures(run_id);
+        let mut tail = run_hub.subscribe_raw();
         // One delta, then the script is exhausted → recv returns None (EOF).
         let (worker, _sent, _sd) = ScriptedWorker::new(vec![WorkerStdout::TextDelta {
             delta: "x".to_string(),
@@ -711,6 +736,17 @@ mod tests {
                 .unwrap()
                 .map(db::RunStatus::as_str),
             Some("errored")
+        );
+        // EOF publishes a terminal `Error` (NOT nothing → NOT reported as
+        // `done` by subscribe): the Worker died, so a live tail sees the failure.
+        let events = drain(&mut tail);
+        assert!(
+            events.iter().any(|e| matches!(e, RunEvent::Error { .. })),
+            "EOF-without-done publishes a terminal Error event, got {events:?}"
+        );
+        assert!(
+            !events.iter().any(|e| matches!(e, RunEvent::Done)),
+            "EOF is not reported as done"
         );
     }
 
@@ -750,41 +786,6 @@ mod tests {
     /// `message` step resolves its text from the specific `(message_id, part_seq)`
     /// part (ADR-0045); a `tool_call` step resolves the tool name. Read straight
     /// from tier 2 so the test pins the durable timeline, not a wire projection.
-    async fn run_steps_kinds_and_content(pool: &SqlitePool, run_id: Uuid) -> Vec<(String, String)> {
-        let rows: Vec<(String, Option<String>, Option<i64>, Option<String>)> = sqlx::query_as(
-            "SELECT rs.kind, rs.message_id, rs.part_seq, tc.name \
-             FROM run_steps rs \
-             LEFT JOIN tool_calls tc ON tc.id = rs.tool_call_id \
-             WHERE rs.run_id = ?1 ORDER BY rs.seq",
-        )
-        .bind(run_id.to_string())
-        .fetch_all(pool)
-        .await
-        .expect("read run_steps");
-
-        let mut out = Vec::with_capacity(rows.len());
-        for (kind, message_id, part_seq, tc_name) in rows {
-            match kind.as_str() {
-                "message" => {
-                    let message_id = message_id.expect("message step has a message_id");
-                    let part_seq = part_seq.expect("message step resolves a specific text part");
-                    let text: String = sqlx::query_scalar(
-                        "SELECT text FROM message_parts WHERE message_id = ?1 AND seq = ?2",
-                    )
-                    .bind(&message_id)
-                    .bind(part_seq)
-                    .fetch_one(pool)
-                    .await
-                    .expect("message step's part exists");
-                    out.push(("message".to_string(), text));
-                }
-                "tool_call" => out.push(("tool_call".to_string(), tc_name.unwrap_or_default())),
-                other => panic!("unexpected run_step kind {other:?}"),
-            }
-        }
-        out
-    }
-
     /// Within ONE Run, assistant text emitted AFTER a tool call is sequenced
     /// AFTER that tool call in `run_steps` (ADR-0045). A scripted Run streams
     /// text, calls a tool, then streams more text: the durable timeline must read
@@ -842,11 +843,7 @@ mod tests {
 
         // The wire shape is unchanged: the snapshot/thread-get concat read still
         // returns the assistant's full reply across both parts, in order.
-        let snap = db::select_run_snapshot(&pool, run_id)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(snap.text, "let me look found it");
+        assert_eq!(run_text(&pool, run_id).await, "let me look found it");
     }
 
     /// One `run_steps` `message` row resolved to `(message_parts.type, text)`,
@@ -963,11 +960,7 @@ mod tests {
         );
 
         // The text-only concat read (snapshot) excludes reasoning entirely.
-        let snap = db::select_run_snapshot(&pool, run_id)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(snap.text, "Plan: Done");
+        assert_eq!(run_text(&pool, run_id).await, "Plan: Done");
     }
 
     /// `text → reasoning → text → reasoning` with NO tool between: the type-switch
@@ -1031,11 +1024,7 @@ mod tests {
         );
 
         // Reply text is the two text runs concatenated; reasoning excluded.
-        let snap = db::select_run_snapshot(&pool, run_id)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(snap.text, "AC");
+        assert_eq!(run_text(&pool, run_id).await, "AC");
     }
 
     #[tokio::test]
@@ -1404,12 +1393,9 @@ mod tests {
         drive_to_errored_with_partial(&pool, run_id, amid, &wf).await;
 
         // The failed attempt persisted partial text.
-        let before = db::select_run_snapshot(&pool, run_id)
-            .await
-            .unwrap()
-            .unwrap();
         assert_eq!(
-            before.text, "half ",
+            run_text(&pool, run_id).await,
+            "half ",
             "the failed attempt streamed partial text"
         );
 
@@ -1444,12 +1430,9 @@ mod tests {
 
         // The failed parts are GONE — snapshot text empty, no stale message_parts /
         // run_steps for the assistant message.
-        let after = db::select_run_snapshot(&pool, run_id)
-            .await
-            .unwrap()
-            .unwrap();
         assert_eq!(
-            after.text, "",
+            run_text(&pool, run_id).await,
+            "",
             "the failed partial text was cleared, not carried"
         );
 
@@ -1702,11 +1685,11 @@ mod tests {
 
         // But the failed attempt's partial assistant text IS cleared, and the Run is
         // back to running with a streaming assistant Message.
-        let snap = db::select_run_snapshot(&pool, run_id)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(snap.text, "", "the failed partial text was cleared");
+        assert_eq!(
+            run_text(&pool, run_id).await,
+            "",
+            "the failed partial text was cleared"
+        );
         assert_eq!(
             db::run_status(&pool, run_id)
                 .await
@@ -1763,12 +1746,9 @@ mod tests {
                 .map(db::RunStatus::as_str),
             Some("completed")
         );
-        let snap = db::select_run_snapshot(&pool, run_id)
-            .await
-            .unwrap()
-            .unwrap();
         assert_eq!(
-            snap.text, "full answer",
+            run_text(&pool, run_id).await,
+            "full answer",
             "only the retry's text, not concatenated"
         );
         assert_eq!(message_role_counts(&pool, run_id).await, (1, 1));

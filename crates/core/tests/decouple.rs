@@ -42,10 +42,11 @@ async fn post_message(ws: &mut Ws, id: u32) -> String {
         .to_string()
 }
 
-/// Send `run/subscribe(run_id)`, read the subscribe RESPONSE and the snapshot
-/// `text_delta`, and return the cumulative snapshot text (the reassembly base).
-/// The snapshot may be `""` or a partial chunk depending on the gate race, so
-/// callers must not hard-assert its content.
+/// Send `run/subscribe(run_id)`, read the subscribe RESPONSE and the ordered
+/// segment `snapshot` (review P1 #2), and return the cumulative snapshot text
+/// (its Text segments concatenated) as the reassembly base. The snapshot may be
+/// empty or a partial chunk depending on the gate race, so callers must not
+/// hard-assert its content.
 async fn subscribe_and_read_snapshot(ws: &mut Ws, id: u32, run_id: &str) -> String {
     let subscribe = format!(
         r#"{{"jsonrpc":"2.0","id":{id},"method":"run/subscribe","params":{{"run_id":"{run_id}"}}}}"#
@@ -72,13 +73,18 @@ async fn subscribe_and_read_snapshot(ws: &mut Ws, id: u32, run_id: &str) -> Stri
         .unwrap_or_else(|e| panic!("snapshot is JSON: {e} — body: {snapshot_body}"));
     assert_eq!(
         snapshot["params"]["event"]["kind"],
-        serde_json::json!("text_delta"),
-        "snapshot is a text_delta — body: {snapshot_body}"
+        serde_json::json!("snapshot"),
+        "snapshot is an ordered segment snapshot — body: {snapshot_body}"
     );
-    snapshot["params"]["event"]["delta"]
-        .as_str()
-        .unwrap_or_else(|| panic!("snapshot text_delta carries a string — body: {snapshot_body}"))
-        .to_string()
+    // Reassembly base = the snapshot's Text segments concatenated (its reply
+    // text; tool_call/reasoning segments carry none). Tail `text_delta`s append.
+    snapshot["params"]["event"]["segments"]
+        .as_array()
+        .unwrap_or_else(|| panic!("snapshot carries a segments array — body: {snapshot_body}"))
+        .iter()
+        .filter(|seg| seg["kind"] == serde_json::json!("text"))
+        .map(|seg| seg["text"].as_str().unwrap_or_default())
+        .collect::<String>()
 }
 
 /// Drain `ws`'s tail from `base`, appending each incremental `text_delta` until

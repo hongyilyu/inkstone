@@ -1,0 +1,11 @@
+{
+  "kind": "external_tool_started",
+  "tool_call_id": "tc_ext_1",
+  "name": "ticktick_filter_tasks",
+  "arguments": {
+    "filter": {
+      "status": [0],
+      "tag": ["s1-advanced"]
+    }
+  }
+}

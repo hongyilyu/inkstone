@@ -25,6 +25,54 @@ impl Moved {
     }
 }
 
+/// An external (`ticktick_*`) call a terminal transition settled as
+/// interrupted (external-task-views A4): the Run died between the call's
+/// started and finished frames. The caller publishes a
+/// `tool_call {status: error, result: interrupted}` event per entry after the
+/// transaction commits, before the terminal Run Event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InterruptedExternalCall {
+    pub tool_call_id: String,
+    pub name: String,
+}
+
+/// A terminal transition's outcome. `Won` carries the external calls its settle
+/// interrupted; `Lost` means a concurrent terminal transition already claimed the
+/// Run. A lost move never has interrupted rows — the enum makes that
+/// unrepresentable (was a struct whose "empty on a lost move" invariant lived in
+/// prose).
+#[derive(Debug)]
+pub enum Terminal {
+    Won {
+        interrupted: Vec<InterruptedExternalCall>,
+    },
+    Lost,
+}
+
+impl Terminal {
+    pub fn won(&self) -> bool {
+        matches!(self, Terminal::Won { .. })
+    }
+}
+
+/// Settle the Run's still-pending external calls inside a won terminal
+/// transition (external-task-views A4) — every terminal verb calls this, so
+/// cancel, worker error, EOF, AND the boot recovery sweep share one rule.
+async fn settle_interrupted_external_calls(
+    conn: &mut SqliteConnection,
+    run_id: Uuid,
+    now_ms: i64,
+) -> sqlx::Result<Vec<InterruptedExternalCall>> {
+    let payload = serde_json::to_string(&crate::protocol::TranscriptToolResult::interrupted())
+        .expect("TranscriptToolResult serializes");
+    let rows =
+        queries::settle_pending_external_tool_calls(&mut *conn, run_id, &payload, now_ms).await?;
+    Ok(rows
+        .into_iter()
+        .map(|(tool_call_id, name)| InterruptedExternalCall { tool_call_id, name })
+        .collect())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TerminalReason {
     Completed,
@@ -85,17 +133,6 @@ impl RunStatus {
         }
     }
 
-    /// Whether the Run has ended. The terminal grouping lives here once, so a
-    /// read site asks the type instead of re-spelling the
-    /// `completed | errored | cancelled` set. `running`/`parked` are non-terminal
-    /// (a `parked` Run resumes; see CONTEXT.md *Run status*).
-    pub fn is_terminal(self) -> bool {
-        match self {
-            Self::Completed | Self::Errored | Self::Cancelled => true,
-            Self::Running | Self::Parked => false,
-        }
-    }
-
     /// Whether the Run is parked, waiting on a Decision (ADR-0025). The parked
     /// classifier lives here once for the resume-gate and subscribe read sites.
     pub fn is_parked(self) -> bool {
@@ -106,7 +143,7 @@ impl RunStatus {
         conn: &mut SqliteConnection,
         run_id: Uuid,
         now_ms: i64,
-    ) -> sqlx::Result<Moved> {
+    ) -> sqlx::Result<Terminal> {
         debug_assert_eq!(Self::Running.as_str(), "running");
         debug_assert_eq!(Self::Completed.as_str(), "completed");
         let moved = Moved::from_rows(
@@ -119,12 +156,13 @@ impl RunStatus {
             .await?,
         );
         if !moved.won() {
-            return Ok(moved);
+            return Ok(Terminal::Lost);
         }
 
         queries::mark_assistant_messages_completed(&mut *conn, run_id, now_ms).await?;
         run_log::append(&mut *conn, run_id, RunLogKind::Done, None, now_ms).await?;
-        Ok(moved)
+        let interrupted = settle_interrupted_external_calls(&mut *conn, run_id, now_ms).await?;
+        Ok(Terminal::Won { interrupted })
     }
 
     pub(super) async fn fail(
@@ -134,7 +172,7 @@ impl RunStatus {
         error_code: &str,
         error_message: &str,
         now_ms: i64,
-    ) -> sqlx::Result<Moved> {
+    ) -> sqlx::Result<Terminal> {
         debug_assert_eq!(Self::Running.as_str(), "running");
         debug_assert_eq!(Self::Errored.as_str(), "errored");
         let moved = Moved::from_rows(
@@ -149,14 +187,15 @@ impl RunStatus {
             .await?,
         );
         if !moved.won() {
-            return Ok(moved);
+            return Ok(Terminal::Lost);
         }
 
         queries::mark_streaming_messages_incomplete(&mut *conn, run_id, now_ms).await?;
         let payload =
             serde_json::json!({ "code": error_code, "message": error_message }).to_string();
         run_log::append(&mut *conn, run_id, RunLogKind::Error, Some(&payload), now_ms).await?;
-        Ok(moved)
+        let interrupted = settle_interrupted_external_calls(&mut *conn, run_id, now_ms).await?;
+        Ok(Terminal::Won { interrupted })
     }
 
     pub(super) async fn park(
@@ -194,8 +233,8 @@ impl RunStatus {
     /// `resume` guards `parked` and would match 0 rows here. On `won()` the terminal
     /// fields are cleared back to live by the guarded query, and the retry milestone
     /// reuses [`RunLogKind::Running`] — the same "now running" moment a fresh start
-    /// logs (no new kind, no `run_log` CHECK change). `is_terminal()` and the boot
-    /// sweep are unchanged; this is the single user-initiated exception.
+    /// logs (no new kind, no `run_log` CHECK change). The boot sweep is
+    /// unchanged; this is the single user-initiated exception.
     pub(super) async fn retry(
         conn: &mut SqliteConnection,
         run_id: Uuid,
@@ -234,6 +273,10 @@ impl RunStatus {
         }
 
         queries::mark_streaming_messages_incomplete(&mut *conn, run_id, now_ms).await?;
+        // Settle still-pending external rows in this transition too — the one
+        // rule EVERY terminal verb shares. A parked Run has no live tail, so the
+        // settled rows surface on reload/late-subscribe, not as events.
+        settle_interrupted_external_calls(&mut *conn, run_id, now_ms).await?;
         let payload = serde_json::json!({ "target": "run" }).to_string();
         run_log::append(&mut *conn, run_id, RunLogKind::Cancelled, Some(&payload), now_ms).await?;
         Ok(moved)
@@ -243,7 +286,7 @@ impl RunStatus {
         conn: &mut SqliteConnection,
         run_id: Uuid,
         now_ms: i64,
-    ) -> sqlx::Result<Moved> {
+    ) -> sqlx::Result<Terminal> {
         debug_assert_eq!(Self::Running.as_str(), "running");
         debug_assert_eq!(Self::Cancelled.as_str(), "cancelled");
         let moved = Moved::from_rows(
@@ -256,13 +299,14 @@ impl RunStatus {
             .await?,
         );
         if !moved.won() {
-            return Ok(moved);
+            return Ok(Terminal::Lost);
         }
 
         queries::mark_streaming_messages_incomplete(&mut *conn, run_id, now_ms).await?;
         let payload = serde_json::json!({ "target": "run" }).to_string();
         run_log::append(&mut *conn, run_id, RunLogKind::Cancelled, Some(&payload), now_ms).await?;
-        Ok(moved)
+        let interrupted = settle_interrupted_external_calls(&mut *conn, run_id, now_ms).await?;
+        Ok(Terminal::Won { interrupted })
     }
 }
 
@@ -431,14 +475,6 @@ mod tests {
         // An unknown / empty stored string parses to `None`.
         assert_eq!(RunStatus::from_str("bogus"), None);
         assert_eq!(RunStatus::from_str(""), None);
-
-        // Terminal grouping: completed/errored/cancelled are terminal; the two
-        // live states are not.
-        assert!(RunStatus::Completed.is_terminal());
-        assert!(RunStatus::Errored.is_terminal());
-        assert!(RunStatus::Cancelled.is_terminal());
-        assert!(!RunStatus::Running.is_terminal());
-        assert!(!RunStatus::Parked.is_terminal());
 
         // Parked grouping: only `parked`.
         assert!(RunStatus::Parked.is_parked());

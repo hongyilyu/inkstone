@@ -1,4 +1,5 @@
 import { cleanup, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it } from "vitest";
 import { groupToolCalls, ToolActivity } from "@/components/ToolActivity.js";
 import type { ToolCall } from "@/store/chat";
@@ -141,5 +142,117 @@ describe("ToolActivity grouped rendering", () => {
 		);
 		const row = screen.getByTestId("tool-call");
 		expect(row).toHaveTextContent("+1");
+	});
+});
+
+// ── External (`ticktick_*`) calls — external-task-views A4 ──────────────────
+
+const externalResult = (text: string, isError = false) => ({
+	content: [{ type: "text" as const, text }],
+	is_error: isError,
+});
+
+describe("external calls never group", () => {
+	it("two same-name external calls stay two rows, keyed by call id, results distinct", () => {
+		const groups = groupToolCalls([
+			call({
+				id: "tc_a",
+				name: "ticktick_search_task",
+				result: externalResult("first result"),
+			}),
+			call({
+				id: "tc_b",
+				name: "ticktick_search_task",
+				result: externalResult("second result"),
+			}),
+		]);
+		expect(groups).toHaveLength(2);
+		expect(groups.map((g) => g.key)).toEqual(["tc_a", "tc_b"]);
+		expect(groups[0].call?.result?.content[0].text).toBe("first result");
+		expect(groups[1].call?.result?.content[0].text).toBe("second result");
+	});
+
+	it("an external call never merges into a same-position Core group", () => {
+		const groups = groupToolCalls([
+			call({ id: "1", arg: "Lev" }),
+			call({ id: "tc_ext", name: "ticktick_filter_tasks" }),
+			call({ id: "2", arg: "Acme" }),
+		]);
+		// Core calls still merge around it; the external row keeps its slot.
+		expect(groups.map((g) => g.key)).toEqual([
+			"group:search_entities",
+			"tc_ext",
+		]);
+		expect(groups[1].call?.name).toBe("ticktick_filter_tasks");
+	});
+});
+
+describe("external expandable row", () => {
+	it("renders collapsed, expands to the model-received content, and collapses back", async () => {
+		render(
+			<ToolActivity
+				toolCalls={[
+					call({
+						id: "tc_ext",
+						name: "ticktick_filter_tasks",
+						result: externalResult("1 task found: S1 timed"),
+					}),
+				]}
+			/>,
+		);
+		const row = screen.getByTestId("tool-call");
+		expect(row).toHaveAttribute("data-status", "completed");
+		// Collapsed by default: the content is NOT in the document.
+		expect(screen.queryByTestId("tool-call-result")).toBeNull();
+
+		const toggle = screen.getByRole("button");
+		expect(toggle).toHaveAttribute("aria-expanded", "false");
+		await userEvent.click(toggle);
+		expect(toggle).toHaveAttribute("aria-expanded", "true");
+		expect(screen.getByTestId("tool-call-result")).toHaveTextContent(
+			"1 task found: S1 timed",
+		);
+
+		await userEvent.click(toggle);
+		expect(screen.queryByTestId("tool-call-result")).toBeNull();
+	});
+
+	it("an errored external call renders the error row and expands to the error content — identically", async () => {
+		render(
+			<ToolActivity
+				toolCalls={[
+					call({
+						id: "tc_err",
+						name: "ticktick_search_task",
+						status: "error",
+						result: externalResult("interrupted", true),
+					}),
+				]}
+			/>,
+		);
+		const row = screen.getByTestId("tool-call");
+		expect(row).toHaveAttribute("data-status", "error");
+		expect(row).toHaveTextContent("failed");
+
+		await userEvent.click(screen.getByRole("button"));
+		expect(screen.getByTestId("tool-call-result")).toHaveTextContent(
+			"interrupted",
+		);
+	});
+
+	it("a running external row is not expandable yet (no result)", () => {
+		render(
+			<ToolActivity
+				toolCalls={[
+					call({
+						id: "tc_run",
+						name: "ticktick_list_projects",
+						status: "running",
+					}),
+				]}
+			/>,
+		);
+		expect(screen.getByRole("button")).toBeDisabled();
+		expect(screen.queryByTestId("tool-call-result")).toBeNull();
 	});
 });

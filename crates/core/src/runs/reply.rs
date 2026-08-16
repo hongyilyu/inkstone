@@ -44,17 +44,6 @@ pub(super) fn send_run_event(
     let _ = out_tx.send(body);
 }
 
-/// Emit a `text_delta` Run Event (the snapshot rides as one of these,
-/// ADR-0022 §17).
-pub(super) fn send_text_delta(out_tx: &UnboundedSender<String>, run_id: Uuid, text: &str) {
-    send_run_event(
-        out_tx,
-        run_id,
-        &RunEvent::TextDelta {
-            delta: text.to_string(),
-        },
-    );
-}
 
 /// Queue a `proposal/pending` notification (ADR-0025): the Run parked and
 /// `proposal_id` is its awaiting Proposal. Rides the `proposal/*` channel, not

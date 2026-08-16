@@ -216,7 +216,8 @@ function searchWorld(
 /** The eval transport for one fixture. Dispatches `callTool` by NAME (pi assigns
  * tool_call_ids at runtime, so we cannot pre-key by id like InMemoryTransport).
  * It records the captured propose call into `capture.current`, and Run Events
- * into `events`. */
+ * into `events`. The eval workflow ships no external tools, so plain
+ * WorkerRunEvent stays the captured type; the widened seam is narrowed here. */
 function evalTransport(
 	fixture: Fixture,
 	events: WorkerRunEvent[],
@@ -225,6 +226,12 @@ function evalTransport(
 	return Layer.succeed(WorkerTransport, {
 		readManifest: Effect.succeed(null),
 		emit: (event) => {
+			if (
+				event.kind === "external_tool_started" ||
+				event.kind === "external_tool_finished"
+			) {
+				return;
+			}
 			events.push(event);
 		},
 		callTool: (_toolCallId, name, params) => {

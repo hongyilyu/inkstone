@@ -420,18 +420,21 @@ export async function awaitRun(
 }
 
 /**
- * Stop a Run from the chat surface (ADR-0014). Fires `run/cancel`, then settles
- * the UI off the authoritative response: interrupt the subscribe fiber, apply a
- * synthetic `cancelled` event to settle the bubble, and drop any pending Proposal.
+ * Stop a Run from the chat surface (ADR-0014). Fires `run/cancel`, then EITHER
+ * lets the live subscribe stream deliver the real terminal, OR settles the UI off
+ * the response — interrupt the fiber, apply a synthetic `cancelled` to settle the
+ * bubble, drop any pending Proposal.
  *
- * We settle here for every (outcome, state) EXCEPT the one case whose terminal is
- * owned elsewhere — `already_terminal` on a *running* Run, where the live subscribe
- * stream already delivered (or will deliver) the real `done`/`error`/`cancelled`.
- * `accepted` settles (Core committed the cancel; for a running Run its real
- * `cancelled` is idempotent with the synthetic one). `unknown_run` settles (Core has
- * no run/hub, so NO stream event will ever come — bailing would leak the fiber). A
- * *parked* Run (awaiting a Proposal decision) has no live tail, so it settles on any
- * outcome rather than wedge the Stop control. See docs/design/web-store.md.
+ * The live stream OWNS the terminal (we return, settling nothing) in exactly two
+ * cases: `accepted` WITH a live tail — a running Run, whose real interrupted
+ * `tool_call`s + `cancelled` arrive on the hub this tab subscribes to (applying
+ * them is what keeps live == reload) — and `already_terminal` on a *running* Run
+ * (its real `done`/`error`/`cancelled` already came or will). Every other
+ * (outcome, state) settles off THIS response because no stream event will come: a
+ * *parked* Run (no live tail, any outcome), an `accepted` running Run WITHOUT a
+ * hub (the resume window), or `unknown_run` (no hub — bailing would leak the
+ * fiber). The inline conditions below are the authoritative table. See
+ * docs/design/web-store.md.
  */
 export async function cancelRun(
 	runtime: WsRuntime,
@@ -440,8 +443,11 @@ export async function cancelRun(
 	const program = Effect.flatMap(WsClient, (client) => client.cancelRun(runId));
 
 	let outcome: "accepted" | "already_terminal" | "unknown_run";
+	let liveTail: boolean;
 	try {
-		outcome = (await runtime.runPromise(program)).outcome;
+		const result = await runtime.runPromise(program);
+		outcome = result.outcome;
+		liveTail = result.live_tail;
 	} catch {
 		// Cancel is best-effort; a failed request leaves the Run as-is.
 		return;
@@ -452,33 +458,47 @@ export async function cancelRun(
 		return;
 	}
 
-	// Parked-ness is a record field read, not re-derived from Proposal status: the
-	// record stays `parked` from the moment a Proposal attaches through `deciding`
-	// and a failed decide, flipping back to `running` only when the resume stream
-	// re-subscribes (which then owns the terminal). A racing cancel during deciding
-	// clears the Proposal here, and decideProposal's currency guard then bails.
+	// Parked-ness is a record field read (not re-derived from Proposal status):
+	// the record stays `parked` from proposal-attach through `deciding` and a
+	// failed decide, flipping to `running` only when the resume stream
+	// re-subscribes (which then owns the terminal).
 	const parked = isRunParked(runId);
 
-	// The ONLY outcome whose terminal is owned elsewhere is `already_terminal` on a
-	// non-parked Run: its live subscribe stream already delivered (or will deliver)
-	// the real done/error/cancelled, which settles the bubble and reaps the fiber.
-	// Every other case must settle here: `accepted` (Core committed the cancel),
-	// and `unknown_run` (Core has no run/hub, so NO stream event will ever come —
-	// bailing would leak the fiber and wedge Stop forever). `parked` always settles
-	// since a parked Run has no live tail regardless of outcome.
-	if (outcome === "already_terminal" && !parked) {
+	// `live_tail` (external-task-views A4) is Core's authoritative answer to "will
+	// a terminal reach me on the live stream?" — no timer guess. Leave the bubble
+	// to the live stream in exactly two cases:
+	// - `accepted` with `live_tail`: Core published (or will publish) the
+	//   interrupted `tool_call` event(s) then `cancelled` on the hub this tab is
+	//   subscribed to. The stream must APPLY them (interrupting here would drop an
+	//   interrupted external call's result and diverge live from reload); its
+	//   takeUntil(cancelled) reaps the fiber and fires onRunSettled.
+	// - `already_terminal` on a RUNNING Run: its live stream already delivered (or
+	//   will deliver) the real done/error/cancelled.
+	if (
+		(outcome === "accepted" && liveTail) ||
+		(outcome === "already_terminal" && !parked)
+	) {
 		return;
 	}
 
-	// Interrupt first so the fiber's takeUntil can't race a real terminal event,
-	// then settle deterministically off the authoritative cancel response.
+	// Everything else settles off this response — no stream event will come:
+	// parked (no live tail, any outcome), an `accepted` running-without-hub
+	// resume window, or `unknown_run` (no hub — bailing would leak the fiber).
+	settleCancelledLocally(runtime, threadId, runId);
+}
+
+/** The synthetic cancel settle: interrupt the fiber (so its takeUntil can't
+ * race), apply a local `cancelled`, drop any Proposal, and refresh the
+ * recent-Runs feed from this authoritative settle point (the interrupted
+ * fiber's own onRunSettled is identity-gated off). */
+function settleCancelledLocally(
+	runtime: WsRuntime,
+	threadId: string,
+	runId: RunId,
+): void {
 	interruptRun(runtime, runId);
 	applyEvent(threadId, runId, { kind: "cancelled" });
 	clearProposal(runId);
-	// A cancel settles the Run HERE, not via the stream finalizer (which we just
-	// interrupted — its onRunSettled is gated off precisely so resume/unmount
-	// teardowns don't fire it). So refresh the recent-Runs feed from this
-	// authoritative settle point, else a user-stopped Run lingers as Running/Waiting.
 	onRunSettled?.();
 }
 

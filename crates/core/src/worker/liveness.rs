@@ -89,8 +89,10 @@ pub(crate) async fn probe(provider: &str, model: &str) -> ProviderTestResult {
                     // An explicit error frame is a failed turn: dead, carrying the
                     // provider's message (the auth/rate/model detail the user needs).
                     Some(crate::protocol::WorkerStdout::Error { message }) => return dead(message),
-                    // The probe ships no tools; a tool_request is an unexpected turn.
-                    Some(crate::protocol::WorkerStdout::ToolRequest { .. }) => {
+                    // The probe ships no tools; any tool frame is an unexpected turn.
+                    Some(crate::protocol::WorkerStdout::ToolRequest { .. })
+                    | Some(crate::protocol::WorkerStdout::ExternalToolStarted { .. })
+                    | Some(crate::protocol::WorkerStdout::ExternalToolFinished { .. }) => {
                         return dead(
                             "worker requested a tool during the liveness probe".to_string(),
                         );

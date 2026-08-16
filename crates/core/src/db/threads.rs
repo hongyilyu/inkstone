@@ -72,10 +72,16 @@ pub enum MessageSegment {
     /// wire spelling (`errored`/anything-unexpected → `error`, `completed` →
     /// `completed`) and the display `arg` derived from the request payload via the
     /// same per-tool extractor the live `tool_call` Run Event uses.
+    /// `tool_call_id` is the durable per-call identity (external-task-views A4);
+    /// `result` is the normalized model-received content, decoded from
+    /// `result_payload` for external (`ticktick_*`) calls so the reload row
+    /// expands identically to the live one.
     ToolCall {
+        tool_call_id: String,
         name: String,
         status: String,
         arg: Option<String>,
+        result: Option<crate::protocol::TranscriptToolResult>,
     },
     /// The decided Proposal the turn parked on (ADR-0044): `accepted`/`rejected`
     /// only — pending/cancelled are skipped at assembly. `entity_id` (ADR-0044
@@ -103,6 +109,57 @@ pub enum MessageSegment {
         width: Option<i64>,
         height: Option<i64>,
     },
+}
+
+/// Map a db-side timeline item to its wire [`crate::protocol::Segment`] variant
+/// (1:1, order-preserving, ADR-0045). Used by `thread/get` rehydration AND the
+/// `run/subscribe` full-timeline snapshot (review P1 #2), so the reloaded and the
+/// live-snapshot timelines are assembled identically.
+impl From<MessageSegment> for crate::protocol::Segment {
+    fn from(segment: MessageSegment) -> Self {
+        use crate::protocol::Segment;
+        match segment {
+            MessageSegment::Text { text } => Segment::Text { text },
+            MessageSegment::ToolCall {
+                tool_call_id,
+                name,
+                status,
+                arg,
+                result,
+            } => Segment::ToolCall {
+                tool_call_id,
+                name,
+                status,
+                arg,
+                result,
+            },
+            MessageSegment::Proposal {
+                proposal_id,
+                mutation_kind,
+                status,
+                entity_id,
+            } => Segment::Proposal {
+                proposal_id,
+                mutation_kind,
+                status,
+                entity_id,
+            },
+            MessageSegment::Reasoning { text, duration_ms } => {
+                Segment::Reasoning { text, duration_ms }
+            }
+            MessageSegment::Attachment {
+                media_id,
+                mime,
+                width,
+                height,
+            } => Segment::Attachment {
+                media_id,
+                mime,
+                width,
+                height,
+            },
+        }
+    }
 }
 
 /// One Message in a `thread/get` read. `segments` is the assistant turn's ordered
@@ -162,7 +219,9 @@ pub async fn get_thread_with_messages(
         // `segment_rows_for_run`'s tolerant arg parsing) with a Diagnostic Log
         // warning (ADR-0038) so the vanished image stays greppable.
         let segments = if role == "assistant" {
-            segment_rows_for_run(pool, &run_id, &id).await?
+            // thread/get reload excludes still-pending calls (owned by the live
+            // tail, ADR-0043); the live subscribe snapshot includes them (#2).
+            segment_rows_for_run(pool, &run_id, &id, false).await?
         } else {
             user_segments(&id, queries::parts_by_message(pool, &id).await?)
         };
@@ -268,6 +327,7 @@ async fn segment_rows_for_run(
     pool: &SqlitePool,
     run_id: &str,
     assistant_message_id: &str,
+    include_pending: bool,
 ) -> sqlx::Result<Vec<MessageSegment>> {
     let Ok(run_uuid) = Uuid::parse_str(run_id) else {
         return Ok(Vec::new());
@@ -287,9 +347,11 @@ async fn segment_rows_for_run(
             kind,
             part_text,
             part_type,
+            tool_call_id,
             tc_name,
             tc_status,
             request_payload,
+            result_payload,
             proposal_id,
             mutation_kind,
             proposal_status,
@@ -340,11 +402,19 @@ async fn segment_rows_for_run(
                         });
                     }
                 } else if !crate::tools::is_proposal(&name) {
-                    // A non-Proposal tool call → a settled tool-activity row
-                    // (ADR-0043). Skip a `pending` call; map the persisted status to
-                    // the wire spelling, never leaking a non-vocabulary value.
+                    // A non-Proposal tool call → a tool-activity row (ADR-0043).
+                    // Map the persisted status to the wire spelling (never leaking
+                    // a non-vocabulary value). thread/get (`include_pending=false`)
+                    // SKIPS a `pending` call — its result is owned by the live tail;
+                    // the `run/subscribe` snapshot (`include_pending=true`) keeps it
+                    // as `running` so a reconnect shows the in-flight call (#2).
                     let status = tc_status.unwrap_or_default();
-                    if status != "pending" {
+                    let wire_status = match status.as_str() {
+                        "pending" => include_pending.then_some("running"),
+                        "completed" => Some("completed"),
+                        _ => Some("error"),
+                    };
+                    if let Some(wire_status) = wire_status {
                         // Derive the display arg from the stored request payload via
                         // the same per-tool extractor the live `tool_call` Run Event
                         // uses, so the reloaded row matches the live one. A malformed
@@ -353,14 +423,27 @@ async fn segment_rows_for_run(
                             .as_deref()
                             .and_then(|p| serde_json::from_str::<serde_json::Value>(p).ok())
                             .and_then(|params| crate::tools::display_arg(&name, &params));
+                        // An external call's payload IS a TranscriptToolResult
+                        // (the finished frame or the interrupted settle wrote
+                        // it) — served so the reload row expands identically to
+                        // the live one (A4). A pending call has none yet; Core-tool
+                        // rows carry none in v1.
+                        let result = if crate::tools::is_external(&name) {
+                            result_payload.as_deref().and_then(|payload| {
+                                serde_json::from_str::<crate::protocol::TranscriptToolResult>(
+                                    payload,
+                                )
+                                .ok()
+                            })
+                        } else {
+                            None
+                        };
                         segments.push(MessageSegment::ToolCall {
+                            tool_call_id: tool_call_id.unwrap_or_default(),
                             name,
-                            status: if status == "completed" {
-                                "completed".to_string()
-                            } else {
-                                "error".to_string()
-                            },
+                            status: wire_status.to_string(),
                             arg,
+                            result,
                         });
                     }
                 }
@@ -369,6 +452,26 @@ async fn segment_rows_for_run(
         }
     }
     Ok(segments)
+}
+
+/// The run's ordered timeline for the `run/subscribe` full-timeline snapshot
+/// (review P1 #2): the SAME assembly `thread/get` uses. `include_pending` is the
+/// liveness gate (CodeRabbit #336): a LIVE hub renders still-pending calls as
+/// `running` (the in-flight external call a reconnect must show), while a run
+/// with NO live hub (terminal/parked) excludes them — a Core row orphaned
+/// `pending` by a crash would otherwise reach the Client as `running` on a
+/// finished Run, forever, and disagree with `thread/get`. Empty when the Run
+/// has no assistant message.
+pub async fn run_live_segments(
+    pool: &SqlitePool,
+    run_id: Uuid,
+    include_pending: bool,
+) -> sqlx::Result<Vec<MessageSegment>> {
+    let Some(assistant_message_id) = queries::assistant_message_id_for_run(pool, run_id).await?
+    else {
+        return Ok(Vec::new());
+    };
+    segment_rows_for_run(pool, &run_id.to_string(), &assistant_message_id, include_pending).await
 }
 
 #[cfg(test)]
@@ -380,6 +483,146 @@ mod tests {
         park_on_proposal, persist_thread_with_first_run, persist_tool_call, resolve_tool_call,
     };
     use crate::workflow::Workflow;
+
+    /// External (`ticktick_*`) rows rehydrate with their durable
+    /// `tool_call_id` and the model-received `result` (external-task-views
+    /// A4): a completed row serves its TranscriptToolResult verbatim, and a
+    /// row the cancel transition settled renders as an ERROR carrying the
+    /// Core-generated interrupted result — the same object the live
+    /// interrupted `tool_call` event carried, so live and reload agree by
+    /// construction. Core-tool rows carry `result: None` in v1.
+    #[tokio::test]
+    async fn thread_get_serves_external_results_and_interrupted_settle() {
+        let pool = memory_pool().await;
+        let thread_id = Uuid::now_v7();
+        let run_id = Uuid::now_v7();
+        let assistant_id = Uuid::now_v7();
+
+        let mut tx = pool.begin().await.expect("begin");
+        queries::insert_thread(&mut *tx, thread_id, "T", 1)
+            .await
+            .expect("thread");
+        sqlx::query(
+            "INSERT INTO runs \
+             (id, thread_id, workflow_name, workflow_version, provider, model, \
+              thinking_level, user_message_id, status, started_at) \
+             VALUES (?, ?, 'w', '1', 'p', 'm', 'off', ?, 'running', 1)",
+        )
+        .bind(run_id.to_string())
+        .bind(thread_id.to_string())
+        .bind(assistant_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .expect("run");
+        queries::insert_message(
+            &mut *tx,
+            assistant_id,
+            thread_id,
+            run_id,
+            "assistant",
+            "streaming",
+            1,
+        )
+        .await
+        .expect("assistant message");
+        tx.commit().await.expect("commit seed");
+
+        // A completed external call with its TranscriptToolResult payload…
+        persist_tool_call(
+            &pool,
+            run_id,
+            "tc-ext-ok",
+            "ticktick_filter_tasks",
+            r#"{"filter":{"status":[0]}}"#,
+            2,
+        )
+        .await
+        .expect("persist external");
+        resolve_tool_call(
+            &pool,
+            "tc-ext-ok",
+            "completed",
+            r#"{"content":[{"type":"text","text":"1 task found"}],"is_error":false}"#,
+            3,
+        )
+        .await
+        .expect("resolve external");
+        // …a Core call (result never served in v1)…
+        persist_tool_call(&pool, run_id, "tc-core", "read_thread", "{}", 4)
+            .await
+            .expect("persist core");
+        resolve_tool_call(&pool, "tc-core", "completed", r#"{"content":[]}"#, 5)
+            .await
+            .expect("resolve core");
+        // …and a still-pending external call the REAL cancel transition settles.
+        persist_tool_call(
+            &pool,
+            run_id,
+            "tc-ext-hang",
+            "ticktick_search_task",
+            "{}",
+            6,
+        )
+        .await
+        .expect("persist pending external");
+        let terminal = crate::db::cancel_running_run(&pool, run_id, 7)
+            .await
+            .expect("cancel");
+        let crate::db::Terminal::Won { interrupted } = terminal else {
+            panic!("cancel won the terminal transition");
+        };
+        assert_eq!(interrupted.len(), 1);
+
+        let (_, messages) = get_thread_with_messages(&pool, thread_id)
+            .await
+            .expect("thread/get")
+            .expect("thread exists");
+        let assistant = messages
+            .iter()
+            .find(|m| m.role == "assistant")
+            .expect("assistant row");
+        let tool_calls: Vec<_> = assistant
+            .segments
+            .iter()
+            .filter_map(|s| match s {
+                MessageSegment::ToolCall {
+                    tool_call_id,
+                    name,
+                    status,
+                    result,
+                    ..
+                } => Some((
+                    tool_call_id.as_str(),
+                    name.as_str(),
+                    status.as_str(),
+                    result.clone(),
+                )),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            tool_calls,
+            vec![
+                (
+                    "tc-ext-ok",
+                    "ticktick_filter_tasks",
+                    "completed",
+                    Some(crate::protocol::TranscriptToolResult::text(
+                        "1 task found",
+                        false
+                    )),
+                ),
+                ("tc-core", "read_thread", "completed", None),
+                (
+                    "tc-ext-hang",
+                    "ticktick_search_task",
+                    "error",
+                    Some(crate::protocol::TranscriptToolResult::interrupted()),
+                ),
+            ],
+            "external rows serve id + result; the settled row renders as an interrupted error"
+        );
+    }
 
     /// ADR-0045: `thread/get` rehydrates the assistant turn's ORDERED `segments[]`
     /// from `run_steps` in seq order — text/tool_call/proposal interleaved as they
@@ -517,15 +760,25 @@ mod tests {
             other => panic!("segment[0] is the text segment, got {other:?}"),
         }
         match &assistant.segments[1] {
-            MessageSegment::ToolCall { name, status, arg } => {
+            MessageSegment::ToolCall {
+                tool_call_id,
+                name,
+                status,
+                arg,
+                result,
+            } => {
+                assert!(!tool_call_id.is_empty(), "the durable per-call id is served");
                 assert_eq!(name, "search_entities");
                 assert_eq!(status, "completed");
                 assert_eq!(arg.as_deref(), Some("Lev"));
+                assert_eq!(*result, None, "a Core-tool row carries no result in v1");
             }
             other => panic!("segment[1] is the completed search, got {other:?}"),
         }
         match &assistant.segments[2] {
-            MessageSegment::ToolCall { name, status, arg } => {
+            MessageSegment::ToolCall {
+                name, status, arg, ..
+            } => {
                 assert_eq!(name, "search_entities");
                 // `errored` maps to the wire `error` spelling.
                 assert_eq!(status, "error");
@@ -1866,6 +2119,7 @@ mod tests {
             system_prompt: String::new(),
             thinking_level: None,
             tools: Vec::new(),
+            external_tools: false,
         }
     }
 

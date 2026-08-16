@@ -61,6 +61,7 @@ mod tests {
             system_prompt: String::new(),
             thinking_level: None,
             tools: Vec::new(),
+            external_tools: false,
         }
     }
 

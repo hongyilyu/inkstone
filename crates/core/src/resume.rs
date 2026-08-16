@@ -11,7 +11,7 @@ use sqlx::SqlitePool;
 use uuid::Uuid;
 
 use crate::db::{self, TimelineStep};
-use crate::protocol::{ManifestMessage, ManifestToolCall};
+use crate::protocol::{ManifestMessage, ManifestToolCall, TranscriptToolResult};
 
 /// One reconstructed transcript block, owning its strings so the spawned resume
 /// task can borrow them into the (borrowing) [`ManifestMessage`]. Mirrors that
@@ -26,8 +26,7 @@ pub enum Block {
     },
     ToolResult {
         tool_call_id: String,
-        content: String,
-        is_error: Option<bool>,
+        result: TranscriptToolResult,
     },
 }
 
@@ -63,12 +62,10 @@ impl Block {
             },
             Block::ToolResult {
                 tool_call_id,
-                content,
-                is_error,
+                result,
             } => ManifestMessage::ToolResult {
                 tool_call_id,
-                content,
-                is_error: *is_error,
+                result,
             },
         }
     }
@@ -125,6 +122,14 @@ pub async fn reconstruct(pool: &SqlitePool, run_id: Uuid) -> sqlx::Result<Vec<Bl
                         tool_calls: Vec::new(),
                     });
                 }
+                // Pair EVERY tool_call with a result (ADR-0025): the persisted
+                // result_payload (the parked call's is the Decision), else the
+                // synthesized placeholder — reduced to the ONE transcript result
+                // type (external-task-views A4).
+                let result = match result {
+                    Some(payload) => transcript_result(&name, &payload),
+                    None => TranscriptToolResult::text(NOT_EXECUTED, false),
+                };
                 if let Some(Block::Assistant { tool_calls, .. }) = blocks.last_mut() {
                     tool_calls.push(ToolCallBlock {
                         id: id.clone(),
@@ -132,18 +137,9 @@ pub async fn reconstruct(pool: &SqlitePool, run_id: Uuid) -> sqlx::Result<Vec<Bl
                         arguments: request,
                     });
                 }
-
-                // Pair EVERY tool_call with a result (ADR-0025): the persisted
-                // result_payload (the parked call's is the Decision), else the
-                // synthesized placeholder.
-                let (content, is_error) = match result {
-                    Some(payload) => (render_result_content(&payload), None),
-                    None => (NOT_EXECUTED.to_string(), Some(false)),
-                };
                 blocks.push(Block::ToolResult {
                     tool_call_id: id,
-                    content,
-                    is_error,
+                    result,
                 });
             }
         }
@@ -152,18 +148,52 @@ pub async fn reconstruct(pool: &SqlitePool, run_id: Uuid) -> sqlx::Result<Vec<Bl
     Ok(blocks)
 }
 
-/// Render a persisted `result_payload` into `tool_result` content. A Decision
-/// payload `{"decision":…, "content":…}` surfaces its `content`; any other shape
-/// passes through verbatim, so a non-Proposal tool's output is never lost.
-fn render_result_content(payload: &str) -> String {
-    match serde_json::from_str::<serde_json::Value>(payload) {
-        Ok(v) => v
-            .get("content")
-            .and_then(|c| c.as_str())
-            .map(str::to_string)
-            .unwrap_or_else(|| payload.to_string()),
-        Err(_) => payload.to_string(),
+/// Reduce a persisted `result_payload` to the ONE transcript result type
+/// (external-task-views A4), keyed by the call's kind:
+///
+/// - **External (`ticktick_*`)**: the payload IS a `TranscriptToolResult` (the
+///   finished frame or the interrupted settle wrote it) — decode it verbatim.
+/// - **Core success** (`AgentToolResult` JSON): keep the content blocks, drop
+///   the runtime `details`/`terminate` sidecars, `is_error: false`.
+/// - **Proposal Decision** (`{"decision", "content", is_error?}`): its
+///   `content` string as one text block.
+/// - **Core error** (`{"code", "message"}`): the message as one text block,
+///   `is_error: TRUE` — the migration away from the old string-reduction, which
+///   replayed an error payload as a success-shaped result.
+/// - Anything else passes through verbatim as one text block, so a tool's
+///   output is never lost.
+fn transcript_result(name: &str, payload: &str) -> TranscriptToolResult {
+    if crate::tools::is_external(name)
+        && let Ok(result) = serde_json::from_str::<TranscriptToolResult>(payload)
+    {
+        return result;
     }
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(payload) {
+        // Proposal Decision: {"decision": …, "content": <string>, is_error?}.
+        if value.get("decision").is_some()
+            && let Some(content) = value.get("content").and_then(|c| c.as_str())
+        {
+            let is_error = value.get("is_error").and_then(|e| e.as_bool()) == Some(true);
+            return TranscriptToolResult::text(content, is_error);
+        }
+        // Core success: the persisted AgentToolResult {content: [...]}.
+        if let Some(content) = value.get("content")
+            && let Ok(blocks) =
+                serde_json::from_value::<Vec<crate::protocol::ToolTextContent>>(content.clone())
+        {
+            return TranscriptToolResult {
+                content: blocks,
+                is_error: false,
+            };
+        }
+        // Core error: {"code": …, "message": <string>}.
+        if let Some(message) = value.get("message").and_then(|m| m.as_str())
+            && value.get("code").is_some()
+        {
+            return TranscriptToolResult::text(message, true);
+        }
+    }
+    TranscriptToolResult::text(payload, false)
 }
 
 #[cfg(test)]
@@ -344,8 +374,7 @@ mod tests {
                 },
                 Block::ToolResult {
                     tool_call_id,
-                    content,
-                    is_error,
+                    result,
                 },
             ] => {
                 assert_eq!(user, "Log that I bought milk.");
@@ -354,8 +383,14 @@ mod tests {
                 assert_eq!(tool_calls.len(), 1);
                 assert_eq!(tool_calls[0].id, "tc-1");
                 assert_eq!(tool_call_id, "tc-1");
-                assert_eq!(content, "Accepted. Created Journal Entry (entity_id=e1).");
-                assert_eq!(*is_error, None, "a Decision is a normal result");
+                assert_eq!(
+                    *result,
+                    TranscriptToolResult::text(
+                        "Accepted. Created Journal Entry (entity_id=e1).",
+                        false
+                    ),
+                    "a Decision is a normal (non-error) result"
+                );
             }
             other => panic!(
                 "expected [User, Assistant(text), Assistant(tool_call), ToolResult], got {} blocks",
@@ -386,19 +421,20 @@ mod tests {
 
         let blocks = reconstruct(&pool, run_id).await.expect("reconstruct");
 
-        let (content, is_error) = blocks
+        let result = blocks
             .iter()
             .find_map(|b| match b {
                 Block::ToolResult {
                     tool_call_id,
-                    content,
-                    is_error,
-                } if tool_call_id == "tc-pending" => Some((content.as_str(), *is_error)),
+                    result,
+                } if tool_call_id == "tc-pending" => Some(result),
                 _ => None,
             })
             .expect("the unexecuted sibling has a paired result");
-        assert_eq!(content, "not executed; resubmit if still needed");
-        assert_eq!(is_error, Some(false));
+        assert_eq!(
+            *result,
+            TranscriptToolResult::text("not executed; resubmit if still needed", false)
+        );
 
         // The invariant itself, as a loop: no orphan tool_call.
         let call_ids: Vec<&str> = blocks
@@ -419,6 +455,54 @@ mod tests {
                 )),
                 "tool_call {id} must pair with a tool_result (providers reject an orphan)"
             );
+        }
+    }
+
+    /// An EXTERNAL (`ticktick_*`) call replays with its persisted
+    /// TranscriptToolResult decoded VERBATIM (external-task-views A4): the
+    /// resumed model reads the same content blocks + error flag the original
+    /// call produced, through the one schema Core results also use. The tool
+    /// NAME rides the paired assistant block (the Worker codec restores it).
+    #[tokio::test]
+    async fn external_call_replays_transcript_result_verbatim() {
+        let pool = memory_pool().await;
+        let run_id = seed_run(&pool).await;
+        insert_tool_call(
+            &pool,
+            run_id,
+            "tc-ext",
+            "ticktick_filter_tasks",
+            r#"{"filter":{"status":[0]}}"#,
+            Some(r#"{"content":[{"type":"text","text":"1 task found"}],"is_error":false}"#),
+        )
+        .await;
+        step_tool(&pool, run_id, 0, "tc-ext").await;
+
+        let blocks = reconstruct(&pool, run_id).await.expect("reconstruct");
+        match blocks.as_slice() {
+            [
+                Block::Assistant { tool_calls, .. },
+                Block::ToolResult {
+                    tool_call_id,
+                    result,
+                },
+            ] => {
+                assert_eq!(tool_calls[0].id, "tc-ext");
+                assert_eq!(
+                    tool_calls[0].name, "ticktick_filter_tasks",
+                    "the paired assistant block carries the tool name for the codec to restore"
+                );
+                assert_eq!(tool_call_id, "tc-ext");
+                assert_eq!(
+                    *result,
+                    TranscriptToolResult::text("1 task found", false),
+                    "the external result decodes verbatim, not string-reduced"
+                );
+            }
+            other => panic!(
+                "expected [Assistant(tool_call), ToolResult], got {} blocks",
+                other.len()
+            ),
         }
     }
 
@@ -530,31 +614,68 @@ mod tests {
         }
     }
 
-    /// A Decision payload surfaces its `content`; anything else — non-JSON, JSON
-    /// without a STRING `content` — passes through verbatim so a non-Proposal
-    /// tool's output is never lost.
+    /// Every persisted payload shape reduces to the ONE transcript result type
+    /// (external-task-views A4): Decisions surface their `content`; a Core
+    /// error migrates to `is_error: true` (no longer replayed success-shaped);
+    /// a Core success keeps its content blocks and DROPS the runtime
+    /// `details`/`terminate` sidecars; an external payload decodes verbatim;
+    /// anything else passes through as one text block so output is never lost.
     #[test]
-    fn render_result_content_unwraps_decision_and_passes_through() {
+    fn transcript_result_reduces_every_payload_shape() {
+        // Proposal Decisions: accept and reject are both normal results.
         assert_eq!(
-            render_result_content(
-                r#"{"decision":"accept","content":"Accepted. Created Todo (entity_id=e1)."}"#
+            transcript_result(
+                "propose_workspace_mutation",
+                r#"{"decision":"accept","content":"Accepted. Created Person (entity_id=e1)."}"#
             ),
-            "Accepted. Created Todo (entity_id=e1)."
+            TranscriptToolResult::text("Accepted. Created Person (entity_id=e1).", false)
         );
         assert_eq!(
-            render_result_content(
+            transcript_result(
+                "propose_workspace_mutation",
                 r#"{"decision":"reject","content":"User declined this proposal.","is_error":false}"#
             ),
-            "User declined this proposal."
+            TranscriptToolResult::text("User declined this proposal.", false)
+        );
+
+        // Core success: content blocks verbatim, details/terminate dropped.
+        assert_eq!(
+            transcript_result(
+                "search_entities",
+                r#"{"content":[{"type":"text","text":"no hits"}],"details":{"secret":"x"},"terminate":true}"#
+            ),
+            TranscriptToolResult::text("no hits", false)
+        );
+
+        // Core error: is_error TRUE (the old string-reduction replayed this as
+        // a success-shaped raw JSON string).
+        assert_eq!(
+            transcript_result("search_entities", r#"{"code":"bad_params","message":"boom"}"#),
+            TranscriptToolResult::text("boom", true)
+        );
+
+        // External: the payload IS a TranscriptToolResult — decoded verbatim,
+        // error flag preserved.
+        assert_eq!(
+            transcript_result(
+                "ticktick_filter_tasks",
+                r#"{"content":[{"type":"text","text":"interrupted"}],"is_error":true}"#
+            ),
+            TranscriptToolResult::interrupted()
+        );
+
+        // Pass-throughs: non-JSON, JSON without a decodable shape.
+        assert_eq!(
+            transcript_result("search_entities", "plain text output"),
+            TranscriptToolResult::text("plain text output", false)
         );
         assert_eq!(
-            render_result_content("plain text output"),
-            "plain text output"
+            transcript_result("search_entities", r#"{"ok":true}"#),
+            TranscriptToolResult::text(r#"{"ok":true}"#, false)
         );
-        assert_eq!(render_result_content(r#"{"ok":true}"#), r#"{"ok":true}"#);
         assert_eq!(
-            render_result_content(r#"{"content":42}"#),
-            r#"{"content":42}"#
+            transcript_result("search_entities", r#"{"content":42}"#),
+            TranscriptToolResult::text(r#"{"content":42}"#, false)
         );
     }
 }

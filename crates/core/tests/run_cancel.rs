@@ -125,18 +125,29 @@ fn cancel_running_run_wins_and_suppresses_late_worker_done() {
             assert_eq!(
                 event["method"].as_str(),
                 Some("run/event"),
-                "expected run/event while waiting for first delta — body: {event}"
+                "expected run/event while waiting for first text — body: {event}"
             );
-            assert_eq!(
-                event["params"]["event"]["kind"].as_str(),
-                Some("text_delta"),
-                "expected text_delta before cancel — body: {event}"
-            );
-            streamed.push_str(
-                event["params"]["event"]["delta"]
-                    .as_str()
-                    .unwrap_or_else(|| panic!("delta is string — body: {event}")),
-            );
+            // The ordered `snapshot` opens the stream (review P1 #2), then tail
+            // `text_delta`s; take text from either until we have some.
+            match event["params"]["event"]["kind"].as_str() {
+                Some("snapshot") => {
+                    for seg in event["params"]["event"]["segments"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                    {
+                        if seg["kind"] == serde_json::json!("text") {
+                            streamed.push_str(seg["text"].as_str().unwrap_or_default());
+                        }
+                    }
+                }
+                Some("text_delta") => streamed.push_str(
+                    event["params"]["event"]["delta"]
+                        .as_str()
+                        .unwrap_or_else(|| panic!("delta is string — body: {event}")),
+                ),
+                other => panic!("expected snapshot/text_delta before cancel — got {other:?}: {event}"),
+            }
         }
 
         let cancel = serde_json::json!({
@@ -283,8 +294,8 @@ fn cancel_before_worker_start_prevents_worker_output() {
         let snapshot = next_json(&mut ws).await;
         assert_eq!(
             snapshot["params"]["event"]["kind"].as_str(),
-            Some("text_delta"),
-            "cancelled run still sends a text snapshot — body: {snapshot}"
+            Some("snapshot"),
+            "cancelled run still sends its ordered segment snapshot — body: {snapshot}"
         );
         let terminal = next_json(&mut ws).await;
         assert_eq!(

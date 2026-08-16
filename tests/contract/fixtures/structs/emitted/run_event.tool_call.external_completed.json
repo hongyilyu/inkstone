@@ -1,0 +1,15 @@
+{
+  "kind": "tool_call",
+  "name": "ticktick_filter_tasks",
+  "result": {
+    "content": [
+      {
+        "text": "1 task found",
+        "type": "text"
+      }
+    ],
+    "is_error": false
+  },
+  "status": "completed",
+  "tool_call_id": "tc_04"
+}

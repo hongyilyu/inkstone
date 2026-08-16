@@ -30,6 +30,7 @@ mod thread_get;
 mod thread_list;
 mod thread_list_archived;
 mod thread_mutate;
+mod ticktick;
 pub(crate) mod title;
 
 use sqlx::SqlitePool;
@@ -141,6 +142,12 @@ pub async fn dispatch(
         }
         "provider/status" => {
             provider::handle(req.id, req.params, out_tx).await;
+        }
+        "ticktick/status" => {
+            ticktick::handle_status(req.id, req.params, out_tx).await;
+        }
+        "ticktick/tasks/list" => {
+            ticktick::handle_tasks_list(req.id, req.params, out_tx).await;
         }
         "model/catalog" => {
             catalog::handle(req.id, req.params, out_tx).await;

@@ -2,11 +2,14 @@
 name = "core"
 version = "0.1.0"
 edition = "2024"
+# let-chains (used across the crate) stabilized in 1.88; CI runs unpinned stable.
+rust-version = "1.88"
 
 [dependencies]
 anyhow = "1"
 axum = { version = "0.8", features = ["ws"] }
 base64 = "0.22"
+reqwest = { version = "0.12", features = ["json"] }
 rust-embed = { version = "8", features = ["mime-guess"] }
 schemars = "0.8"
 serde = { version = "1", features = ["derive"] }
@@ -21,6 +24,7 @@ tower-http = { version = "0.6", features = ["fs"] }
 tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+url = "2"
 uuid = { version = "1", features = ["v7", "serde"] }
 
 [dev-dependencies]

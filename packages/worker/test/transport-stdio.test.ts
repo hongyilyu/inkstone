@@ -154,6 +154,58 @@ describe("StdioTransportLive (over injected streams)", () => {
 		}
 	});
 
+	it("never leaks manifest secrets into a schema-failure message (review R10 #1)", async () => {
+		const input = new PassThrough();
+		const { output } = capturingWritable();
+		// A REAL token beside a malformed field: Effect Schema's default tree
+		// formatter would print the actual `external_tools` object — token
+		// included — and this message becomes the persisted run error_message.
+		const token = "tok_SECRET_do_not_leak";
+		input.write(
+			`${JSON.stringify({
+				run_id: "01900000-0000-7000-8000-0000000000aa",
+				external_tools: { endpoint: 123, access_token: token },
+			})}\n`,
+		);
+
+		const result = await Effect.runPromise(
+			Effect.gen(function* () {
+				const t = yield* WorkerTransport;
+				return yield* Effect.either(t.readManifest);
+			}).pipe(Effect.provide(makeStdioTransport(input, output))),
+		);
+
+		expect(result._tag).toBe("Left");
+		if (result._tag === "Left") {
+			expect(result.left.message).not.toContain(token);
+			expect(result.left.message).not.toContain("tok_");
+			// Still diagnosable: the failing paths are named (values are not).
+			expect(result.left.message).toContain("schema validation");
+		}
+	});
+
+	it("never leaks the raw line into a JSON-syntax failure message (review R10 #1)", async () => {
+		const input = new PassThrough();
+		const { output } = capturingWritable();
+		// Node's JSON.parse SyntaxError quotes a snippet of its input — which
+		// here contains the token — so the message must be fully static.
+		const token = "tok_SECRET_do_not_leak";
+		input.write(`{"access_token": "${token}", not json\n`);
+
+		const result = await Effect.runPromise(
+			Effect.gen(function* () {
+				const t = yield* WorkerTransport;
+				return yield* Effect.either(t.readManifest);
+			}).pipe(Effect.provide(makeStdioTransport(input, output))),
+		);
+
+		expect(result._tag).toBe("Left");
+		if (result._tag === "Left") {
+			expect(result.left.message).not.toContain(token);
+			expect(result.left.message).toBe("manifest line is not valid JSON");
+		}
+	});
+
 	it("salvages run_id onto ManifestParseError when the JSON parses but fails schema (#146)", async () => {
 		const input = new PassThrough();
 		const { output } = capturingWritable();

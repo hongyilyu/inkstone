@@ -24,6 +24,7 @@ mod runs;
 mod settings;
 mod skills;
 mod start_run;
+mod ticktick;
 mod tools;
 #[cfg(not(debug_assertions))]
 mod web_embed;
@@ -76,6 +77,10 @@ async fn main() -> Result<()> {
     // Validate the Workflow(s) before serving: a malformed default.toml aborts
     // boot (fail-fast, ADR-0018) rather than failing the first Run.
     workflow::init()?;
+
+    // Read the TickTick credential exactly once (external-task-views A5):
+    // missing/unreadable degrades to "not connected", never a boot failure.
+    ticktick::init();
 
     let pool = db::open().await?;
 

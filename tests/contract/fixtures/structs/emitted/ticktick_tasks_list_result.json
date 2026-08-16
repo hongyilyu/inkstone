@@ -1,0 +1,35 @@
+{
+  "source_limit_reached": true,
+  "tasks": [
+    {
+      "checklist_items": [
+        {
+          "done": true,
+          "title": "2%"
+        }
+      ],
+      "due": {
+        "date": "2026-08-20T17:30:00.000+0000",
+        "is_all_day": false,
+        "time_zone": "America/Los_Angeles"
+      },
+      "id": "t1",
+      "kind": "CHECKLIST",
+      "list_name": "Inbox",
+      "priority": 3,
+      "repeat_flag": "RRULE:FREQ=DAILY;INTERVAL=1",
+      "tags": [
+        "errand"
+      ],
+      "title": "buy milk"
+    },
+    {
+      "checklist_items": [],
+      "id": "t2",
+      "kind": "TEXT",
+      "priority": 0,
+      "tags": [],
+      "title": "think"
+    }
+  ]
+}

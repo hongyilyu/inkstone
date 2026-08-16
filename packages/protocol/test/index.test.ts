@@ -91,16 +91,18 @@ describe("RunCancelParams", () => {
 });
 
 describe("RunCancelResult", () => {
-	it("decodes each outcome and encodes back unchanged", () => {
+	it("decodes each outcome + live_tail and encodes back unchanged", () => {
 		for (const outcome of [
 			"accepted",
 			"already_terminal",
 			"unknown_run",
 		] as const) {
-			const wire = { outcome };
-			const decoded = S.decodeUnknownSync(RunCancelResult)(wire);
-			expect(decoded).toEqual(wire);
-			expect(S.encodeSync(RunCancelResult)(decoded)).toEqual(wire);
+			for (const live_tail of [true, false]) {
+				const wire = { outcome, live_tail };
+				const decoded = S.decodeUnknownSync(RunCancelResult)(wire);
+				expect(decoded).toEqual(wire);
+				expect(S.encodeSync(RunCancelResult)(decoded)).toEqual(wire);
+			}
 		}
 	});
 
@@ -639,18 +641,22 @@ describe("WorkerManifest", () => {
 		).toThrow();
 	});
 
-	it("decodes mode: fresh and a tool_result carrying is_error", () => {
+	it("decodes mode: fresh and a tool_result carrying an error result", () => {
 		const fresh = { ...valid, mode: "fresh" };
 		expect(S.decodeUnknownSync(WorkerManifest)(fresh)).toEqual(fresh);
 
+		// The ONE transcript result type (external-task-views A4): the error
+		// flag lives inside `result`, never as a sibling field.
 		const withError = {
 			...valid,
 			messages: [
 				{
 					role: "tool_result",
 					tool_call_id: "tc_9",
-					content: "boom",
-					is_error: true,
+					result: {
+						content: [{ type: "text", text: "boom" }],
+						is_error: true,
+					},
 				},
 			],
 		};

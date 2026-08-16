@@ -79,8 +79,8 @@ fn cancel_parked_run() {
             .unwrap_or_else(|e| panic!("snapshot is JSON: {e} — body: {snapshot_body}"));
         assert_eq!(
             snapshot["params"]["event"]["kind"].as_str(),
-            Some("text_delta"),
-            "cancelled subscribe sends text snapshot first — body: {snapshot_body}"
+            Some("snapshot"),
+            "cancelled subscribe sends its ordered segment snapshot first — body: {snapshot_body}"
         );
 
         let terminal_body = next_text(&mut ws).await;

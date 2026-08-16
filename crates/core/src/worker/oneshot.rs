@@ -105,8 +105,9 @@ where
         messages: vec![],
         mode: None,
         access_token: spec.access_token,
-        // One-shot workers (titler, liveness probe) are text-only.
+        // One-shot workers (titler, liveness probe) are text-only, no tools.
         attachments: None,
+        external_tools: None,
     };
     let manifest_line = super::serialize_manifest(&manifest);
 

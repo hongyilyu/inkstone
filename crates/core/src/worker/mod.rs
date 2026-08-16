@@ -12,12 +12,19 @@ mod liveness;
 mod oneshot;
 mod port;
 mod run;
+mod external;
+#[cfg(test)]
+mod test_support;
 mod title;
 
 pub use title::spawn_title_generation;
 // The provider/test handler (`crate::runs::provider`) drives the synchronous
 // liveness probe (ADR-0062) — a one-shot non-Run Worker, sibling to the titler.
 pub(crate) use liveness::probe as probe_liveness;
+// The interrupted-external-call publisher (external-task-views A4), shared by
+// the run loop's terminal branch and `run/cancel`'s post-response publish.
+pub(crate) use external::publish_interrupted;
+pub(crate) use run::WORKER_DISCONNECTED_MESSAGE;
 
 use sqlx::SqlitePool;
 use tracing::Instrument;
@@ -25,7 +32,9 @@ use uuid::Uuid;
 
 use crate::db;
 use crate::hub::{self, Hubs, RunHub};
-use crate::protocol::{ManifestAttachment, ManifestMessage, WorkerManifest, WorkflowManifest};
+use crate::protocol::{
+    ExternalToolsManifest, ManifestAttachment, ManifestMessage, WorkerManifest, WorkflowManifest,
+};
 use crate::workflow::Workflow;
 
 use crate::launch::{self, Role};
@@ -94,13 +103,13 @@ pub fn spawn(m: SpawnManifest) {
             // token resolution the build performs. `drive`'s own entry check
             // re-tests after the build.
             if run_hub.is_cancelled() {
-                hub::remove(&hubs, run_id);
+                hub::remove_own(&hubs, run_id, &run_hub);
                 return;
             }
             let Some(line) =
                 fresh_manifest_line(run_id, &workflow, &prompt, &history, attachments).await
             else {
-                finalize_error(&pool, &hubs, run_id).await;
+                finalize_error(&pool, &hubs, run_id, &run_hub).await;
                 return;
             };
             drive(
@@ -119,8 +128,9 @@ pub fn spawn(m: SpawnManifest) {
 }
 
 /// Resume a parked Run after its Proposal is decided (ADR-0025). Reconstructs
-/// the transcript, flips `parked → running` (self-guarded — bails if another
-/// resume won the race), creates a fresh per-run hub, and hands the pre-built
+/// the transcript, registers a fresh per-run hub THEN flips `parked → running`
+/// (hub::activate — a concurrent resume backs off; a lost CAS deregisters), and
+/// hands the pre-built
 /// `mode:"resume"` manifest to [`drive`].
 ///
 /// Errors only on a pre-spawn failure (assistant message missing). The atomic
@@ -155,15 +165,23 @@ pub async fn resume(run_id: Uuid, pool: &SqlitePool, hubs: &Hubs) -> anyhow::Res
         anyhow::bail!("resume manifest build failed for run {run_id} (token resolution)");
     };
 
-    // Flip parked → running before creating the hub/spawning. Self-guarded on
-    // `status = 'parked'`: if 0 rows matched, another resume won the race —
-    // bail so exactly one resume Worker runs.
-    let flipped = db::mark_run_running(pool, run_id).await?;
-    if !flipped.won() {
+    // Activate through the shared registry operation (review R8 #1): register
+    // the hub FIRST (first-wins — a concurrent resume backs off instead of
+    // replacing this registration), THEN the parked→running CAS. A Run is
+    // observably `running` only while its producer's hub is reachable, so a
+    // concurrent `run/cancel` that reads `running` always finds THIS hub and
+    // signals it — the no-hub branch can never apply to a live Run. On a lost
+    // CAS (a cancel flipped the parked Run first) or a CAS fault, `activate`
+    // removes the registration identity-checked and this resume backs off; the
+    // CAS stays the exactly-one-resume choke.
+    let activated = hub::activate(hubs, run_id, || async {
+        Ok::<_, anyhow::Error>(db::mark_run_running(pool, run_id).await?.won())
+    })
+    .await?;
+    let Some(run_hub) = activated else {
         return Ok(());
-    }
+    };
 
-    let run_hub = hub::create(hubs, run_id);
     let pool = pool.clone();
     let hubs = hubs.clone();
     // Correlation span (ADR-0038), mirroring `spawn`: `run_id` reaches the
@@ -213,11 +231,11 @@ async fn drive(
     run_hub: RunHub,
 ) {
     if run_hub.is_cancelled() {
-        hub::remove(&hubs, run_id);
+        hub::remove_own(&hubs, run_id, &run_hub);
         return;
     }
     let Some(cmd) = resolve_worker_cmd(run_id) else {
-        finalize_error(&pool, &hubs, run_id).await;
+        finalize_error(&pool, &hubs, run_id, &run_hub).await;
         return;
     };
     match ChildWorker::spawn(run_id, &cmd.program, &cmd.args, line).await {
@@ -227,7 +245,7 @@ async fn drive(
             // loop ever runs — `kill_on_drop` reaps it, no orphan Worker.
             if run_hub.is_cancelled() {
                 drop(worker);
-                hub::remove(&hubs, run_id);
+                hub::remove_own(&hubs, run_id, &run_hub);
                 return;
             }
             run_loop(
@@ -248,7 +266,7 @@ async fn drive(
         // already reported success, so re-parking would leave a decided card
         // over a silently hung turn. Finalizing `errored` keeps the failure
         // visible and the user can re-send.
-        Err(()) => finalize_error(&pool, &hubs, run_id).await,
+        Err(()) => finalize_error(&pool, &hubs, run_id, &run_hub).await,
     }
 }
 
@@ -279,6 +297,7 @@ async fn fresh_manifest_line(
     // skill; resume uses the plain `augmented_system_prompt`. Bound here to outlive
     // the borrowing manifest.
     let system_prompt = crate::skills::augmented_system_prompt_with_trigger(workflow, prompt);
+    let endpoint = external_tools_endpoint(workflow);
     let manifest = WorkerManifest {
         run_id,
         workflow: workflow_manifest(workflow, &system_prompt),
@@ -287,6 +306,7 @@ async fn fresh_manifest_line(
         mode: None,
         access_token: access_token.as_deref(),
         attachments: (!attachments.is_empty()).then_some(attachments),
+        external_tools: external_tools_manifest(&endpoint),
     };
     Some(serialize_manifest(&manifest))
 }
@@ -301,6 +321,7 @@ async fn resume_manifest_line(
     let messages: Vec<ManifestMessage> = transcript.iter().map(crate::resume::Block::as_message).collect();
     let access_token = resolve_token(run_id, workflow).await?;
     let system_prompt = crate::skills::augmented_system_prompt(workflow);
+    let endpoint = external_tools_endpoint(workflow);
     let manifest = WorkerManifest {
         run_id,
         workflow: workflow_manifest(workflow, &system_prompt),
@@ -312,8 +333,34 @@ async fn resume_manifest_line(
         // only the CURRENT turn's attachments ever reach a model, and a resumed
         // Run's turn already started without them.
         attachments: None,
+        // Resume keeps the external tools reachable (the resumed model may call
+        // more of them); the auth comes from the SAME boot-read state (A5).
+        external_tools: external_tools_manifest(&endpoint),
     };
     Some(serialize_manifest(&manifest))
+}
+
+/// The MCP endpoint for this spawn, resolved only when the Workflow opts into
+/// external tools (external-task-views A3) — owned by the caller so the
+/// borrowing manifest can reference it.
+fn external_tools_endpoint(workflow: &Workflow) -> Option<String> {
+    workflow
+        .external_tools
+        .then(crate::ticktick::mcp_endpoint)
+}
+
+/// The manifest's external-tool config (A3/A5): present iff the Workflow opted
+/// in AND a TickTick credential loaded at boot — a dark lane never ships
+/// endpoint or auth.
+fn external_tools_manifest<'a>(
+    endpoint: &'a Option<String>,
+) -> Option<ExternalToolsManifest<'a>> {
+    let endpoint = endpoint.as_deref()?;
+    let connection = crate::ticktick::connection()?;
+    Some(ExternalToolsManifest {
+        endpoint,
+        access_token: &connection.access_token,
+    })
 }
 
 /// Build the `WorkflowManifest` (ADR-0018). `system_prompt` is passed in (not
@@ -368,11 +415,22 @@ async fn pre_spawn_delay_if_configured() {
 /// Pre-loop spawn-failure path: the Worker produced no output, so terminate the
 /// Run as `worker_disconnected` (ADR-0017) and remove the hub so a subscriber
 /// falls through to the persisted snapshot + `done`.
-async fn finalize_error(pool: &SqlitePool, hubs: &Hubs, run_id: Uuid) {
+async fn finalize_error(pool: &SqlitePool, hubs: &Hubs, run_id: Uuid, run_hub: &RunHub) {
+    // One gated drain (review R9 #1): the errored commit and the hub removal
+    // are atomic w.r.t. an activation waiting on this gate. A persist fault
+    // retries once (review R12 #2) — landing `errored` is what gives retry a
+    // path; a doubly-failed write leaves the bounded zombie paths + boot sweep
+    // to own the residue (holding the hub would spin re-attaching subscribers
+    // against a producerless channel).
+    let guard = run_hub.gate().await;
     if let Err(e) = db::error_run(pool, run_id, db::now_ms()).await {
         tracing::error!(event = "worker.error_run_failed", %run_id, error = ?e);
+        if let Err(e) = db::error_run(pool, run_id, db::now_ms()).await {
+            tracing::error!(event = "worker.terminal_persist_lost", %run_id, error = ?e);
+        }
     }
-    crate::hub::remove(hubs, run_id);
+    crate::hub::remove_own(hubs, run_id, run_hub);
+    drop(guard);
 }
 
 #[cfg(test)]
@@ -388,6 +446,7 @@ mod tests {
             system_prompt: "Base prompt.".to_string(),
             thinking_level: Some("off".to_string()),
             tools: tools.iter().map(|s| s.to_string()).collect(),
+            external_tools: false,
         }
     }
 
@@ -483,7 +542,7 @@ mod tests {
         .expect("seed run");
 
         let hubs = hub::new_hubs();
-        let run_hub = hub::create(&hubs, run_id);
+        let run_hub = hub::register(&hubs, run_id).expect("fresh run registers");
         // The cancel wins BEFORE the driver reaches the child spawn.
         run_hub.cancel();
 
@@ -512,6 +571,64 @@ mod tests {
             Some("running"),
             "no terminal tx: the driver spawned nothing and finalized nothing"
         );
+    }
+
+    /// The manifest carries `external_tools` (endpoint + auth) IFF the
+    /// Workflow opted in AND a TickTick credential loaded at boot
+    /// (external-task-views A3/A5) — a dark lane never ships endpoint or auth,
+    /// and resume uses the SAME boot-read state as fresh.
+    #[tokio::test]
+    async fn manifest_ships_external_tools_iff_flag_and_credential() {
+        let config = crate::config::test_override::install(crate::config::Config {
+            ticktick_mcp_url_override: Some("http://127.0.0.1:1/mcp".to_string()),
+            ..Default::default()
+        });
+
+        let manifest_json = |line: Option<String>| -> serde_json::Value {
+            serde_json::from_str(line.expect("manifest builds").trim_end())
+                .expect("manifest line is JSON")
+        };
+
+        // Flag ON + credential present → endpoint (the test override) + token.
+        let connected = crate::ticktick::token::test_override::install(Some(
+            crate::ticktick::token::test_override::test_connection("tok_ticktick", "conn-e2e"),
+        ));
+        let wf = Workflow {
+            external_tools: true,
+            ..workflow(&[])
+        };
+        let line = fresh_manifest_line(Uuid::now_v7(), &wf, "hi", &[], Vec::new()).await;
+        let manifest = manifest_json(line);
+        assert_eq!(
+            manifest["external_tools"],
+            serde_json::json!({
+                "endpoint": "http://127.0.0.1:1/mcp",
+                "access_token": "tok_ticktick"
+            })
+        );
+        // Resume ships the same config from the same boot-read state.
+        let line = resume_manifest_line(Uuid::now_v7(), &wf, &[]).await;
+        let manifest = manifest_json(line);
+        assert_eq!(manifest["external_tools"]["access_token"], "tok_ticktick");
+
+        // Flag OFF (credential still present) → absent.
+        let dark = workflow(&[]);
+        let line = fresh_manifest_line(Uuid::now_v7(), &dark, "hi", &[], Vec::new()).await;
+        assert!(
+            manifest_json(line).get("external_tools").is_none(),
+            "a Workflow that did not opt in ships no endpoint/auth"
+        );
+        drop(connected);
+
+        // Flag ON but NO credential → absent.
+        let disconnected = crate::ticktick::token::test_override::install(None);
+        let line = fresh_manifest_line(Uuid::now_v7(), &wf, "hi", &[], Vec::new()).await;
+        assert!(
+            manifest_json(line).get("external_tools").is_none(),
+            "no boot-read credential → no external tools"
+        );
+        drop(disconnected);
+        drop(config);
     }
 
     /// With no skills dir, the prompt is left untouched (no empty block) but

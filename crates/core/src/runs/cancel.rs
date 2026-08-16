@@ -1,22 +1,24 @@
 //! `run/cancel` handler (ADR-0014): the thin JSON-RPC shell over the
 //! [`crate::cancel`] verb (ADR-0029, the `proposal/decide` → [`crate::decide`]
-//! precedent applied to cancel). Decode params → call `cancel::cancel` (injecting
-//! `hub::get` as the hub lookup) → frame the typed [`Outcome`] as the unchanged
-//! `RunCancelResult` wire strings (`accepted` / `already_terminal` / `unknown_run`)
-//! → frame a DB fault as `Internal`. A malformed `run_id` is `invalid_params`.
+//! precedent applied to cancel). Decode params → call [`crate::cancel::cancel`],
+//! injecting `hub::get` as the hub lookup AND a `respond` closure that frames the
+//! unchanged `RunCancelResult` wire strings (`accepted` / `already_terminal` /
+//! `unknown_run`) with `live_tail`.
 //!
-//! The parked-vs-running decision and the running-won Worker signal live in the
-//! verb. On a won running-cancel the verb returns the live `RunHub`; this shell
-//! publishes the terminal `RunEvent::Cancelled` + removes the hub via
-//! [`crate::cancel::publish_cancelled`] AFTER framing the Response, preserving the
-//! deterministic `response → cancelled` wire order.
+//! The whole decision, the settle transition, the interrupted publications, and
+//! the terminal `Cancelled` publish live in the verb — for a running-cancel, all
+//! under ONE hub-gate acquisition (review P1 #3). The verb calls the injected
+//! `respond` at the right point (inside the gate, BEFORE the events) so the wire
+//! order `response → interrupted → cancelled` holds. A DB fault rides
+//! `anyhow::Error` and is framed here as `Internal` (`-32603`); a malformed
+//! `run_id` is `invalid_params` at decode.
 
 use sqlx::SqlitePool;
 use tokio::sync::mpsc::UnboundedSender;
 
 use super::handler::{self, HandlerError};
 use super::reply::send_response;
-use crate::cancel::{self, Outcome};
+use crate::cancel;
 use crate::hub::{self, Hubs};
 use crate::protocol::{RunCancelParams, RunCancelResult};
 
@@ -34,31 +36,32 @@ pub(super) async fn handle_cancel(
     };
     let run_id = params.run_id;
 
-    // The verb owns the decision + the Worker signal; the hub lookup is injected so
-    // it stays testable against `:memory:` (ADR-0029).
-    let (outcome, cancelled_hub) = match cancel::cancel(pool, run_id, |id| hub::get(hubs, id)).await
-    {
-        Ok(Outcome::Accepted { hub }) => ("accepted", hub),
-        Ok(Outcome::AlreadyTerminal) => ("already_terminal", None),
-        Ok(Outcome::UnknownRun) => ("unknown_run", None),
-        Err(e) => {
-            handler::frame_error(out_tx, id, HandlerError::Internal(e));
-            return;
-        }
-    };
-
-    match serde_json::to_value(RunCancelResult {
-        outcome: outcome.to_string(),
-    }) {
-        Ok(result) => send_response(out_tx, id, result),
-        Err(e) => {
-            handler::frame_error(out_tx, id, HandlerError::Internal(anyhow::Error::new(e)));
-            return;
-        }
+    // The verb frames the Response via this callback — for a running-cancel,
+    // INSIDE its gated section and BEFORE the terminal event, pinning the wire
+    // order response → interrupted → cancelled. A DB fault is the only `Err` and
+    // leaves the callback uncalled, so frame that error here.
+    let respond_id = id.clone();
+    let result = cancel::cancel(
+        pool,
+        hubs,
+        run_id,
+        |id| hub::get(hubs, id),
+        |outcome, live_tail| {
+            match serde_json::to_value(RunCancelResult {
+                outcome: outcome.to_string(),
+                live_tail,
+            }) {
+                Ok(value) => send_response(out_tx, respond_id, value),
+                Err(e) => handler::frame_error(
+                    out_tx,
+                    respond_id,
+                    HandlerError::Internal(anyhow::Error::new(e)),
+                ),
+            }
+        },
+    )
+    .await;
+    if let Err(e) = result {
+        handler::frame_error(out_tx, id, HandlerError::Internal(e));
     }
-
-    // Publish the terminal Cancelled + remove the hub AFTER the Response is framed,
-    // so the client sees `response → cancelled`. A parked/lost/terminal/unknown
-    // outcome carries no hub, and `publish_cancelled` is then a no-op.
-    cancel::publish_cancelled(hubs, run_id, cancelled_hub).await;
 }

@@ -108,7 +108,9 @@ pub fn spawn_title_generation(
                             // failed turn: in both cases discard the partial output
                             // and keep the placeholder.
                             Some(crate::protocol::WorkerStdout::Error { .. })
-                            | Some(crate::protocol::WorkerStdout::ToolRequest { .. }) => {
+                            | Some(crate::protocol::WorkerStdout::ToolRequest { .. })
+                            | Some(crate::protocol::WorkerStdout::ExternalToolStarted { .. })
+                            | Some(crate::protocol::WorkerStdout::ExternalToolFinished { .. }) => {
                                 return None;
                             }
                             // EOF without `done`: use whatever was accumulated.

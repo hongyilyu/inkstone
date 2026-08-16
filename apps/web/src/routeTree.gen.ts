@@ -16,6 +16,7 @@ import { Route as LibraryIndexRouteImport } from './routes/library/index'
 import { Route as ChatIndexRouteImport } from './routes/_chat/index'
 import { Route as SettingsModelsRouteImport } from './routes/settings/models'
 import { Route as LibraryTimelineRouteImport } from './routes/library/timeline'
+import { Route as LibraryTasksRouteImport } from './routes/library/tasks'
 import { Route as LibraryMediaRouteImport } from './routes/library/media'
 import { Route as LibraryHealthRouteImport } from './routes/library/health'
 import { Route as LibraryGtdRouteImport } from './routes/library/gtd'
@@ -55,6 +56,11 @@ const SettingsModelsRoute = SettingsModelsRouteImport.update({
 const LibraryTimelineRoute = LibraryTimelineRouteImport.update({
   id: '/timeline',
   path: '/timeline',
+  getParentRoute: () => LibraryRouteRoute,
+} as any)
+const LibraryTasksRoute = LibraryTasksRouteImport.update({
+  id: '/tasks',
+  path: '/tasks',
   getParentRoute: () => LibraryRouteRoute,
 } as any)
 const LibraryMediaRoute = LibraryMediaRouteImport.update({
@@ -97,6 +103,7 @@ export interface FileRoutesByFullPath {
   '/library/gtd': typeof LibraryGtdRoute
   '/library/health': typeof LibraryHealthRoute
   '/library/media': typeof LibraryMediaRoute
+  '/library/tasks': typeof LibraryTasksRoute
   '/library/timeline': typeof LibraryTimelineRoute
   '/settings/models': typeof SettingsModelsRoute
   '/library/': typeof LibraryIndexRoute
@@ -109,6 +116,7 @@ export interface FileRoutesByTo {
   '/library/gtd': typeof LibraryGtdRoute
   '/library/health': typeof LibraryHealthRoute
   '/library/media': typeof LibraryMediaRoute
+  '/library/tasks': typeof LibraryTasksRoute
   '/library/timeline': typeof LibraryTimelineRoute
   '/settings/models': typeof SettingsModelsRoute
   '/': typeof ChatIndexRoute
@@ -125,6 +133,7 @@ export interface FileRoutesById {
   '/library/gtd': typeof LibraryGtdRoute
   '/library/health': typeof LibraryHealthRoute
   '/library/media': typeof LibraryMediaRoute
+  '/library/tasks': typeof LibraryTasksRoute
   '/library/timeline': typeof LibraryTimelineRoute
   '/settings/models': typeof SettingsModelsRoute
   '/_chat/': typeof ChatIndexRoute
@@ -142,6 +151,7 @@ export interface FileRouteTypes {
     | '/library/gtd'
     | '/library/health'
     | '/library/media'
+    | '/library/tasks'
     | '/library/timeline'
     | '/settings/models'
     | '/library/'
@@ -154,6 +164,7 @@ export interface FileRouteTypes {
     | '/library/gtd'
     | '/library/health'
     | '/library/media'
+    | '/library/tasks'
     | '/library/timeline'
     | '/settings/models'
     | '/'
@@ -169,6 +180,7 @@ export interface FileRouteTypes {
     | '/library/gtd'
     | '/library/health'
     | '/library/media'
+    | '/library/tasks'
     | '/library/timeline'
     | '/settings/models'
     | '/_chat/'
@@ -233,6 +245,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof LibraryTimelineRouteImport
       parentRoute: typeof LibraryRouteRoute
     }
+    '/library/tasks': {
+      id: '/library/tasks'
+      path: '/tasks'
+      fullPath: '/library/tasks'
+      preLoaderRoute: typeof LibraryTasksRouteImport
+      parentRoute: typeof LibraryRouteRoute
+    }
     '/library/media': {
       id: '/library/media'
       path: '/media'
@@ -283,6 +302,7 @@ interface LibraryRouteRouteChildren {
   LibraryGtdRoute: typeof LibraryGtdRoute
   LibraryHealthRoute: typeof LibraryHealthRoute
   LibraryMediaRoute: typeof LibraryMediaRoute
+  LibraryTasksRoute: typeof LibraryTasksRoute
   LibraryTimelineRoute: typeof LibraryTimelineRoute
   LibraryIndexRoute: typeof LibraryIndexRoute
 }
@@ -292,6 +312,7 @@ const LibraryRouteRouteChildren: LibraryRouteRouteChildren = {
   LibraryGtdRoute: LibraryGtdRoute,
   LibraryHealthRoute: LibraryHealthRoute,
   LibraryMediaRoute: LibraryMediaRoute,
+  LibraryTasksRoute: LibraryTasksRoute,
   LibraryTimelineRoute: LibraryTimelineRoute,
   LibraryIndexRoute: LibraryIndexRoute,
 }

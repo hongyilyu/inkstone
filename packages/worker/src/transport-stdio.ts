@@ -5,10 +5,33 @@ import {
 	WorkerManifest,
 	type WorkerOutbound,
 } from "@inkstone/protocol";
-import { Effect, Either, Layer, Schema as S } from "effect";
+import { Effect, Either, Layer, ParseResult, Schema as S } from "effect";
 import type { ToolCallResponse } from "./tool-proxy.js";
 import { ManifestParseError, WorkerTransport } from "./transport.js";
 import { logWorkerFault } from "./worker-log.js";
+
+/** A VALUE-FREE manifest parse failure message (review R10 #1). The manifest
+ * carries secrets (`external_tools.access_token`, `access_token`), and both
+ * default failure texts embed input: Effect Schema's TreeFormatter prints the
+ * ACTUAL value at each issue, and Node's `JSON.parse` SyntaxError quotes a
+ * source snippet. This message flows into a terminal `error` Run Event and is
+ * PERSISTED by Core as the run's error_message — so it is built from issue
+ * PATHS + tags only, never values or input. */
+const sanitizedManifestError = (e: unknown): string => {
+	if (ParseResult.isParseError(e)) {
+		const issues = ParseResult.ArrayFormatter.formatErrorSync(e)
+			.map(
+				(issue) =>
+					`${issue.path.map(String).join(".") || "<root>"}: ${issue._tag}`,
+			)
+			.join("; ");
+		return `manifest failed WorkerManifest schema validation (${issues})`;
+	}
+	if (e instanceof SyntaxError) {
+		return "manifest line is not valid JSON";
+	}
+	return `manifest parse failed: ${e instanceof Error ? e.name : "unknown"}`;
+};
 
 /** Best-effort run_id from a raw manifest line, for when schema decode fails but
  * the JSON parsed (#146): keeps the failure's diagnostic line joinable to
@@ -147,9 +170,10 @@ const makeStdioService = (
 				try: () => S.decodeUnknownSync(WorkerManifest)(JSON.parse(line)),
 				catch: (e) =>
 					new ManifestParseError({
-						message: `worker could not parse manifest: ${
-							e instanceof Error ? e.message : String(e)
-						}`,
+						// Sanitized (review R10 #1): this string reaches the terminal
+						// `error` Run Event and Core's persisted error_message — it must
+						// never embed the manifest's values (the bearer token).
+						message: sanitizedManifestError(e),
 						// Salvage run_id from the raw JSON so a schema-skew failure (#146)
 						// still logs a joinable run_id — undefined only on a JSON syntax error.
 						runId: rawRunId(line),

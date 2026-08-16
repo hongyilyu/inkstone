@@ -389,31 +389,22 @@ function searchResultsFromToolResult(text: string): SearchResultRow[] {
 type AnyMessage = {
 	role: string;
 	content?: unknown;
+	/** Wire `tool_result` blocks carry the ONE transcript result type
+	 * (external-task-views A4); pi runtime `toolResult`s keep flat `content`. */
+	result?: { content?: unknown };
 	tool_call_id?: string;
 	toolCallId?: string;
 };
 
+/** The flattened text of a tool result, across both transcript forms: the wire
+ * `tool_result`'s `result.content` blocks, or the pi `toolResult`'s `content`. */
+function toolResultText(m: AnyMessage): string {
+	return textOf(m.result?.content ?? m.content);
+}
+
 /** The tool-call id a tool_result message answers, across both transcript forms. */
 function toolResultCallId(m: AnyMessage): string | undefined {
 	return m.tool_call_id ?? m.toolCallId;
-}
-
-/** Unwrap a tool_result content string to the tool's own inner payload text.
- * In-process pi `toolResult`s flatten to the bare inner JSON, but a RESUME
- * transcript carries Core's serialized `AgentToolResult` envelope verbatim
- * (`{"content":[{"type":"text","text":"<inner>"}],…}` — see resume.rs
- * render_result_content). Peel that envelope so the parse helpers see the inner
- * `{entries|results …}` either way; leave already-bare text untouched. */
-function unwrapToolResultText(text: string): string {
-	try {
-		const parsed = JSON.parse(text) as { content?: unknown };
-		if (Array.isArray(parsed.content)) {
-			return textOf(parsed.content);
-		}
-	} catch {
-		// Not an envelope (already bare inner JSON) — fall through.
-	}
-	return text;
 }
 
 /** Newest-first scan for the latest tool_result content matching `predicate`. */
@@ -424,7 +415,7 @@ function latestToolResultText(
 	for (let i = messages.length - 1; i >= 0; i--) {
 		const m = messages[i];
 		if (m.role !== "tool_result" && m.role !== "toolResult") continue;
-		const text = unwrapToolResultText(textOf(m.content));
+		const text = toolResultText(m);
 		if (predicate(text)) return text;
 	}
 	return undefined;
@@ -490,7 +481,7 @@ function searchedEntityId(
 		const m = messages[i];
 		if (m.role !== "tool_result" && m.role !== "toolResult") continue;
 		if (toolResultCallId(m) !== searchCallId) continue;
-		const text = unwrapToolResultText(textOf(m.content));
+		const text = toolResultText(m);
 		if (!text.includes('"results"')) continue;
 		return searchResultsFromToolResult(text)[0]?.id;
 	}
@@ -511,19 +502,24 @@ export function extractionPhase(manifest: WorkerManifest): ExtractionPhase {
 
 	const decisions = manifest.messages.filter(
 		(m): m is Extract<typeof m, { role: "tool_result" }> =>
-			m.role === "tool_result" && decisionOutcome(m.content) !== undefined,
+			m.role === "tool_result" &&
+			decisionOutcome(textOf(m.result.content)) !== undefined,
 	);
 	const latest = decisions.at(-1);
-	if (latest !== undefined && decisionOutcome(latest.content) === "declined") {
+	if (
+		latest !== undefined &&
+		decisionOutcome(textOf(latest.result.content)) === "declined"
+	) {
 		return "dismiss";
 	}
 
 	const acceptedCreateOf = (kind: string) =>
-		decisions.some((d) => acceptedCreate(d.content, kind));
+		decisions.some((d) => acceptedCreate(textOf(d.result.content), kind));
 	// The Todo flow is a single create with no reference step, so an accepted
 	// create_todo Decision means the flow is complete.
 	if (acceptedCreateOf("Todo")) return "done";
-	if (decisions.some((d) => acceptedReference(d.content))) return "done";
+	if (decisions.some((d) => acceptedReference(textOf(d.result.content))))
+		return "done";
 	if (acceptedCreateOf("Person") || acceptedCreateOf("Project"))
 		return "after_create_entity";
 	if (acceptedCreateOf("Journal Entry")) return "after_journal";
@@ -802,7 +798,7 @@ function decisionFor(
 		const m = messages[i];
 		if (m.role !== "tool_result" && m.role !== "toolResult") continue;
 		if (toolResultCallId(m) !== callId) continue;
-		return decisionOutcome(textOf(m.content));
+		return decisionOutcome(toolResultText(m));
 	}
 	return undefined;
 }
@@ -971,7 +967,9 @@ function setCaptureResponses(
 	// after_create vs after_link — both resume into the enrichment leg.
 	if (manifest.mode === "resume") {
 		const todoCreated = manifest.messages.some(
-			(m) => m.role === "tool_result" && acceptedCreate(m.content, "Todo"),
+			(m) =>
+				m.role === "tool_result" &&
+				acceptedCreate(textOf(m.result.content), "Todo"),
 		);
 		if (todoCreated) {
 			setCaptureEnrichResponses(faux, manifest, scenario);
@@ -1120,6 +1118,27 @@ export function fauxDepsFor(manifest: WorkerManifest): InterpreterDeps {
 		faux.setResponses([
 			fauxAssistantMessage("", { stopReason: "error", errorMessage }),
 		]);
+	} else if (process.env.INKSTONE_FAUX_EXTERNAL !== undefined) {
+		// External tool-call mode (e2e, external-task-views A3/A4): one
+		// `ticktick_filter_tasks` call per comma-separated entry ("error" sends
+		// empty args so the fake MCP server fails the call), then a final turn
+		// echoing the LAST tool result — proving the model received the content.
+		const entries = process.env.INKSTONE_FAUX_EXTERNAL.split(",");
+		faux.setResponses([
+			...entries.map((entry, index) =>
+				toolCallTurn(
+					"ticktick_filter_tasks",
+					entry === "error" ? {} : { filter: { status: [0] }, call: index + 1 },
+					`tc_ext_${index + 1}`,
+				),
+			),
+			(context) => {
+				const toolResult = [...context.messages]
+					.reverse()
+					.find((m) => m.role === "toolResult");
+				return textTurn(`external result: ${textOf(toolResult?.content)}`);
+			},
+		]);
 	} else if (process.env.INKSTONE_FAUX_TOOL_CALL === "1") {
 		// Tool-call mode (e2e): turn 1 read_thread on the pasted id, turn 2 echoes the result.
 		faux.setResponses([
@@ -1178,7 +1197,11 @@ export function fauxDepsFor(manifest: WorkerManifest): InterpreterDeps {
 				.reverse()
 				.find((message) => message.role === "tool_result");
 			faux.setResponses([
-				textTurn(journalConfirmation(textOf(toolResult?.content))),
+				textTurn(
+					journalConfirmation(
+						toolResult === undefined ? "" : textOf(toolResult.result.content),
+					),
+				),
 			]);
 		} else {
 			setProposePlaybackResponses(faux, manifest, scenario);

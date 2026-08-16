@@ -1,0 +1,51 @@
+name: ticktick-live-smoke
+
+# The plan's credentialed LIVE contract validation (docs/plans/
+# external-task-views-plan.md): deterministic tests use hand-authored wire
+# values, so upstream TickTick schema/tool drift stays green locally — this job
+# is the drift detector. Scheduled weekly + manually dispatchable; deliberately
+# NOT part of the PR gate (needs a repo secret; must not hammer the live API).
+#
+# Two lanes, each through its production surface (review R10 #3):
+#   - OpenAPI (Web lane): the `#[ignore]`d Rust test `live_openapi_contract_smoke`
+#     runs the REAL decoder (reqwest → wire.rs → normalize) and asserts
+#     representative-shape counters (the smoke account stages due/tags/checklist).
+#   - MCP (Worker lane): scripts/ticktick-live-smoke.mjs asserts initialize +
+#     tools/list still offer the exact read allowlist.
+# Both are non-capturing: counts/booleans only reach the log.
+
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: live-contract-smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "."
+          shared-key: core
+      - name: Smoke the OpenAPI lane through the production decoder
+        env:
+          TICKTICK_ACCESS_TOKEN: ${{ secrets.TICKTICK_ACCESS_TOKEN }}
+        run: >
+          cargo test --manifest-path crates/core/Cargo.toml
+          live_openapi_contract_smoke -- --ignored --nocapture
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Smoke the MCP lane (initialize + tools/list allowlist)
+        env:
+          TICKTICK_ACCESS_TOKEN: ${{ secrets.TICKTICK_ACCESS_TOKEN }}
+        run: node scripts/ticktick-live-smoke.mjs

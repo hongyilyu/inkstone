@@ -74,6 +74,19 @@ fn no_arg(_params: &Value) -> Option<String> {
     None
 }
 
+/// The reserved name prefix of EXTERNAL tools — Worker-executed MCP tools the
+/// model sees as `ticktick_*` (external-task-views A3/A4). Reserved in this
+/// registry (see `registry_reserves_the_external_prefix`), so the prefix is
+/// unambiguous at every consumer: the frame handler, the interrupted settle,
+/// resume, and the Web's no-grouping rule all key off it — no parallel boolean
+/// to sync while a call is in flight.
+pub const EXTERNAL_TOOL_PREFIX: &str = "ticktick_";
+
+/// Whether `name` is an external (Worker-executed MCP) tool.
+pub fn is_external(name: &str) -> bool {
+    name.starts_with(EXTERNAL_TOOL_PREFIX)
+}
+
 /// Every registered tool, in manifest (descriptor) order.
 const REGISTRY: &[ToolEntry] = &[
     ToolEntry {
@@ -315,6 +328,26 @@ mod tests {
             vec![propose_workspace_mutation::NAME],
             "exactly one Proposal tool, and it is propose_workspace_mutation"
         );
+    }
+
+    /// The `ticktick_` prefix is RESERVED for external tools (A3/A4): no Core
+    /// tool may register under it (the prefix marks a call external at every
+    /// consumer), and `is_external` classifies by it. The registry is a const
+    /// table, so this test IS the registration guard.
+    #[test]
+    fn registry_reserves_the_external_prefix() {
+        for entry in REGISTRY {
+            assert!(
+                !entry.name.starts_with(EXTERNAL_TOOL_PREFIX),
+                "{:?} must not register under the reserved external prefix {EXTERNAL_TOOL_PREFIX:?}",
+                entry.name
+            );
+        }
+        assert!(is_external("ticktick_filter_tasks"));
+        assert!(!is_external("read_thread"));
+        // An external name is never registered, so the dispatch gate rejects it
+        // even if a Workflow allowlists it.
+        assert!(!is_allowed(&["ticktick_filter_tasks".to_string()], "ticktick_filter_tasks"));
     }
 
     #[test]

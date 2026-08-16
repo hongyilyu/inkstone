@@ -11,6 +11,7 @@ mod proposal;
 mod provider;
 mod run;
 mod thread;
+mod ticktick;
 mod worker;
 
 #[cfg(test)]
@@ -23,6 +24,7 @@ pub use proposal::*;
 pub use provider::*;
 pub use run::*;
 pub use thread::*;
+pub use ticktick::*;
 pub use worker::*;
 
 use serde::{Deserialize, Serialize};

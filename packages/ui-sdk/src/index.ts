@@ -33,6 +33,8 @@ import {
 	ThreadGetResult,
 	ThreadListResult,
 	ThreadMutateResult,
+	TickTickStatusResult,
+	TickTickTasksListResult,
 } from "@inkstone/protocol";
 import {
 	Cause,
@@ -254,6 +256,20 @@ export const requestDescriptors = {
 		method: "thread/list",
 		toParams: () => ({}),
 		result: ThreadListResult,
+	},
+	// ticktick/status + ticktick/tasks/list (external-task-views A2). Status is
+	// resolved FIRST on every (re)connection; its opaque connection_id is the
+	// SOLE key the Web uses for the task query (the reconnect protocol gates
+	// task reads on it). tasks/list is the two-read OpenAPI fetch, normalized.
+	tickTickStatus: {
+		method: "ticktick/status",
+		toParams: () => ({}),
+		result: TickTickStatusResult,
+	},
+	tickTickTasksList: {
+		method: "ticktick/tasks/list",
+		toParams: () => ({}),
+		result: TickTickTasksListResult,
 	},
 	// run/get_history (ADR-0028 as-built): the recent-Runs feed, newest-first.
 	// A `limit` is sent only when given; omitting it lets Core apply its

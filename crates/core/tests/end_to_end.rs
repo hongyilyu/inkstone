@@ -115,6 +115,19 @@ fn end_to_end_post_message_streams_text_delta_then_done() {
             "event run_id matches — body: {body}"
         );
         match v["params"]["event"]["kind"].as_str() {
+            // The ordered snapshot (review P1 #2) opens the stream: fold its Text
+            // segments into the reassembly base; tail `text_delta`s then append.
+            Some("snapshot") => {
+                for seg in v["params"]["event"]["segments"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                {
+                    if seg["kind"] == serde_json::json!("text") {
+                        assembled.push_str(seg["text"].as_str().unwrap_or_default());
+                    }
+                }
+            }
             Some("text_delta") => {
                 assembled.push_str(
                     v["params"]["event"]["delta"]

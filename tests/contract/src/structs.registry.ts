@@ -79,6 +79,8 @@ import {
 	ThreadRenameParams,
 	ThreadTitledNotification,
 	ThreadUnarchiveParams,
+	TickTickStatusResult,
+	TickTickTasksListResult,
 	ToolResult,
 	WorkerManifest,
 	WorkerOutbound,
@@ -711,6 +713,24 @@ export const fixtures: readonly FixtureEntry[] = [
 	},
 	{
 		message: "RunEvent",
+		file: "run_event.tool_call.external_completed.json",
+		schema: RunEvent,
+		dir: "emitted",
+	},
+	{
+		message: "RunEvent",
+		file: "run_event.tool_call.external_interrupted.json",
+		schema: RunEvent,
+		dir: "emitted",
+	},
+	{
+		message: "RunEvent",
+		file: "run_event.snapshot.json",
+		schema: RunEvent,
+		dir: "emitted",
+	},
+	{
+		message: "RunEvent",
 		file: "run_event.done.json",
 		schema: RunEvent,
 		dir: "emitted",
@@ -757,11 +777,31 @@ export const fixtures: readonly FixtureEntry[] = [
 		schema: WorkerManifest,
 		dir: "emitted",
 	},
-	// WorkerStdout: Rust deser-only (5 variants); decoded against the TS
-	// WorkerOutbound = WorkerRunEvent | ToolRequest union, its exact 1:1 mirror
-	// (RunEvent's Core-synthesized cancelled/tool_call kinds are excluded from
+	{
+		message: "TickTickStatusResult",
+		file: "ticktick_status_result.connected.json",
+		schema: TickTickStatusResult,
+		dir: "emitted",
+	},
+	{
+		message: "TickTickStatusResult",
+		file: "ticktick_status_result.not_connected.json",
+		schema: TickTickStatusResult,
+		dir: "emitted",
+	},
+	{
+		message: "TickTickTasksListResult",
+		file: "ticktick_tasks_list_result.json",
+		schema: TickTickTasksListResult,
+		dir: "emitted",
+	},
+	// WorkerStdout: Rust deser-only (7 variants); decoded against the TS
+	// WorkerOutbound = WorkerRunEvent | ToolRequest | ExternalToolStarted |
+	// ExternalToolFinished union, its exact 1:1 mirror (RunEvent's
+	// Core-synthesized cancelled/tool_call kinds are excluded from
 	// WorkerRunEvent). text_delta/reasoning_delta/done/error decode as
-	// WorkerRunEvent members; tool_request as the ToolRequest member.
+	// WorkerRunEvent members; tool_request and the two external-tool lifecycle
+	// frames (external-task-views A4) as their own members.
 	{
 		message: "WorkerStdout",
 		file: "worker_stdout.text_delta.json",
@@ -789,6 +829,18 @@ export const fixtures: readonly FixtureEntry[] = [
 	{
 		message: "WorkerStdout",
 		file: "worker_stdout.reasoning_delta.json",
+		schema: WorkerOutbound,
+		dir: "authored",
+	},
+	{
+		message: "WorkerStdout",
+		file: "worker_stdout.external_tool_started.json",
+		schema: WorkerOutbound,
+		dir: "authored",
+	},
+	{
+		message: "WorkerStdout",
+		file: "worker_stdout.external_tool_finished.json",
 		schema: WorkerOutbound,
 		dir: "authored",
 	},
@@ -905,6 +957,9 @@ export const CANONICAL_MESSAGES: readonly string[] = [
 	// chat-image-attachments slice 1 — media/upload (ADR-0058)
 	"MediaUploadParams",
 	"MediaUploadResult",
+	// external-task-views S2 — the Web lane's two read verbs (A2)
+	"TickTickStatusResult",
+	"TickTickTasksListResult",
 ];
 
 /** Expected fixture count per tagged-union message (grilling Q10). A union must
@@ -916,14 +971,17 @@ export const UNION_VARIANTS: Readonly<Record<string, number>> = {
 	// tool_call spans 3 ToolCallStatus values) raises the total. A dropped variant
 	// fixture drops the count and reds the lock.
 	//
-	// RunEvent (6 variants): text_delta, tool_call ×3 statuses, done, cancelled,
-	//   error, reasoning_delta = 8 fixtures.
-	RunEvent: 8,
+	// RunEvent (7 variants): text_delta, tool_call ×3 statuses ×2 external
+	//   result legs (external-task-views A4: completed-with-result +
+	//   interrupted-error-with-result), snapshot (review P1 #2 — also locks the
+	//   nested Segment union through this leg), done, cancelled, error,
+	//   reasoning_delta = 11 fixtures.
+	RunEvent: 11,
 	// ToolResult carries the ToolOutcome union (ok / err) = 2 fixtures.
 	ToolResult: 2,
-	// WorkerStdout (5 variants): text_delta, done, error, tool_request,
-	//   reasoning_delta = 5.
-	WorkerStdout: 5,
+	// WorkerStdout (7 variants): text_delta, done, error, tool_request,
+	//   reasoning_delta, external_tool_started, external_tool_finished = 7.
+	WorkerStdout: 7,
 	// WorkerManifest: maximal (all 3 ManifestMessage variants in one fixture) +
 	// bare = 2 fixtures; the per-ManifestMessage-variant coverage is asserted
 	// structurally in the Rust self-lock, not by fixture count.

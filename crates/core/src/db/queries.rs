@@ -2398,26 +2398,19 @@ where
 pub(super) async fn select_run_snapshot<'e, E>(
     executor: E,
     run_id: Uuid,
-) -> sqlx::Result<Option<(Option<String>, String)>>
+) -> sqlx::Result<Option<(String, Option<String>)>>
 where
     E: Executor<'e, Database = Sqlite>,
 {
-    let row: Option<(Option<String>, String)> = sqlx::query_as(
-        "SELECT ( \
-                  SELECT group_concat(text, '') FROM ( \
-                    SELECT text FROM message_parts \
-                    WHERE message_id = m.id AND type = 'text' ORDER BY seq \
-                  ) \
-                ) AS text, \
-                r.status \
-         FROM runs r \
-         JOIN messages m ON m.run_id = r.id AND m.role = 'assistant' \
-         WHERE r.id = ?1",
-    )
-    .bind(run_id.to_string())
-    .fetch_optional(executor)
-    .await?;
-    Ok(row)
+    // `(status, error_message)` — naturally authoritative (`None` iff the Run
+    // does not exist), the property the errored-late-subscribe fix relies on.
+    // The assistant text is no longer read here: the `run/subscribe` timeline
+    // now rides the ordered segment `Snapshot` (review P1 #2), and `thread/get`
+    // assembles its own via `segment_timeline`.
+    sqlx::query_as("SELECT status, error_message FROM runs WHERE id = ?1")
+        .bind(run_id.to_string())
+        .fetch_optional(executor)
+        .await
 }
 
 /// Read the Workflow fields a Run snapshotted at its start (ADR-0024): the
@@ -2557,6 +2550,106 @@ where
     .map(|_| ())
 }
 
+/// Insert a pending EXTERNAL tool-call row ONLY while its Run is still
+/// `running` (external-task-views A4): the Worker executes MCP tools itself and
+/// its frames race the Run's terminal transitions. A started frame that arrives
+/// after the Run was cancelled/errored must NOT land an orphan pending row, so
+/// the insert is guarded on the Run's live status. Returns rows affected (1 =
+/// inserted, 0 = the Run was already terminal → the caller publishes nothing).
+pub(super) async fn insert_external_tool_call_if_running<'e, E>(
+    executor: E,
+    id: &str,
+    run_id: Uuid,
+    name: &str,
+    request_payload: &str,
+    now_ms: i64,
+) -> sqlx::Result<u64>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    Ok(sqlx::query(
+        "INSERT INTO tool_calls (id, run_id, name, request_payload, status, requested_at) \
+         SELECT ?, ?, ?, ?, 'pending', ? \
+         WHERE EXISTS (SELECT 1 FROM runs WHERE id = ? AND status = 'running')",
+    )
+    .bind(id)
+    .bind(run_id.to_string())
+    .bind(name)
+    .bind(request_payload)
+    .bind(now_ms)
+    .bind(run_id.to_string())
+    .execute(executor)
+    .await?
+    .rows_affected())
+}
+
+/// Resolve an EXTERNAL tool-call row, guarded on `run_id` AND `status='pending'`
+/// (external-task-views A4). Scoping by `run_id` means a stray id can never
+/// resolve another Run's row; the `pending` guard means a finished frame that
+/// races a terminal settle (cancel/EOF, which flips the row to `errored` with
+/// the interrupted result) matches 0 rows and loses — it can never clobber a
+/// settled row to a success-shaped result. `RETURNING name` hands back the
+/// resolved row's tool name (`Some` = won), so the caller publishes the finished
+/// event without tracking id→name pairings itself — the pending guard is the one
+/// pairing authority (review M1).
+pub(super) async fn resolve_external_tool_call<'e, E>(
+    executor: E,
+    id: &str,
+    run_id: Uuid,
+    status: &str,
+    result_payload: &str,
+    now_ms: i64,
+) -> sqlx::Result<Option<String>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_scalar(
+        "UPDATE tool_calls SET status = ?, result_payload = ?, resolved_at = ? \
+         WHERE id = ? AND run_id = ? AND status = 'pending' \
+         RETURNING name",
+    )
+    .bind(status)
+    .bind(result_payload)
+    .bind(now_ms)
+    .bind(id)
+    .bind(run_id.to_string())
+    .fetch_optional(executor)
+    .await
+}
+
+/// Settle every still-pending EXTERNAL (`ticktick_*`) call of a terminating
+/// Run with the Core-generated interrupted result (external-task-views A4):
+/// Worker death can land between `external_tool_started` and its finished
+/// frame, so the row settles as an error in the SAME transition that settles
+/// the Run. Returns the settled `(id, name)` pairs so the caller can publish
+/// the matching `tool_call` events after the commit. The prefix predicate
+/// binds [`crate::tools::EXTERNAL_TOOL_PREFIX`] — Core-tool rows are never
+/// touched (a crashed-mid-write Core row stays `pending` for the reload
+/// filter, as before).
+pub(super) async fn settle_pending_external_tool_calls<'e, E>(
+    executor: E,
+    run_id: Uuid,
+    result_payload: &str,
+    now_ms: i64,
+) -> sqlx::Result<Vec<(String, String)>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    let prefix = crate::tools::EXTERNAL_TOOL_PREFIX;
+    sqlx::query_as(
+        "UPDATE tool_calls SET status = 'errored', result_payload = ?, resolved_at = ? \
+         WHERE run_id = ? AND status = 'pending' AND substr(name, 1, ?) = ? \
+         RETURNING id, name",
+    )
+    .bind(result_payload)
+    .bind(now_ms)
+    .bind(run_id.to_string())
+    .bind(prefix.len() as i64)
+    .bind(prefix)
+    .fetch_all(executor)
+    .await
+}
+
 /// Insert a `run_steps` row of kind `tool_call`, interleaving the tool call
 /// into the Run timeline at `seq`.
 pub(super) async fn insert_tool_call_run_step<'e, E>(
@@ -2634,7 +2727,7 @@ where
 {
     sqlx::query_as(
         "SELECT rs.kind, mp.text, \
-                tc.name, tc.status, tc.request_payload, \
+                tc.id, tc.name, tc.status, tc.request_payload, tc.result_payload, \
                 p.id, p.mutation_kind, p.status, \
                 mp.type, \
                 ( \
@@ -2663,45 +2756,51 @@ where
     .bind(assistant_message_id)
     .fetch_all(executor)
     .await
-    .map(|rows: Vec<(_, _, _, _, _, _, _, _, _, Option<i64>, Option<i64>, i64)>| {
-        rows.into_iter()
-            .map(
-                |(
-                    kind,
-                    part_text,
-                    tc_name,
-                    tc_status,
-                    request_payload,
-                    proposal_id,
-                    mutation_kind,
-                    proposal_status,
-                    part_type,
-                    duration_to_next,
-                    run_ended_at,
-                    step_created_at,
-                )| {
-                    // Resolve the reasoning span at the seam: the next step's
-                    // delta if there is one, else `run.ended_at − created_at`.
-                    // A negative span (clock skew) or an unknown end → None.
-                    let duration_ms = duration_to_next
-                        .or_else(|| run_ended_at.map(|end| end - step_created_at))
-                        .filter(|&d| d >= 0);
-                    SegmentTimelineRow {
+    .map(
+        |rows: Vec<(_, _, _, _, _, _, _, _, _, _, _, Option<i64>, Option<i64>, i64)>| {
+            rows.into_iter()
+                .map(
+                    |(
                         kind,
                         part_text,
-                        part_type,
+                        tool_call_id,
                         tc_name,
                         tc_status,
                         request_payload,
+                        result_payload,
                         proposal_id,
                         mutation_kind,
                         proposal_status,
-                        duration_ms,
-                    }
-                },
-            )
-            .collect()
-    })
+                        part_type,
+                        duration_to_next,
+                        run_ended_at,
+                        step_created_at,
+                    )| {
+                        // Resolve the reasoning span at the seam: the next step's
+                        // delta if there is one, else `run.ended_at − created_at`.
+                        // A negative span (clock skew) or an unknown end → None.
+                        let duration_ms = duration_to_next
+                            .or_else(|| run_ended_at.map(|end| end - step_created_at))
+                            .filter(|&d| d >= 0);
+                        SegmentTimelineRow {
+                            kind,
+                            part_text,
+                            part_type,
+                            tool_call_id,
+                            tc_name,
+                            tc_status,
+                            request_payload,
+                            result_payload,
+                            proposal_id,
+                            mutation_kind,
+                            proposal_status,
+                            duration_ms,
+                        }
+                    },
+                )
+                .collect()
+        },
+    )
 }
 
 /// One row of the [`segment_timeline`] walk, named so the caller
@@ -2714,9 +2813,11 @@ pub(super) struct SegmentTimelineRow {
     pub kind: String,
     pub part_text: Option<String>,
     pub part_type: Option<String>,
+    pub tool_call_id: Option<String>,
     pub tc_name: Option<String>,
     pub tc_status: Option<String>,
     pub request_payload: Option<String>,
+    pub result_payload: Option<String>,
     pub proposal_id: Option<String>,
     pub mutation_kind: Option<String>,
     pub proposal_status: Option<String>,

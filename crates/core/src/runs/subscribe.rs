@@ -15,9 +15,9 @@ use tokio::sync::broadcast;
 use tokio::sync::mpsc::UnboundedSender;
 use uuid::Uuid;
 
-use super::reply::{send_proposal_pending, send_response, send_run_event, send_text_delta};
+use super::reply::{send_proposal_pending, send_response, send_run_event};
 use crate::db::{self, RunStatus};
-use crate::hub::{self, Hubs};
+use crate::hub::{self, Hubs, RunTail};
 use crate::protocol::{RunEvent, SubscribeParams, SubscribeResult};
 
 pub(super) async fn handle(
@@ -31,20 +31,36 @@ pub(super) async fn handle(
     // invalid_params before this runs.
     let run_id = params.run_id;
 
-    match hub::get(hubs, run_id) {
+    // Generation turnover between the hub and status reads loops back to a
+    // fresh decision (review R11 #2); drains are gated-atomic, so each pass
+    // either settles or observes the newer generation.
+    loop {
+        match hub::get(hubs, run_id) {
         // Run still streaming: snapshot under the gate, then attach
         // (RunHub::snapshot_then_attach owns the ADR-0022 lock ritual).
         Some(run_hub) => {
-            let (snapshot, receiver) = run_hub
-                .snapshot_then_attach(|| db::select_run_snapshot(pool, run_id))
+            // Full-timeline snapshot (review P1 #2): read the Run status AND the
+            // ORDERED segment timeline (text / reasoning / tool_call / proposal, in
+            // `run_steps` order, incl. a still-running call) in ONE gated read, then
+            // attach. The single `Snapshot` event ATOMICALLY REPLACES the Client's
+            // segments, so a reconnect renders the true interleaved order and never
+            // drops reasoning; the tail carries only what happens strictly after
+            // this instant, so nothing falls in the thread/get↔subscribe gap.
+            let ((snapshot, segments), tail) = run_hub
+                .snapshot_then_attach(|| async {
+                    (
+                        db::select_run_snapshot(pool, run_id).await,
+                        db::run_live_segments(pool, run_id, true).await,
+                    )
+                })
                 .await;
 
-            let (snapshot_text, status) = match snapshot {
-                Ok(Some(snap)) => (snap.text, snap.status),
-                Ok(None) => (String::new(), RunStatus::Running),
+            let (status, error_message) = match snapshot {
+                Ok(Some(snap)) => (snap.status, snap.error_message),
+                Ok(None) => (RunStatus::Running, None),
                 Err(e) => {
                     tracing::error!(event = "subscribe.snapshot_read_failed", %run_id, error = ?e);
-                    (String::new(), RunStatus::Running)
+                    (RunStatus::Running, None)
                 }
             };
 
@@ -55,14 +71,19 @@ pub(super) async fn handle(
             // so the tail would block on `recv()` forever. When the status under
             // the gate is already terminal, emit it and close WITHOUT attaching.
             send_subscribe_response(out_tx, id, run_id, status.as_str());
-            send_text_delta(out_tx, run_id, &snapshot_text);
+            send_segment_snapshot(out_tx, run_id, segments);
             match status {
-                RunStatus::Cancelled => send_run_event(out_tx, run_id, &RunEvent::Cancelled),
-                RunStatus::Completed | RunStatus::Errored => {
-                    send_run_event(out_tx, run_id, &RunEvent::Done)
-                }
+                // A live Run tails; the tail is already attached under the gate.
                 RunStatus::Running | RunStatus::Parked => {
-                    spawn_tail_forwarder(run_id, receiver, out_tx.clone(), pool.clone())
+                    spawn_tail_forwarder(run_id, hubs.clone(), tail, out_tx.clone(), pool.clone())
+                }
+                // Terminal under the gate: emit and close WITHOUT attaching (an
+                // attached receiver would sit past the already-published terminal
+                // and hang). Errored → Error, never a synthesized Done.
+                terminal => {
+                    if let Some(event) = terminal_event(terminal, error_message) {
+                        send_run_event(out_tx, run_id, &event);
+                    }
                 }
             }
         }
@@ -70,43 +91,110 @@ pub(super) async fn handle(
         // parked (ADR-0025) from terminal. `None` is the unknown-run id — modeled
         // as the absence of a status rather than an empty-string sentinel.
         None => {
-            let status: Option<RunStatus> = match db::run_status(pool, run_id).await {
-                Ok(status) => status,
+            // The snapshot is authoritative (review #2): it carries status + text
+            // + error_message, and is `None` ONLY for an unknown run id — the LEFT
+            // JOIN returns a known Run's row even before it streams assistant text.
+            // One read, exhaustively mapped; no separate `run_status` the terminal
+            // match could ignore its error state.
+            let mut snapshot = match db::select_run_snapshot(pool, run_id).await {
+                Ok(snapshot) => snapshot,
                 Err(e) => {
-                    tracing::error!(event = "subscribe.run_status_read_failed", %run_id, error = ?e);
+                    tracing::error!(event = "subscribe.snapshot_read_failed", %run_id, error = ?e);
                     None
                 }
             };
-            let snapshot = db::select_run_snapshot(pool, run_id).await;
+            // A generation may have ACTIVATED between the hub read and this
+            // status read (review R11 #2 / R12 #1) — for ANY status: re-decide
+            // through the live branch rather than classify a stale snapshot (a
+            // stale terminal would mis-close a subscriber whose run is already
+            // retrying; a stale `running` would mis-report a lost Worker).
+            if hub::get(hubs, run_id).is_some() {
+                continue;
+            }
+            // A RUNNING status with the no-hub read CONFIRMED is either a drain
+            // that landed between the reads — one re-read settles it (the drain
+            // committed its transition before removing the hub, so a stale
+            // `running` cannot persist) — or the boot-recovery zombie, which
+            // correctly closes with Error below.
+            if snapshot
+                .as_ref()
+                .is_some_and(|snap| snap.status == RunStatus::Running)
+            {
+                snapshot = match db::select_run_snapshot(pool, run_id).await {
+                    Ok(snapshot) => snapshot,
+                    Err(e) => {
+                        tracing::error!(event = "subscribe.snapshot_read_failed", %run_id, error = ?e);
+                        None
+                    }
+                };
+            }
             // The wire status stays a string (ADR-0029): an unknown run reports
             // the empty status, exactly as before.
-            send_subscribe_response(out_tx, id, run_id, status.map_or("", RunStatus::as_str));
-            match snapshot {
-                Ok(Some(snap)) => {
-                    send_text_delta(out_tx, run_id, &snap.text);
-                }
-                Ok(None) => {
-                    // Unknown run id — no snapshot.
-                }
-                Err(e) => {
-                    tracing::error!(event = "subscribe.snapshot_read_failed", %run_id, error = ?e);
-                }
+            send_subscribe_response(
+                out_tx,
+                id,
+                run_id,
+                snapshot.as_ref().map_or("", |snap| snap.status.as_str()),
+            );
+            if snapshot.is_some() {
+                // Ordered segment snapshot (review P1 #2): the SAME timeline
+                // `thread/get` renders, atomically replacing the Client's segments —
+                // so a call settled by the terminal transition after the client's
+                // `thread/get` (excluded there as pending) isn't lost on a late
+                // subscribe to a just-terminated Run.
+                send_segment_snapshot(
+                    out_tx,
+                    run_id,
+                    db::run_live_segments(pool, run_id, false).await,
+                );
             }
-            // No-false-done (ADR-0025): a parked Run stopped without a terminal
-            // event, so emit NO terminal Run Event — the Client reads `parked`
-            // from the response status. Cancelled gets its terminal event;
-            // completed, running, and the unknown/errored fallback synthesize
-            // `done`.
-            match status {
-                // Push `proposal/pending` (ADR-0025) so a fresh subscriber shows
-                // the review card without a separate `proposal/get` poll.
-                Some(RunStatus::Parked) => emit_pending(out_tx, pool, run_id).await,
-                Some(RunStatus::Cancelled) => {
-                    send_run_event(out_tx, run_id, &RunEvent::Cancelled)
+            // Terminal mapping via the shared `terminal_event` (review #2/M2):
+            // Errored re-attaches as Error (never a synthesized Done); a `running`
+            // Run with no live hub lost its Worker → Error. Parked pushes
+            // `proposal/pending` (ADR-0025), and an unknown run id (`None`) closes
+            // with Error — so the Client neither hangs nor sees a false done.
+            match snapshot {
+                Some(snap) if snap.status == RunStatus::Parked => {
+                    emit_pending(out_tx, pool, run_id).await
                 }
-                _ => send_run_event(out_tx, run_id, &RunEvent::Done),
+                Some(snap) => {
+                    if let Some(event) = terminal_event(snap.status, snap.error_message) {
+                        send_run_event(out_tx, run_id, &event);
+                    }
+                }
+                None => send_run_event(
+                    out_tx,
+                    run_id,
+                    &RunEvent::Error {
+                        message: "unknown run".to_string(),
+                    },
+                ),
             }
         }
+    }
+        return;
+    }
+}
+
+/// The terminal `RunEvent` a settled (or live-lost) status maps to — `None` for
+/// `Parked` (which pushes `proposal/pending` instead, ADR-0025). A `Running` Run
+/// reached WITHOUT a live hub lost its Worker (the boot-recovery window — every
+/// activation path registers its hub BEFORE flipping `running`, review R8 #1 —
+/// which the recovery sweep closes) → `Error`, NEVER a synthesized `Done`. The
+/// SINGLE source every subscribe terminal site consumes (review M2), so the
+/// mapping can't diverge and the forwarder can't fall through to a
+/// false-success catch-all.
+fn terminal_event(status: RunStatus, error_message: Option<String>) -> Option<RunEvent> {
+    match status {
+        RunStatus::Parked => None,
+        RunStatus::Completed => Some(RunEvent::Done),
+        RunStatus::Cancelled => Some(RunEvent::Cancelled),
+        RunStatus::Errored => Some(RunEvent::Error {
+            message: error_message.unwrap_or_default(),
+        }),
+        RunStatus::Running => Some(RunEvent::Error {
+            message: crate::worker::WORKER_DISCONNECTED_MESSAGE.to_string(),
+        }),
     }
 }
 
@@ -122,6 +210,31 @@ async fn emit_pending(out_tx: &UnboundedSender<String>, pool: &SqlitePool, run_i
             // still learns the park via the `parked` response status, so this
             // is WARN, not ERROR.
             tracing::warn!(event = "subscribe.pending_proposal_lookup_failed", %run_id, error = ?e);
+        }
+    }
+}
+
+/// Emit the Run's ordered timeline as ONE `RunEvent::Snapshot` (review P1 #2):
+/// the Client atomically REPLACES its segments for the Run with this list, so the
+/// reconnect timeline matches `thread/get` in interleaved order (text / reasoning
+/// / tool_call), plus any still-running call. Maps db `MessageSegment` → wire
+/// `Segment` via the shared `From` impl. A read fault degrades to no snapshot
+/// (WARN) — the tail still delivers subsequent deltas.
+fn send_segment_snapshot(
+    out_tx: &UnboundedSender<String>,
+    run_id: Uuid,
+    segments: sqlx::Result<Vec<db::MessageSegment>>,
+) {
+    match segments {
+        Ok(segments) => send_run_event(
+            out_tx,
+            run_id,
+            &RunEvent::Snapshot {
+                segments: segments.into_iter().map(crate::protocol::Segment::from).collect(),
+            },
+        ),
+        Err(e) => {
+            tracing::warn!(event = "subscribe.segment_snapshot_read_failed", %run_id, error = ?e);
         }
     }
 }
@@ -155,9 +268,13 @@ fn send_subscribe_response(
 /// drop it just breaks, no synthesized `done` — the Run keeps running under the
 /// Worker (ADR-0012).
 ///
-/// `Lagged` → re-snapshot (ADR-0022 §28): on buffer overflow, re-read the
-/// persisted snapshot and re-emit it as a cumulative `text_delta`, then resume.
-/// Lag degrades to "re-read the truth," never lost text.
+/// `Lagged` → re-snapshot + re-attach under the gate (ADR-0022 §28, review F2):
+/// on buffer overflow, re-read the ordered timeline AND attach a FRESH receiver
+/// (`resubscribe()`, positioned at the current tail) inside the gate, so the
+/// snapshot's last-committed event meets the resumed tail exactly — no event is
+/// replayed from the stale buffer (which would duplicate text/reasoning), none
+/// lost. The [`RunTail`] owns the receiver + gate but NO sender, so the forwarder
+/// never keeps the channel open and `Closed` still fires.
 ///
 /// Terminal-event guarantee: a subscribe can attach in the window between a
 /// terminal event being published and `hub::remove`, with its receiver
@@ -168,20 +285,21 @@ fn send_subscribe_response(
 /// event.
 fn spawn_tail_forwarder(
     run_id: Uuid,
-    mut receiver: broadcast::Receiver<RunEvent>,
+    hubs: Hubs,
+    mut tail: RunTail,
     out_tx: UnboundedSender<String>,
     pool: SqlitePool,
 ) {
     tokio::spawn(async move {
         let mut saw_terminal = false;
-        loop {
+        'forward: loop {
             tokio::select! {
                 // Connection dropped: break WITHOUT synthesizing a `done` —
                 // no client to receive it (the Run keeps running, ADR-0012).
                 () = out_tx.closed() => {
                     break;
                 }
-                recv = receiver.recv() => {
+                recv = tail.recv() => {
                     match recv {
                         Ok(event) => {
                             // Track terminal events so we don't synthesize a
@@ -206,16 +324,71 @@ fn spawn_tail_forwarder(
                             // status is `parked`, push `proposal/pending` instead
                             // of a synthesized `done`.
                             if !saw_terminal {
-                                match db::run_status(&pool, run_id).await {
-                                    Ok(Some(RunStatus::Parked)) => {
-                                        emit_pending(&out_tx, &pool, run_id).await;
+                                // Shared `terminal_event` (review M2): Errored →
+                                // Error, Completed → Done, Cancelled → Cancelled,
+                                // Parked → `proposal/pending`. A run that vanished
+                                // (`Ok(None)`) or a DB read fault closes with Error
+                                // — NEVER a synthesized Done. A RUNNING status is
+                                // intercepted: a NEW generation may own it (review
+                                // R10 #2 / R11 #2) — re-attach when its hub is
+                                // live; when the hub is already gone, ONE re-read
+                                // settles it (a drain removes the hub in the same
+                                // gated section as its transition, so a stale
+                                // `running` cannot repeat) — `running` with no hub
+                                // twice in a row is the boot-recovery zombie.
+                                let mut saw_running_no_hub = false;
+                                loop {
+                                    // A LIVE generation trumps any snapshot
+                                    // classification (review R12 #1): re-attach —
+                                    // a stale terminal must not close a subscriber
+                                    // whose run is already resuming/retrying.
+                                    if let Some(next) = hub::get(&hubs, run_id) {
+                                        let (segments, next_tail) = next
+                                            .snapshot_then_attach(|| async {
+                                                db::run_live_segments(&pool, run_id, true).await
+                                            })
+                                            .await;
+                                        send_segment_snapshot(&out_tx, run_id, segments);
+                                        tail = next_tail;
+                                        continue 'forward;
                                     }
-                                    Ok(Some(RunStatus::Cancelled)) => {
-                                        send_run_event(&out_tx, run_id, &RunEvent::Cancelled);
+                                    match db::select_run_snapshot(&pool, run_id).await {
+                                        Ok(Some(snap)) if snap.status == RunStatus::Parked => {
+                                            emit_pending(&out_tx, &pool, run_id).await;
+                                        }
+                                        Ok(Some(snap)) if snap.status == RunStatus::Running => {
+                                            if !saw_running_no_hub {
+                                                saw_running_no_hub = true;
+                                                continue;
+                                            }
+                                            send_run_event(
+                                                &out_tx,
+                                                run_id,
+                                                &RunEvent::Error {
+                                                    message:
+                                                        crate::worker::WORKER_DISCONNECTED_MESSAGE
+                                                            .to_string(),
+                                                },
+                                            );
+                                        }
+                                        Ok(Some(snap)) => {
+                                            if let Some(event) =
+                                                terminal_event(snap.status, snap.error_message)
+                                            {
+                                                send_run_event(&out_tx, run_id, &event);
+                                            }
+                                        }
+                                        Ok(None) | Err(_) => send_run_event(
+                                            &out_tx,
+                                            run_id,
+                                            &RunEvent::Error {
+                                                message:
+                                                    crate::worker::WORKER_DISCONNECTED_MESSAGE
+                                                        .to_string(),
+                                                },
+                                        ),
                                     }
-                                    _ => {
-                                        send_run_event(&out_tx, run_id, &RunEvent::Done);
-                                    }
+                                    break;
                                 }
                             }
                             break;
@@ -225,18 +398,19 @@ fn spawn_tail_forwarder(
                             // recovers via re-snapshot, so WARN. Lagged count in
                             // a field, never interpolated into the message.
                             tracing::warn!(event = "subscribe.forwarder_lagged", %run_id, n);
-                            // Re-emit the persisted text as a cumulative
-                            // `text_delta`; a read error is tolerated and the
-                            // tail resumes either way.
-                            match db::select_run_snapshot(&pool, run_id).await {
-                                Ok(Some(snap)) => {
-                                    send_text_delta(&out_tx, run_id, &snap.text);
-                                }
-                                Ok(None) => {}
-                                Err(e) => {
-                                    tracing::error!(event = "subscribe.resnapshot_read_failed", %run_id, error = ?e);
-                                }
-                            }
+                            // Recover through the tail (review F2/F3): the lagged
+                            // receiver would otherwise resume at the OLDEST retained
+                            // buffer entry and replay events ALREADY in this snapshot
+                            // (text/reasoning would duplicate). `recover` re-snapshots
+                            // AND repositions the receiver at the current tail UNDER
+                            // THE GATE, so the snapshot's last event meets the tail
+                            // exactly — no gap, no replay.
+                            let segments = tail
+                                .recover(|| async {
+                                    db::run_live_segments(&pool, run_id, true).await
+                                })
+                                .await;
+                            send_segment_snapshot(&out_tx, run_id, segments);
                         }
                     }
                 }
@@ -248,71 +422,11 @@ fn spawn_tail_forwarder(
 #[cfg(test)]
 mod tests {
     use crate::db::test_support::memory_pool;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
     use tokio::sync::mpsc;
-    use tracing::field::{Field, Visit};
-    use tracing::Level;
-    use tracing_subscriber::layer::{Context, SubscriberExt};
-    use tracing_subscriber::Layer;
     use uuid::Uuid;
 
     use super::*;
-
-    /// One captured diagnostic event: its stable `event` key, its level, and
-    /// the top-level `run_id` field (ADR-0038's canonical correlation field).
-    #[derive(Clone)]
-    struct CapturedEvent {
-        event: Option<String>,
-        level: Level,
-        run_id: Option<String>,
-    }
-
-    /// Pulls the `event` and `run_id` field values off a `tracing` event.
-    /// `tracing` fields are not a map, so a `Visit` impl is the only way to read
-    /// specific field values. `event = "..."` records as a str; `%run_id`
-    /// records via its `Display` impl (debug form for everything else).
-    #[derive(Default)]
-    struct FieldGrab {
-        event: Option<String>,
-        run_id: Option<String>,
-    }
-
-    impl Visit for FieldGrab {
-        fn record_str(&mut self, field: &Field, value: &str) {
-            match field.name() {
-                "event" => self.event = Some(value.to_string()),
-                "run_id" => self.run_id = Some(value.to_string()),
-                _ => {}
-            }
-        }
-
-        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
-            // `%run_id` lands here as a `Display`-formatted value; capture it if
-            // `record_str` did not (subscriber backends differ).
-            if field.name() == "run_id" && self.run_id.is_none() {
-                self.run_id = Some(format!("{value:?}").trim_matches('"').to_string());
-            }
-        }
-    }
-
-    /// A minimal in-memory `tracing` Layer that appends each event's
-    /// `event`/level/`run_id` into a shared buffer for assertions. Hand-rolled
-    /// to avoid a new dev-dependency (tracing-subscriber is already a dep).
-    struct CaptureLayer {
-        events: Arc<Mutex<Vec<CapturedEvent>>>,
-    }
-
-    impl<S: tracing::Subscriber> Layer<S> for CaptureLayer {
-        fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
-            let mut grab = FieldGrab::default();
-            event.record(&mut grab);
-            self.events.lock().unwrap().push(CapturedEvent {
-                event: grab.event,
-                level: *event.metadata().level(),
-                run_id: grab.run_id,
-            });
-        }
-    }
 
     /// Seed a Thread + Run, then commit a `running -> cancelled` transition so
     /// tier 2 reports `cancelled` (the state a late subscriber must read back).
@@ -325,6 +439,7 @@ mod tests {
             system_prompt: "sp".to_string(),
             thinking_level: Some("off".to_string()),
             tools: Vec::new(),
+            external_tools: false,
         };
         let run_id = Uuid::now_v7();
         db::persist_thread_with_first_run(
@@ -351,6 +466,78 @@ mod tests {
         run_id
     }
 
+    /// Seed a Thread + Run, then stamp it `errored` with `message` (the terminal
+    /// fields `RunStatus::fail` leaves behind), so a late subscriber must read the
+    /// failure back as `Error` — never a synthesized `done`.
+    async fn seed_errored_run(pool: &SqlitePool, message: &str) -> Uuid {
+        let workflow = crate::workflow::Workflow {
+            name: "test".to_string(),
+            version: "1".to_string(),
+            provider: "faux".to_string(),
+            model: Some("m".to_string()),
+            system_prompt: "sp".to_string(),
+            thinking_level: Some("off".to_string()),
+            tools: Vec::new(),
+            external_tools: false,
+        };
+        let run_id = Uuid::now_v7();
+        db::persist_thread_with_first_run(
+            pool,
+            Uuid::now_v7(),
+            run_id,
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            &workflow,
+            "prompt",
+            &[],
+            "t",
+            1,
+        )
+        .await
+        .expect("seed run");
+        sqlx::query(
+            "UPDATE runs SET status = 'errored', terminal_reason = 'errored', \
+             error_code = 'agent_error', error_message = ?1, ended_at = 99 WHERE id = ?2",
+        )
+        .bind(message)
+        .bind(run_id.to_string())
+        .execute(pool)
+        .await
+        .expect("stamp errored");
+        run_id
+    }
+
+    /// Seed a Thread + Run left `running` (the state `run/post_message` leaves it
+    /// in), so a subscribe takes the live-hub snapshot path.
+    async fn seed_running_run(pool: &SqlitePool) -> Uuid {
+        let workflow = crate::workflow::Workflow {
+            name: "test".to_string(),
+            version: "1".to_string(),
+            provider: "faux".to_string(),
+            model: Some("m".to_string()),
+            system_prompt: "sp".to_string(),
+            thinking_level: Some("off".to_string()),
+            tools: Vec::new(),
+            external_tools: false,
+        };
+        let run_id = Uuid::now_v7();
+        db::persist_thread_with_first_run(
+            pool,
+            Uuid::now_v7(),
+            run_id,
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            &workflow,
+            "prompt",
+            &[],
+            "t",
+            1,
+        )
+        .await
+        .expect("seed run");
+        run_id
+    }
+
     /// Terminal-event guarantee (ADR-0022): a subscriber attaching after
     /// `Cancelled` was published — its receiver positioned past the event —
     /// must still terminate with exactly one `cancelled` on channel close, not
@@ -366,7 +553,13 @@ mod tests {
         drop(event_tx);
 
         let (out_tx, mut out_rx) = mpsc::unbounded_channel::<String>();
-        spawn_tail_forwarder(run_id, event_rx, out_tx, pool.clone());
+        spawn_tail_forwarder(
+            run_id,
+            hub::new_hubs(),
+            RunTail::from_parts(event_rx, Arc::new(tokio::sync::Mutex::new(()))),
+            out_tx,
+            pool.clone(),
+        );
 
         // Exactly one frame: a synthesized `cancelled`, then the channel closes.
         let body = tokio::time::timeout(std::time::Duration::from_secs(5), out_rx.recv())
@@ -395,18 +588,18 @@ mod tests {
         let run_id = seed_cancelled_run(&pool).await;
         // A live hub still registered (Worker has not reached hub::remove).
         let hubs = hub::new_hubs();
-        let _run_hub = hub::create(&hubs, run_id);
+        let _run_hub = hub::register(&hubs, run_id).expect("fresh run registers");
 
         let (out_tx, mut out_rx) = mpsc::unbounded_channel::<String>();
         handle(&pool, &hubs, serde_json::json!(7), SubscribeParams { run_id }, &out_tx).await;
 
-        // Subscribe response, then the snapshot text_delta, then `cancelled`.
+        // Subscribe response, then the ordered segment snapshot, then `cancelled`.
         let resp: serde_json::Value =
             serde_json::from_str(&out_rx.recv().await.expect("subscribe response")).unwrap();
         assert_eq!(resp["result"]["status"].as_str(), Some("cancelled"));
         let snapshot: serde_json::Value =
             serde_json::from_str(&out_rx.recv().await.expect("snapshot")).unwrap();
-        assert_eq!(snapshot["params"]["event"]["kind"].as_str(), Some("text_delta"));
+        assert_eq!(snapshot["params"]["event"]["kind"].as_str(), Some("snapshot"));
         let terminal: serde_json::Value =
             serde_json::from_str(&out_rx.recv().await.expect("terminal")).unwrap();
         assert_eq!(
@@ -424,61 +617,283 @@ mod tests {
         );
     }
 
-    /// Severity split (ADR-0038): a broadcast-overflow re-snapshot is a
-    /// *tolerated* degradation, so the forwarder logs `subscribe.forwarder_lagged`
-    /// at WARN (not ERROR) carrying the canonical top-level `run_id`. Overflow is
-    /// forced deterministically: send > capacity events into a cap-8 channel
-    /// BEFORE the forwarder polls, so its first `recv()` returns
-    /// `RecvError::Lagged` and it takes the re-snapshot arm.
+    /// Review #2: a late subscribe to an ERRORED Run with NO live hub must
+    /// terminate with `Error` (carrying the persisted message), never a
+    /// synthesized `done`. This is the no-hub branch the old `_ => Done` fall-
+    /// through mis-reported as success.
     #[tokio::test]
-    async fn forwarder_lagged_logs_warn_with_top_level_run_id() {
-        let captured = Arc::new(Mutex::new(Vec::<CapturedEvent>::new()));
-        let layer = CaptureLayer {
-            events: captured.clone(),
-        };
-        // Scoped to this test via a DefaultGuard — unit tests have no global
-        // subscriber, and the guard drops at test end so nothing leaks.
-        let _guard = tracing::subscriber::set_default(
-            tracing_subscriber::registry().with(layer),
+    async fn no_hub_errored_run_terminates_with_error_not_done() {
+        let pool = memory_pool().await;
+        let run_id = seed_errored_run(&pool, "provider auth failed").await;
+        // Empty registry → the no-hub branch (the Run's hub is long gone).
+        let hubs = hub::new_hubs();
+
+        let (out_tx, mut out_rx) = mpsc::unbounded_channel::<String>();
+        handle(&pool, &hubs, serde_json::json!(9), SubscribeParams { run_id }, &out_tx).await;
+
+        let resp: serde_json::Value =
+            serde_json::from_str(&out_rx.recv().await.expect("subscribe response")).unwrap();
+        assert_eq!(resp["result"]["status"].as_str(), Some("errored"));
+        let snapshot: serde_json::Value =
+            serde_json::from_str(&out_rx.recv().await.expect("snapshot")).unwrap();
+        assert_eq!(snapshot["params"]["event"]["kind"].as_str(), Some("snapshot"));
+        let terminal: serde_json::Value =
+            serde_json::from_str(&out_rx.recv().await.expect("terminal")).unwrap();
+        assert_eq!(
+            terminal["params"]["event"]["kind"].as_str(),
+            Some("error"),
+            "an errored Run re-attaches as error, never a synthesized done"
+        );
+        assert_eq!(
+            terminal["params"]["event"]["message"].as_str(),
+            Some("provider auth failed"),
+            "the persisted error_message rides the re-attach"
         );
 
+        drop(out_tx);
+        assert!(out_rx.recv().await.is_none(), "exactly three frames, then close");
+    }
+
+    /// Barrier (review P1 #2): the live-hub subscribe snapshot is ONE ordered
+    /// `snapshot` event — the full `run_steps` timeline (text / reasoning /
+    /// tool_call in order), INCLUDING a call that settled after the client's
+    /// `thread/get` (excluded there as pending). The Client atomically replaces
+    /// its segments, so the settled call is delivered in true order, never lost.
+    #[tokio::test]
+    async fn live_subscribe_snapshot_carries_the_ordered_settled_call() {
         let pool = memory_pool().await;
-        // Seed a run so the Lagged arm's re-snapshot read has a valid run_id.
+        let run_id = seed_running_run(&pool).await;
+        // The window: the call was pending at the client's thread/get (excluded
+        // there), then settled before this subscribe reads its snapshot.
+        assert!(
+            db::begin_external_tool_call(
+                &pool,
+                run_id,
+                "tc-win",
+                "ticktick_filter_tasks",
+                r#"{"filter":{"status":[0]}}"#,
+                db::now_ms(),
+            )
+            .await
+            .expect("begin")
+            .won()
+        );
+        assert!(
+            db::finish_external_tool_call(
+                &pool,
+                run_id,
+                "tc-win",
+                "completed",
+                r#"{"content":[{"type":"text","text":"3 tasks"}],"is_error":false}"#,
+                db::now_ms(),
+            )
+            .await
+            .expect("finish")
+            .is_some()
+        );
+
+        // A live hub (the run is still streaming) → the snapshot-then-attach path.
+        let hubs = hub::new_hubs();
+        let _run_hub = hub::register(&hubs, run_id).expect("fresh run registers");
+        let (out_tx, mut out_rx) = mpsc::unbounded_channel::<String>();
+        handle(&pool, &hubs, serde_json::json!(3), SubscribeParams { run_id }, &out_tx).await;
+
+        // Collect the snapshot frames (the forwarder then blocks on an empty tail).
+        let mut frames = Vec::new();
+        while let Ok(Some(body)) =
+            tokio::time::timeout(std::time::Duration::from_millis(250), out_rx.recv()).await
+        {
+            frames.push(serde_json::from_str::<serde_json::Value>(&body).expect("json frame"));
+        }
+
+        let snapshot = frames
+            .iter()
+            .find(|f| f["params"]["event"]["kind"].as_str() == Some("snapshot"))
+            .expect("a single ordered snapshot event is emitted");
+        let segments = snapshot["params"]["event"]["segments"]
+            .as_array()
+            .expect("the snapshot carries an ordered segments array");
+        let tool_call = segments
+            .iter()
+            .find(|s| s["kind"].as_str() == Some("tool_call"))
+            .expect("the settled tool call is in the ordered snapshot, not lost");
+        assert_eq!(tool_call["tool_call_id"].as_str(), Some("tc-win"));
+        assert_eq!(tool_call["status"].as_str(), Some("completed"));
+        assert_eq!(
+            tool_call["result"]["content"][0]["text"].as_str(),
+            Some("3 tasks"),
+            "the settled call carries the model-received result (A4)"
+        );
+    }
+
+    /// No-duplication on lag recovery (review F2): after the re-snapshot the
+    /// forwarder `resubscribe()`s, so the stale retained buffer is DISCARDED —
+    /// the resumed tail carries only events published strictly AFTER recovery,
+    /// never a replay of buffered deltas the snapshot already covered. Forces
+    /// Lagged with `BUFFERED` deltas, then proves the FIRST post-snapshot tail
+    /// frame is a later `SENTINEL`, not a re-delivered `BUFFERED`.
+    #[tokio::test]
+    async fn forwarder_lag_resubscribes_without_replaying_the_buffer() {
+        let pool = memory_pool().await;
         let run_id = seed_cancelled_run(&pool).await;
 
-        // Overflow a cap-8 channel before the forwarder drains: 9 buffered
-        // events on a capacity-8 broadcast guarantees the receiver is past
-        // capacity, so its next `recv()` yields `Lagged`.
+        // Overflow a cap-8 channel BEFORE the forwarder drains, so its first
+        // `recv()` yields `Lagged` and it takes the re-snapshot + resubscribe arm.
         let (event_tx, event_rx) = broadcast::channel::<RunEvent>(8);
         for _ in 0..9 {
             event_tx
-                .send(RunEvent::TextDelta { delta: "x".to_string() })
+                .send(RunEvent::TextDelta {
+                    delta: "BUFFERED".to_string(),
+                })
                 .expect("buffer a tail event");
         }
 
         let (out_tx, mut out_rx) = mpsc::unbounded_channel::<String>();
-        spawn_tail_forwarder(run_id, event_rx, out_tx, pool.clone());
-
-        // Pump the forwarder: the Lagged arm re-emits the persisted snapshot as
-        // a `text_delta`, so awaiting one out frame proves it processed Lagged.
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), out_rx.recv())
-            .await
-            .expect("forwarder emits a re-snapshot frame within timeout");
-
-        let events = captured.lock().unwrap();
-        let lagged = events
-            .iter()
-            .find(|e| e.event.as_deref() == Some("subscribe.forwarder_lagged"))
-            .expect("subscribe.forwarder_lagged was emitted on broadcast overflow");
-        assert_eq!(
-            lagged.level,
-            Level::WARN,
-            "forwarder lag is a tolerated degradation — WARN, not ERROR"
+        spawn_tail_forwarder(
+            run_id,
+            hub::new_hubs(),
+            RunTail::from_parts(event_rx, Arc::new(tokio::sync::Mutex::new(()))),
+            out_tx,
+            pool.clone(),
         );
+
+        // Frame 1 is the re-snapshot (recovery). Draining it proves the Lagged
+        // arm ran AND the forwarder resubscribed (send happens after resubscribe).
+        let snapshot = tokio::time::timeout(std::time::Duration::from_secs(5), out_rx.recv())
+            .await
+            .expect("re-snapshot frame within timeout")
+            .expect("re-snapshot frame present");
+        assert!(
+            !snapshot.contains("BUFFERED"),
+            "the re-snapshot is the persisted timeline, never the broadcast buffer — frame: {snapshot}"
+        );
+
+        // A NEW event after recovery: the fresh receiver (at the tail) delivers
+        // THIS, never one of the 9 discarded `BUFFERED` deltas.
+        event_tx
+            .send(RunEvent::TextDelta {
+                delta: "SENTINEL".to_string(),
+            })
+            .expect("publish a post-recovery event");
+        let next = tokio::time::timeout(std::time::Duration::from_secs(5), out_rx.recv())
+            .await
+            .expect("post-recovery tail frame within timeout")
+            .expect("post-recovery tail frame present");
+        assert!(
+            next.contains("SENTINEL") && !next.contains("BUFFERED"),
+            "the resumed tail delivers only post-recovery events, never a replayed buffer — frame: {next}"
+        );
+    }
+
+    /// Cross-generation re-attach (review R10 #2): an old tail whose channel
+    /// closes NON-terminally (park→resume / errored→retry drained the old
+    /// generation) while the run is RUNNING under a NEW generation must re-attach
+    /// to it — fresh ordered snapshot, then the new tail — never misreport the
+    /// live resumed run as worker-disconnected.
+    #[tokio::test]
+    async fn forwarder_reattaches_to_a_new_generation_on_nonterminal_close() {
+        let pool = memory_pool().await;
+        let run_id = seed_running_run(&pool).await;
+
+        // The OLD generation's channel, with the forwarder tailing it.
+        let (old_tx, old_rx) = broadcast::channel::<RunEvent>(8);
+        let hubs = hub::new_hubs();
+        let (out_tx, mut out_rx) = mpsc::unbounded_channel::<String>();
+        spawn_tail_forwarder(
+            run_id,
+            hubs.clone(),
+            RunTail::from_parts(old_rx, Arc::new(tokio::sync::Mutex::new(()))),
+            out_tx,
+            pool.clone(),
+        );
+
+        // A NEW generation activates (registered hub), then the old generation's
+        // channel closes without a terminal event — the park/retry drain shape.
+        let next = hub::register(&hubs, run_id).expect("new generation registers");
+        drop(old_tx);
+
+        // Frame 1: the re-attach snapshot (proves the forwarder attached to the
+        // new generation instead of synthesizing worker-disconnected).
+        let snapshot = tokio::time::timeout(std::time::Duration::from_secs(5), out_rx.recv())
+            .await
+            .expect("re-attach snapshot within timeout")
+            .expect("frame present");
+        assert!(
+            snapshot.contains("\"snapshot\""),
+            "the old tail re-attached with an ordered snapshot — frame: {snapshot}"
+        );
+
+        // The new generation's events now flow through the SAME subscriber.
+        next.send(RunEvent::TextDelta {
+            delta: "resumed".to_string(),
+        });
+        let tail_frame = tokio::time::timeout(std::time::Duration::from_secs(5), out_rx.recv())
+            .await
+            .expect("new-generation tail frame within timeout")
+            .expect("frame present");
+        assert!(
+            tail_frame.contains("resumed"),
+            "the new generation's tail reaches the old subscriber — frame: {tail_frame}"
+        );
+    }
+
+    /// The boot-recovery zombie stays bounded (review R11 #2): `running` with NO
+    /// live generation — confirmed by the one re-read the new close-loop takes —
+    /// still closes with worker-disconnected (never hangs, never loops).
+    #[tokio::test]
+    async fn forwarder_close_on_running_zombie_reports_disconnect_bounded() {
+        let pool = memory_pool().await;
+        let run_id = seed_running_run(&pool).await;
+
+        let (old_tx, old_rx) = broadcast::channel::<RunEvent>(8);
+        let (out_tx, mut out_rx) = mpsc::unbounded_channel::<String>();
+        spawn_tail_forwarder(
+            run_id,
+            hub::new_hubs(),
+            RunTail::from_parts(old_rx, Arc::new(tokio::sync::Mutex::new(()))),
+            out_tx,
+            pool.clone(),
+        );
+        drop(old_tx);
+
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(5), out_rx.recv())
+            .await
+            .expect("the zombie close settles within the bound")
+            .expect("frame present");
+        let v: serde_json::Value = serde_json::from_str(&frame).expect("json");
+        assert_eq!(v["params"]["event"]["kind"].as_str(), Some("error"));
         assert_eq!(
-            lagged.run_id.as_deref(),
-            Some(run_id.to_string().as_str()),
-            "the lag event carries the canonical top-level run_id"
+            v["params"]["event"]["message"].as_str(),
+            Some(crate::worker::WORKER_DISCONNECTED_MESSAGE),
+            "a genuine no-generation running run is a lost Worker"
+        );
+    }
+
+    /// The no-hub subscribe branch re-checks a RUNNING status (review R11 #2):
+    /// with no generation appearing across the confirming re-read, the boot
+    /// zombie closes with Error — the pre-existing contract, now via the
+    /// bounded recheck path.
+    #[tokio::test]
+    async fn no_hub_running_zombie_subscribe_closes_with_error() {
+        let pool = memory_pool().await;
+        let run_id = seed_running_run(&pool).await;
+        let hubs = hub::new_hubs();
+
+        let (out_tx, mut out_rx) = mpsc::unbounded_channel::<String>();
+        handle(&pool, &hubs, serde_json::json!(11), SubscribeParams { run_id }, &out_tx).await;
+
+        let resp: serde_json::Value =
+            serde_json::from_str(&out_rx.recv().await.expect("subscribe response")).unwrap();
+        assert_eq!(resp["result"]["status"].as_str(), Some("running"));
+        let snapshot: serde_json::Value =
+            serde_json::from_str(&out_rx.recv().await.expect("snapshot")).unwrap();
+        assert_eq!(snapshot["params"]["event"]["kind"].as_str(), Some("snapshot"));
+        let terminal: serde_json::Value =
+            serde_json::from_str(&out_rx.recv().await.expect("terminal")).unwrap();
+        assert_eq!(terminal["params"]["event"]["kind"].as_str(), Some("error"));
+        assert_eq!(
+            terminal["params"]["event"]["message"].as_str(),
+            Some(crate::worker::WORKER_DISCONNECTED_MESSAGE),
         );
     }
 }

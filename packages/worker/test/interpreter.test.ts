@@ -173,7 +173,12 @@ describe("generic interpreter (faux provider)", () => {
 				{
 					role: "tool_result",
 					tool_call_id: "tc_1",
-					content: "Accepted. Created Journal Entry.",
+					result: {
+						content: [
+							{ type: "text", text: "Accepted. Created Journal Entry." },
+						],
+						is_error: false,
+					},
 				},
 			],
 		});

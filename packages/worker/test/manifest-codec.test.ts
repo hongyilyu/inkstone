@@ -48,11 +48,18 @@ describe("manifestCodec.toAgentMessages", () => {
 		expect(typeof msg.timestamp).toBe("number");
 	});
 
-	it("maps a tool_result to a pi toolResult paired by id, defaulting isError", () => {
+	it("maps a tool_result's TranscriptToolResult to a pi toolResult paired by id", () => {
 		const [msg] = asRecords(
 			manifestCodec.toAgentMessages(
 				manifest([
-					{ role: "tool_result", tool_call_id: "tc_1", content: "Accepted." },
+					{
+						role: "tool_result",
+						tool_call_id: "tc_1",
+						result: {
+							content: [{ type: "text", text: "Accepted." }],
+							is_error: false,
+						},
+					},
 				]),
 			),
 		);
@@ -62,20 +69,61 @@ describe("manifestCodec.toAgentMessages", () => {
 		expect(msg.isError).toBe(false);
 	});
 
-	it("honors an explicit is_error on a tool_result", () => {
+	it("carries the result's is_error into the pi toolResult", () => {
 		const [msg] = asRecords(
 			manifestCodec.toAgentMessages(
 				manifest([
 					{
 						role: "tool_result",
 						tool_call_id: "tc_1",
-						content: "boom",
-						is_error: true,
+						result: {
+							content: [{ type: "text", text: "boom" }],
+							is_error: true,
+						},
 					},
 				]),
 			),
 		);
 		expect(msg.isError).toBe(true);
+	});
+
+	it("restores each tool_result's tool NAME from its paired assistant call", () => {
+		// external-task-views A4: pi replays a provider-valid transcript only if
+		// the toolResult carries its call's name — derived from the manifest's
+		// assistant tool_calls, no extra wire field.
+		const out = asRecords(
+			manifestCodec.toAgentMessages(
+				manifest([
+					{
+						role: "assistant",
+						tool_calls: [
+							{
+								id: "tc_ext",
+								name: "ticktick_filter_tasks",
+								arguments: { filter: { status: [0] } },
+							},
+						],
+					},
+					{
+						role: "tool_result",
+						tool_call_id: "tc_ext",
+						result: {
+							content: [{ type: "text", text: "1 task found" }],
+							is_error: false,
+						},
+					},
+					{
+						role: "tool_result",
+						tool_call_id: "tc_unknown",
+						result: { content: [], is_error: false },
+					},
+				]),
+			),
+		);
+		const results = out.filter((m) => m.role === "toolResult");
+		expect(results[0].toolName).toBe("ticktick_filter_tasks");
+		// An unpaired result degrades to the empty name rather than throwing.
+		expect(results[1].toolName).toBe("");
 	});
 
 	it("synthesizes an assistant message carrying the workflow model, text, and tool calls", () => {
@@ -162,7 +210,11 @@ describe("manifestCodec.toAgentMessages", () => {
 					role: "assistant",
 					tool_calls: [{ id: "tc_1", name: "read_thread", arguments: {} }],
 				},
-				{ role: "tool_result", tool_call_id: "tc_1", content: "ok" },
+				{
+					role: "tool_result",
+					tool_call_id: "tc_1",
+					result: { content: [{ type: "text", text: "ok" }], is_error: false },
+				},
 			]),
 		);
 		expect(roles(out)).toEqual(["user", "assistant", "toolResult"]);

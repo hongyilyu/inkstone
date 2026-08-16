@@ -1,0 +1,15 @@
+{
+  "kind": "tool_call",
+  "name": "ticktick_search_task",
+  "result": {
+    "content": [
+      {
+        "text": "interrupted",
+        "type": "text"
+      }
+    ],
+    "is_error": true
+  },
+  "status": "error",
+  "tool_call_id": "tc_05"
+}

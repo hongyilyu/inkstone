@@ -87,7 +87,7 @@ fn credentials_dir() -> Result<PathBuf> {
     Ok(parent.join("credentials"))
 }
 
-fn credential_path(provider: &str) -> Result<PathBuf> {
+pub(crate) fn credential_path(provider: &str) -> Result<PathBuf> {
     // Defense-in-depth: `provider` becomes a filename, so a value containing a
     // path separator or `..` could escape the credentials dir. Handlers gate
     // against the known-provider allowlist, but reject traversal here too so no

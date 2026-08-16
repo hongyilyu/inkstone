@@ -140,6 +140,14 @@ export interface SpawnCoreOptions {
 	};
 	/** Gate-fixture chunk count: `chunks` > 1 splits `echo: <prompt>` into deltas and pauses after chunk 1 until the gate file exists. */
 	readonly chunks?: number;
+	/** Bind a FIXED port instead of an ephemeral one (`INKSTONE_PORT`). Only
+	 * needed for a same-tab Core restart (the account-swap e2e): the browser's
+	 * WebSocket reconnects to the same origin after Core comes back. */
+	readonly port?: number;
+	/** Reuse an existing Workspace tempdir instead of minting a fresh one — the
+	 * respawn half of a restart test (same DB, credentials, and boot-read state
+	 * dir as the first spawn). */
+	readonly reuseWorkspaceDir?: string;
 	/**
 	 * Whether the Workspace boots with a provider already connected (ADR-0023):
 	 * seeds a credential file so `provider/status` reports Connected and the chat
@@ -179,6 +187,26 @@ export interface SpawnCoreOptions {
 	readonly extractParamsFile?: string;
 	/** Faux direct-capture scenario (`INKSTONE_FAUX_CAPTURE_PARAMS`): `{ intent, todo?, project?, person?, enrich? }` JSON file the capture mode reads. */
 	readonly captureParamsFile?: string;
+	/** External-tool lane (external-task-views A3): points Core's TickTick MCP
+	 * endpoint override (`INKSTONE_TICKTICK_MCP_URL`) at a fake server, seeds a
+	 * `ticktick.json` credential, and flips `external_tools = true` in the
+	 * generated faux Workflow — so the spawn manifest carries endpoint + auth
+	 * and the Worker connects for real. */
+	readonly ticktickMcpUrl?: string;
+	/** Drive the faux provider in external tool-call mode
+	 * (`INKSTONE_FAUX_EXTERNAL`): each entry is one `ticktick_filter_tasks` call
+	 * turn (`"error"` scripts an args-less failing call); a final turn echoes
+	 * the last tool result. Requires {@link ticktickMcpUrl}. */
+	readonly fauxExternalCalls?: readonly ("ok" | "error")[];
+	/** Web lane (external-task-views A2): point Core's TickTick OpenAPI base
+	 * (`INKSTONE_TICKTICK_API_URL`) at a fake server and seed a `ticktick.json`
+	 * credential, so `ticktick/status` reports connected and `ticktick/tasks/list`
+	 * reads from the fake. Omitted = the Web lane is not connected. */
+	readonly ticktickApiUrl?: string;
+	/** The bearer token written to `ticktick.json` (default: a fixed e2e token).
+	 * A restart test passes DIFFERENT tokens per spawn so the fake server can
+	 * serve different accounts by `Authorization` header. */
+	readonly ticktickToken?: string;
 }
 
 export interface SpawnedCore {
@@ -192,8 +220,10 @@ export interface SpawnedCore {
 	readonly logDir: string;
 	/** Release the gate so the fixture streams its remaining chunks + done. */
 	tripGate(): void;
-	/** SIGTERM Core, wait for exit, and remove the tempdir Workspace. */
-	shutdown(): Promise<void>;
+	/** SIGTERM Core, wait for exit, and remove the tempdir Workspace —
+	 * `preserveWorkspace` keeps that dir for a restart test's `reuseWorkspaceDir`
+	 * respawn (the respawned Core's own shutdown removes it). */
+	shutdown(opts?: { preserveWorkspace?: boolean }): Promise<void>;
 }
 
 /** Resolve once Core prints `INKSTONE_LISTENING <url>`, or reject on timeout/exit. */
@@ -258,7 +288,11 @@ function awaitListening(
 export async function spawnCore(
 	opts: SpawnCoreOptions = {},
 ): Promise<SpawnedCore> {
-	const workspaceDir = mkdtempSync(path.join(tmpdir(), "inkstone-test-"));
+	// A restart test reuses the first spawn's Workspace (same DB + credentials +
+	// boot-read state dir); otherwise mint a fresh hermetic tempdir.
+	const workspaceDir =
+		opts.reuseWorkspaceDir ??
+		mkdtempSync(path.join(tmpdir(), "inkstone-test-"));
 	const dbPath = path.join(workspaceDir, "db.sqlite");
 	// Pin the Diagnostic Log dir (ADR-0038) into the tempdir so e2e runs don't
 	// write core.jsonl/worker.jsonl into the dev/CI OS data dir — and so a test
@@ -283,13 +317,44 @@ export async function spawnCore(
 		// Pin the media root (ADR-0058) into the tempdir so `media/upload` bytes
 		// land hermetically — never in the dev/CI OS data dir.
 		INKSTONE_MEDIA_DIR: path.join(workspaceDir, "media"),
-		// Ephemeral OS-assigned port (avoids cross-test collisions).
-		INKSTONE_PORT: "0",
+		// Ephemeral OS-assigned port (avoids cross-test collisions), unless a
+		// fixed port is requested for a same-tab restart.
+		INKSTONE_PORT: opts.port !== undefined ? String(opts.port) : "0",
 		INKSTONE_WEB_DIR: WEB_DIST,
 		INKSTONE_LOG_DIR: logDir,
 		INKSTONE_SKILLS_DIR: skillsDir,
 		INKSTONE_CREDENTIALS_DIR: credentialsDir,
 	};
+
+	// TickTick lanes (external-task-views A2/A3): Web reads OpenAPI, Worker reads
+	// MCP — both from the ONE boot-read `ticktick.json`, so there is a single
+	// credential shape honoring `ticktickToken`, not a per-lane copy that
+	// clobbers when both URLs are set (review M10). Each endpoint override is set
+	// when given, UNCONDITIONALLY — `ticktickMcpUrl` alone (no faux mode) now
+	// takes effect instead of being a silent no-op trapped in the faux block.
+	const seedTickTickCredential = (token: string) => {
+		mkdirSync(credentialsDir, { recursive: true });
+		writeFileSync(
+			path.join(credentialsDir, "ticktick.json"),
+			JSON.stringify({
+				access_token: token,
+				token_type: "bearer",
+				scope: "tasks:read tasks:write",
+				obtained_at: "2026-08-15T00:00:00.000Z",
+			}),
+			// Core's custody gate rejects group/world-readable tokens (R12 #5).
+			{ mode: 0o600 },
+		);
+	};
+	if (opts.ticktickApiUrl !== undefined) {
+		env.INKSTONE_TICKTICK_API_URL = opts.ticktickApiUrl;
+	}
+	if (opts.ticktickMcpUrl !== undefined) {
+		env.INKSTONE_TICKTICK_MCP_URL = opts.ticktickMcpUrl;
+	}
+	if (opts.ticktickApiUrl !== undefined || opts.ticktickMcpUrl !== undefined) {
+		seedTickTickCredential(opts.ticktickToken ?? "e2e-ticktick-web-token");
+	}
 
 	// Seed a connected provider by default: the chat surface gates the welcome +
 	// composer on `provider/status` (a usable Core has a provider connected), so
@@ -341,6 +406,7 @@ export async function spawnCore(
 		"INKSTONE_FAUX_EXTRACT_PARAMS",
 		"INKSTONE_FAUX_CAPTURE",
 		"INKSTONE_FAUX_CAPTURE_PARAMS",
+		"INKSTONE_FAUX_EXTERNAL",
 		"INKSTONE_FAUX_ECHO_HISTORY",
 		"INKSTONE_PROPOSE_PARAMS_FILE",
 	]) {
@@ -427,7 +493,8 @@ export async function spawnCore(
 		opts.fauxError !== undefined ||
 		opts.fauxToolCall ||
 		opts.fauxLoadSkill !== undefined ||
-		opts.faux !== undefined
+		opts.faux !== undefined ||
+		opts.fauxExternalCalls !== undefined
 	) {
 		const workflowsDir = path.join(workspaceDir, "workflows");
 		mkdirSync(workflowsDir, { recursive: true });
@@ -451,6 +518,10 @@ export async function spawnCore(
 				// Deliberately NO `thinking_level` — regression guard for resume's `resolve_effective_workflow`; see docs/design/e2e-tests.md
 				'system_prompt = "You are a test assistant."',
 				`tools = ${tools}`,
+				// External-tool opt-in (external-task-views A3): the manifest ships
+				// endpoint+auth only when the Workflow flips this AND a ticktick
+				// credential loaded at boot — both seeded below with ticktickMcpUrl.
+				...(opts.ticktickMcpUrl !== undefined ? ["external_tools = true"] : []),
 				"",
 			].join("\n"),
 		);
@@ -474,7 +545,11 @@ export async function spawnCore(
 				}),
 			);
 		}
-		if (opts.fauxToolCall) {
+		// (The MCP endpoint override + ticktick credential are seeded
+		// unconditionally above — no longer trapped in this faux block, review M10.)
+		if (opts.fauxExternalCalls !== undefined) {
+			env.INKSTONE_FAUX_EXTERNAL = opts.fauxExternalCalls.join(",");
+		} else if (opts.fauxToolCall) {
 			env.INKSTONE_FAUX_TOOL_CALL = "1";
 		} else if (opts.fauxLoadSkill !== undefined) {
 			env.INKSTONE_FAUX_LOAD_SKILL = opts.fauxLoadSkill;
@@ -542,7 +617,7 @@ export async function spawnCore(
 			}
 			writeFileSync(gatePath, "go");
 		},
-		async shutdown() {
+		async shutdown(opts?: { preserveWorkspace?: boolean }) {
 			await new Promise<void>((resolve) => {
 				if (child.exitCode !== null || child.signalCode !== null) {
 					resolve();
@@ -567,7 +642,13 @@ export async function spawnCore(
 					resolve();
 				}
 			});
-			rmSync(workspaceDir, { recursive: true, force: true });
+			// `preserveWorkspace` keeps the Workspace dir for a restart test
+			// (CodeRabbit #336): the respawn passes it as `reuseWorkspaceDir`, so
+			// the SAME DB/credentials/boot-state carry over; the second Core's own
+			// (unpreserved) shutdown then removes the directory.
+			if (!opts?.preserveWorkspace) {
+				rmSync(workspaceDir, { recursive: true, force: true });
+			}
 			if (binDir) rmSync(binDir, { recursive: true, force: true });
 		},
 	};

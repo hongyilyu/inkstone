@@ -2,45 +2,29 @@ import type { ProposalReviewContext, ResolvedNode } from "@inkstone/protocol";
 import type { RunEventValue } from "@inkstone/ui-sdk";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
+import {
+	appendProposalSegment,
+	appendReasoningSegment,
+	appendTextSegment,
+	concatText,
+	type Segment,
+	sealOpenReasoning,
+	settleRunningToolSegments,
+	type ToolCall,
+	toSegment,
+	upsertToolSegment,
+} from "./timeline.js";
 
-/** A tool call surfaced live within an assistant turn (ADR-0006 tool_call Run Event). */
-export interface ToolCall {
-	readonly id: string;
-	readonly name: string;
-	readonly status: "running" | "completed" | "error";
-	/** The tool's display argument (ADR-0043), e.g. a search query; absent for argless tools. */
-	readonly arg?: string;
-}
-
-/**
- * One item in an assistant turn's ordered timeline (ADR-0045): a contiguous run
- * of text, a tool-call boundary, a positional marker for the Proposal card, or a
- * `reasoning` (thinking) trace. The `proposal` segment carries ONLY `runId` — the
- * {@link PendingProposal} map stays the source of interactive state; this segment
- * just says "the card renders HERE in the timeline". The `reasoning` kind (ADR-0045
- * amendment, #202) is now realized — the model's thinking, default-collapsed, with
- * an optional `durationMs` (web-clocked live open→seal, Core-computed on reload). It
- * is EXCLUDED from {@link concatText}, so the trace never leaks into the reply text.
- * The `attachment` kind (ADR-0058) is an image on a user Message — the bytes live
- * at `GET /media/{mediaId}`; `width`/`height` are pixel dims when known. It carries
- * no text, so {@link concatText} excludes it by construction.
- */
-export type Segment =
-	| { readonly kind: "text"; readonly text: string }
-	| { readonly kind: "tool_call"; readonly call: ToolCall }
-	| { readonly kind: "proposal"; readonly runId: string }
-	| {
-			readonly kind: "reasoning";
-			readonly text: string;
-			readonly durationMs?: number;
-	  }
-	| {
-			readonly kind: "attachment";
-			readonly mediaId: string;
-			readonly mime: string;
-			readonly width?: number;
-			readonly height?: number;
-	  };
+// The timeline model + its pure reducers live in ./timeline.ts (review F3);
+// re-export the public surface so existing `@/store/chat` importers (ToolCall,
+// Segment, concatText, toSegment, …) are unaffected by the split.
+export {
+	concatText,
+	type Segment,
+	type ToolCall,
+	toSegment,
+	type WireSegment,
+} from "./timeline.js";
 
 /** The canonical live UI message; mirrors the wire `MessageView` shape. */
 export interface Message {
@@ -69,17 +53,6 @@ export interface Message {
 	 * turn cancelled in a PRIOR session reloads as the same calm notice.
 	 */
 	readonly cancelled?: boolean;
-}
-
-/** Concatenate the text of every `text` segment in order — the single source for the
- * flat reply text the copy button, ⌘K search-match, typing-indicator, and retry read
- * (ADR-0045: there is no denormalized flat `text`; it derives from segments). */
-export function concatText(segments: readonly Segment[]): string {
-	let text = "";
-	for (const seg of segments) {
-		if (seg.kind === "text") text += seg.text;
-	}
-	return text;
 }
 
 /**
@@ -465,123 +438,6 @@ export function resetMessageForRetry(threadId: string, runId: string): void {
 // `segments[]` so the live render is the same shape the reload will read (slice 3).
 
 /**
- * Thread a `text_delta` into the timeline (ADR-0045), mirroring the flat-text
- * SET-vs-APPEND rule (ADR-0022) so `concatText(segments) === flat text` always holds:
- *
- * - **APPEND** (disarmed tail): extend the OPEN trailing text segment; if the trailing
- *   segment is non-text (a tool/proposal just sealed the run) or the timeline is empty,
- *   OPEN a fresh text segment — the web mirror of Core's open-on-first-delta.
- * - **SET** (armed cumulative snapshot): the delta is the cumulative concat of ALL the
- *   turn's text so far (`group_concat`, no boundary markers — `select_run_snapshot`), so
- *   it replaces EVERY existing text segment, not just the trailing one. Collapse all text
- *   segments into ONE carrying the snapshot at the position of the FIRST text segment, and
- *   drop the rest — PRESERVING the interleaved tool_call/proposal segments' order. If no
- *   text segment exists yet, OPEN one at the end. Replacing only the last text segment (the
- *   prior rule) left earlier text segments in place, so a post-park resume snapshot that
- *   re-includes pre-park prose DUPLICATED it (concatText = "A" + "A B" ≠ flat "A B").
- */
-function appendTextSegment(
-	segments: readonly Segment[],
-	delta: string,
-	armed: boolean,
-): readonly Segment[] {
-	if (armed) {
-		return setCumulativeText(segments, delta);
-	}
-	const last = segments[segments.length - 1];
-	if (last?.kind === "text") {
-		return [
-			...segments.slice(0, -1),
-			{ kind: "text", text: last.text + delta },
-		];
-	}
-	return [...segments, { kind: "text", text: delta }];
-}
-
-/**
- * Reconcile a cumulative-snapshot SET into the timeline: the snapshot is the WHOLE
- * turn's text, so the result has exactly one text segment carrying it (at the first
- * existing text position) and keeps every non-text segment in its place. With no text
- * segment yet, the snapshot opens one at the end. This is what makes
- * `concatText(segments) === snapshot` hold even when the turn had multiple pre-snapshot
- * text runs (text→tool→text→park→resume) — the duplicated-prefix case the prior
- * last-text-only rule missed.
- */
-function setCumulativeText(
-	segments: readonly Segment[],
-	snapshot: string,
-): readonly Segment[] {
-	const firstTextIndex = segments.findIndex((seg) => seg.kind === "text");
-	if (firstTextIndex === -1) {
-		return [...segments, { kind: "text", text: snapshot }];
-	}
-	const result: Segment[] = [];
-	for (let i = 0; i < segments.length; i++) {
-		const seg = segments[i];
-		if (i === firstTextIndex) {
-			result.push({ kind: "text", text: snapshot });
-		} else if (seg.kind !== "text") {
-			result.push(seg);
-		}
-		// Drop every other text segment — its content is already in the snapshot.
-	}
-	return result;
-}
-
-/**
- * Thread a `reasoning_delta` into the timeline (ADR-0045 amendment): APPEND-ONLY,
- * the disarmed twin of {@link appendTextSegment}. There is NO armed cumulative-SET
- * path — the resume snapshot is text-only (`type='text'` SQL filter), so a reasoning
- * segment never receives a snapshot delta. If the trailing segment is `reasoning`,
- * extend its text (`opened: false`); else OPEN a fresh reasoning segment (`opened:
- * true`, the web mirror of Core's open-on-first-delta). A text/tool/proposal between
- * two reasoning runs correctly opens a new one. The `opened` flag is the single source
- * of "did a fresh block start here" — `applyEvent` uses it to (re)stamp the block's
- * open-time, rather than re-deriving the trailing-segment check separately.
- */
-function appendReasoningSegment(
-	segments: readonly Segment[],
-	delta: string,
-): { segments: readonly Segment[]; opened: boolean } {
-	const last = segments[segments.length - 1];
-	if (last?.kind === "reasoning") {
-		return {
-			segments: [
-				...segments.slice(0, -1),
-				{ kind: "reasoning", text: last.text + delta },
-			],
-			opened: false,
-		};
-	}
-	return {
-		segments: [...segments, { kind: "reasoning", text: delta }],
-		opened: true,
-	};
-}
-
-/** Seal the OPEN trailing reasoning segment with a web-clocked `durationMs` when a Run
- * terminates (ADR-0045 amendment: live clocks its own open→seal). No-op if the trailing
- * segment is not reasoning, already sealed, or no open-time was recorded — the reloaded
- * path carries Core's authoritative `duration_ms`, so live is a nicety. */
-function sealOpenReasoning(
-	segments: readonly Segment[],
-	openedAt: number | undefined,
-	now: number,
-): readonly Segment[] {
-	if (openedAt === undefined) {
-		return segments;
-	}
-	const last = segments[segments.length - 1];
-	if (last?.kind !== "reasoning" || last.durationMs !== undefined) {
-		return segments;
-	}
-	return [
-		...segments.slice(0, -1),
-		{ kind: "reasoning", text: last.text, durationMs: now - openedAt },
-	];
-}
-
-/**
  * A timeline boundary arrived for `runId` (a text delta, a new tool call, or the Run
  * terminal): seal the open reasoning block with its web-clocked `durationMs` AND clear
  * the run record's `reasoningOpenedAt`, in ONE atomic state step (ADR-0045 amendment,
@@ -614,51 +470,6 @@ function sealReasoningAtBoundary(
 		...sealed,
 		runs: { ...sealed.runs, [runId]: { ...run, reasoningOpenedAt: undefined } },
 	};
-}
-
-/** Upsert a `tool_call` segment by call id (ADR-0045): a new id appends a fresh
- * segment at the end of the timeline; a known id flips its call's status in place. */
-function upsertToolSegment(
-	segments: readonly Segment[],
-	call: ToolCall,
-): readonly Segment[] {
-	const found = segments.some(
-		(seg) => seg.kind === "tool_call" && seg.call.id === call.id,
-	);
-	if (!found) {
-		return [...segments, { kind: "tool_call", call }];
-	}
-	return segments.map((seg) =>
-		seg.kind === "tool_call" && seg.call.id === call.id
-			? { kind: "tool_call", call: { ...seg.call, status: call.status } }
-			: seg,
-	);
-}
-
-/** Settle any `running` tool_call SEGMENT to `terminal` when its Run ends (the
- * segment-aware twin of {@link settleRunningToolCalls}; the lost-boundary case). */
-function settleRunningToolSegments(
-	segments: readonly Segment[],
-	terminal: "completed" | "error",
-): readonly Segment[] {
-	return segments.map((seg) =>
-		seg.kind === "tool_call" && seg.call.status === "running"
-			? { kind: "tool_call", call: { ...seg.call, status: terminal } }
-			: seg,
-	);
-}
-
-/** Append a `proposal` segment for `runId` at the current end of the timeline,
- * unless one is already present (skip-if-present): the seam where a Proposal enters
- * the timeline (it does NOT flow through {@link applyEvent}) — see {@link setPendingProposal}. */
-function appendProposalSegment(
-	segments: readonly Segment[],
-	runId: string,
-): readonly Segment[] {
-	if (segments.some((seg) => seg.kind === "proposal")) {
-		return segments;
-	}
-	return [...segments, { kind: "proposal", runId }];
 }
 
 /** Attach a `proposal` segment (skip-if-present) to the assistant message owning
@@ -766,6 +577,42 @@ export function applyEvent(
 			return s;
 		}
 
+		if (event.kind === "snapshot") {
+			// Full-timeline snapshot (review P1 #2): atomically REPLACE the run's
+			// segments with the ordered wire timeline (text / reasoning / tool_call
+			// in run_steps order, incl. a still-running call), then DISARM the
+			// cumulative-text bit so subsequent tail `text_delta`s APPEND to the
+			// snapshot rather than SET over it. This is the reconnect authority —
+			// it supersedes whatever `thread/get` painted, in true order.
+			const segments = event.segments.map((seg) => toSegment(runId, seg));
+			const next = updateRunMessage(s, threadId, runId, (m) => ({
+				...m,
+				segments,
+			}));
+			const run = next.runs[runId];
+			if (run === undefined) {
+				return next;
+			}
+			// If the snapshot's timeline ENDS with an OPEN reasoning block
+			// (streaming, no `durationMs`), re-anchor `reasoningOpenedAt` so the next
+			// boundary can seal it — the wire snapshot carries no open-time, so
+			// without this the block stays unsealed forever (review F4). Any other
+			// trailing segment clears it. Re-anchoring to `now` times a post-reconnect
+			// seal from the snapshot — the best available once the true open-time is lost.
+			const last = segments[segments.length - 1];
+			const reasoningOpenedAt =
+				last?.kind === "reasoning" && last.durationMs === undefined
+					? now
+					: undefined;
+			return {
+				...next,
+				runs: {
+					...next.runs,
+					[runId]: { ...run, snapshotArmed: false, reasoningOpenedAt },
+				},
+			};
+		}
+
 		if (event.kind === "text_delta") {
 			// A text delta means the model finished any open reasoning block: seal it
 			// with a web-clocked duration NOW (not at terminal) so the disclosure reads
@@ -830,13 +677,15 @@ export function applyEvent(
 					? sealReasoningAtBoundary(s, threadId, runId, now)
 					: s;
 			// Upsert into the timeline: `started` appends a `running` segment, a
-			// terminal status flips the matching one in place (ADR-0045).
+			// terminal status flips the matching one in place (ADR-0045), merging
+			// the model-received `result` when the event carries one (A4).
 			const status = event.status === "started" ? "running" : event.status;
 			const call: ToolCall = {
 				id: event.tool_call_id,
 				name: event.name,
 				status,
 				arg: event.arg,
+				result: event.result,
 			};
 			return updateRunMessage(sealed, threadId, runId, (m) => ({
 				...m,
