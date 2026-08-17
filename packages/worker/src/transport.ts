@@ -1,6 +1,18 @@
-import type { WorkerManifest, WorkerRunEvent } from "@inkstone/protocol";
+import type {
+	ExternalToolFinished,
+	ExternalToolStarted,
+	WorkerManifest,
+	WorkerRunEvent,
+} from "@inkstone/protocol";
 import { Context, Data, type Effect } from "effect";
 import type { CallTool } from "./tool-proxy.js";
+
+export type ExternalToolFrame = ExternalToolStarted | ExternalToolFinished;
+
+/** What the interpreter emits through the seam: Run Events plus the two
+ * external-tool lifecycle frames (external-task-views A4) — everything on
+ * `WorkerOutbound` except the proxy-owned `tool_request`. */
+export type WorkerEmit = WorkerRunEvent | ExternalToolFrame;
 
 /** The manifest line on stdin was present but not a valid {@link WorkerManifest}.
  * `runId` is the best-effort run_id salvaged from the raw JSON when the line
@@ -23,8 +35,11 @@ export class WorkerTransport extends Context.Tag(
 			WorkerManifest | null,
 			ManifestParseError
 		>;
-		/** Emit one Run Event (fire-and-forget; ADR-0006 Run Event channel). */
+		/** Emit one fire-and-forget Run Event (ADR-0006 Run Event channel). */
 		readonly emit: (event: WorkerRunEvent) => void;
+		/** Emit one external lifecycle frame and wait until Core durably accepts
+		 * that exact phase + call id. */
+		readonly syncExternalTool: (event: ExternalToolFrame) => Promise<void>;
 		/** Round-trip one Tool Request to Core and await its Tool Result (bidirectional Tool Protocol; ADR-0006). Same shape as the proxy's {@link CallTool}. */
 		readonly callTool: CallTool;
 	}

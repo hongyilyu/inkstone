@@ -246,24 +246,23 @@ const decisionResult = (
 ): ManifestMessage => ({
 	role: "tool_result",
 	tool_call_id,
-	content,
+	result: { content: [{ type: "text", text: content }], is_error: false },
 });
 
-// Core serializes a tool's AgentToolResult into the transcript verbatim, so a
-// RESUME tool_result's `content` is the envelope `{content:[{text:"<inner>"}],…}`
-// (see resume.rs render_result_content), NOT the bare inner JSON. Fixtures must
-// match that shape so the worker's unwrap path is exercised as in production.
+// Core reduces every persisted payload to the ONE transcript result type
+// (external-task-views A4; resume.rs transcript_result), so a RESUME
+// tool_result carries the tool's bare inner text as content blocks — no
+// AgentToolResult envelope. Fixtures match that production shape.
 const resumeToolResult = (
 	tool_call_id: string,
 	inner: unknown,
 ): ManifestMessage => ({
 	role: "tool_result",
 	tool_call_id,
-	content: JSON.stringify({
+	result: {
 		content: [{ type: "text", text: JSON.stringify(inner) }],
-		details: null,
-		terminate: null,
-	}),
+		is_error: false,
+	},
 });
 
 const searchResult = (

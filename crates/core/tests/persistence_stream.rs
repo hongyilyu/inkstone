@@ -62,6 +62,17 @@ fn text_delta_appends_to_message_parts() {
                 "frame is a run/event — body: {body}"
             );
             match v["params"]["event"]["kind"].as_str() {
+                Some("snapshot") => {
+                    for seg in v["params"]["event"]["segments"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                    {
+                        if seg["kind"] == serde_json::json!("text") {
+                            assembled.push_str(seg["text"].as_str().unwrap_or_default());
+                        }
+                    }
+                }
                 Some("text_delta") => {
                     assembled.push_str(
                         v["params"]["event"]["delta"]

@@ -211,6 +211,51 @@ describe("chat store + stream bridge", () => {
 		await runtime.dispose();
 	});
 
+	it("merges a terminal event's result into the existing external call (A4)", async () => {
+		const queue = Effect.runSync(Queue.unbounded<RunEventValue>());
+		const runtime = makeStubRuntime(queue, "run-external");
+
+		await send(runtime, "threadA", "how many tasks tomorrow?");
+
+		Queue.unsafeOffer(queue, {
+			kind: "tool_call",
+			tool_call_id: "tc_ext",
+			name: "ticktick_filter_tasks",
+			status: "started",
+		});
+		Queue.unsafeOffer(queue, {
+			kind: "tool_call",
+			tool_call_id: "tc_ext",
+			name: "ticktick_filter_tasks",
+			status: "completed",
+			result: {
+				content: [{ type: "text", text: "1 task found: S1 timed" }],
+				is_error: false,
+			},
+		});
+		Queue.unsafeOffer(queue, { kind: "done" });
+		await awaitRun(runtime, "run-external");
+
+		const assistant = getChatState().threads.threadA?.messages[1];
+		expect(
+			(assistant?.segments ?? [])
+				.filter((s) => s.kind === "tool_call")
+				.map((s) => s.call),
+		).toEqual([
+			{
+				id: "tc_ext",
+				name: "ticktick_filter_tasks",
+				status: "completed",
+				result: {
+					content: [{ type: "text", text: "1 task found: S1 timed" }],
+					is_error: false,
+				},
+			},
+		]);
+
+		await runtime.dispose();
+	});
+
 	it("maps a tool_call error status onto the matching row", async () => {
 		const queue = Effect.runSync(Queue.unbounded<RunEventValue>());
 		const runtime = makeStubRuntime(queue, "run-tool-err");
@@ -548,6 +593,40 @@ describe("segment timeline (ADR-0045)", () => {
 		]);
 		// The render-source invariant holds: concatText(segments) === the flat reply text.
 		expect(concatText(segs)).toBe("First. Second. Done.");
+	});
+
+	it("a snapshot ending with an OPEN reasoning block seals it on the next boundary (F4)", () => {
+		seedRun("tF4", "run-f4");
+
+		// A reconnect `snapshot` whose LAST segment is an OPEN reasoning block (no
+		// `duration_ms`). The wire snapshot carries no open-time, so applyEvent must
+		// RE-ANCHOR `reasoningOpenedAt` to `now`; without it a later boundary can
+		// never seal the block and it stays "Thinking…" forever (review F4).
+		applyEvent(
+			"tF4",
+			"run-f4",
+			{
+				kind: "snapshot",
+				segments: [
+					{ kind: "text", text: "hello" },
+					{ kind: "reasoning", text: "thinking" },
+				],
+			},
+			1_000,
+		);
+		// Right after the snapshot the block is open (unsealed).
+		expect(segmentsOf("tF4", "run-f4")).toEqual([
+			{ kind: "text", text: "hello" },
+			{ kind: "reasoning", text: "thinking" },
+		]);
+
+		// A later boundary seals it with a duration web-clocked from the snapshot instant.
+		applyEvent("tF4", "run-f4", { kind: "text_delta", delta: "world" }, 3_000);
+		expect(segmentsOf("tF4", "run-f4")).toEqual([
+			{ kind: "text", text: "hello" },
+			{ kind: "reasoning", text: "thinking", durationMs: 2_000 },
+			{ kind: "text", text: "world" },
+		]);
 	});
 
 	it("appends a proposal segment exactly once per run (skip-if-present)", () => {

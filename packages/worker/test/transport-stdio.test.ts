@@ -88,6 +88,74 @@ describe("StdioTransportLive (over injected streams)", () => {
 		expect(resp).toEqual({ ok: { content: [{ type: "text", text: "ok" }] } });
 	});
 
+	it("round-trips external lifecycle ACKs and rejects a NACK without Core detail", async () => {
+		const input = new PassThrough();
+		const { output, written } = capturingWritable();
+		input.write(`${manifestJson}\n`);
+
+		const result = await Effect.runPromise(
+			Effect.gen(function* () {
+				const t = yield* WorkerTransport;
+				yield* t.readManifest;
+
+				const started = t.syncExternalTool({
+					kind: "external_tool_started",
+					tool_call_id: "tc-ext",
+					name: "ticktick_filter_tasks",
+					arguments: { filter: { status: [0] } },
+				});
+				input.write(
+					`${JSON.stringify({
+						kind: "external_tool_ack",
+						tool_call_id: "tc-ext",
+						phase: "started",
+						ok: true,
+					})}\n`,
+				);
+				yield* Effect.promise(() => started);
+
+				const finished = t.syncExternalTool({
+					kind: "external_tool_finished",
+					tool_call_id: "tc-ext",
+					result: {
+						content: [{ type: "text", text: "one task" }],
+						is_error: false,
+					},
+				});
+				input.write(
+					`${JSON.stringify({
+						kind: "external_tool_ack",
+						tool_call_id: "tc-ext",
+						phase: "finished",
+						ok: false,
+					})}\n`,
+				);
+				return yield* Effect.promise(() =>
+					finished.then(
+						() => ({ rejected: false, message: "" }),
+						(error: unknown) => ({
+							rejected: true,
+							message: error instanceof Error ? error.message : String(error),
+						}),
+					),
+				);
+			}).pipe(Effect.provide(makeStdioTransport(input, output))),
+		);
+
+		expect(result).toEqual({
+			rejected: true,
+			message: "Core rejected an external tool lifecycle frame",
+		});
+		const frames = written()
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line));
+		expect(frames.map((frame) => frame.kind)).toEqual([
+			"external_tool_started",
+			"external_tool_finished",
+		]);
+	});
+
 	it("settles the pending call LOUD when an inbound tool_result fails schema decode", async () => {
 		const input = new PassThrough();
 		const { output } = capturingWritable();
@@ -151,6 +219,58 @@ describe("StdioTransportLive (over injected streams)", () => {
 		expect(result._tag).toBe("Left");
 		if (result._tag === "Left") {
 			expect(result.left).toBeInstanceOf(ManifestParseError);
+		}
+	});
+
+	it("never leaks manifest secrets into a schema-failure message (review R10 #1)", async () => {
+		const input = new PassThrough();
+		const { output } = capturingWritable();
+		// A REAL token beside a malformed field: Effect Schema's default tree
+		// formatter would print the actual `external_tools` object — token
+		// included — and this message becomes the persisted run error_message.
+		const token = "tok_SECRET_do_not_leak";
+		input.write(
+			`${JSON.stringify({
+				run_id: "01900000-0000-7000-8000-0000000000aa",
+				external_tools: { endpoint: 123, access_token: token },
+			})}\n`,
+		);
+
+		const result = await Effect.runPromise(
+			Effect.gen(function* () {
+				const t = yield* WorkerTransport;
+				return yield* Effect.either(t.readManifest);
+			}).pipe(Effect.provide(makeStdioTransport(input, output))),
+		);
+
+		expect(result._tag).toBe("Left");
+		if (result._tag === "Left") {
+			expect(result.left.message).not.toContain(token);
+			expect(result.left.message).not.toContain("tok_");
+			// Still diagnosable: the failing paths are named (values are not).
+			expect(result.left.message).toContain("schema validation");
+		}
+	});
+
+	it("never leaks the raw line into a JSON-syntax failure message (review R10 #1)", async () => {
+		const input = new PassThrough();
+		const { output } = capturingWritable();
+		// Node's JSON.parse SyntaxError quotes a snippet of its input — which
+		// here contains the token — so the message must be fully static.
+		const token = "tok_SECRET_do_not_leak";
+		input.write(`{"access_token": "${token}", not json\n`);
+
+		const result = await Effect.runPromise(
+			Effect.gen(function* () {
+				const t = yield* WorkerTransport;
+				return yield* Effect.either(t.readManifest);
+			}).pipe(Effect.provide(makeStdioTransport(input, output))),
+		);
+
+		expect(result._tag).toBe("Left");
+		if (result._tag === "Left") {
+			expect(result.left.message).not.toContain(token);
+			expect(result.left.message).toBe("manifest line is not valid JSON");
 		}
 	});
 

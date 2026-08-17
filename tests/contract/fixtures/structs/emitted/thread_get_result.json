@@ -28,12 +28,29 @@
           "arg": "Lev",
           "kind": "tool_call",
           "name": "search_entities",
-          "status": "completed"
+          "status": "completed",
+          "tool_call_id": "tc_01"
         },
         {
           "kind": "tool_call",
           "name": "read_thread",
-          "status": "completed"
+          "status": "completed",
+          "tool_call_id": "tc_02"
+        },
+        {
+          "kind": "tool_call",
+          "name": "ticktick_filter_tasks",
+          "result": {
+            "content": [
+              {
+                "text": "1 task found",
+                "type": "text"
+              }
+            ],
+            "is_error": false
+          },
+          "status": "completed",
+          "tool_call_id": "tc_03"
         },
         {
           "entity_id": "0190d3c1-0000-7000-8000-000000000002",

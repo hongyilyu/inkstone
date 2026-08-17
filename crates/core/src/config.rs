@@ -12,6 +12,11 @@ use std::time::Duration;
 /// The default one-shot collector timeout (titler + probe): 15 seconds.
 const DEFAULT_TIMEOUT_MS: u64 = 15_000;
 
+/// A7's per-request bound for the TickTick OpenAPI lane (review R12 #6): its
+/// own default (30s — a remote SaaS read, slower than local provider probes),
+/// overridable via `INKSTONE_TICKTICK_TIMEOUT_MS` like every other timeout.
+const TICKTICK_TIMEOUT_DEFAULT_MS: u64 = 30_000;
+
 /// Boot-resolved configuration. Each field corresponds to one `INKSTONE_*` env
 /// var; `None` means "unset, use the runtime default" (e.g. derive from the OS
 /// data dir).
@@ -27,11 +32,20 @@ pub struct Config {
     pub log_dir_override: Option<PathBuf>,
     pub title_timeout: Duration,
     pub provider_test_timeout: Duration,
+    /// Per-request bound for TickTick OpenAPI reads (A7, review R12 #6).
+    pub ticktick_timeout: Duration,
     pub worker_pre_spawn_delay: Option<Duration>,
     pub worker_log_path: Option<PathBuf>,
     /// The one browser origin allowed to open `/ws` remotely (ADR-0007).
     /// Empty is unset; unset keeps remote browser origins closed.
     pub public_origin: Option<String>,
+    /// Test-only override of the TickTick MCP endpoint (external-task-views
+    /// A7): production uses the compile-time const. Empty is unset.
+    pub ticktick_mcp_url_override: Option<String>,
+    /// Test-only override of the TickTick OpenAPI base URL (external-task-views
+    /// A7): the fake-HTTP-server harness points the Web lane at a local
+    /// fixture. Production uses the compile-time const. Empty is unset.
+    pub ticktick_api_url_override: Option<String>,
 }
 
 impl Default for Config {
@@ -63,8 +77,15 @@ impl Config {
                 .map(PathBuf::from),
             workflows_dir_override: get("INKSTONE_WORKFLOWS_DIR").map(PathBuf::from),
             log_dir_override: get("INKSTONE_LOG_DIR").map(PathBuf::from),
-            title_timeout: parse_timeout_ms(&get("INKSTONE_TITLE_TIMEOUT_MS")),
-            provider_test_timeout: parse_timeout_ms(&get("INKSTONE_PROVIDER_TEST_TIMEOUT_MS")),
+            title_timeout: parse_timeout_ms(&get("INKSTONE_TITLE_TIMEOUT_MS"), DEFAULT_TIMEOUT_MS),
+            provider_test_timeout: parse_timeout_ms(
+                &get("INKSTONE_PROVIDER_TEST_TIMEOUT_MS"),
+                DEFAULT_TIMEOUT_MS,
+            ),
+            ticktick_timeout: parse_timeout_ms(
+                &get("INKSTONE_TICKTICK_TIMEOUT_MS"),
+                TICKTICK_TIMEOUT_DEFAULT_MS,
+            ),
             worker_pre_spawn_delay: get("INKSTONE_WORKER_PRE_SPAWN_DELAY_MS")
                 .and_then(|v| v.to_str().and_then(|s| s.parse::<u64>().ok()))
                 .filter(|ms| *ms > 0)
@@ -73,20 +94,26 @@ impl Config {
             public_origin: get("INKSTONE_PUBLIC_ORIGIN")
                 .and_then(|value| value.into_string().ok())
                 .filter(|value| !value.is_empty()),
+            ticktick_mcp_url_override: get("INKSTONE_TICKTICK_MCP_URL")
+                .and_then(|value| value.into_string().ok())
+                .filter(|value| !value.is_empty()),
+            ticktick_api_url_override: get("INKSTONE_TICKTICK_API_URL")
+                .and_then(|value| value.into_string().ok())
+                .filter(|value| !value.is_empty()),
         }
     }
 }
 
-/// Parse a timeout env var: unset, unparseable, or `0` falls back to 15s.
+/// Parse a timeout env var: unset, unparseable, or `0` falls back to `default_ms`.
 /// `0` is rejected because a zero-length timeout fires instantly, turning every
 /// one-shot into a silent no-op.
-fn parse_timeout_ms(raw: &Option<OsString>) -> Duration {
+fn parse_timeout_ms(raw: &Option<OsString>, default_ms: u64) -> Duration {
     let ms = raw
         .as_ref()
         .and_then(|v| v.to_str())
         .and_then(|s| s.parse::<u64>().ok())
         .filter(|ms| *ms > 0)
-        .unwrap_or(DEFAULT_TIMEOUT_MS);
+        .unwrap_or(default_ms);
     Duration::from_millis(ms)
 }
 
@@ -182,9 +209,12 @@ mod tests {
         env.insert("INKSTONE_LOG_DIR", "/tmp/logs");
         env.insert("INKSTONE_TITLE_TIMEOUT_MS", "5000");
         env.insert("INKSTONE_PROVIDER_TEST_TIMEOUT_MS", "3000");
+        env.insert("INKSTONE_TICKTICK_TIMEOUT_MS", "250");
         env.insert("INKSTONE_WORKER_PRE_SPAWN_DELAY_MS", "100");
         env.insert("INKSTONE_WORKER_LOG_PATH", "/tmp/worker.jsonl");
         env.insert("INKSTONE_PUBLIC_ORIGIN", "https://inkstone.example.com");
+        env.insert("INKSTONE_TICKTICK_MCP_URL", "http://127.0.0.1:9/mcp");
+        env.insert("INKSTONE_TICKTICK_API_URL", "http://127.0.0.1:9");
 
         let cfg = Config::from_lookup(lookup(&env));
 
@@ -202,6 +232,7 @@ mod tests {
         assert_eq!(cfg.log_dir_override, Some(PathBuf::from("/tmp/logs")));
         assert_eq!(cfg.title_timeout, Duration::from_millis(5000));
         assert_eq!(cfg.provider_test_timeout, Duration::from_millis(3000));
+        assert_eq!(cfg.ticktick_timeout, Duration::from_millis(250));
         assert_eq!(cfg.worker_pre_spawn_delay, Some(Duration::from_millis(100)));
         assert_eq!(
             cfg.worker_log_path,
@@ -210,6 +241,14 @@ mod tests {
         assert_eq!(
             cfg.public_origin.as_deref(),
             Some("https://inkstone.example.com")
+        );
+        assert_eq!(
+            cfg.ticktick_mcp_url_override.as_deref(),
+            Some("http://127.0.0.1:9/mcp")
+        );
+        assert_eq!(
+            cfg.ticktick_api_url_override.as_deref(),
+            Some("http://127.0.0.1:9")
         );
     }
 
@@ -226,9 +265,12 @@ mod tests {
         assert_eq!(cfg.log_dir_override, None);
         assert_eq!(cfg.title_timeout, Duration::from_millis(15_000));
         assert_eq!(cfg.provider_test_timeout, Duration::from_millis(15_000));
+        assert_eq!(cfg.ticktick_timeout, Duration::from_millis(30_000));
         assert_eq!(cfg.worker_pre_spawn_delay, None);
         assert_eq!(cfg.worker_log_path, None);
         assert_eq!(cfg.public_origin, None);
+        assert_eq!(cfg.ticktick_mcp_url_override, None);
+        assert_eq!(cfg.ticktick_api_url_override, None);
     }
 
     #[test]
@@ -250,11 +292,13 @@ mod tests {
         let mut env = HashMap::new();
         env.insert("INKSTONE_TITLE_TIMEOUT_MS", "0");
         env.insert("INKSTONE_PROVIDER_TEST_TIMEOUT_MS", "0");
+        env.insert("INKSTONE_TICKTICK_TIMEOUT_MS", "0");
 
         let cfg = Config::from_lookup(lookup(&env));
 
         assert_eq!(cfg.title_timeout, Duration::from_millis(15_000));
         assert_eq!(cfg.provider_test_timeout, Duration::from_millis(15_000));
+        assert_eq!(cfg.ticktick_timeout, Duration::from_millis(30_000));
     }
 
     #[test]
@@ -262,11 +306,13 @@ mod tests {
         let mut env = HashMap::new();
         env.insert("INKSTONE_TITLE_TIMEOUT_MS", "not-a-number");
         env.insert("INKSTONE_PROVIDER_TEST_TIMEOUT_MS", "abc");
+        env.insert("INKSTONE_TICKTICK_TIMEOUT_MS", "invalid");
 
         let cfg = Config::from_lookup(lookup(&env));
 
         assert_eq!(cfg.title_timeout, Duration::from_millis(15_000));
         assert_eq!(cfg.provider_test_timeout, Duration::from_millis(15_000));
+        assert_eq!(cfg.ticktick_timeout, Duration::from_millis(30_000));
     }
 
     #[test]

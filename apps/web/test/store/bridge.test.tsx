@@ -33,6 +33,7 @@ import {
 } from "@/store/bridge.js";
 import {
 	appendMessage,
+	applyEvent,
 	attachRun,
 	getChatState,
 	resetChatStore,
@@ -358,11 +359,18 @@ describe("decideProposal resume fiber tracking (M2)", () => {
 });
 
 describe("cancelRun (ADR-0014)", () => {
-	/** A stub whose subscribeRun never terminates and whose cancelRun returns `outcome`. */
+	/** A stub whose subscribeRun never terminates and whose cancelRun returns
+	 * `outcome` + `live_tail` (default false — no live stream event follows). */
 	function makeCancelRuntime(outcome: {
 		readonly outcome: "accepted" | "already_terminal" | "unknown_run";
+		readonly live_tail?: boolean;
 	}) {
-		const cancelRun = vi.fn(() => Effect.succeed(outcome));
+		const cancelRun = vi.fn(() =>
+			Effect.succeed({
+				outcome: outcome.outcome,
+				live_tail: outcome.live_tail ?? false,
+			}),
+		);
 		const subscribeRun = vi.fn(
 			(_runId: RunId): Stream.Stream<RunEventValue, WsError> =>
 				Stream.fromQueue(Effect.runSync(Queue.unbounded<RunEventValue>())),
@@ -417,6 +425,95 @@ describe("cancelRun (ADR-0014)", () => {
 		expect(thread?.activeRunId).toBeUndefined();
 		// The parked Proposal is gone (nothing left to review), and the fiber is dropped.
 		expect(getChatState().proposals[runId]).toBeUndefined();
+		expect(hasRunFiber(runId)).toBe(false);
+
+		await runtime.dispose();
+	});
+
+	it("on accepted for a RUNNING run: applies the real interrupted tool_call + cancelled tail (A4)", async () => {
+		// Core pins the wire order response → interrupted tool_call(s) →
+		// cancelled (external-task-views A4). The bridge must let the live stream
+		// APPLY them — a synthetic settle would drop the interrupted result and
+		// diverge live from reload.
+		const queue = Effect.runSync(Queue.unbounded<RunEventValue>());
+		const cancelRun = vi.fn(() =>
+			Effect.sync(() => {
+				// The event tail lands right behind the response, as Core does.
+				Queue.unsafeOffer(queue, {
+					kind: "tool_call",
+					tool_call_id: "tc_ext",
+					name: "ticktick_filter_tasks",
+					status: "error",
+					result: {
+						content: [{ type: "text", text: "interrupted" }],
+						is_error: true,
+					},
+				});
+				Queue.unsafeOffer(queue, { kind: "cancelled" });
+				// live_tail: true — the stream delivers the real interrupted +
+				// cancelled tail; the bridge must NOT synthesize its own.
+				return { outcome: "accepted" as const, live_tail: true };
+			}),
+		);
+		const subscribeRun = vi.fn(
+			(_runId: RunId): Stream.Stream<RunEventValue, WsError> =>
+				Stream.fromQueue(queue),
+		);
+		const runtime = makeCoreRuntime({ overrides: { subscribeRun, cancelRun } });
+		const runId = "run-cancel-external" as RunId;
+		seedActiveRun(runId, runtime);
+		// The external call is in flight (a running row from the started event).
+		applyEvent("t1", runId, {
+			kind: "tool_call",
+			tool_call_id: "tc_ext",
+			name: "ticktick_filter_tasks",
+			status: "started",
+		});
+
+		await cancelRunBridge(runtime, runId);
+		// The stream applies the tail and its takeUntil reaps the fiber.
+		await vi.waitFor(() => {
+			expect(hasRunFiber(runId)).toBe(false);
+		});
+
+		const thread = getChatState().threads.t1;
+		const message = thread?.messages.find((m) => m.id === "a1");
+		expect(message?.status).toBe("incomplete");
+		expect(message?.cancelled).toBe(true);
+		// The row settled from the REAL interrupted event: error + the
+		// Core-generated result — the same object reload will serve.
+		const row = message?.segments.find((s) => s.kind === "tool_call");
+		expect(row?.kind === "tool_call" && row.call).toEqual({
+			id: "tc_ext",
+			name: "ticktick_filter_tasks",
+			status: "error",
+			arg: undefined,
+			result: {
+				content: [{ type: "text", text: "interrupted" }],
+				is_error: true,
+			},
+		});
+
+		await runtime.dispose();
+	});
+
+	it("on accepted WITHOUT a live tail: settles immediately off the response (no timer)", async () => {
+		// live_tail: false is Core's explicit "no stream event will follow"
+		// (parked, or the running-without-hub resume window). The bridge settles
+		// synthetically at once — no 3-second grace timer, no wedged Stop.
+		const { runtime } = makeCancelRuntime({
+			outcome: "accepted",
+			live_tail: false,
+		});
+		const runId = "run-cancel-no-tail" as RunId;
+		seedActiveRun(runId, runtime);
+
+		await cancelRunBridge(runtime, runId);
+
+		const thread = getChatState().threads.t1;
+		expect(thread?.messages.find((m) => m.id === "a1")?.status).toBe(
+			"incomplete",
+		);
 		expect(hasRunFiber(runId)).toBe(false);
 
 		await runtime.dispose();
@@ -541,7 +638,8 @@ describe("cancelRun (ADR-0014)", () => {
 		const runtime = makeCoreRuntime({
 			overrides: {
 				subscribeRun,
-				cancelRun: () => Effect.succeed({ outcome: "accepted" as const }),
+				cancelRun: () =>
+					Effect.succeed({ outcome: "accepted" as const, live_tail: false }),
 				retryRun: () => Effect.succeed({ outcome: "accepted" as const }),
 				proposalDecide: () =>
 					Effect.promise(() => decideGate).pipe(

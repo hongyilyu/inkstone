@@ -14,7 +14,7 @@ import {
 } from "@test/test-utils/renderWithCore";
 import { act, cleanup, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Deferred, Effect, Stream } from "effect";
+import { Deferred, Effect, Queue, Stream } from "effect";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatColumn } from "@/components/ChatColumn.js";
 import {
@@ -66,7 +66,8 @@ function makeStubOverrides(opts: {
 		subscribeRun: () => Stream.fromIterable(opts.events),
 		cancelRun:
 			opts.cancelRun ??
-			(() => Effect.succeed({ outcome: "accepted" as const })),
+			(() =>
+				Effect.succeed({ outcome: "accepted" as const, live_tail: false })),
 		// Fail fast on an UNEXPECTED retry path: a test that drives run/retry must
 		// opt in via `opts.retryRun`; an accidental retry in an unrelated test dies
 		// rather than silently passing on a default "accepted" (CodeRabbit #244).
@@ -857,17 +858,33 @@ describe("ChatColumn", () => {
 
 	it("shows a Stop control while a run streams and settles the bubble on cancel", async () => {
 		const user = userEvent.setup();
+		// The stream stays OPEN after the partial delta (a live tail), and — per
+		// the A4 cancel contract — Core delivers the real `cancelled` event right
+		// behind an accepted response; the bridge now applies THAT instead of
+		// synthesizing its own (which would clobber interrupted tool results).
+		const tail = Effect.runSync(Queue.unbounded<RunEventValue>());
 		const cancelRun = vi.fn(() =>
-			Effect.succeed({ outcome: "accepted" as const }),
+			Effect.sync(() => {
+				Queue.unsafeOffer(tail, { kind: "cancelled" } as RunEventValue);
+				// live_tail: true — the live stream delivers the real `cancelled`.
+				return { outcome: "accepted" as const, live_tail: true };
+			}),
 		);
-		// A partial (non-terminal) stream: the assistant turn stays active (no
-		// done/error/cancelled), so activeRunId stays set and Stop is shown.
-		const overrides = makeStubOverrides({
-			runId: "run-stop",
-			threadId: "thread-stop",
-			events: [{ kind: "text_delta", delta: "echo: h" }],
-			cancelRun,
-		});
+		const overrides = {
+			...makeStubOverrides({
+				runId: "run-stop",
+				threadId: "thread-stop",
+				events: [],
+				cancelRun,
+			}),
+			subscribeRun: () =>
+				Stream.concat(
+					Stream.fromIterable([
+						{ kind: "text_delta", delta: "echo: h" } as RunEventValue,
+					]),
+					Stream.fromQueue(tail),
+				),
+		};
 
 		await renderFocused(overrides, "threadA");
 

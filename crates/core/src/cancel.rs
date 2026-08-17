@@ -1,121 +1,95 @@
 //! Run cancellation as one deep, directly-testable verb (ADR-0029, extending the
 //! `proposal/decide` → [`crate::decide`] precedent to `run/cancel`).
 //!
-//! [`cancel`] owns the whole decision: read the Run status, pick the parked vs
-//! running guarded transition (ADR-0028), and on a won running-cancel perform the
-//! Worker signal. It returns a typed [`Outcome`] — `Accepted` / `AlreadyTerminal`
-//! / `UnknownRun` — the three [ADR-0014](../docs/adr/0014-client-core-wire-protocol.md)
-//! result values, NOT error codes. The only failure channel is a DB fault, which
-//! rides `anyhow::Error` (the handler maps it to `-32603`); the negative-but-
-//! expected domain outcomes stay in the `Ok` payload (ADR-0029 "protocol error vs
-//! result value").
+//! [`cancel`] owns the whole decision AND its side effects: read the Run status,
+//! pick the parked vs running guarded transition (ADR-0028), and — for a won
+//! running-cancel with a live hub — signal the Worker, frame the Response (via
+//! the injected `respond`), settle + publish the interrupted external calls, and
+//! publish the terminal `Cancelled`, ALL under ONE lifecycle-slot + hub-gate
+//! acquisition. Holding both across the settle tx AND the raw event sends makes
+//! generation changes and `run/subscribe` classification atomic with the whole
+//! sequence.
 //!
-//! The hub interaction is INJECTED as a closure (`get_hub`) so the decision + the
-//! Worker signal are assertable against a `:memory:` pool without the live `Hubs`
-//! registry — mirroring how [`crate::decide::apply`] injects `worker::resume`
-//! (ADR-0026: the verb takes no new subsystem dependency). On a won running-cancel
-//! the verb signals the live Worker and returns the won [`RunHub`] inside
-//! [`Outcome::Accepted`]; the terminal `Cancelled` publish + `hub::remove` are
-//! performed by [`publish_cancelled`], which the thin handler calls AFTER framing
-//! its Response — preserving the deterministic `response → cancelled` wire order.
+//! Response framing is INJECTED as `respond` so the verb frames it in the right
+//! place (inside the gate, BEFORE the events — pinning the wire order
+//! response → interrupted → cancelled) while staying assertable against a
+//! `:memory:` pool. The only failure channel is a DB fault on `anyhow::Error`
+//! (the handler maps it to `-32603`); expected domain outcomes ride the `respond`
+//! string (`accepted` / `already_terminal` / `unknown_run`), ADR-0029.
 
 use sqlx::SqlitePool;
 use uuid::Uuid;
 
 use crate::db::{self, RunStatus};
-use crate::hub::{self, Hubs, RunHub};
+use crate::hub::{self, Hubs};
 use crate::protocol::RunEvent;
 
-/// The result of a cancel request (ADR-0014 result values, not error codes). The
-/// handler maps each to its wire `outcome` string.
-pub enum Outcome {
-    /// The Run was live (running) or parked and is now cancelling. For a won
-    /// running-cancel this carries the live [`RunHub`] the verb signalled, so the
-    /// handler can publish the terminal `Cancelled` AFTER framing its Response; a
-    /// parked cancel carries `None` (no live Worker to signal or publish for).
-    Accepted { hub: Option<RunHub> },
-    /// The Run had already finished (terminal) or a concurrent winner committed the
-    /// terminal transition first — nothing to cancel.
-    AlreadyTerminal,
-    /// No Run with this id.
-    UnknownRun,
-}
-
-/// Cancel a Run (ADR-0014, ADR-0028). Reads the status, picks the guarded
-/// transition, and on a won running-cancel signals the live Worker via the
-/// injected `get_hub`. Returns the typed [`Outcome`]; a DB fault is the only
-/// `Err`.
-///
-/// `get_hub` resolves the live [`RunHub`] for a run id (production: `|id|
-/// hub::get(hubs, id)`); injected so the decision + Worker signal are testable
-/// against `:memory:` without the live registry.
-pub async fn cancel<F>(pool: &SqlitePool, run_id: Uuid, get_hub: F) -> anyhow::Result<Outcome>
-where
-    F: FnOnce(Uuid) -> Option<RunHub>,
-{
+/// Cancel a Run (ADR-0014/0028/0029). The transient lifecycle slot makes
+/// the durable status, active hub generation, and any terminal drain one
+/// linearized decision. `respond(outcome, live_tail)` is framed before live
+/// terminal events so the initiating connection observes response first.
+pub async fn cancel(
+    pool: &SqlitePool,
+    hubs: &Hubs,
+    run_id: Uuid,
+    respond: impl FnOnce(&str, bool),
+) -> anyhow::Result<()> {
+    let lifecycle = hub::lifecycle(hubs, run_id).await;
     match db::run_status(pool, run_id).await? {
-        // Unknown run id — an ADR-0014 result value, not an error code.
-        None => Ok(Outcome::UnknownRun),
+        None => respond("unknown_run", false),
         Some(RunStatus::Parked) => {
-            // Parked Run has no live Worker: a pure tier-2 flip of the Run + its
-            // pending Proposal. A rollback (no pending Proposal, or a concurrent
-            // decide/cancel already won) maps to AlreadyTerminal.
-            if db::cancel_parked_run(pool, run_id, db::now_ms()).await? {
-                Ok(Outcome::Accepted { hub: None })
-            } else {
-                Ok(Outcome::AlreadyTerminal)
-            }
+            let accepted = db::cancel_parked_run(pool, run_id, db::now_ms()).await?;
+            respond(
+                if accepted {
+                    "accepted"
+                } else {
+                    "already_terminal"
+                },
+                false,
+            );
         }
-        Some(RunStatus::Running) => {
-            // Win the guarded running -> cancelled transition first; the DB
-            // transition is the user-visible outcome. On a win, signal the live
-            // Worker (cleanup) and hand the hub back so the handler publishes the
-            // terminal Cancelled AFTER framing its Response.
-            if db::cancel_running_run(pool, run_id, db::now_ms()).await?.won() {
-                let hub = get_hub(run_id);
-                if let Some(run_hub) = &hub {
-                    run_hub.cancel();
+        Some(RunStatus::Running) => match hub::get(hubs, run_id) {
+            Some(run_hub) => {
+                let gate = run_hub.gate().await;
+                match db::cancel_running_run(pool, run_id, db::now_ms()).await? {
+                    db::Terminal::Won { interrupted } => {
+                        run_hub.cancel();
+                        respond("accepted", true);
+                        crate::worker::publish_interrupted(&run_hub, interrupted);
+                        run_hub.send(RunEvent::Cancelled);
+                        hub::remove_own(hubs, run_id, &run_hub, &lifecycle);
+                    }
+                    db::Terminal::Lost => respond("already_terminal", false),
                 }
-                Ok(Outcome::Accepted { hub })
-            } else {
-                // The Worker committed a terminal transition first.
-                Ok(Outcome::AlreadyTerminal)
+                drop(gate);
             }
-        }
-        // Completed, errored, or cancelled — the Run already ended. The terminal set
-        // is classified once by `is_terminal` (ADR-0028), not re-spelled here.
-        Some(status) if status.is_terminal() => Ok(Outcome::AlreadyTerminal),
-        // Unreachable: the two live states are matched above and the rest are
-        // terminal. A guarded arm does not count toward match exhaustiveness, so
-        // this explicit arm is required.
-        Some(_) => Ok(Outcome::AlreadyTerminal),
+            None => {
+                let terminal = db::cancel_running_run(pool, run_id, db::now_ms()).await?;
+                respond(
+                    if terminal.won() {
+                        "accepted"
+                    } else {
+                        "already_terminal"
+                    },
+                    false,
+                );
+            }
+        },
+        Some(_) => respond("already_terminal", false),
     }
-}
-
-/// Publish the terminal `Cancelled` Run Event and remove the hub, after a won
-/// running-cancel. Called by the handler AFTER it frames the cancel Response, so
-/// the client always sees `response → cancelled` (not a racing broadcast). The
-/// gated publish (`lock → send → unlock`, ADR-0022) is
-/// [`RunHub::publish_gated`]; then `hub::remove`.
-pub async fn publish_cancelled(hubs: &Hubs, run_id: Uuid, hub: Option<RunHub>) {
-    let Some(run_hub) = hub else {
-        return;
-    };
-
-    run_hub.publish_gated(RunEvent::Cancelled).await;
-
-    hub::remove(hubs, run_id);
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::db::test_support::memory_pool;
-    use super::{cancel, publish_cancelled, Outcome};
+    use super::cancel;
     use crate::db;
+    use crate::db::test_support::memory_pool;
     use crate::hub;
-    use crate::protocol::RunEvent;
+    use crate::protocol::{RunEvent, ToolCallStatus, TranscriptToolResult};
     use crate::workflow::Workflow;
     use sqlx::SqlitePool;
+    use std::cell::Cell;
     use uuid::Uuid;
 
     fn test_workflow() -> Workflow {
@@ -127,6 +101,7 @@ mod tests {
             system_prompt: "sp".to_string(),
             thinking_level: Some("off".to_string()),
             tools: vec!["propose_workspace_mutation".to_string()],
+            external_tools: false,
         }
     }
 
@@ -191,25 +166,41 @@ mod tests {
         .expect("count pending proposals")
     }
 
-    // 1. Parked Run → Accepted (no hub); the Run AND its pending Proposal flip to
-    //    cancelled. The verb takes the pure tier-2 parked path; no Worker to signal.
+    /// Run `cancel`, recording the single `respond(outcome, live_tail)` call.
+    async fn cancel_recording(pool: &SqlitePool, hubs: &hub::Hubs, run_id: Uuid) -> (String, bool) {
+        let recorded: Cell<Option<(String, bool)>> = Cell::new(None);
+        cancel(pool, hubs, run_id, |outcome, live_tail| {
+            recorded.set(Some((outcome.to_string(), live_tail)));
+        })
+        .await
+        .expect("cancel ok");
+        recorded
+            .into_inner()
+            .expect("respond was called exactly once")
+    }
+
+    // 1. Parked Run → accepted (no live tail); the Run AND its pending Proposal
+    //    flip to cancelled. Pure tier-2 parked path; no Worker to signal.
     #[tokio::test]
     async fn parked_run_is_accepted_and_flips_run_and_proposal() {
         let pool = memory_pool().await;
         let run_id = seed_parked_run(&pool).await;
-        assert_eq!(pending_proposal_count(&pool, run_id).await, 1, "seed: one pending proposal");
-
-        // get_hub must NOT be consulted on the parked path — a parked Run has no
-        // live Worker. Panic if it is, to pin the parked branch.
-        let outcome = cancel(&pool, run_id, |_| panic!("parked path must not touch the hub"))
-            .await
-            .expect("cancel ok");
-
-        assert!(
-            matches!(outcome, Outcome::Accepted { hub: None }),
-            "a parked cancel is Accepted with no hub"
+        assert_eq!(
+            pending_proposal_count(&pool, run_id).await,
+            1,
+            "seed: one pending proposal"
         );
-        assert_eq!(run_status_str(&pool, run_id).await, Some("cancelled"), "run cancelled");
+
+        let hubs = hub::new_hubs();
+        let (outcome, live_tail) = cancel_recording(&pool, &hubs, run_id).await;
+
+        assert_eq!(outcome, "accepted");
+        assert!(!live_tail, "a parked cancel has no live tail");
+        assert_eq!(
+            run_status_str(&pool, run_id).await,
+            Some("cancelled"),
+            "run cancelled"
+        );
         assert_eq!(
             pending_proposal_count(&pool, run_id).await,
             0,
@@ -217,102 +208,140 @@ mod tests {
         );
     }
 
-    // 2. Running Run, cancel WINS → Accepted carrying the live hub; the verb
-    //    signalled the Worker (is_cancelled), and publish_cancelled then broadcasts
-    //    Cancelled + removes the hub.
+    // 2. Running Run, cancel WINS → accepted with a live tail; the verb signals
+    //    the Worker (is_cancelled), publishes the terminal Cancelled, and removes
+    //    the hub — ALL inside one gated section (review P1 #3).
     #[tokio::test]
-    async fn running_won_signals_then_publishes_and_removes() {
+    async fn running_won_signals_publishes_and_removes_under_the_gate() {
         let pool = memory_pool().await;
         let run_id = seed_running_run(&pool).await;
 
-        // A real registered hub + a tail subscriber to observe the published event.
         let hubs = hub::new_hubs();
-        let registered = hub::create(&hubs, run_id);
+        let registered = hub::register(&hubs, run_id).expect("fresh run registers");
         let mut tail = registered.subscribe_raw();
 
-        let outcome = cancel(&pool, run_id, |id| hub::get(&hubs, id))
-            .await
-            .expect("cancel ok");
+        let (outcome, live_tail) = cancel_recording(&pool, &hubs, run_id).await;
 
-        let hub = match outcome {
-            Outcome::Accepted { hub: Some(hub) } => hub,
-            _ => panic!("a won running-cancel is Accepted with the live hub"),
-        };
-        assert_eq!(run_status_str(&pool, run_id).await, Some("cancelled"), "run cancelled");
-        assert!(hub.is_cancelled(), "the verb signalled the live Worker");
-        // No terminal event published yet — that's publish_cancelled's job, AFTER
-        // the handler frames its Response.
-        assert!(tail.try_recv().is_err(), "verb itself publishes no event");
-
-        publish_cancelled(&hubs, run_id, Some(hub)).await;
-
-        assert!(
-            matches!(tail.try_recv(), Ok(RunEvent::Cancelled)),
-            "publish_cancelled broadcasts the terminal Cancelled"
-        );
-        assert!(hub::get(&hubs, run_id).is_none(), "the hub is removed after publish");
-    }
-
-    // 3. Running Run, but a terminal transition already committed → cancel LOSES the
-    //    guard → AlreadyTerminal; no signal, no publish.
-    #[tokio::test]
-    async fn running_lost_to_committed_terminal_is_already_terminal() {
-        let pool = memory_pool().await;
-        let run_id = seed_running_run(&pool).await;
-        // The Worker reached `done` first: commit the running -> completed move.
-        assert!(
-            db::complete_run(&pool, run_id, db::now_ms()).await.expect("complete").won(),
-            "seed: the run completes before the cancel"
-        );
-
-        let outcome = cancel(&pool, run_id, |_| panic!("a lost running-cancel must not touch the hub"))
-            .await
-            .expect("cancel ok");
-
-        assert!(
-            matches!(outcome, Outcome::AlreadyTerminal),
-            "a running-cancel that lost the guard is AlreadyTerminal"
-        );
+        assert_eq!(outcome, "accepted");
+        assert!(live_tail, "a won running-cancel carries a live tail");
         assert_eq!(
             run_status_str(&pool, run_id).await,
-            Some("completed"),
-            "the committed completion stands"
+            Some("cancelled"),
+            "run cancelled"
+        );
+        assert!(
+            registered.is_cancelled(),
+            "the verb signalled the live Worker"
+        );
+        // The terminal Cancelled was published under the gate (no separate step),
+        // and the hub was removed.
+        assert!(
+            matches!(tail.try_recv(), Ok(RunEvent::Cancelled)),
+            "the gated section broadcasts the terminal Cancelled"
+        );
+        assert!(
+            hub::get(&hubs, run_id).is_none(),
+            "the hub is removed after publish"
         );
     }
 
-    // 4. A Run that already ended (terminal) → AlreadyTerminal, classified by
-    //    is_terminal without re-reading the running/parked guards.
+    // 2b. Cancel-after-started (external-task-views A4): a running Run with a
+    //     PENDING external call settles it as interrupted inside the SAME gated
+    //     section, publishing interrupted `tool_call` → `Cancelled` in order.
+    #[tokio::test]
+    async fn cancel_after_external_started_publishes_interrupted_then_cancelled() {
+        let pool = memory_pool().await;
+        let run_id = seed_running_run(&pool).await;
+        // The Worker reported an external call started; no finished frame yet.
+        db::persist_tool_call(
+            &pool,
+            run_id,
+            "tc-ext",
+            "ticktick_filter_tasks",
+            r#"{"filter":{"status":[0]}}"#,
+            db::now_ms(),
+        )
+        .await
+        .expect("persist pending external call");
+
+        let hubs = hub::new_hubs();
+        let registered = hub::register(&hubs, run_id).expect("fresh run registers");
+        let mut tail = registered.subscribe_raw();
+
+        let (outcome, _live_tail) = cancel_recording(&pool, &hubs, run_id).await;
+        assert_eq!(outcome, "accepted");
+
+        // The row settled in the cancel transition, as an error carrying the
+        // Core-generated interrupted result.
+        let (status, payload): (String, Option<String>) =
+            sqlx::query_as("SELECT status, result_payload FROM tool_calls WHERE id = 'tc-ext'")
+                .fetch_one(&pool)
+                .await
+                .expect("read settled row");
+        assert_eq!(status, "errored");
+        assert_eq!(
+            serde_json::from_str::<TranscriptToolResult>(&payload.unwrap()).unwrap(),
+            TranscriptToolResult::interrupted()
+        );
+
+        // Pinned order (all published under the one gate): interrupted tool_call
+        // event(s) BEFORE the terminal Cancelled.
+        let mut events = Vec::new();
+        while let Ok(event) = tail.try_recv() {
+            events.push(event);
+        }
+        match events.as_slice() {
+            [
+                RunEvent::ToolCall {
+                    tool_call_id,
+                    status: ToolCallStatus::Error,
+                    result: Some(result),
+                    ..
+                },
+                RunEvent::Cancelled,
+            ] => {
+                assert_eq!(tool_call_id, "tc-ext");
+                assert_eq!(*result, TranscriptToolResult::interrupted());
+            }
+            other => panic!("expected [interrupted tool_call, Cancelled], got {other:?}"),
+        }
+    }
+
+    // 3. A Run that already ended (terminal) → already_terminal, classified by
+    //    is_terminal without touching the hub.
     #[tokio::test]
     async fn terminal_run_is_already_terminal() {
         let pool = memory_pool().await;
         let run_id = seed_running_run(&pool).await;
-        assert!(db::complete_run(&pool, run_id, db::now_ms()).await.expect("complete").won());
-
-        let outcome = cancel(&pool, run_id, |_| panic!("a terminal Run must not touch the hub"))
-            .await
-            .expect("cancel ok");
-
         assert!(
-            matches!(outcome, Outcome::AlreadyTerminal),
-            "cancelling an already-completed Run is AlreadyTerminal"
+            db::complete_run(&pool, run_id, db::now_ms())
+                .await
+                .expect("complete")
+                .won()
         );
+
+        let hubs = hub::new_hubs();
+        let (outcome, live_tail) = cancel_recording(&pool, &hubs, run_id).await;
+
+        assert_eq!(
+            outcome, "already_terminal",
+            "cancelling a completed Run is already_terminal"
+        );
+        assert!(!live_tail);
     }
 
-    // 5. An id with no Run row → UnknownRun.
+    // 4. An id with no Run row → unknown_run.
     #[tokio::test]
     async fn unknown_run_is_unknown_run() {
         let pool = memory_pool().await;
-        let outcome = cancel(&pool, Uuid::now_v7(), |_| panic!("unknown Run must not touch the hub"))
-            .await
-            .expect("cancel ok");
-        assert!(
-            matches!(outcome, Outcome::UnknownRun),
-            "an unknown run id is UnknownRun"
-        );
+        let hubs = hub::new_hubs();
+        let (outcome, live_tail) = cancel_recording(&pool, &hubs, Uuid::now_v7()).await;
+        assert_eq!(outcome, "unknown_run");
+        assert!(!live_tail);
     }
 
-    // 6. Parked Run whose pending Proposal already vanished (a concurrent decide won)
-    //    → the guarded parked transition rolls back → AlreadyTerminal.
+    // 5. Parked Run whose pending Proposal already vanished (a concurrent decide
+    //    won) → the guarded parked transition rolls back → already_terminal.
     #[tokio::test]
     async fn parked_race_lost_is_already_terminal() {
         let pool = memory_pool().await;
@@ -328,15 +357,18 @@ mod tests {
         .await
         .expect("force proposal accepted");
 
-        let outcome = cancel(&pool, run_id, |_| panic!("a lost parked race must not touch the hub"))
-            .await
-            .expect("cancel ok");
+        let hubs = hub::new_hubs();
+        let (outcome, _live_tail) = cancel_recording(&pool, &hubs, run_id).await;
 
-        assert!(
-            matches!(outcome, Outcome::AlreadyTerminal),
-            "a parked cancel that lost the proposal race is AlreadyTerminal"
+        assert_eq!(
+            outcome, "already_terminal",
+            "a lost parked race is already_terminal"
         );
         // The Run stays parked (the transition rolled back) — the live decide owns it.
-        assert_eq!(run_status_str(&pool, run_id).await, Some("parked"), "run stays parked");
+        assert_eq!(
+            run_status_str(&pool, run_id).await,
+            Some("parked"),
+            "run stays parked"
+        );
     }
 }

@@ -6,6 +6,11 @@
       "mime": "image/png"
     }
   ],
+  "external_tools": {
+    "access_token": "tok_ticktick",
+    "endpoint": "https://mcp.ticktick.com/",
+    "timeout_ms": 30000
+  },
   "messages": [
     {
       "role": "user",
@@ -24,7 +29,15 @@
       ]
     },
     {
-      "content": "Accepted.",
+      "result": {
+        "content": [
+          {
+            "text": "Accepted.",
+            "type": "text"
+          }
+        ],
+        "is_error": false
+      },
       "role": "tool_result",
       "tool_call_id": "tc_1"
     }

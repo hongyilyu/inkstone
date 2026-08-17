@@ -184,15 +184,32 @@ describe("WsClient", () => {
 					status: "complete",
 					run_id: "01234567-89ab-7def-8012-345678901234",
 					// The assistant turn's ordered segments[] (ADR-0045): tool rows, then
-					// the reply text — covers the text + tool_call (with/without arg) variants.
+					// the reply text — covers the text + tool_call (with/without arg,
+					// with an external result — external-task-views A4) variants.
 					segments: [
 						{
 							kind: "tool_call",
+							tool_call_id: "tc_1",
 							name: "search_entities",
 							status: "completed",
 							arg: "Lev",
 						},
-						{ kind: "tool_call", name: "read_thread", status: "completed" },
+						{
+							kind: "tool_call",
+							tool_call_id: "tc_2",
+							name: "read_thread",
+							status: "completed",
+						},
+						{
+							kind: "tool_call",
+							tool_call_id: "tc_3",
+							name: "ticktick_filter_tasks",
+							status: "completed",
+							result: {
+								content: [{ type: "text", text: "1 task found" }],
+								is_error: false,
+							},
+						},
 						{ kind: "text", text: "echo: hi" },
 					],
 				},
@@ -1224,6 +1241,30 @@ const cannedCases: Record<keyof typeof requestDescriptors, CannedCase> = {
 		params: {},
 		response: { threads: [{ id: "t-1", title: "T", last_activity_at: 1 }] },
 	},
+	tickTickStatus: {
+		args: [],
+		method: "ticktick/status",
+		params: {},
+		response: { state: "connected", connection_id: "conn-1" },
+	},
+	tickTickTasksList: {
+		args: [],
+		method: "ticktick/tasks/list",
+		params: {},
+		response: {
+			source_limit_reached: false,
+			tasks: [
+				{
+					id: "t1",
+					title: "buy milk",
+					kind: "TEXT",
+					priority: 0,
+					tags: [],
+					checklist_items: [],
+				},
+			],
+		},
+	},
 	getRunHistory: {
 		args: [2],
 		method: "run/get_history",
@@ -1324,7 +1365,7 @@ const cannedCases: Record<keyof typeof requestDescriptors, CannedCase> = {
 		args: ["r-1"],
 		method: "run/cancel",
 		params: { run_id: "r-1" },
-		response: { outcome: "already_terminal" },
+		response: { outcome: "already_terminal", live_tail: false },
 	},
 	retryRun: {
 		args: ["r-1"],

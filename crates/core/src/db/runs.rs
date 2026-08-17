@@ -9,7 +9,7 @@ use uuid::Uuid;
 // Lifecycle types come through the facade's re-exports (mod.rs keeps their
 // ADR-0028/0029 annotations), not `super::lifecycle` directly, so the facade
 // surface stays the one import path.
-use super::{Moved, ProposalStatus, RunStatus, TerminalReason};
+use super::{Moved, ProposalStatus, RunStatus, Terminal, TerminalReason};
 use super::queries::{self, PartType};
 use super::run_log;
 use crate::workflow::Workflow;
@@ -345,6 +345,83 @@ pub async fn resolve_tool_call(
     queries::resolve_tool_call(pool, tool_call_id, status, result_payload, now_ms).await
 }
 
+/// Begin an EXTERNAL (Worker-executed MCP) tool call (external-task-views A4):
+/// persist the pending row + its `run_steps` entry in one transaction, GUARDED
+/// so the insert lands only while the Run is still `running`. Returns
+/// [`Moved::Won`] when the row was inserted, [`Moved::Lost`] when the Run had
+/// already gone terminal (a started frame that raced cancellation/EOF) — the
+/// caller publishes the started event ONLY on a win, so a phantom row can never
+/// reach a client.
+pub async fn begin_external_tool_call(
+    pool: &SqlitePool,
+    run_id: Uuid,
+    tool_call_id: &str,
+    name: &str,
+    request_payload: &str,
+    now_ms: i64,
+) -> sqlx::Result<Moved> {
+    let mut tx = pool.begin().await?;
+    let inserted = queries::insert_external_tool_call_if_running(
+        &mut *tx,
+        tool_call_id,
+        run_id,
+        name,
+        request_payload,
+        now_ms,
+    )
+    .await?;
+    if inserted == 0 {
+        // The Run is no longer running — no row, no step, no event.
+        return Ok(Moved::Lost);
+    }
+    let seq = queries::next_run_step_seq(&mut *tx, run_id).await?;
+    queries::insert_tool_call_run_step(&mut *tx, run_id, seq, tool_call_id, now_ms).await?;
+    tx.commit().await?;
+    Ok(Moved::Won)
+}
+
+/// The authoritative outcome of pairing an external finished frame with its
+/// durable started row.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ExternalToolFinish {
+    Resolved(String),
+    AlreadySettled,
+    Missing,
+}
+
+/// Finish an EXTERNAL tool call, distinguishing a resolved pending row from an
+/// already-settled row and a frame that was never started. The update + fallback
+/// classification share one transaction, so cancellation cannot change the
+/// answer between them.
+pub async fn finish_external_tool_call(
+    pool: &SqlitePool,
+    run_id: Uuid,
+    tool_call_id: &str,
+    status: &str,
+    result_payload: &str,
+    now_ms: i64,
+) -> sqlx::Result<ExternalToolFinish> {
+    let mut tx = pool.begin().await?;
+    let resolved = queries::resolve_external_tool_call(
+        &mut *tx,
+        tool_call_id,
+        run_id,
+        status,
+        result_payload,
+        now_ms,
+    )
+    .await?;
+    let outcome = match resolved {
+        Some(name) => ExternalToolFinish::Resolved(name),
+        None => match queries::external_tool_call_status(&mut *tx, tool_call_id, run_id).await? {
+            Some(_) => ExternalToolFinish::AlreadySettled,
+            None => ExternalToolFinish::Missing,
+        },
+    };
+    tx.commit().await?;
+    Ok(outcome)
+}
+
 /// Read a Run's [`RunStatus`] (ADR-0025); `None` when the Run does not exist.
 /// Backs `run/subscribe`'s parked branch and the forwarder's no-false-done check.
 ///
@@ -406,18 +483,21 @@ pub async fn cancel_parked_run(pool: &SqlitePool, run_id: Uuid, now_ms: i64) -> 
     Ok(true)
 }
 
-/// Cancel a running Run in one guarded transition. Returns `Won` only if the
-/// Run was still `running`; a lost race means a Worker terminal transition got
-/// there first and the caller maps the cancel request to `already_terminal`.
+/// Cancel a running Run in one guarded transition. Wins only if the Run was
+/// still `running`; a lost race means a Worker terminal transition got there
+/// first and the caller maps the cancel request to `already_terminal`. The won
+/// transition also settles still-pending external calls as interrupted
+/// (external-task-views A4) — the returned [`Terminal`] carries them for the
+/// post-commit `tool_call` event publishes.
 pub async fn cancel_running_run(
     pool: &SqlitePool,
     run_id: Uuid,
     now_ms: i64,
-) -> sqlx::Result<Moved> {
+) -> sqlx::Result<Terminal> {
     let mut tx = pool.begin().await?;
-    let moved = RunStatus::cancel_running(&mut *tx, run_id, now_ms).await?;
+    let terminal = RunStatus::cancel_running(&mut *tx, run_id, now_ms).await?;
     tx.commit().await?;
-    Ok(moved)
+    Ok(terminal)
 }
 
 /// Prepare an errored Run for in-place retry (ADR-0028 retry amendment, #230) in
@@ -596,22 +676,24 @@ pub async fn read_run_timeline(pool: &SqlitePool, run_id: Uuid) -> sqlx::Result<
     Ok(steps)
 }
 
-/// A Run's snapshot for `run/subscribe` (ADR-0022): the assistant message's
-/// cumulative text at the subscribe instant plus the Run's status. `text` is
-/// empty for a Run that has streamed no delta yet.
+/// A Run's terminal-state snapshot for `run/subscribe` (ADR-0022): the Run's
+/// status + persisted error message at the subscribe instant. The assistant
+/// timeline now rides the ordered segment `Snapshot` (review P1 #2), so this no
+/// longer carries text.
 #[derive(Debug)]
 pub struct RunSnapshot {
-    pub text: String,
-    /// The Run's [`RunStatus`]. Part of the ADR-0022 snapshot shape; the
-    /// subscribe handler reads it to tell terminal from live under the gate, and
-    /// the `thread/get` rehydration read consumes it in a later slice.
+    /// The Run's [`RunStatus`]. The subscribe handler reads it under the gate to
+    /// tell terminal from live and pick the terminal event.
     pub status: RunStatus,
+    /// The persisted `error_message` when the Run settled `errored` (`None`
+    /// otherwise). Lets `run/subscribe` emit a faithful `RunEvent::Error` for a
+    /// re-attach to an already-errored Run, rather than mis-reporting `done`.
+    pub error_message: Option<String>,
 }
 
-/// Read the snapshot-then-tail starting point: the assistant message's
-/// cumulative text (all `message_parts` concatenated in `seq` order) and the
-/// Run status. `None` when the Run does not exist (subscribe handler stays
-/// defensible against unknown run ids).
+/// Read the Run's status + error message. `None` when the Run does not exist
+/// (subscribe handler stays defensible against unknown run ids — the property
+/// the errored-late-subscribe fix relies on).
 ///
 /// The stored status is parsed into [`RunStatus`] at this seam; an unknown value
 /// surfaces as a loud `sqlx::Error::Decode` (see [`run_status`]).
@@ -619,14 +701,14 @@ pub async fn select_run_snapshot(
     pool: &SqlitePool,
     run_id: Uuid,
 ) -> sqlx::Result<Option<RunSnapshot>> {
-    let Some((text, status)) = queries::select_run_snapshot(pool, run_id).await? else {
+    let Some((status, error_message)) = queries::select_run_snapshot(pool, run_id).await? else {
         return Ok(None);
     };
     let status = RunStatus::from_str(&status)
         .ok_or_else(|| sqlx::Error::Decode(format!("unknown stored run status {status:?}").into()))?;
     Ok(Some(RunSnapshot {
-        text: text.unwrap_or_default(),
         status,
+        error_message,
     }))
 }
 
@@ -656,6 +738,7 @@ pub async fn run_workflow_snapshot(
                 thinking_level: Some(thinking_level),
                 system_prompt: base.system_prompt.clone(),
                 tools: base.tools.clone(),
+                external_tools: base.external_tools,
             },
         ))
 }
@@ -663,18 +746,18 @@ pub async fn run_workflow_snapshot(
 /// Clean termination on the Worker's `done`: flip `runs` and the assistant
 /// `messages` row to `completed` and append a `done` `run_log` row, in one
 /// transaction so a reader never sees an in-between mix.
-pub async fn complete_run(pool: &SqlitePool, run_id: Uuid, now_ms: i64) -> sqlx::Result<Moved> {
+pub async fn complete_run(pool: &SqlitePool, run_id: Uuid, now_ms: i64) -> sqlx::Result<Terminal> {
     let mut tx = pool.begin().await?;
-    let moved = RunStatus::complete(&mut *tx, run_id, now_ms).await?;
+    let terminal = RunStatus::complete(&mut *tx, run_id, now_ms).await?;
     tx.commit().await?;
-    Ok(moved)
+    Ok(terminal)
 }
 
 /// Worker stdout EOF without a `done` event (worker died/killed/hung up). Flip
 /// `runs` to `errored` (`terminal_reason='worker_disconnected'`), every
 /// `streaming` Message to `incomplete` (ADR-0017 invariant), and append an
 /// `error` `run_log` row. One transaction.
-pub async fn error_run(pool: &SqlitePool, run_id: Uuid, now_ms: i64) -> sqlx::Result<Moved> {
+pub async fn error_run(pool: &SqlitePool, run_id: Uuid, now_ms: i64) -> sqlx::Result<Terminal> {
     error_run_with_message(
         pool,
         run_id,
@@ -698,13 +781,13 @@ pub async fn error_run_with_message(
     error_code: &str,
     error_message: &str,
     now_ms: i64,
-) -> sqlx::Result<Moved> {
+) -> sqlx::Result<Terminal> {
     let mut tx = pool.begin().await?;
-    let moved =
+    let terminal =
         RunStatus::fail(&mut *tx, run_id, terminal_reason, error_code, error_message, now_ms)
             .await?;
     tx.commit().await?;
-    Ok(moved)
+    Ok(terminal)
 }
 
 /// Boot recovery sweep (ADR-0012): on Core start, force-error every `running`
@@ -720,7 +803,7 @@ pub async fn recover_interrupted_runs(pool: &SqlitePool, now_ms: i64) -> sqlx::R
     let mut swept: u64 = 0;
     for id in queries::select_running_run_ids(&mut *tx).await? {
         let run_id = Uuid::parse_str(&id).map_err(|e| sqlx::Error::Decode(e.into()))?;
-        let moved = RunStatus::fail(
+        let terminal = RunStatus::fail(
             &mut *tx,
             run_id,
             TerminalReason::CoreRestarted,
@@ -729,7 +812,7 @@ pub async fn recover_interrupted_runs(pool: &SqlitePool, now_ms: i64) -> sqlx::R
             now_ms,
         )
         .await?;
-        swept += moved.won() as u64;
+        swept += terminal.won() as u64;
     }
     tx.commit().await?;
     Ok(swept)
@@ -943,15 +1026,79 @@ mod tests {
             .expect("count run events")
     }
 
+    /// The terminal settle (external-task-views A4) touches ONLY still-pending
+    /// EXTERNAL rows: a pending Core row stays pending (the reload filter owns
+    /// it, as before), and an already-resolved external row keeps its real
+    /// result. The boot recovery sweep — funnelled through the same
+    /// `RunStatus::fail` — settles too.
+    #[tokio::test]
+    async fn terminal_settle_interrupts_only_pending_external_rows() {
+        let pool = memory_pool().await;
+        let run_id = Uuid::parse_str("55555555-5555-4555-8555-555555555555").unwrap();
+        insert_bare_run(&pool, &run_id.to_string(), "running").await;
+        // Three rows: a pending external, a pending CORE, a completed external.
+        persist_tool_call(&pool, run_id, "tc-ext-pending", "ticktick_search_task", "{}", 1)
+            .await
+            .expect("pending external");
+        persist_tool_call(&pool, run_id, "tc-core-pending", "read_thread", "{}", 1)
+            .await
+            .expect("pending core");
+        persist_tool_call(&pool, run_id, "tc-ext-done", "ticktick_filter_tasks", "{}", 1)
+            .await
+            .expect("resolved external");
+        resolve_tool_call(
+            &pool,
+            "tc-ext-done",
+            "completed",
+            r#"{"content":[{"type":"text","text":"1 task found"}],"is_error":false}"#,
+            2,
+        )
+        .await
+        .expect("resolve external");
+
+        // Boot recovery (RunStatus::fail funnel) is a terminal transition too.
+        let swept = recover_interrupted_runs(&pool, 42).await.expect("sweep");
+        assert_eq!(swept, 1);
+
+        let rows: Vec<(String, String, Option<String>)> = sqlx::query_as(
+            "SELECT id, status, result_payload FROM tool_calls WHERE run_id = ?1 ORDER BY id",
+        )
+        .bind(run_id.to_string())
+        .fetch_all(&pool)
+        .await
+        .expect("read rows");
+        let by_id: std::collections::HashMap<&str, (&str, Option<&str>)> = rows
+            .iter()
+            .map(|(id, status, payload)| (id.as_str(), (status.as_str(), payload.as_deref())))
+            .collect();
+        assert_eq!(
+            by_id["tc-ext-pending"],
+            (
+                "errored",
+                Some(r#"{"content":[{"type":"text","text":"interrupted"}],"is_error":true}"#)
+            ),
+            "the pending external row settles as interrupted"
+        );
+        assert_eq!(
+            by_id["tc-core-pending"],
+            ("pending", None),
+            "a pending Core row is never touched"
+        );
+        assert_eq!(
+            by_id["tc-ext-done"].0, "completed",
+            "an already-resolved external row keeps its real result"
+        );
+    }
+
     #[tokio::test]
     async fn complete_loses_on_parked_and_writes_no_done_event() {
         let pool = memory_pool().await;
         let run_id = Uuid::parse_str("33333333-3333-4333-8333-333333333333").unwrap();
         insert_bare_run(&pool, &run_id.to_string(), "parked").await;
 
-        let moved = complete_run(&pool, run_id, 42).await.expect("complete");
+        let terminal = complete_run(&pool, run_id, 42).await.expect("complete");
 
-        assert_eq!(moved, Moved::Lost);
+        assert!(!terminal.won());
         assert_eq!(run_status_of(&pool, &run_id.to_string()).await, "parked");
         assert_eq!(run_event_count(&pool, &run_id.to_string(), "done").await, 0);
     }
@@ -962,9 +1109,9 @@ mod tests {
         let run_id = Uuid::parse_str("44444444-4444-4444-8444-444444444444").unwrap();
         insert_bare_run(&pool, &run_id.to_string(), "parked").await;
 
-        let moved = error_run(&pool, run_id, 42).await.expect("error");
+        let terminal = error_run(&pool, run_id, 42).await.expect("error");
 
-        assert_eq!(moved, Moved::Lost);
+        assert!(!terminal.won());
         assert_eq!(run_status_of(&pool, &run_id.to_string()).await, "parked");
         assert_eq!(
             run_event_count(&pool, &run_id.to_string(), "error").await,
@@ -1309,18 +1456,13 @@ mod tests {
         );
     }
 
-    /// The snapshot-composition rule (finding F9, the Core half): a Run's
-    /// subscribe snapshot is the assistant message's CUMULATIVE text — all
-    /// `type='text'` parts concatenated in `seq` order, reasoning excluded.
-    /// CROSS-LANGUAGE MIRROR: the web client (`apps/web/src/store/chat.ts`
-    /// `setCumulativeText` / the `appendTextSegment` armed path) assumes exactly
-    /// this rule, because Core sends the snapshot as a plain `text_delta`
-    /// (`runs/subscribe.rs` `send_text_delta(… &snap.text)` sites) —
-    /// indistinguishable on the wire from a tail delta; only the client's armed
-    /// bit disambiguates. Tagging the snapshot on the wire is the recorded
-    /// follow-up (F9's full fix); until then this test tethers the two halves.
+    /// The assistant timeline's `type='text'` parts persist in `seq` order with
+    /// reasoning interleaved — the raw shape `run_live_segments` assembles into
+    /// the ordered `Snapshot` (review P1 #2), reasoning kept in place, text not
+    /// coalesced across it. (The `run/subscribe` wire tagging F9 flagged is now
+    /// the explicit `snapshot` Run Event.)
     #[tokio::test]
-    async fn select_run_snapshot_concats_text_parts_in_seq_order() {
+    async fn assistant_text_parts_persist_in_seq_order() {
         let pool = memory_pool().await;
         let thread_id = Uuid::now_v7();
         let run_id = Uuid::now_v7();
@@ -1364,17 +1506,66 @@ mod tests {
         queries::insert_text_part(&mut *tx, assistant_id, 2, "world")
             .await
             .expect("text part 2");
+        // The run_steps spine the segment assembler orders by (production writes
+        // part + step together via `open_assistant_part`).
+        for seq in 0..3 {
+            queries::insert_message_run_step(&mut *tx, run_id, seq, assistant_id, seq, 1)
+                .await
+                .expect("message run step");
+        }
         tx.commit().await.expect("commit seed");
 
-        let snap = select_run_snapshot(&pool, run_id)
-            .await
-            .expect("read ok")
-            .expect("run exists");
+        // The assistant text parts concatenate in seq order, reasoning excluded.
+        // (`run_live_segments` now assembles these as SEPARATE ordered segments
+        // with reasoning interleaved — review P1 #2; here we pin the persisted
+        // parts directly.)
+        let text: Option<String> = sqlx::query_scalar(
+            "SELECT group_concat(text, '') FROM ( \
+               SELECT text FROM message_parts \
+               WHERE message_id = ?1 AND type = 'text' ORDER BY seq )",
+        )
+        .bind(assistant_id.to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("read text");
         assert_eq!(
-            snap.text, "Hello world",
-            "cumulative = all text parts, seq order, reasoning excluded"
+            text.unwrap_or_default(),
+            "Hello world",
+            "text parts concatenate in seq order, reasoning excluded"
         );
-        assert!(snap.status.is_parked(), "status rides the snapshot");
+        assert!(
+            run_status(&pool, run_id)
+                .await
+                .expect("status")
+                .expect("run exists")
+                .is_parked(),
+            "the seeded run is parked"
+        );
+
+        // The assembled timeline (the `run/subscribe` snapshot source) preserves
+        // the text–reasoning–text interleave as SEPARATE ordered segments.
+        let segments = crate::db::run_live_segments(&pool, run_id, true)
+            .await
+            .expect("assemble live segments");
+        let shape: Vec<String> = segments
+            .iter()
+            .map(|seg| match seg {
+                crate::db::MessageSegment::Text { text } => format!("text:{text}"),
+                crate::db::MessageSegment::Reasoning { text, .. } => {
+                    format!("reasoning:{text}")
+                }
+                other => format!("other:{other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            shape,
+            vec![
+                "text:Hello ".to_string(),
+                "reasoning:thinking…".to_string(),
+                "text:world".to_string(),
+            ],
+            "run_live_segments keeps the interleave in seq order"
+        );
     }
 
     /// Drive a bare Run to `errored` directly (terminal fields stamped), to seed

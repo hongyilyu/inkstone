@@ -178,6 +178,9 @@ mod parity_fixtures {
             s.push('\n');
             s
         };
+        // Owned by the fn so the borrowing ManifestMessage::ToolResult below
+        // can reference it (the wire block borrows its result).
+        let decision_result = TranscriptToolResult::text("Accepted.", false);
         // Each entry serializes one instance through the real serde path.
         macro_rules! fx {
             ($file:literal, $val:expr) => {
@@ -201,6 +204,7 @@ mod parity_fixtures {
                 "run_cancel_result.json",
                 RunCancelResult {
                     outcome: "accepted".to_string(),
+                    live_tail: true,
                 }
             ),
             fx!(
@@ -732,14 +736,29 @@ mod parity_fixtures {
                             terminal_reason: Some("completed".to_string()),
                             segments: vec![
                                 Segment::ToolCall {
+                                    tool_call_id: "tc_01".to_string(),
                                     name: "search_entities".to_string(),
                                     status: "completed".to_string(),
                                     arg: Some("Lev".to_string()),
+                                    // Core-tool rows carry no result in v1 (A4).
+                                    result: None,
                                 },
                                 Segment::ToolCall {
+                                    tool_call_id: "tc_02".to_string(),
                                     name: "read_thread".to_string(),
                                     status: "completed".to_string(),
                                     arg: None,
+                                    result: None,
+                                },
+                                // An EXTERNAL (`ticktick_*`) call carries the
+                                // normalized model-received result so the reload
+                                // row expands identically to the live one (A4).
+                                Segment::ToolCall {
+                                    tool_call_id: "tc_03".to_string(),
+                                    name: "ticktick_filter_tasks".to_string(),
+                                    status: "completed".to_string(),
+                                    arg: None,
+                                    result: Some(TranscriptToolResult::text("1 task found", false)),
                                 },
                                 Segment::Proposal {
                                     proposal_id: UUID_A.to_string(),
@@ -881,6 +900,7 @@ mod parity_fixtures {
                     name: "search_entities".to_string(),
                     status: ToolCallStatus::Started,
                     arg: Some("Lev".to_string()),
+                    result: None,
                 }
             ),
             fx!(
@@ -890,6 +910,7 @@ mod parity_fixtures {
                     name: "read_thread".to_string(),
                     status: ToolCallStatus::Completed,
                     arg: None,
+                    result: None,
                 }
             ),
             fx!(
@@ -899,6 +920,55 @@ mod parity_fixtures {
                     name: "read_thread".to_string(),
                     status: ToolCallStatus::Error,
                     arg: None,
+                    result: None,
+                }
+            ),
+            // A terminal EXTERNAL-call event carries the normalized result the
+            // model received (external-task-views A4); an interrupted settle is
+            // the error-shaped case.
+            fx!(
+                "run_event.tool_call.external_completed.json",
+                RunEvent::ToolCall {
+                    tool_call_id: "tc_04".to_string(),
+                    name: "ticktick_filter_tasks".to_string(),
+                    status: ToolCallStatus::Completed,
+                    arg: None,
+                    result: Some(TranscriptToolResult::text("1 task found", false)),
+                }
+            ),
+            fx!(
+                "run_event.tool_call.external_interrupted.json",
+                RunEvent::ToolCall {
+                    tool_call_id: "tc_05".to_string(),
+                    name: "ticktick_search_task".to_string(),
+                    status: ToolCallStatus::Error,
+                    arg: None,
+                    result: Some(TranscriptToolResult::interrupted()),
+                }
+            ),
+            // snapshot (review P1 #2): the ordered full-timeline reconnect
+            // authority — one representative of each segment kind it carries
+            // (text, external tool_call with result, reasoning with duration),
+            // locking the nested Segment union through the RunEvent leg.
+            fx!(
+                "run_event.snapshot.json",
+                RunEvent::Snapshot {
+                    segments: vec![
+                        Segment::Text {
+                            text: "Bought milk. ".to_string(),
+                        },
+                        Segment::ToolCall {
+                            tool_call_id: "tc_06".to_string(),
+                            name: "ticktick_filter_tasks".to_string(),
+                            status: "completed".to_string(),
+                            arg: None,
+                            result: Some(TranscriptToolResult::text("1 task found", false)),
+                        },
+                        Segment::Reasoning {
+                            text: "Checking the list…".to_string(),
+                            duration_ms: Some(1500),
+                        },
+                    ],
                 }
             ),
             fx!("run_event.done.json", RunEvent::Done),
@@ -952,6 +1022,24 @@ mod parity_fixtures {
                     },
                 }
             ),
+            fx!(
+                "external_tool_ack.started.json",
+                ExternalToolAck {
+                    kind: "external_tool_ack",
+                    tool_call_id: "tc_ext".to_string(),
+                    phase: ExternalToolPhase::Started,
+                    ok: true,
+                }
+            ),
+            fx!(
+                "external_tool_ack.finished_nack.json",
+                ExternalToolAck {
+                    kind: "external_tool_ack",
+                    tool_call_id: "tc_ext".to_string(),
+                    phase: ExternalToolPhase::Finished,
+                    ok: false,
+                }
+            ),
             // WorkerManifest (ser-only, borrowed-lifetime <'a> — owned literals live
             // to the serialize call inside `fx!`). Maximal: resume mode, all THREE
             // ManifestMessage variants (user / assistant-with-tool_calls /
@@ -989,8 +1077,7 @@ mod parity_fixtures {
                         },
                         ManifestMessage::ToolResult {
                             tool_call_id: "tc_1",
-                            content: "Accepted.",
-                            is_error: None,
+                            result: &decision_result,
                         },
                     ],
                     mode: Some("resume"),
@@ -999,6 +1086,11 @@ mod parity_fixtures {
                         mime: "image/png".to_string(),
                         data_base64: "aW1hZ2UgYnl0ZXM=".to_string(),
                     }]),
+                    external_tools: Some(ExternalToolsManifest {
+                        endpoint: "https://mcp.ticktick.com/",
+                        access_token: "tok_ticktick",
+                        timeout_ms: 30_000,
+                    }),
                 }
             ),
             // WorkerManifest bare: fresh start, empty history, no mode / token /
@@ -1021,6 +1113,58 @@ mod parity_fixtures {
                     mode: None,
                     access_token: None,
                     attachments: None,
+                    external_tools: None,
+                }
+            ),
+            // ── ticktick/* Web-lane results (external-task-views A2) ──────────
+            fx!(
+                "ticktick_status_result.connected.json",
+                TickTickStatusResult::Connected {
+                    connection_id: "conn-01900000".to_string(),
+                }
+            ),
+            fx!(
+                "ticktick_status_result.not_connected.json",
+                TickTickStatusResult::NotConnected
+            ),
+            // A maximal row (Inbox list, due tuple, RRULE, checklist) + a
+            // minimal one (unmatched list, undated) cover every optional leg;
+            // source_limit_reached true carries the truncation signal.
+            fx!(
+                "ticktick_tasks_list_result.json",
+                TickTickTasksListResult {
+                    source_limit_reached: true,
+                    tasks: vec![
+                        TickTickTaskRow {
+                            id: "t1".to_string(),
+                            list_name: Some("Inbox".to_string()),
+                            title: "buy milk".to_string(),
+                            kind: "CHECKLIST".to_string(),
+                            priority: 3,
+                            tags: vec!["errand".to_string()],
+                            due: Some(TickTickDue {
+                                date: "2026-08-20T17:30:00.000+0000".to_string(),
+                                is_all_day: false,
+                                time_zone: "America/Los_Angeles".to_string(),
+                            }),
+                            repeat_flag: Some("RRULE:FREQ=DAILY;INTERVAL=1".to_string()),
+                            checklist_items: vec![TickTickChecklistItem {
+                                title: "2%".to_string(),
+                                done: true,
+                            }],
+                        },
+                        TickTickTaskRow {
+                            id: "t2".to_string(),
+                            list_name: None,
+                            title: "think".to_string(),
+                            kind: "TEXT".to_string(),
+                            priority: 0,
+                            tags: vec![],
+                            due: None,
+                            repeat_flag: None,
+                            checklist_items: vec![],
+                        },
+                    ],
                 }
             ),
             // ── Decision prose (finding F12): NOT a wire type — the machine-
@@ -1116,14 +1260,22 @@ mod parity_fixtures {
             "run_event.tool_call.started.json",
             "run_event.tool_call.completed.json",
             "run_event.tool_call.error.json",
+            "run_event.tool_call.external_completed.json",
+            "run_event.tool_call.external_interrupted.json",
+            "run_event.snapshot.json",
             "run_event.done.json",
             "run_event.cancelled.json",
             "run_event.error.json",
             "run_event.reasoning_delta.json",
             "tool_result.ok.json",
             "tool_result.err.json",
+            "external_tool_ack.started.json",
+            "external_tool_ack.finished_nack.json",
             "worker_manifest.json",
             "worker_manifest.bare.json",
+            "ticktick_status_result.connected.json",
+            "ticktick_status_result.not_connected.json",
+            "ticktick_tasks_list_result.json",
             "decision_prose.json",
         ];
         // The embedded table must cover exactly what the writer emits — neither can
@@ -1243,6 +1395,8 @@ mod parity_fixtures {
         parses!(WorkerStdout, "worker_stdout.error.json");
         parses!(WorkerStdout, "worker_stdout.tool_request.json");
         parses!(WorkerStdout, "worker_stdout.reasoning_delta.json");
+        parses!(WorkerStdout, "worker_stdout.external_tool_started.json");
+        parses!(WorkerStdout, "worker_stdout.external_tool_finished.json");
 
         // HelperLine (deser-only): the 3 variants Core reads off the Provider
         // Helper's stdout (ADR-0023). Hand-authored because Core never
@@ -1278,6 +1432,8 @@ mod parity_fixtures {
     /// `DecisionProse`, which is not a `pub` production type here; the TS
     /// registry's `ProviderHelperLine` is Rust's `HelperLine`).
     const FIXTURE_BACKED: &[&str] = &[
+        "TickTickStatusResult",
+        "TickTickTasksListResult",
         "PostMessageParams",
         "PostMessageResult",
         "SubscribeParams",
@@ -1338,6 +1494,7 @@ mod parity_fixtures {
         "SettingsSetParams",
         "RunEvent",
         "ToolResult",
+        "ExternalToolAck",
         "WorkerStdout",
         "WorkerManifest",
         "HelperLine",
@@ -1376,6 +1533,10 @@ mod parity_fixtures {
         ("AgentToolResult", "tool_result.ok.json"),
         ("ToolTextContent", "tool_result.ok.json"),
         ("ToolErrorWire", "tool_result.err.json"),
+        (
+            "ExternalToolPhase",
+            "external_tool_ack.started.json / external_tool_ack.finished_nack.json",
+        ),
         ("ProviderStatus", "provider_status_result.json"),
         ("ModelInfo", "model_catalog_result.json"),
         ("ProviderModels", "model_catalog_result.json"),
@@ -1384,6 +1545,18 @@ mod parity_fixtures {
         ("ManifestMessage", "worker_manifest.json (all three variants)"),
         ("WorkflowManifest", "worker_manifest.json"),
         ("CoreToolDescriptor", "worker_manifest.json"),
+        ("ExternalToolsManifest", "worker_manifest.json external_tools"),
+        ("TickTickDue", "ticktick_tasks_list_result.json tasks[].due"),
+        (
+            "TickTickChecklistItem",
+            "ticktick_tasks_list_result.json tasks[].checklist_items",
+        ),
+        ("TickTickTaskRow", "ticktick_tasks_list_result.json tasks[]"),
+        (
+            "TranscriptToolResult",
+            "run_event.tool_call.external_*.json + worker_manifest.json tool_result \
+             + worker_stdout.external_tool_finished.json (authored)",
+        ),
     ];
 
     /// Deliberately out of the gate, each with its recorded reason.
@@ -1413,6 +1586,7 @@ mod parity_fixtures {
         ("provider.rs", include_str!("provider.rs")),
         ("run.rs", include_str!("run.rs")),
         ("thread.rs", include_str!("thread.rs")),
+        ("ticktick.rs", include_str!("ticktick.rs")),
         ("worker.rs", include_str!("worker.rs")),
     ];
 

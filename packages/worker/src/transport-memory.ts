@@ -1,7 +1,10 @@
-import type { WorkerRunEvent } from "@inkstone/protocol";
 import { Effect, Layer } from "effect";
 import type { ToolCallResponse } from "./tool-proxy.js";
-import { WorkerTransport } from "./transport.js";
+import {
+	type ExternalToolFrame,
+	type WorkerEmit,
+	WorkerTransport,
+} from "./transport.js";
 
 /** One outbound Tool Request recorded by the in-memory seam so a test can assert what the model asked Core to run. */
 export interface CapturedToolRequest {
@@ -20,13 +23,18 @@ export interface InMemoryToolChannel {
 
 /** Test `Layer` for {@link WorkerTransport} (ADR-0027): `captured`/`tools` arrays are the assertions, no real stdio. See docs/design/worker-transport.md. */
 export const InMemoryTransport = (
-	captured: WorkerRunEvent[],
+	captured: WorkerEmit[],
 	tools?: InMemoryToolChannel,
+	syncExternal?: (frame: ExternalToolFrame) => Promise<void>,
 ): Layer.Layer<WorkerTransport> =>
 	Layer.succeed(WorkerTransport, {
 		readManifest: Effect.succeed(null),
 		emit: (event) => {
 			captured.push(event);
+		},
+		syncExternalTool: (frame) => {
+			captured.push(frame);
+			return syncExternal?.(frame) ?? Promise.resolve();
 		},
 		callTool: (toolCallId, name, params) => {
 			tools?.requests.push({ toolCallId, name, params });

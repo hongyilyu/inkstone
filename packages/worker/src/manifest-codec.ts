@@ -10,6 +10,18 @@ import type { WorkerManifest } from "@inkstone/protocol";
 /** Map the manifest's assembled history into pi `Message[]` — see docs/design/worker.md (ADR-0025). */
 function toAgentMessages(manifest: WorkerManifest): AgentMessage[] {
 	const now = Date.now();
+	// Restore each tool_result's tool NAME from its paired assistant tool_call
+	// (external-task-views A4): pi associates a replayed result with its call by
+	// id, but providers also want the name; the manifest's assistant blocks
+	// already carry it, so no extra wire field is needed.
+	const toolNames = new Map<string, string>();
+	for (const m of manifest.messages) {
+		if (m.role === "assistant") {
+			for (const tc of m.tool_calls ?? []) {
+				toolNames.set(tc.id, tc.name);
+			}
+		}
+	}
 	const history: Message[] = manifest.messages.map((m): Message => {
 		if (m.role === "user") {
 			return { role: "user", content: m.text, timestamp: now };
@@ -18,9 +30,12 @@ function toAgentMessages(manifest: WorkerManifest): AgentMessage[] {
 			return {
 				role: "toolResult",
 				toolCallId: m.tool_call_id,
-				toolName: "",
-				content: [{ type: "text", text: m.content }],
-				isError: m.is_error ?? false,
+				toolName: toolNames.get(m.tool_call_id) ?? "",
+				// Copy the decoded (readonly) blocks into the mutable array pi
+				// expects; the ONE transcript result type carries content +
+				// is_error for every tool kind (external-task-views A4).
+				content: m.result.content.map((c) => ({ ...c })),
+				isError: m.result.is_error,
 				timestamp: now,
 			};
 		}

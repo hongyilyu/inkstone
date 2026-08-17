@@ -30,6 +30,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 pub use intent_graph::{IntentGraphOutcome, apply_intent_graph_proposal, resolved_plan_for};
 pub(crate) use intent_graph::validate_intent_graph_payload;
 pub use lifecycle::Moved;
+pub use lifecycle::{InterruptedExternalCall, Terminal};
 // `RunStatus` is the read+write Interface for Run status: the write verbs live on
 // it (ADR-0028), and the read seam (`run_status`, `RunSnapshot.status`) now returns
 // it too, so read sites match compiler-checked variants instead of raw strings
@@ -74,12 +75,13 @@ pub(crate) use queries::PartType;
 // `RunSnapshot` is not re-exported: its one consumer (`run/subscribe`) reads
 // fields off `select_run_snapshot`'s return without naming the type.
 pub use runs::{
-    AttachmentSeed, TimelineStep, append_assistant_part, assistant_message_id_for_run,
-    cancel_parked_run, cancel_running_run, complete_run, error_run, error_run_with_message,
-    history_for_run, list_run_history, mark_run_running, open_assistant_part,
-    persist_initial_run, persist_thread_with_first_run, persist_tool_call, prepare_retry,
-    read_run_timeline, recover_interrupted_runs, resolve_tool_call, run_prompt_and_thread,
-    run_status, run_workflow_snapshot, select_run_snapshot,
+    AttachmentSeed, ExternalToolFinish, TimelineStep, append_assistant_part,
+    assistant_message_id_for_run, begin_external_tool_call, cancel_parked_run, cancel_running_run,
+    complete_run, error_run, error_run_with_message, finish_external_tool_call, history_for_run,
+    list_run_history, mark_run_running, open_assistant_part, persist_initial_run,
+    persist_thread_with_first_run, persist_tool_call, prepare_retry, read_run_timeline,
+    recover_interrupted_runs, resolve_tool_call, run_prompt_and_thread, run_status,
+    run_workflow_snapshot, select_run_snapshot,
 };
 // Result/row types no caller names (`Backlinks`, `CurrentEntityRow`,
 // `ResolvedEntityRef`) and the V0-internal GTD reads (`todos_by_*`, consumed
@@ -95,7 +97,7 @@ pub use entities_read::{
 // binary-only crate an unreachable re-export trips `unused_imports`.
 pub use threads::{
     MessageSegment, archive_thread, get_thread_with_messages, list_archived_threads,
-    list_threads, thread_exists, unarchive_thread, update_thread_title,
+    list_threads, run_live_segments, thread_exists, unarchive_thread, update_thread_title,
 };
 
 /// Current wall-clock time as ms since UNIX_EPOCH (the `*_at` columns).

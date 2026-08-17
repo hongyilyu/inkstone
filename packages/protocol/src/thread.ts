@@ -3,6 +3,8 @@
 
 import { Schema as S } from "effect";
 
+import { TranscriptToolResult } from "./transcript.js";
+
 /** `thread/create` params: the opening `prompt`, plus optional `attachment_ids`
  * — ids from prior `media/upload` calls to link to the user Message (ADR-0058);
  * omitted = no attachments. */
@@ -83,9 +85,16 @@ export const Segment = S.Union(
 	S.Struct({ kind: S.Literal("text"), text: S.String }),
 	S.Struct({
 		kind: S.Literal("tool_call"),
+		/** The durable per-call identity (external-task-views A4), served from the
+		 * `tool_calls` row so the reload row keys and expands identically to the
+		 * live one. */
+		tool_call_id: S.String,
 		name: S.String,
 		status: S.String,
 		arg: S.optional(S.String),
+		/** The normalized result the model received — populated for external
+		 * (`ticktick_*`) calls in v1, so the collapsed row expands to it (A4). */
+		result: S.optional(TranscriptToolResult),
 	}),
 	S.Struct({
 		kind: S.Literal("proposal"),

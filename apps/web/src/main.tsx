@@ -4,6 +4,7 @@ import { AlertTriangle, Compass } from "lucide-react";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { EmptyState } from "./components/ui/empty-state.tsx";
+import { TickTickReconnectSync } from "./lib/hooks/useTickTick.ts";
 import { routeTree } from "./routeTree.gen";
 import { RuntimeProvider } from "./runtime.tsx";
 import "./index.css";
@@ -89,6 +90,9 @@ createRoot(root).render(
 	<StrictMode>
 		<QueryClientProvider client={queryClient}>
 			<RuntimeProvider>
+				{/* App-lifetime: observes WS reconnects even while Tasks is unmounted
+				    (review F2), so an account swap can't survive in a stale cache. */}
+				<TickTickReconnectSync />
 				<RouterProvider router={router} />
 			</RuntimeProvider>
 		</QueryClientProvider>

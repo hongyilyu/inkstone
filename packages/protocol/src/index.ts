@@ -10,4 +10,6 @@ export * from "./proposal.js";
 export * from "./provider.js";
 export * from "./run.js";
 export * from "./thread.js";
+export * from "./ticktick.js";
+export * from "./transcript.js";
 export * from "./worker.js";

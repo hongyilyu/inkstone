@@ -91,16 +91,18 @@ describe("RunCancelParams", () => {
 });
 
 describe("RunCancelResult", () => {
-	it("decodes each outcome and encodes back unchanged", () => {
+	it("decodes each outcome + live_tail and encodes back unchanged", () => {
 		for (const outcome of [
 			"accepted",
 			"already_terminal",
 			"unknown_run",
 		] as const) {
-			const wire = { outcome };
-			const decoded = S.decodeUnknownSync(RunCancelResult)(wire);
-			expect(decoded).toEqual(wire);
-			expect(S.encodeSync(RunCancelResult)(decoded)).toEqual(wire);
+			for (const live_tail of [true, false]) {
+				const wire = { outcome, live_tail };
+				const decoded = S.decodeUnknownSync(RunCancelResult)(wire);
+				expect(decoded).toEqual(wire);
+				expect(S.encodeSync(RunCancelResult)(decoded)).toEqual(wire);
+			}
 		}
 	});
 
@@ -602,6 +604,33 @@ describe("WorkerManifest", () => {
 		expect(S.decodeUnknownSync(WorkerManifest)(valid)).toEqual(valid);
 	});
 
+	it("requires the external-tool timeout beside endpoint and auth", () => {
+		const external = {
+			...valid,
+			external_tools: {
+				endpoint: "https://mcp.ticktick.com/",
+				access_token: "tok_ticktick",
+				timeout_ms: 250,
+			},
+		};
+		expect(S.decodeUnknownSync(WorkerManifest)(external)).toEqual(external);
+		const { timeout_ms: _omit, ...withoutTimeout } = external.external_tools;
+		expect(() =>
+			S.decodeUnknownSync(WorkerManifest)({
+				...external,
+				external_tools: withoutTimeout,
+			}),
+		).toThrow();
+		for (const timeout_ms of [0, -1, 1.5]) {
+			expect(() =>
+				S.decodeUnknownSync(WorkerManifest)({
+					...external,
+					external_tools: { ...external.external_tools, timeout_ms },
+				}),
+			).toThrow();
+		}
+	});
+
 	it("decodes a manifest without an access token (faux/env providers)", () => {
 		const { access_token: _omit, ...noToken } = valid;
 		expect(S.decodeUnknownSync(WorkerManifest)(noToken)).toEqual(noToken);
@@ -639,18 +668,22 @@ describe("WorkerManifest", () => {
 		).toThrow();
 	});
 
-	it("decodes mode: fresh and a tool_result carrying is_error", () => {
+	it("decodes mode: fresh and a tool_result carrying an error result", () => {
 		const fresh = { ...valid, mode: "fresh" };
 		expect(S.decodeUnknownSync(WorkerManifest)(fresh)).toEqual(fresh);
 
+		// The ONE transcript result type (external-task-views A4): the error
+		// flag lives inside `result`, never as a sibling field.
 		const withError = {
 			...valid,
 			messages: [
 				{
 					role: "tool_result",
 					tool_call_id: "tc_9",
-					content: "boom",
-					is_error: true,
+					result: {
+						content: [{ type: "text", text: "boom" }],
+						is_error: true,
+					},
 				},
 			],
 		};

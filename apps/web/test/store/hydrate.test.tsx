@@ -99,15 +99,30 @@ describe("refresh-durable hydration", () => {
 					segments: [
 						{
 							kind: "tool_call",
+							tool_call_id: "tc_1",
 							name: "search_entities",
 							status: "completed",
 							arg: "Lev",
 						},
 						{
 							kind: "tool_call",
+							tool_call_id: "tc_2",
 							name: "search_entities",
 							status: "error",
 							arg: "Acme",
+						},
+						// An external call reloads WITH its model-received result
+						// (external-task-views A4), so the row expands identically
+						// to the live one.
+						{
+							kind: "tool_call",
+							tool_call_id: "tc_ext",
+							name: "ticktick_filter_tasks",
+							status: "completed",
+							result: {
+								content: [{ type: "text", text: "1 task found" }],
+								is_error: false,
+							},
 						},
 						{ kind: "text", text: "done" },
 					],
@@ -127,23 +142,41 @@ describe("refresh-durable hydration", () => {
 		await hydrateThread(runtime, "tTools");
 
 		const assistant = getChatState().threads.tTools?.messages[1];
+		// The rows key on the DURABLE tool_call_id (external-task-views A4) — the
+		// same id the live `tool_call` Run Event carried, so the reload row keys
+		// identically to the live one.
 		expect(assistant?.segments.filter((s) => s.kind === "tool_call")).toEqual([
 			{
 				kind: "tool_call",
 				call: {
-					id: "m2:seg:0",
+					id: "tc_1",
 					name: "search_entities",
 					status: "completed",
 					arg: "Lev",
+					result: undefined,
 				},
 			},
 			{
 				kind: "tool_call",
 				call: {
-					id: "m2:seg:1",
+					id: "tc_2",
 					name: "search_entities",
 					status: "error",
 					arg: "Acme",
+					result: undefined,
+				},
+			},
+			{
+				kind: "tool_call",
+				call: {
+					id: "tc_ext",
+					name: "ticktick_filter_tasks",
+					status: "completed",
+					arg: undefined,
+					result: {
+						content: [{ type: "text", text: "1 task found" }],
+						is_error: false,
+					},
 				},
 			},
 		]);

@@ -186,6 +186,7 @@ dependencies = [
  "axum",
  "base64",
  "futures-util",
+ "libc",
  "reqwest",
  "rust-embed",
  "schemars",
@@ -203,6 +204,7 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+ "url",
  "uuid",
 ]
 

@@ -1,0 +1,13 @@
+{
+  "kind": "external_tool_finished",
+  "tool_call_id": "tc_ext_1",
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "1 task found: S1 timed"
+      }
+    ],
+    "is_error": false
+  }
+}

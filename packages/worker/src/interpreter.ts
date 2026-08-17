@@ -17,6 +17,11 @@ import type {
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import type { WorkerManifest } from "@inkstone/protocol";
 import { Effect } from "effect";
+import {
+	connectExternalTools,
+	externalFrameFor,
+	liftExternalIsError,
+} from "./external-tools.js";
 import { manifestCodec } from "./manifest-codec.js";
 import { makeProxyTools } from "./tool-proxy.js";
 import { WorkerTransport } from "./transport.js";
@@ -73,7 +78,7 @@ export function runInterpreter(
 ): Effect.Effect<void, never, WorkerTransport> {
 	return Effect.gen(function* () {
 		// Both channels feed pi's callbacks, which run outside the Effect context (ADR-0027).
-		const { emit, callTool } = yield* WorkerTransport;
+		const { emit, syncExternalTool, callTool } = yield* WorkerTransport;
 
 		const model = deps.resolveModel(manifest.workflow);
 		// Current-turn images ride the manifest as raw base64 (never data:-prefixed
@@ -98,10 +103,22 @@ export function runInterpreter(
 			timestamp: Date.now(),
 		};
 
-		const tools =
+		const proxyTools =
 			manifest.workflow.tools.length > 0
 				? makeProxyTools(manifest.workflow.tools, callTool)
 				: [];
+		// External (Worker-executed MCP) tools — external-task-views A3: connect
+		// + discover ONCE per spawn when the manifest carries the config; the
+		// dual read-allowlist lives in external-tools.ts. A connect/discovery
+		// failure throws — worker-main's catchAllDefect turns it into the Run's
+		// terminal `error` event (the Workflow opted in; fail loud).
+		const externalConfig = manifest.external_tools;
+		const external =
+			externalConfig !== undefined
+				? yield* Effect.promise(() => connectExternalTools(externalConfig))
+				: undefined;
+		const tools =
+			external === undefined ? proxyTools : [...proxyTools, ...external.tools];
 
 		// Inject the OAuth access token (if present) as the provider apiKey (ADR-0023).
 		const streamFn: StreamFn = (model_, context, options) =>
@@ -128,6 +145,14 @@ export function runInterpreter(
 		const config = {
 			model,
 			...(reasoning !== undefined ? { reasoning } : {}),
+			// v1 pins the WHOLE batch sequential (external-task-views A4): pi then
+			// finalizes each call before the next starts, so frame order equals
+			// source order by contract — pi's default is "parallel", making this
+			// explicit setting load-bearing.
+			toolExecution: "sequential" as const,
+			// Lift an external result's own `isError` into pi's error flag — the
+			// hook lives in external-tools.ts beside the seam it serves (review M3).
+			afterToolCall: liftExternalIsError,
 			convertToLlm: (messages: AgentMessage[]) =>
 				messages.filter(
 					(m): m is Message =>
@@ -136,7 +161,16 @@ export function runInterpreter(
 						m.role === "toolResult",
 				),
 		};
-		const onEvent: AgentEventSink = (event) => {
+		const onEvent: AgentEventSink = async (event) => {
+			// External-call lifecycle frames (external-task-views A4): sourced from
+			// pi's own tool-execution events — never hand-assembled state. The
+			// mapping (and its text-block narrowing) lives in external-tools.ts;
+			// only `ticktick_*` calls yield a frame (review M3).
+			const externalFrame = externalFrameFor(event);
+			if (externalFrame !== undefined) {
+				await syncExternalTool(externalFrame);
+				return;
+			}
 			if (
 				event.type === "message_update" &&
 				event.assistantMessageEvent.type === "text_delta"
@@ -176,16 +210,26 @@ export function runInterpreter(
 			}
 		};
 
-		if (manifest.mode === "resume") {
-			// Resume (ADR-0025): transcript is already the context; continue without a new prompt.
-			yield* Effect.promise(() =>
-				runAgentLoopContinue(context, config, onEvent, signal, streamFn),
-			);
-		} else {
-			yield* Effect.promise(() =>
-				runAgentLoop([prompt], context, config, onEvent, signal, streamFn),
-			);
-		}
+		// Resume (ADR-0025): transcript is already the context; continue without
+		// a new prompt.
+		const loop =
+			manifest.mode === "resume"
+				? Effect.promise(() =>
+						runAgentLoopContinue(context, config, onEvent, signal, streamFn),
+					)
+				: Effect.promise(() =>
+						runAgentLoop([prompt], context, config, onEvent, signal, streamFn),
+					);
+		// `ensuring` closes the MCP connection on every exit (done, defect,
+		// interruption) so its transport never outlives the run — production
+		// exits the process anyway; in-process tests must not leak.
+		yield* external === undefined
+			? loop
+			: loop.pipe(
+					Effect.ensuring(
+						Effect.promise(() => external.close().catch(() => undefined)),
+					),
+				);
 
 		if (errorMessage !== undefined) {
 			// A model/provider-reported run failure: worker-main's catchAll never sees

@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 /// One `content` block of an `AgentToolResult`. Text-only today; `r#type`
 /// serializes as `"type"`.
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct ToolTextContent {
     pub r#type: String,
     pub text: String,
@@ -25,6 +25,40 @@ pub struct AgentToolResult {
     pub details: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub terminate: Option<bool>,
+}
+
+/// The single transcript result type for ALL tools (external-task-views A4):
+/// the model-visible content blocks plus the ONE error flag. Carried by the
+/// `external_tool_finished` frame, persisted in `tool_calls.result_payload`
+/// for external (`ticktick_*`) calls, served on terminal `tool_call` Run
+/// Events and `Segment::ToolCall`, and replayed in the resume manifest's
+/// `tool_result` blocks. Deliberately no runtime `details`/`terminate` — those
+/// are Worker-runtime control flow, never durable transcript state.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct TranscriptToolResult {
+    pub content: Vec<ToolTextContent>,
+    pub is_error: bool,
+}
+
+impl TranscriptToolResult {
+    /// A single-text-block result.
+    pub fn text(text: impl Into<String>, is_error: bool) -> Self {
+        Self {
+            content: vec![ToolTextContent {
+                r#type: "text".to_string(),
+                text: text.into(),
+            }],
+            is_error,
+        }
+    }
+
+    /// The Core-generated result a Run-termination settle writes into every
+    /// still-pending external call (external-task-views A4): the one case where
+    /// an expansion shows Core-synthesized text rather than content the model
+    /// received (the model saw nothing; the Run died first).
+    pub fn interrupted() -> Self {
+        Self::text("interrupted", true)
+    }
 }
 
 /// One tool the Workflow exposes, shipped (allowlist-filtered) in the spawn
@@ -64,6 +98,25 @@ pub struct ToolResult {
     pub outcome: ToolOutcome,
 }
 
+/// Which external lifecycle frame Core is acknowledging.
+#[derive(Debug, Serialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExternalToolPhase {
+    Started,
+    Finished,
+}
+
+/// Core → Worker: durable acceptance or rejection of one external lifecycle
+/// frame. The dedicated Worker pipe already identifies the Run, so correlation
+/// needs only `tool_call_id` + `phase`. Failure detail stays in Core's log.
+#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+pub struct ExternalToolAck {
+    pub kind: &'static str,
+    pub tool_call_id: String,
+    pub phase: ExternalToolPhase,
+    pub ok: bool,
+}
+
 /// What Core reads off the Worker's stdout: the one-way `RunEvent`s plus the
 /// bidirectional `tool_request`. The `tool_request`'s `run_id` is Core-ignored
 /// (Core uses the spawn's authoritative run id) — kept for symmetry with the TS
@@ -90,6 +143,21 @@ pub enum WorkerStdout {
         tool_call_id: String,
         name: String,
         params: serde_json::Value,
+    },
+    /// An EXTERNAL (Worker-executed MCP, `ticktick_*`) call began
+    /// (external-task-views A4), from pi's `tool_execution_start` event. Core
+    /// persists the pending row and publishes the started `tool_call` event.
+    ExternalToolStarted {
+        tool_call_id: String,
+        name: String,
+        arguments: serde_json::Value,
+    },
+    /// The external call's ONE terminal frame, from pi's finalized
+    /// `tool_execution_end`. No outer error flag — `result.is_error` is the
+    /// single source; `tool_calls.status` derives from it.
+    ExternalToolFinished {
+        tool_call_id: String,
+        result: TranscriptToolResult,
     },
 }
 
@@ -142,12 +210,13 @@ pub enum ManifestMessage<'a> {
         #[allow(dead_code)]
         tool_calls: Option<Vec<ManifestToolCall<'a>>>,
     },
-    #[allow(dead_code)]
+    /// The paired result for a prior tool_call (ADR-0025), carried as the ONE
+    /// transcript result type (external-task-views A4): Core tool results,
+    /// Proposal Decisions, the not-executed placeholder, and MCP results all
+    /// ride this same shape.
     ToolResult {
         tool_call_id: &'a str,
-        content: &'a str,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        is_error: Option<bool>,
+        result: &'a TranscriptToolResult,
     },
 }
 
@@ -201,6 +270,33 @@ pub struct WorkerManifest<'a> {
     pub access_token: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub attachments: Option<Vec<ManifestAttachment>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub external_tools: Option<ExternalToolsManifest<'a>>,
+}
+
+/// External (Worker-executed MCP) tool config shipped in the spawn manifest
+/// (external-task-views A3/A5): the TickTick MCP endpoint + auth from Core's
+/// boot-read credential state. Absent = no external tools this Run.
+///
+/// `Debug` is hand-implemented to redact `access_token` — the bearer secret
+/// must never reach a log line (mirrors [`crate::credentials::Credentials`]).
+/// Core's tracing logs structs with `{:?}`, so a deriving Debug is the exact
+/// leak primitive that convention forbids.
+#[derive(Serialize)]
+pub struct ExternalToolsManifest<'a> {
+    pub endpoint: &'a str,
+    pub access_token: &'a str,
+    pub timeout_ms: u64,
+}
+
+impl std::fmt::Debug for ExternalToolsManifest<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExternalToolsManifest")
+            .field("endpoint", &self.endpoint)
+            .field("access_token", &"<redacted>")
+            .field("timeout_ms", &self.timeout_ms)
+            .finish()
+    }
 }
 
 /// Mirror tests: lock the Rust serde shapes to the canonical snake_case wire
@@ -248,5 +344,178 @@ mod mirror_tests {
         assert!(matches!(d, WorkerStdout::TextDelta { .. }));
         let done: WorkerStdout = serde_json::from_value(json!({ "kind": "done" })).unwrap();
         assert!(matches!(done, WorkerStdout::Done));
+    }
+
+    #[test]
+    fn worker_stdout_decodes_external_tool_started() {
+        let wire = json!({
+            "kind": "external_tool_started",
+            "tool_call_id": "tc_ext",
+            "name": "ticktick_filter_tasks",
+            "arguments": { "filter": { "status": [0] } }
+        });
+        let ev: WorkerStdout = serde_json::from_value(wire).unwrap();
+        match ev {
+            WorkerStdout::ExternalToolStarted {
+                tool_call_id,
+                name,
+                arguments,
+            } => {
+                assert_eq!(tool_call_id, "tc_ext");
+                assert_eq!(name, "ticktick_filter_tasks");
+                assert_eq!(arguments["filter"]["status"], json!([0]));
+            }
+            other => panic!("expected ExternalToolStarted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn worker_stdout_decodes_external_tool_finished() {
+        let wire = json!({
+            "kind": "external_tool_finished",
+            "tool_call_id": "tc_ext",
+            "result": {
+                "content": [{ "type": "text", "text": "1 task found" }],
+                "is_error": false
+            }
+        });
+        let ev: WorkerStdout = serde_json::from_value(wire).unwrap();
+        match ev {
+            WorkerStdout::ExternalToolFinished {
+                tool_call_id,
+                result,
+            } => {
+                assert_eq!(tool_call_id, "tc_ext");
+                assert_eq!(result, TranscriptToolResult::text("1 task found", false));
+            }
+            other => panic!("expected ExternalToolFinished, got {other:?}"),
+        }
+        // A frame missing `result.is_error` fails strict decode — the error flag
+        // lives once, inside the result, and is never defaulted.
+        assert!(
+            serde_json::from_value::<WorkerStdout>(json!({
+                "kind": "external_tool_finished",
+                "tool_call_id": "tc_ext",
+                "result": { "content": [] }
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn external_tool_ack_serializes() {
+        let ack = ExternalToolAck {
+            kind: "external_tool_ack",
+            tool_call_id: "tc_ext".to_string(),
+            phase: ExternalToolPhase::Started,
+            ok: true,
+        };
+        assert_eq!(
+            serde_json::to_value(ack).unwrap(),
+            json!({
+                "kind": "external_tool_ack",
+                "tool_call_id": "tc_ext",
+                "phase": "started",
+                "ok": true
+            })
+        );
+    }
+
+    #[test]
+    fn external_tools_manifest_debug_redacts_the_token() {
+        let manifest = ExternalToolsManifest {
+            endpoint: "https://mcp.ticktick.com/",
+            access_token: "SECRET_TICKTICK_TOKEN",
+            timeout_ms: 30_000,
+        };
+        let rendered = format!("{manifest:?}");
+        assert!(
+            !rendered.contains("SECRET_TICKTICK_TOKEN"),
+            "the bearer token must never reach a Debug line"
+        );
+        assert!(
+            rendered.contains("https://mcp.ticktick.com/"),
+            "the non-secret endpoint may show"
+        );
+    }
+
+    #[test]
+    fn transcript_tool_result_round_trips() {
+        let r = TranscriptToolResult::interrupted();
+        let wire = serde_json::to_value(&r).unwrap();
+        assert_eq!(
+            wire,
+            json!({
+                "content": [{ "type": "text", "text": "interrupted" }],
+                "is_error": true
+            })
+        );
+        let back: TranscriptToolResult = serde_json::from_value(wire).unwrap();
+        assert_eq!(back, r);
+    }
+
+    #[test]
+    fn manifest_tool_result_block_carries_transcript_result() {
+        let result = TranscriptToolResult::text("Accepted.", false);
+        let block = ManifestMessage::ToolResult {
+            tool_call_id: "tc_1",
+            result: &result,
+        };
+        assert_eq!(
+            serde_json::to_value(&block).unwrap(),
+            json!({
+                "role": "tool_result",
+                "tool_call_id": "tc_1",
+                "result": {
+                    "content": [{ "type": "text", "text": "Accepted." }],
+                    "is_error": false
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn worker_manifest_external_tools_serializes_and_skips_when_absent() {
+        let manifest = WorkerManifest {
+            run_id: uuid::Uuid::parse_str(UUID_A).unwrap(),
+            workflow: WorkflowManifest {
+                name: "default",
+                version: "1",
+                provider: "faux",
+                model: "m",
+                system_prompt: "sp",
+                thinking_level: "off",
+                tools: Vec::new(),
+            },
+            prompt: "hi",
+            messages: Vec::new(),
+            mode: None,
+            access_token: None,
+            attachments: None,
+            external_tools: Some(ExternalToolsManifest {
+                endpoint: "https://mcp.ticktick.com/",
+                access_token: "tok",
+                timeout_ms: 30_000,
+            }),
+        };
+        let wire = serde_json::to_value(&manifest).unwrap();
+        assert_eq!(
+            wire["external_tools"],
+            json!({
+                "endpoint": "https://mcp.ticktick.com/",
+                "access_token": "tok",
+                "timeout_ms": 30_000
+            })
+        );
+
+        let manifest = WorkerManifest {
+            external_tools: None,
+            ..manifest
+        };
+        let wire = serde_json::to_value(&manifest).unwrap();
+        assert!(
+            wire.get("external_tools").is_none(),
+            "absent external_tools is skipped, not null"
+        );
     }
 }

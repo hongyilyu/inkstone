@@ -1,0 +1,6 @@
+{
+  "kind": "external_tool_ack",
+  "ok": false,
+  "phase": "finished",
+  "tool_call_id": "tc_ext"
+}

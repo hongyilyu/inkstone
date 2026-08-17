@@ -80,6 +80,19 @@ fn faux_completion_streams_through_core() {
             let v: serde_json::Value = serde_json::from_str(&body)
                 .unwrap_or_else(|e| panic!("event is JSON: {e} — body: {body}"));
             match v["params"]["event"]["kind"].as_str() {
+                // The ordered snapshot (review P1 #2) opens the stream: fold its
+                // Text segments into the base; tail `text_delta`s then append.
+                Some("snapshot") => {
+                    for seg in v["params"]["event"]["segments"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                    {
+                        if seg["kind"] == serde_json::json!("text") {
+                            assembled.push_str(seg["text"].as_str().unwrap_or_default());
+                        }
+                    }
+                }
                 Some("text_delta") => {
                     assembled.push_str(
                         v["params"]["event"]["delta"]

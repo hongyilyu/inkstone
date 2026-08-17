@@ -115,8 +115,9 @@ fn subscribe_snapshot_then_tail() {
             "subscribe response is a response, not a notification — body: {sub_resp_body}"
         );
 
-        // The SNAPSHOT: a cumulative text_delta. Its content may be "" or
-        // "echo: " depending on the gate race — do NOT hard-assert it.
+        // The SNAPSHOT: an ordered segment `snapshot` (review P1 #2). Its content
+        // may be empty or "echo: " depending on the gate race — do NOT hard-assert
+        // it; the reassembly base is its Text segments concatenated.
         let snapshot_body = next_text(&mut ws).await;
         let snapshot: serde_json::Value = serde_json::from_str(&snapshot_body)
             .unwrap_or_else(|e| panic!("snapshot is JSON: {e} — body: {snapshot_body}"));
@@ -132,13 +133,16 @@ fn subscribe_snapshot_then_tail() {
         );
         assert_eq!(
             snapshot["params"]["event"]["kind"],
-            serde_json::json!("text_delta"),
-            "snapshot is a text_delta — body: {snapshot_body}"
+            serde_json::json!("snapshot"),
+            "snapshot is an ordered segment snapshot — body: {snapshot_body}"
         );
-        let mut assembled = snapshot["params"]["event"]["delta"]
-            .as_str()
-            .unwrap_or_else(|| panic!("snapshot text_delta carries a string — body: {snapshot_body}"))
-            .to_string();
+        let mut assembled = snapshot["params"]["event"]["segments"]
+            .as_array()
+            .unwrap_or_else(|| panic!("snapshot carries a segments array — body: {snapshot_body}"))
+            .iter()
+            .filter(|seg| seg["kind"] == serde_json::json!("text"))
+            .map(|seg| seg["text"].as_str().unwrap_or_default())
+            .collect::<String>();
 
         // Trip the gate so the worker emits chunk 2 + done.
         std::fs::write(&gate_path, b"go").expect("create gate file");
@@ -274,6 +278,17 @@ fn late_subscribe_after_terminal_still_gets_done() {
                 "B frame is a run/event — body: {body}"
             );
             match v["params"]["event"]["kind"].as_str() {
+                Some("snapshot") => {
+                    for seg in v["params"]["event"]["segments"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                    {
+                        if seg["kind"] == serde_json::json!("text") {
+                            assembled.push_str(seg["text"].as_str().unwrap_or_default());
+                        }
+                    }
+                }
                 Some("text_delta") => {
                     assembled.push_str(
                         v["params"]["event"]["delta"]

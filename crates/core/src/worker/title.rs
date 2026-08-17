@@ -93,29 +93,40 @@ pub fn spawn_title_generation(
                     role: crate::launch::Role::Titler,
                 },
                 title_timeout(),
-                |worker| Box::pin(async move {
-                    let mut acc = String::new();
-                    loop {
-                        match worker.recv().await {
-                            Some(crate::protocol::WorkerStdout::TextDelta { delta }) => {
-                                acc.push_str(&delta)
+                |worker| {
+                    Box::pin(async move {
+                        let mut acc = String::new();
+                        loop {
+                            match worker.recv().await {
+                                Ok(Some(crate::protocol::WorkerStdout::TextDelta { delta })) => {
+                                    acc.push_str(&delta)
+                                }
+                                // Reasoning deltas (ADR-0045 reasoning amendment, #202)
+                                // are not title text — skip them and keep collecting.
+                                Ok(Some(crate::protocol::WorkerStdout::ReasoningDelta {
+                                    ..
+                                })) => {}
+                                Ok(Some(crate::protocol::WorkerStdout::Done)) => return Some(acc),
+                                // The titler has no tools and an explicit error is a
+                                // failed turn: in both cases discard the partial output
+                                // and keep the placeholder.
+                                Ok(Some(crate::protocol::WorkerStdout::Error { .. }))
+                                | Ok(Some(crate::protocol::WorkerStdout::ToolRequest { .. }))
+                                | Ok(Some(crate::protocol::WorkerStdout::ExternalToolStarted {
+                                    ..
+                                }))
+                                | Ok(Some(crate::protocol::WorkerStdout::ExternalToolFinished {
+                                    ..
+                                }))
+                                | Err(()) => {
+                                    return None;
+                                }
+                                // EOF without `done`: use whatever was accumulated.
+                                Ok(None) => return Some(acc),
                             }
-                            // Reasoning deltas (ADR-0045 reasoning amendment, #202)
-                            // are not title text — skip them and keep collecting.
-                            Some(crate::protocol::WorkerStdout::ReasoningDelta { .. }) => {}
-                            Some(crate::protocol::WorkerStdout::Done) => return Some(acc),
-                            // The titler has no tools and an explicit error is a
-                            // failed turn: in both cases discard the partial output
-                            // and keep the placeholder.
-                            Some(crate::protocol::WorkerStdout::Error { .. })
-                            | Some(crate::protocol::WorkerStdout::ToolRequest { .. }) => {
-                                return None;
-                            }
-                            // EOF without `done`: use whatever was accumulated.
-                            None => return Some(acc),
                         }
-                    }
-                }),
+                    })
+                },
             )
             .await;
 

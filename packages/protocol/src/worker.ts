@@ -4,16 +4,10 @@
 import { Schema as S } from "effect";
 
 import { WorkerRunEvent } from "./run.js";
+import { ToolTextContent, TranscriptToolResult } from "./transcript.js";
 
 // tool protocol (ADR-0018): the Worker<->Core duplex for tool calls — see docs/design/protocol.md
-
-/** The only `content` modality Core produces today (image is out of scope). */
-export const ToolTextContent = S.Struct({
-	type: S.Literal("text"),
-	text: S.String,
-});
-
-export type ToolTextContent = S.Schema.Type<typeof ToolTextContent>;
+// (transcript.ts's own schemas reach the barrel via index.ts, not this file.)
 
 /** Hand-mirror of pi-agent-core's `AgentToolResult` (ADR-0018:201; no `isError`). */
 export const AgentToolResult = S.Struct({
@@ -48,6 +42,22 @@ export const ToolResult = S.Struct({
 
 export type ToolResult = S.Schema.Type<typeof ToolResult>;
 
+/** Core → Worker: durable acceptance or rejection of one external lifecycle
+ * frame. The dedicated one-Run Worker pipe supplies run identity, so the ACK
+ * correlates by tool_call_id + phase. Core logs the failure detail. */
+export const ExternalToolAck = S.Struct({
+	kind: S.Literal("external_tool_ack"),
+	tool_call_id: S.String,
+	phase: S.Literal("started", "finished"),
+	ok: S.Boolean,
+});
+
+export type ExternalToolAck = S.Schema.Type<typeof ExternalToolAck>;
+
+/** Every post-manifest frame Core can write to the Worker. */
+export const WorkerInbound = S.Union(ToolResult, ExternalToolAck);
+export type WorkerInbound = S.Schema.Type<typeof WorkerInbound>;
+
 /** One tool the Workflow exposes; shipped in the WorkflowManifest. */
 export const CoreToolDescriptor = S.Struct({
 	name: S.String,
@@ -58,8 +68,37 @@ export const CoreToolDescriptor = S.Struct({
 
 export type CoreToolDescriptor = S.Schema.Type<typeof CoreToolDescriptor>;
 
+/** Worker → Core: an EXTERNAL (Worker-executed MCP, `ticktick_*`) tool call
+ * began (external-task-views A4). Sourced from pi's `tool_execution_start`
+ * event — never hand-assembled state. `name` is the namespaced model-facing
+ * name; `arguments` the validated call args. */
+export const ExternalToolStarted = S.Struct({
+	kind: S.Literal("external_tool_started"),
+	tool_call_id: S.String,
+	name: S.String,
+	arguments: S.Unknown,
+});
+
+export type ExternalToolStarted = S.Schema.Type<typeof ExternalToolStarted>;
+
+/** Worker → Core: an external call's ONE terminal frame, from pi's finalized
+ * `tool_execution_end` event. No outer error flag — `result.is_error` is the
+ * single source of truth; `tool_calls.status` derives from it. */
+export const ExternalToolFinished = S.Struct({
+	kind: S.Literal("external_tool_finished"),
+	tool_call_id: S.String,
+	result: TranscriptToolResult,
+});
+
+export type ExternalToolFinished = S.Schema.Type<typeof ExternalToolFinished>;
+
 /** What the Worker writes to stdout (mirrors Rust's `WorkerStdout` in crates/core/src/protocol/worker.rs). */
-export const WorkerOutbound = S.Union(WorkerRunEvent, ToolRequest);
+export const WorkerOutbound = S.Union(
+	WorkerRunEvent,
+	ToolRequest,
+	ExternalToolStarted,
+	ExternalToolFinished,
+);
 
 export type WorkerOutbound = S.Schema.Type<typeof WorkerOutbound>;
 
@@ -99,11 +138,14 @@ export const ManifestMessage = S.Union(
 		text: S.optional(S.String),
 		tool_calls: S.optional(S.Array(ManifestToolCall)),
 	}),
+	// The paired result for a prior tool_call (ADR-0025), carried as the ONE
+	// transcript result type (external-task-views A4): Core tool results,
+	// Proposal Decisions, the not-executed placeholder, and MCP results all
+	// arrive through this same shape.
 	S.Struct({
 		role: S.Literal("tool_result"),
 		tool_call_id: S.String,
-		content: S.String,
-		is_error: S.optional(S.Boolean),
+		result: TranscriptToolResult,
 	}),
 );
 
@@ -135,6 +177,19 @@ export const WorkerManifest = S.Struct({
 	 * does not replay images); absent = text-only turn. */
 	attachments: S.optional(
 		S.Array(S.Struct({ mime: S.String, data_base64: S.String })),
+	),
+	/** External (Worker-executed MCP) tool config (external-task-views A3/A5):
+	 * the TickTick MCP endpoint + auth Core hands the Worker at spawn from its
+	 * boot-read credential state. Absent = no external tools this Run. */
+	external_tools: S.optional(
+		S.Struct({
+			endpoint: S.String,
+			access_token: S.String,
+			timeout_ms: S.Number.pipe(
+				S.int({ description: undefined }),
+				S.greaterThanOrEqualTo(1, { description: undefined }),
+			),
+		}),
 	),
 });
 

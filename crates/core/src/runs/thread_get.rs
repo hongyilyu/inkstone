@@ -10,7 +10,7 @@ use sqlx::SqlitePool;
 use tokio::sync::mpsc::UnboundedSender;
 
 use super::handler::{self, HandlerError};
-use crate::db::{self, MessageSegment};
+use crate::db;
 use crate::protocol::{MessageView, Segment, ThreadGetParams, ThreadGetResult};
 
 pub(super) async fn handle(
@@ -35,42 +35,10 @@ pub(super) async fn handle(
                 run_id: row.run_id,
                 terminal_reason: row.terminal_reason,
                 // Map each db-side timeline item to its wire `Segment` variant,
-                // preserving order (ADR-0045). The variants are 1:1.
-                segments: row
-                    .segments
-                    .into_iter()
-                    .map(|segment| match segment {
-                        MessageSegment::Text { text } => Segment::Text { text },
-                        MessageSegment::ToolCall { name, status, arg } => {
-                            Segment::ToolCall { name, status, arg }
-                        }
-                        MessageSegment::Proposal {
-                            proposal_id,
-                            mutation_kind,
-                            status,
-                            entity_id,
-                        } => Segment::Proposal {
-                            proposal_id,
-                            mutation_kind,
-                            status,
-                            entity_id,
-                        },
-                        MessageSegment::Reasoning { text, duration_ms } => {
-                            Segment::Reasoning { text, duration_ms }
-                        }
-                        MessageSegment::Attachment {
-                            media_id,
-                            mime,
-                            width,
-                            height,
-                        } => Segment::Attachment {
-                            media_id,
-                            mime,
-                            width,
-                            height,
-                        },
-                    })
-                    .collect(),
+                // preserving order (ADR-0045). The `From` impl (db::threads) is
+                // shared with the `run/subscribe` snapshot so both assemble
+                // identically.
+                segments: row.segments.into_iter().map(Segment::from).collect(),
             })
             .collect();
 

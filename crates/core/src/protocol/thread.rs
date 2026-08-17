@@ -3,6 +3,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::worker::TranscriptToolResult;
+
 /// `thread/titled` Notification (ADR-0047): the one-shot titler (ADR-0046) pushes
 /// the generated `title` to the connection that created `thread_id`, so its
 /// sidebar updates live without a `thread/list` poll. Rides the connection's
@@ -109,7 +111,10 @@ pub struct ThreadGetParams {
 /// consumer): an image/media reference on a user Message, its bytes served at
 /// `GET /media/{media_id}`. This SUPERSEDES the read-path shapes of ADR-0043
 /// (`tool_calls`) and ADR-0044 (`proposal`): both fold into `segments`.
-#[derive(Debug, Serialize)]
+// `Deserialize`/`Clone` (beyond `thread/get`'s serialize-only need): `Segment`
+// also rides `RunEvent::Snapshot` (review P1 #2), which the wire protocol
+// round-trips. `default` on each skipped Option lets an omitted field decode.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Segment {
     /// A contiguous run of assistant text (one `message_parts` row).
@@ -117,12 +122,18 @@ pub enum Segment {
     /// A settled tool-activity row (ADR-0043): `name`, `status` (`completed`/`error`
     /// — the read filters `pending`), and an optional display `arg`, omitted (not
     /// `null`) for argless tools. Proposal tool calls are NOT emitted here — they
-    /// become a `proposal` segment.
+    /// become a `proposal` segment. `tool_call_id` is the durable per-call
+    /// identity (external-task-views A4) so the reload row keys and expands
+    /// identically to the live one; `result` is the normalized content the model
+    /// received, populated for external (`ticktick_*`) calls in v1.
     ToolCall {
+        tool_call_id: String,
         name: String,
         status: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         arg: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        result: Option<TranscriptToolResult>,
     },
     /// The decided Proposal an assistant turn parked on (ADR-0044). Only
     /// `accepted`/`rejected` appear — a still-`pending` Proposal renders its
@@ -137,7 +148,7 @@ pub enum Segment {
         proposal_id: String,
         mutation_kind: String,
         status: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         entity_id: Option<String>,
     },
     /// The model's thinking trace (ADR-0045 reasoning amendment, #202): `text` is
@@ -147,7 +158,7 @@ pub enum Segment {
     /// unknown. Renders default-collapsed; never replayed into the worker transcript.
     Reasoning {
         text: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         duration_ms: Option<i64>,
     },
     /// An image/media reference on a user Message (ADR-0058 consumer, the fifth
@@ -158,9 +169,9 @@ pub enum Segment {
     Attachment {
         media_id: String,
         mime: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         width: Option<i64>,
-        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         height: Option<i64>,
     },
 }
@@ -182,7 +193,7 @@ pub struct MessageView {
     /// The owning Run's `terminal_reason` — `'cancelled'` lets the Client
     /// rehydrate a stopped turn calmly (ADR-0014: cancel is not an error);
     /// omitted (not `null`, matching the TS `S.optional`) while the Run is live.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal_reason: Option<String>,
     pub segments: Vec<Segment>,
 }

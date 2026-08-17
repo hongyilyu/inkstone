@@ -22,8 +22,10 @@ mod recurrence;
 mod resume;
 mod runs;
 mod settings;
+mod shutdown;
 mod skills;
 mod start_run;
+mod ticktick;
 mod tools;
 #[cfg(not(debug_assertions))]
 mod web_embed;
@@ -53,10 +55,15 @@ struct AppState {
     /// Per-run event hubs (ADR-0022): `run_id → RunHub`, shared across all
     /// connections so a Run's live stream outlives the socket that started it.
     hubs: Hubs,
+    /// Sticky Core-level shutdown signal. WebSockets close before `main`
+    /// returns the fatal error that terminates the process.
+    shutdown: shutdown::Receiver,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let shutdown_rx = shutdown::subscribe();
+
     // Resolve all INKSTONE_* env knobs once and freeze them in a process-global
     // Config. Modules read the struct, not the env — tests inject values
     // directly without env mutation. Must run before `logging::init`:
@@ -76,6 +83,10 @@ async fn main() -> Result<()> {
     // Validate the Workflow(s) before serving: a malformed default.toml aborts
     // boot (fail-fast, ADR-0018) rather than failing the first Run.
     workflow::init()?;
+
+    // Read the TickTick credential exactly once (external-task-views A5):
+    // missing/unreadable degrades to "not connected", never a boot failure.
+    ticktick::init();
 
     let pool = db::open().await?;
 
@@ -100,6 +111,7 @@ async fn main() -> Result<()> {
     let state = AppState {
         pool,
         hubs: hub::new_hubs(),
+        shutdown: shutdown_rx.clone(),
     };
 
     let app = Router::new()
@@ -146,7 +158,13 @@ async fn main() -> Result<()> {
     tracing::info!(event = "core.listening", addr = %local_addr);
     println!("INKSTONE_LISTENING http://{local_addr}");
 
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown::wait(shutdown_rx.clone()))
+        .await?;
+    if *shutdown_rx.borrow() {
+        tracing::error!(event = "core.degraded_shutdown_complete");
+        anyhow::bail!("Core shut down after fatal terminal persistence");
+    }
     Ok(())
 }
 
@@ -251,6 +269,8 @@ async fn media_handler(State(state): State<AppState>, Path(id): Path<String>) ->
 
 async fn handle_socket(mut socket: WebSocket, state: AppState) {
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<String>();
+    let shutdown = shutdown::wait(state.shutdown.clone());
+    tokio::pin!(shutdown);
 
     // Single-task multiplex: race an incoming WS frame against an outbound frame
     // on the per-connection channel. Responses and Notifications share the
@@ -258,6 +278,10 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
     loop {
         tokio::select! {
             biased;
+            _ = &mut shutdown => {
+                let _ = socket.send(Message::Close(None)).await;
+                break;
+            }
             msg = socket.recv() => {
                 let Some(Ok(msg)) = msg else {
                     // recv closed or errored: a normal client disconnect is not a

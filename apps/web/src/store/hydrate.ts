@@ -18,66 +18,8 @@ import {
 	rehydrateDecidedProposal,
 	type Segment,
 	setHydrationStatus,
+	toSegment,
 } from "./chat.js";
-
-type WireSegment = ThreadGetResult["messages"][number]["segments"][number];
-
-/** A persisted tool call's wire status maps to a live `tool_call` segment status:
- * `error` keeps its spelling, anything else (a rehydrated call is `completed`)
- * settles to `completed`. A rehydrated call is never `running`. */
-function toToolCallStatus(status: string): "completed" | "error" {
-	return status === "error" ? "error" : "completed";
-}
-
-/** Map one wire `Segment` to a live store {@link Segment} (ADR-0045), preserving
- * its timeline position. A `tool_call` segment carries no id (the durable record
- * has one, but the live row keys only on render order), so synthesize a stable
- * `<messageId>:seg:<i>` id from its index, keeping React keys distinct. The wire
- * `proposal` segment becomes a positional `{kind:"proposal", runId}` marker — the
- * decided card's interactive state lives in the `proposals` map, seeded separately
- * by {@link rehydrateDecidedProposals}. */
-function toSegment(
-	messageId: string,
-	runId: string,
-	segment: WireSegment,
-	index: number,
-): Segment {
-	switch (segment.kind) {
-		case "text":
-			return { kind: "text", text: segment.text };
-		case "tool_call":
-			return {
-				kind: "tool_call",
-				call: {
-					id: `${messageId}:seg:${index}`,
-					name: segment.name,
-					status: toToolCallStatus(segment.status),
-					arg: segment.arg,
-				},
-			};
-		case "proposal":
-			return { kind: "proposal", runId };
-		case "reasoning":
-			// The model's thinking trace (ADR-0045 amendment): the wire carries Core's
-			// computed `duration_ms`; store it as `durationMs`. Excluded from concatText.
-			return {
-				kind: "reasoning",
-				text: segment.text,
-				durationMs: segment.duration_ms,
-			};
-		case "attachment":
-			// An image on a user Message (ADR-0058): the bytes live at
-			// `GET /media/{media_id}`; `width`/`height` are omitted (not null) when the
-			// upload didn't supply them. Carries no text, so concatText excludes it.
-			return {
-				kind: "attachment",
-				mediaId: segment.media_id,
-				mime: segment.mime,
-				width: segment.width,
-				height: segment.height,
-			};
-	}
-}
 
 /** Map a wire `MessageView` to the live {@link Message}, narrowing role/status via
  * defensive guards. The ordered `segments[]` is consumed VERBATIM (ADR-0045): the
@@ -99,8 +41,8 @@ export function toMessage(view: ThreadGetResult["messages"][number]): Message {
 	// it must never be flagged.
 	const cancelled =
 		status === "incomplete" && view.terminal_reason === "cancelled";
-	const segments: Segment[] = view.segments.map((segment, i) =>
-		toSegment(view.id, view.run_id, segment, i),
+	const segments: Segment[] = view.segments.map((segment) =>
+		toSegment(view.run_id, segment),
 	);
 	return {
 		id: view.id,

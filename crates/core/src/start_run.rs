@@ -225,8 +225,11 @@ pub enum StartRunError {
     ProviderNotConnected(String),
     /// `RetryCas` only: the guarded `errored → running` CAS lost (the Run raced
     /// out of `errored` since the shell's advisory read). Nothing was cleared,
-    /// no hub was created, nothing spawned — the caller reports its own
-    /// vocabulary (retry: `not_errored`).
+    /// no hub is left registered, nothing spawned — the caller reports its own
+    /// vocabulary (retry: `not_errored`). Also returned when the activation slot
+    /// is owned by a LIVE producer (activation waits out a mid-drain slot first
+    /// — review R9 #1): a live producer means the Run's status cannot be this
+    /// attempt's from-state, so its CAS was going to lose anyway.
     PersistRaceLost,
     /// A DB or credential-store fault.
     Internal(anyhow::Error),
@@ -280,17 +283,26 @@ where
     //    errored Run. Fail loud so the Client can prompt "connect it".
     ensure_provider_connected(&workflow.provider)?;
 
-    // 3. Persist: the variant's own transactional shape, against the resolved
-    //    Workflow. A RetryCas that loses its guarded flip returns
-    //    PersistRaceLost here — before the hub exists and before any spawn, so
-    //    the hub-only-after-a-committed-persist invariant holds by position.
-    persist_step
-        .execute(pool, thread_id, &workflow, &prompt)
-        .await?;
-
-    // 4. Hub BEFORE spawn (ADR-0022): a subscribe arriving right after the
-    //    response can't find a missing hub.
-    let run_hub = hub::create(hubs, run_id);
+    // 3+4. Activate: register the hub, THEN run the variant's transactional
+    //    persist — the shared registry operation (review R8 #1, same as resume).
+    //    Hub-before-CAS closes the retry race: `RetryCas` flips errored→running,
+    //    and a `run/cancel` that reads `running` must find the producer's hub to
+    //    signal it — flipping first left an unsignallable window. First-wins
+    //    registration also backs a concurrent retry off (`None` → the CAS it
+    //    would have run was going to lose anyway → PersistRaceLost), and a
+    //    finishing old Worker never shadows it: a drain is one gated section, so
+    //    activation waits it out and then runs the CAS (review R9 #1). A failed
+    //    or lost persist deregisters — no producerless hub leaks. The hub also
+    //    still precedes the spawn (ADR-0022): a subscribe arriving right after
+    //    the response can't find a missing hub.
+    let run_hub = hub::activate(hubs, run_id, || async {
+        persist_step
+            .execute(pool, thread_id, &workflow, &prompt)
+            .await
+            .map(|()| true)
+    })
+    .await?
+    .ok_or(StartRunError::PersistRaceLost)?;
 
     // 5. History BEFORE spawn (ADR-0018): prior-Run conversation history,
     //    excluding the Run just persisted. A read failure is non-fatal: fall
@@ -574,9 +586,9 @@ mod tests {
     }
 
     // 5. PersistStep::RetryCas on a RUNNING (not errored) Run: the guarded
-    //    errored→running CAS loses → Err(PersistRaceLost), NO hub, NO spawn
-    //    (panic-in-closure pins "never called"), and the Run is untouched —
-    //    the hub-only-after-a-committed-persist invariant.
+    //    errored→running CAS loses → Err(PersistRaceLost), NO hub left behind
+    //    (activate deregisters its own registration on the lost CAS), NO spawn
+    //    (panic-in-closure pins "never called"), and the Run is untouched.
     #[tokio::test]
     async fn retry_cas_lost_race_returns_persist_race_lost_no_hub_no_spawn() {
         let _cred = credentials_dir(true);
@@ -692,8 +704,9 @@ mod tests {
     //    gate satisfied, but PersistStep::FreshRun targets a thread_id with no
     //    threads row, so the insert violates the (immediate) runs.thread_id FK
     //    → Err(Internal). AFTER the failure: zero runs rows, NO hub, NO spawn
-    //    (panic-in-closure). This kills the hub-before-persist mutation — were
-    //    hub::create hoisted above the persist, the hub would leak here.
+    //    (panic-in-closure). Pins activate's failure contract: the hub is
+    //    registered BEFORE the persist, so a failed persist MUST deregister it
+    //    — a leak here would leave a producerless hub.
     #[tokio::test]
     async fn persist_failure_leaves_no_hub() {
         let _cred = credentials_dir(true);

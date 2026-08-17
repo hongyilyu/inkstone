@@ -78,28 +78,37 @@ pub(crate) async fn probe(provider: &str, model: &str) -> ProviderTestResult {
             role: crate::launch::Role::Worker,
         },
         probe_timeout(),
-        |worker| Box::pin(async move {
-            loop {
-                match worker.recv().await {
-                    // Any output — a streamed delta or a clean finish — proves the
-                    // provider answered.
-                    Some(crate::protocol::WorkerStdout::TextDelta { .. })
-                    | Some(crate::protocol::WorkerStdout::ReasoningDelta { .. })
-                    | Some(crate::protocol::WorkerStdout::Done) => return alive(),
-                    // An explicit error frame is a failed turn: dead, carrying the
-                    // provider's message (the auth/rate/model detail the user needs).
-                    Some(crate::protocol::WorkerStdout::Error { message }) => return dead(message),
-                    // The probe ships no tools; a tool_request is an unexpected turn.
-                    Some(crate::protocol::WorkerStdout::ToolRequest { .. }) => {
-                        return dead(
-                            "worker requested a tool during the liveness probe".to_string(),
-                        );
+        |worker| {
+            Box::pin(async move {
+                loop {
+                    match worker.recv().await {
+                        // Any output — a streamed delta or a clean finish — proves the
+                        // provider answered.
+                        Ok(Some(crate::protocol::WorkerStdout::TextDelta { .. }))
+                        | Ok(Some(crate::protocol::WorkerStdout::ReasoningDelta { .. }))
+                        | Ok(Some(crate::protocol::WorkerStdout::Done)) => return alive(),
+                        // An explicit error frame is a failed turn: dead, carrying the
+                        // provider's message (the auth/rate/model detail the user needs).
+                        Ok(Some(crate::protocol::WorkerStdout::Error { message })) => {
+                            return dead(message);
+                        }
+                        // The probe ships no tools; any tool frame is an unexpected turn.
+                        Ok(Some(crate::protocol::WorkerStdout::ToolRequest { .. }))
+                        | Ok(Some(crate::protocol::WorkerStdout::ExternalToolStarted { .. }))
+                        | Ok(Some(crate::protocol::WorkerStdout::ExternalToolFinished {
+                            ..
+                        })) => {
+                            return dead(
+                                "worker requested a tool during the liveness probe".to_string(),
+                            );
+                        }
+                        // EOF before any reply: the Worker died without answering.
+                        Ok(None) => return dead("worker closed without a reply".to_string()),
+                        Err(()) => return dead("worker emitted an invalid frame".to_string()),
                     }
-                    // EOF before any reply: the Worker died without answering.
-                    None => return dead("worker closed without a reply".to_string()),
                 }
-            }
-        }),
+            })
+        },
     )
     .await;
 
