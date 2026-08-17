@@ -107,7 +107,8 @@ pub enum ExternalToolPhase {
 }
 
 /// Core → Worker: durable acceptance or rejection of one external lifecycle
-/// frame. Failure detail stays in Core's diagnostic log.
+/// frame. The dedicated Worker pipe already identifies the Run, so correlation
+/// needs only `tool_call_id` + `phase`. Failure detail stays in Core's log.
 #[derive(Debug, Serialize, Clone, PartialEq, Eq)]
 pub struct ExternalToolAck {
     pub kind: &'static str,

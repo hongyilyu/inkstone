@@ -27,6 +27,8 @@ pub(crate) use external::publish_interrupted;
 pub(crate) use run::WORKER_DISCONNECTED_MESSAGE;
 
 use sqlx::SqlitePool;
+use std::future::Future;
+use std::time::Duration;
 use tracing::Instrument;
 use uuid::Uuid;
 
@@ -263,14 +265,55 @@ async fn drive(
     terminate_if_fatal(run_id, exit);
 }
 
-/// Terminal persistence is a process invariant: once every write attempt fails,
-/// continuing would leave an in-memory producer over an untrustworthy durable
-/// transcript. Preserve the hub and let boot recovery settle the `running` row.
+/// Terminal persistence is a process invariant: after every write attempt
+/// fails, ask the server owner to close sockets and stop the process. Recovery
+/// sees the durable `running` row; no in-memory hub survives the restart.
 fn terminate_if_fatal(run_id: Uuid, exit: Exit) {
     if exit == Exit::FatalPersistence {
         tracing::error!(event = "worker.fatal_terminal_persistence", %run_id);
-        std::process::exit(1);
+        crate::shutdown::request();
     }
+}
+
+const TERMINAL_PERSIST_RETRY_DELAYS: [Duration; 2] =
+    [Duration::from_millis(50), Duration::from_millis(200)];
+
+/// Try the intended terminal transition twice, then its generic error fallback.
+/// The bounded pauses give transient SQLite write contention time to clear.
+pub(super) async fn persist_terminal_with_retry<F, Fut, G, GFut>(
+    run_id: Uuid,
+    mut persist: F,
+    fallback: G,
+) -> sqlx::Result<db::Terminal>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = sqlx::Result<db::Terminal>>,
+    G: FnOnce() -> GFut,
+    GFut: Future<Output = sqlx::Result<db::Terminal>>,
+{
+    for (attempt, delay) in TERMINAL_PERSIST_RETRY_DELAYS.into_iter().enumerate() {
+        match persist().await {
+            Ok(terminal) => return Ok(terminal),
+            Err(error) => tracing::error!(
+                event = "worker.terminal_tx_failed",
+                %run_id,
+                attempt = attempt + 1,
+                retry_in_ms = delay.as_millis() as u64,
+                error = ?error
+            ),
+        }
+        tokio::time::sleep(delay).await;
+    }
+
+    fallback().await.map_err(|error| {
+        tracing::error!(
+            event = "worker.terminal_persist_lost",
+            %run_id,
+            attempt = 3,
+            error = ?error
+        );
+        error
+    })
 }
 
 /// Build the fresh-spawn manifest line (ADR-0018): Workflow fields, prompt,
@@ -418,21 +461,17 @@ async fn pre_spawn_delay_if_configured() {
 
 /// Pre-loop spawn-failure path. The terminal write and hub drain use the same
 /// lifecycle → hub-gate order as the run loop. A repeated persistence failure
-/// retains the hub and asks the driver to terminate Core.
+/// retains the hub while the driver requests Core's degraded shutdown.
 async fn finalize_error(pool: &SqlitePool, hubs: &Hubs, run_id: Uuid, run_hub: &RunHub) -> Exit {
     let lifecycle = hub::lifecycle(hubs, run_id).await;
     let guard = run_hub.gate().await;
     let now_ms = db::now_ms();
-    let result = match db::error_run(pool, run_id, now_ms).await {
-        Ok(terminal) => Ok(terminal),
-        Err(first) => {
-            tracing::error!(event = "worker.error_run_failed", %run_id, error = ?first);
-            db::error_run(pool, run_id, now_ms).await.map_err(|e| {
-                tracing::error!(event = "worker.terminal_persist_lost", %run_id, error = ?e);
-                e
-            })
-        }
-    };
+    let result = persist_terminal_with_retry(
+        run_id,
+        || db::error_run(pool, run_id, now_ms),
+        || db::error_run(pool, run_id, now_ms),
+    )
+    .await;
 
     if result.is_err() {
         drop(guard);
@@ -470,9 +509,14 @@ mod tests {
         let (hubs, run_hub) = super::test_support::fixtures(run_id);
 
         pool.close().await;
+        let started = tokio::time::Instant::now();
         let exit = finalize_error(&pool, &hubs, run_id, &run_hub).await;
 
         assert_eq!(exit, Exit::FatalPersistence);
+        assert!(
+            started.elapsed() >= Duration::from_millis(250),
+            "the retry ladder includes its 50ms and 200ms backoffs"
+        );
         assert!(
             hub::get(&hubs, run_id).is_some(),
             "a failed terminal write must not drain the live generation"

@@ -21,6 +21,8 @@ pub(super) const EXTERNAL_PERSIST_FAILED_MESSAGE: &str =
     "core could not persist an external tool call";
 pub(super) const WORKER_PROTOCOL_FAILED_MESSAGE: &str =
     "worker emitted an invalid external tool lifecycle frame";
+pub(super) const RUN_NO_LONGER_ACTIVE_MESSAGE: &str =
+    "external tool call could not start because the run is no longer active";
 
 pub(super) enum FrameFailure {
     Cancelled,
@@ -95,7 +97,7 @@ pub(super) async fn handle_started<P: WorkerPort>(
             let failure = if run_hub.is_cancelled() {
                 FrameFailure::Cancelled
             } else {
-                FrameFailure::Terminal(WORKER_PROTOCOL_FAILED_MESSAGE)
+                FrameFailure::Terminal(RUN_NO_LONGER_ACTIVE_MESSAGE)
             };
             Err(reject(worker, tool_call_id, ExternalToolPhase::Started, failure).await)
         }
@@ -799,6 +801,47 @@ mod tests {
                 .unwrap()
                 .map(db::RunStatus::as_str),
             Some("errored")
+        );
+    }
+
+    #[tokio::test]
+    async fn terminal_race_does_not_blame_the_worker() {
+        let pool = memory_pool().await;
+        let wf = test_workflow(&[]);
+        let (run_id, _thread_id, _assistant_id) = seed_run(&pool, &wf).await;
+        let (_hubs, run_hub) = fixtures(run_id);
+        let (mut worker, _sent, _shutdowns, acks) =
+            ScriptedWorker::new_with_acks(Vec::new());
+
+        assert!(
+            db::cancel_running_run(&pool, run_id, db::now_ms())
+                .await
+                .expect("cancel transition")
+                .won()
+        );
+        assert!(
+            !run_hub.is_cancelled(),
+            "the durable transition wins before the in-memory signal lands"
+        );
+
+        let result = handle_started(
+            &mut worker,
+            &pool,
+            run_id,
+            &run_hub,
+            "tc-raced",
+            "ticktick_filter_tasks",
+            &serde_json::json!({}),
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(FrameFailure::Terminal(RUN_NO_LONGER_ACTIVE_MESSAGE))
+        ));
+        assert_eq!(
+            acks.lock().unwrap().as_slice(),
+            &[ack("tc-raced", ExternalToolPhase::Started, false)]
         );
     }
 

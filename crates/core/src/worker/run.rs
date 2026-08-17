@@ -308,37 +308,16 @@ pub(super) async fn run_loop<P: WorkerPort + Send>(
             }
         };
 
-        let result = match persist().await {
-            Err(first) => {
-                tracing::error!(event = "worker.terminal_tx_failed", %run_id, error = ?first);
-                match persist().await {
-                    Err(second) => {
-                        tracing::error!(
-                            event = "worker.terminal_tx_retry_failed",
-                            %run_id,
-                            error = ?second
-                        );
-                        db::error_run(&pool, run_id, now_ms).await.map_err(|e| {
-                            tracing::error!(
-                                event = "worker.terminal_persist_lost",
-                                %run_id,
-                                error = ?e
-                            );
-                            e
-                        })
-                    }
-                    ok => ok,
-                }
-            }
-            ok => ok,
-        };
+        let result = super::persist_terminal_with_retry(run_id, persist, || {
+            db::error_run(&pool, run_id, now_ms)
+        })
+        .await;
 
         let terminal = match result {
             Ok(terminal) => terminal,
             Err(_) => {
-                // Keep the registered hub as evidence that this generation was
-                // never durably drained. The driver exits the process; boot
-                // recovery owns the remaining durable `running` row.
+                // Keep this generation registered while Core closes sockets.
+                // Restart recovery settles the durable `running` row.
                 drop(guard);
                 drop(lifecycle);
                 return Exit::FatalPersistence;

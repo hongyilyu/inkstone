@@ -25,11 +25,16 @@ with `tool_result` on the post-manifest inbound stream. `params` and
 `json_schema` are opaque JSON forwarded verbatim (the Worker wraps `json_schema`
 in `Type.Unsafe`; Core re-validates `params`). The descriptor list ships in the
 WorkflowManifest.
+External tools use a second duplex lifecycle on the same streams: the Worker
+emits `external_tool_started` / `external_tool_finished`, and Core replies with
+`external_tool_ack` only after durably accepting that phase.
+
 
 ## packages/protocol/src/worker.ts — WorkerOutbound
 
-`WorkerOutbound` (`WorkerRunEvent | ToolRequest`) mirrors Rust's `WorkerStdout`
-in crates/core/src/protocol/worker.rs.
+`WorkerOutbound` (`WorkerRunEvent | ToolRequest | ExternalToolStarted |
+ExternalToolFinished`) mirrors Rust's `WorkerStdout` in
+crates/core/src/protocol/worker.rs.
 
 ## packages/protocol/src/worker.ts — WorkerManifest (manifest overview)
 

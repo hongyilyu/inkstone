@@ -43,7 +43,8 @@ export const ToolResult = S.Struct({
 export type ToolResult = S.Schema.Type<typeof ToolResult>;
 
 /** Core → Worker: durable acceptance or rejection of one external lifecycle
- * frame. No failure detail crosses this boundary; Core logs the cause. */
+ * frame. The dedicated one-Run Worker pipe supplies run identity, so the ACK
+ * correlates by tool_call_id + phase. Core logs the failure detail. */
 export const ExternalToolAck = S.Struct({
 	kind: S.Literal("external_tool_ack"),
 	tool_call_id: S.String,
