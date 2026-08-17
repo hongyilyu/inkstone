@@ -27,25 +27,14 @@ pub(super) async fn handle(
     params: SubscribeParams,
     out_tx: &UnboundedSender<String>,
 ) {
-    // run_id is typed at decode (ADR-0029 C2): a malformed id is framed as
-    // invalid_params before this runs.
     let run_id = params.run_id;
+    let lifecycle = hub::lifecycle(hubs, run_id).await;
 
-    // Generation turnover between the hub and status reads loops back to a
-    // fresh decision (review R11 #2); drains are gated-atomic, so each pass
-    // either settles or observes the newer generation.
-    loop {
-        match hub::get(hubs, run_id) {
-        // Run still streaming: snapshot under the gate, then attach
-        // (RunHub::snapshot_then_attach owns the ADR-0022 lock ritual).
+    match hub::get(hubs, run_id) {
         Some(run_hub) => {
-            // Full-timeline snapshot (review P1 #2): read the Run status AND the
-            // ORDERED segment timeline (text / reasoning / tool_call / proposal, in
-            // `run_steps` order, incl. a still-running call) in ONE gated read, then
-            // attach. The single `Snapshot` event ATOMICALLY REPLACES the Client's
-            // segments, so a reconnect renders the true interleaved order and never
-            // drops reasoning; the tail carries only what happens strictly after
-            // this instant, so nothing falls in the thread/get↔subscribe gap.
+            // Snapshot and attach while the lifecycle slot pins this exact hub
+            // generation. The hub gate keeps the durable timeline and live tail
+            // gap-free; the lifecycle slot keeps generation classification stable.
             let ((snapshot, segments), tail) = run_hub
                 .snapshot_then_attach(|| async {
                     (
@@ -64,98 +53,49 @@ pub(super) async fn handle(
                 }
             };
 
-            // A terminal transition can commit before the Worker drops its hub
-            // clone (e.g. a `run/cancel` win while it's parked in a long tool
-            // dispatch). A receiver attached now sits AFTER the published
-            // terminal event while the Worker's sender keeps the channel open,
-            // so the tail would block on `recv()` forever. When the status under
-            // the gate is already terminal, emit it and close WITHOUT attaching.
             send_subscribe_response(out_tx, id, run_id, status.as_str());
             send_segment_snapshot(out_tx, run_id, segments);
             match status {
-                // A live Run tails; the tail is already attached under the gate.
                 RunStatus::Running | RunStatus::Parked => {
-                    spawn_tail_forwarder(run_id, hubs.clone(), tail, out_tx.clone(), pool.clone())
+                    drop(lifecycle);
+                    spawn_tail_forwarder(run_id, hubs.clone(), tail, out_tx.clone(), pool.clone());
                 }
-                // Terminal under the gate: emit and close WITHOUT attaching (an
-                // attached receiver would sit past the already-published terminal
-                // and hang). Errored → Error, never a synthesized Done.
                 terminal => {
                     if let Some(event) = terminal_event(terminal, error_message) {
                         send_run_event(out_tx, run_id, &event);
                     }
+                    drop(lifecycle);
                 }
             }
         }
-        // No hub: terminal, parked, or unknown. Read persisted status to tell
-        // parked (ADR-0025) from terminal. `None` is the unknown-run id — modeled
-        // as the absence of a status rather than an empty-string sentinel.
         None => {
-            // The snapshot is authoritative (review #2): it carries status + text
-            // + error_message, and is `None` ONLY for an unknown run id — the LEFT
-            // JOIN returns a known Run's row even before it streams assistant text.
-            // One read, exhaustively mapped; no separate `run_status` the terminal
-            // match could ignore its error state.
-            let mut snapshot = match db::select_run_snapshot(pool, run_id).await {
+            // No activation or drain can cross this read: both acquire the same
+            // lifecycle slot before changing the hub generation or durable status.
+            let snapshot = match db::select_run_snapshot(pool, run_id).await {
                 Ok(snapshot) => snapshot,
                 Err(e) => {
                     tracing::error!(event = "subscribe.snapshot_read_failed", %run_id, error = ?e);
                     None
                 }
             };
-            // A generation may have ACTIVATED between the hub read and this
-            // status read (review R11 #2 / R12 #1) — for ANY status: re-decide
-            // through the live branch rather than classify a stale snapshot (a
-            // stale terminal would mis-close a subscriber whose run is already
-            // retrying; a stale `running` would mis-report a lost Worker).
-            if hub::get(hubs, run_id).is_some() {
-                continue;
-            }
-            // A RUNNING status with the no-hub read CONFIRMED is either a drain
-            // that landed between the reads — one re-read settles it (the drain
-            // committed its transition before removing the hub, so a stale
-            // `running` cannot persist) — or the boot-recovery zombie, which
-            // correctly closes with Error below.
-            if snapshot
-                .as_ref()
-                .is_some_and(|snap| snap.status == RunStatus::Running)
-            {
-                snapshot = match db::select_run_snapshot(pool, run_id).await {
-                    Ok(snapshot) => snapshot,
-                    Err(e) => {
-                        tracing::error!(event = "subscribe.snapshot_read_failed", %run_id, error = ?e);
-                        None
-                    }
-                };
-            }
-            // The wire status stays a string (ADR-0029): an unknown run reports
-            // the empty status, exactly as before.
+            let segments = if snapshot.is_some() {
+                Some(db::run_live_segments(pool, run_id, false).await)
+            } else {
+                None
+            };
+
             send_subscribe_response(
                 out_tx,
                 id,
                 run_id,
                 snapshot.as_ref().map_or("", |snap| snap.status.as_str()),
             );
-            if snapshot.is_some() {
-                // Ordered segment snapshot (review P1 #2): the SAME timeline
-                // `thread/get` renders, atomically replacing the Client's segments —
-                // so a call settled by the terminal transition after the client's
-                // `thread/get` (excluded there as pending) isn't lost on a late
-                // subscribe to a just-terminated Run.
-                send_segment_snapshot(
-                    out_tx,
-                    run_id,
-                    db::run_live_segments(pool, run_id, false).await,
-                );
+            if let Some(segments) = segments {
+                send_segment_snapshot(out_tx, run_id, segments);
             }
-            // Terminal mapping via the shared `terminal_event` (review #2/M2):
-            // Errored re-attaches as Error (never a synthesized Done); a `running`
-            // Run with no live hub lost its Worker → Error. Parked pushes
-            // `proposal/pending` (ADR-0025), and an unknown run id (`None`) closes
-            // with Error — so the Client neither hangs nor sees a false done.
             match snapshot {
                 Some(snap) if snap.status == RunStatus::Parked => {
-                    emit_pending(out_tx, pool, run_id).await
+                    emit_pending(out_tx, pool, run_id).await;
                 }
                 Some(snap) => {
                     if let Some(event) = terminal_event(snap.status, snap.error_message) {
@@ -170,9 +110,8 @@ pub(super) async fn handle(
                     },
                 ),
             }
+            drop(lifecycle);
         }
-    }
-        return;
     }
 }
 
@@ -294,16 +233,10 @@ fn spawn_tail_forwarder(
         let mut saw_terminal = false;
         'forward: loop {
             tokio::select! {
-                // Connection dropped: break WITHOUT synthesizing a `done` —
-                // no client to receive it (the Run keeps running, ADR-0012).
-                () = out_tx.closed() => {
-                    break;
-                }
+                () = out_tx.closed() => break,
                 recv = tail.recv() => {
                     match recv {
                         Ok(event) => {
-                            // Track terminal events so we don't synthesize a
-                            // `done` after a real one on channel close.
                             if matches!(
                                 event,
                                 RunEvent::Done | RunEvent::Cancelled | RunEvent::Error { .. }
@@ -313,98 +246,49 @@ fn spawn_tail_forwarder(
                             send_run_event(&out_tx, run_id, &event);
                         }
                         Err(broadcast::error::RecvError::Closed) => {
-                            // Sender dropped at the Worker's `hub::remove`. If we
-                            // never forwarded a terminal event (attached late or
-                            // it fell in a lagged window), synthesize a `done` so
-                            // the stream finalizes instead of hanging.
-                            //
-                            // No-false-done on park (ADR-0025): a park removes
-                            // the hub WITHOUT a terminal event, so `saw_terminal`
-                            // is false but the Run isn't done — when persisted
-                            // status is `parked`, push `proposal/pending` instead
-                            // of a synthesized `done`.
                             if !saw_terminal {
-                                // Shared `terminal_event` (review M2): Errored →
-                                // Error, Completed → Done, Cancelled → Cancelled,
-                                // Parked → `proposal/pending`. A run that vanished
-                                // (`Ok(None)`) or a DB read fault closes with Error
-                                // — NEVER a synthesized Done. A RUNNING status is
-                                // intercepted: a NEW generation may own it (review
-                                // R10 #2 / R11 #2) — re-attach when its hub is
-                                // live; when the hub is already gone, ONE re-read
-                                // settles it (a drain removes the hub in the same
-                                // gated section as its transition, so a stale
-                                // `running` cannot repeat) — `running` with no hub
-                                // twice in a row is the boot-recovery zombie.
-                                let mut saw_running_no_hub = false;
-                                loop {
-                                    // A LIVE generation trumps any snapshot
-                                    // classification (review R12 #1): re-attach —
-                                    // a stale terminal must not close a subscriber
-                                    // whose run is already resuming/retrying.
-                                    if let Some(next) = hub::get(&hubs, run_id) {
-                                        let (segments, next_tail) = next
-                                            .snapshot_then_attach(|| async {
-                                                db::run_live_segments(&pool, run_id, true).await
-                                            })
-                                            .await;
-                                        send_segment_snapshot(&out_tx, run_id, segments);
-                                        tail = next_tail;
-                                        continue 'forward;
-                                    }
-                                    match db::select_run_snapshot(&pool, run_id).await {
-                                        Ok(Some(snap)) if snap.status == RunStatus::Parked => {
-                                            emit_pending(&out_tx, &pool, run_id).await;
-                                        }
-                                        Ok(Some(snap)) if snap.status == RunStatus::Running => {
-                                            if !saw_running_no_hub {
-                                                saw_running_no_hub = true;
-                                                continue;
-                                            }
-                                            send_run_event(
-                                                &out_tx,
-                                                run_id,
-                                                &RunEvent::Error {
-                                                    message:
-                                                        crate::worker::WORKER_DISCONNECTED_MESSAGE
-                                                            .to_string(),
-                                                },
-                                            );
-                                        }
-                                        Ok(Some(snap)) => {
-                                            if let Some(event) =
-                                                terminal_event(snap.status, snap.error_message)
-                                            {
-                                                send_run_event(&out_tx, run_id, &event);
-                                            }
-                                        }
-                                        Ok(None) | Err(_) => send_run_event(
-                                            &out_tx,
-                                            run_id,
-                                            &RunEvent::Error {
-                                                message:
-                                                    crate::worker::WORKER_DISCONNECTED_MESSAGE
-                                                        .to_string(),
-                                                },
-                                        ),
-                                    }
-                                    break;
+                                // The old sender is gone. Pin generation turnover
+                                // before deciding whether to reattach or synthesize
+                                // the persisted terminal outcome.
+                                let lifecycle = hub::lifecycle(&hubs, run_id).await;
+                                if let Some(next) = hub::get(&hubs, run_id) {
+                                    let (segments, next_tail) = next
+                                        .snapshot_then_attach(|| async {
+                                            db::run_live_segments(&pool, run_id, true).await
+                                        })
+                                        .await;
+                                    send_segment_snapshot(&out_tx, run_id, segments);
+                                    tail = next_tail;
+                                    drop(lifecycle);
+                                    continue 'forward;
                                 }
+
+                                match db::select_run_snapshot(&pool, run_id).await {
+                                    Ok(Some(snap)) if snap.status == RunStatus::Parked => {
+                                        emit_pending(&out_tx, &pool, run_id).await;
+                                    }
+                                    Ok(Some(snap)) => {
+                                        if let Some(event) =
+                                            terminal_event(snap.status, snap.error_message)
+                                        {
+                                            send_run_event(&out_tx, run_id, &event);
+                                        }
+                                    }
+                                    Ok(None) | Err(_) => send_run_event(
+                                        &out_tx,
+                                        run_id,
+                                        &RunEvent::Error {
+                                            message: crate::worker::WORKER_DISCONNECTED_MESSAGE
+                                                .to_string(),
+                                        },
+                                    ),
+                                }
+                                drop(lifecycle);
                             }
                             break;
                         }
                         Err(broadcast::error::RecvError::Lagged(n)) => {
-                            // Tolerated degradation (ADR-0038): buffer overflow
-                            // recovers via re-snapshot, so WARN. Lagged count in
-                            // a field, never interpolated into the message.
                             tracing::warn!(event = "subscribe.forwarder_lagged", %run_id, n);
-                            // Recover through the tail (review F2/F3): the lagged
-                            // receiver would otherwise resume at the OLDEST retained
-                            // buffer entry and replay events ALREADY in this snapshot
-                            // (text/reasoning would duplicate). `recover` re-snapshots
-                            // AND repositions the receiver at the current tail UNDER
-                            // THE GATE, so the snapshot's last event meets the tail
-                            // exactly — no gap, no replay.
                             let segments = tail
                                 .recover(|| async {
                                     db::run_live_segments(&pool, run_id, true).await
@@ -678,7 +562,7 @@ mod tests {
             .expect("begin")
             .won()
         );
-        assert!(
+        assert!(matches!(
             db::finish_external_tool_call(
                 &pool,
                 run_id,
@@ -688,15 +572,22 @@ mod tests {
                 db::now_ms(),
             )
             .await
-            .expect("finish")
-            .is_some()
-        );
+            .expect("finish"),
+            db::ExternalToolFinish::Resolved(_)
+        ));
 
         // A live hub (the run is still streaming) → the snapshot-then-attach path.
         let hubs = hub::new_hubs();
         let _run_hub = hub::register(&hubs, run_id).expect("fresh run registers");
         let (out_tx, mut out_rx) = mpsc::unbounded_channel::<String>();
-        handle(&pool, &hubs, serde_json::json!(3), SubscribeParams { run_id }, &out_tx).await;
+        handle(
+            &pool,
+            &hubs,
+            serde_json::json!(3),
+            SubscribeParams { run_id },
+            &out_tx,
+        )
+        .await;
 
         // Collect the snapshot frames (the forwarder then blocks on an empty tail).
         let mut frames = Vec::new();

@@ -39,6 +39,7 @@ use crate::workflow::Workflow;
 
 use crate::launch::{self, Role};
 use child::ChildWorker;
+use port::Exit;
 use run::run_loop;
 
 /// Resolve the Worker launch command (ADR-0041): the `INKSTONE_WORKER_CMD`
@@ -103,13 +104,13 @@ pub fn spawn(m: SpawnManifest) {
             // token resolution the build performs. `drive`'s own entry check
             // re-tests after the build.
             if run_hub.is_cancelled() {
-                hub::remove_own(&hubs, run_id, &run_hub);
+                hub::retire(&hubs, run_id, &run_hub).await;
                 return;
             }
             let Some(line) =
                 fresh_manifest_line(run_id, &workflow, &prompt, &history, attachments).await
             else {
-                finalize_error(&pool, &hubs, run_id, &run_hub).await;
+                terminate_if_fatal(run_id, finalize_error(&pool, &hubs, run_id, &run_hub).await);
                 return;
             };
             drive(
@@ -231,21 +232,19 @@ async fn drive(
     run_hub: RunHub,
 ) {
     if run_hub.is_cancelled() {
-        hub::remove_own(&hubs, run_id, &run_hub);
+        hub::retire(&hubs, run_id, &run_hub).await;
         return;
     }
     let Some(cmd) = resolve_worker_cmd(run_id) else {
-        finalize_error(&pool, &hubs, run_id, &run_hub).await;
+        terminate_if_fatal(run_id, finalize_error(&pool, &hubs, run_id, &run_hub).await);
         return;
     };
-    match ChildWorker::spawn(run_id, &cmd.program, &cmd.args, line).await {
+
+    let exit = match ChildWorker::spawn(run_id, &cmd.program, &cmd.args, line).await {
         Ok(worker) => {
-            // Post-spawn cancel check (the union addition for resume): the
-            // cancel won while the child was spawning, so drop it before the
-            // loop ever runs — `kill_on_drop` reaps it, no orphan Worker.
             if run_hub.is_cancelled() {
                 drop(worker);
-                hub::remove_own(&hubs, run_id, &run_hub);
+                hub::retire(&hubs, run_id, &run_hub).await;
                 return;
             }
             run_loop(
@@ -257,16 +256,20 @@ async fn drive(
                 hubs,
                 run_hub,
             )
-            .await;
+            .await
         }
-        // A pre-loop spawn failure finalizes the Run `errored`. For a fresh
-        // Run this is the ordinary pre-spawn failure path. For a resume it is
-        // the rare residual case — a post-flip spawn failure (the realistic
-        // token/manifest failure is handled before the flip): the decide RPC
-        // already reported success, so re-parking would leave a decided card
-        // over a silently hung turn. Finalizing `errored` keeps the failure
-        // visible and the user can re-send.
         Err(()) => finalize_error(&pool, &hubs, run_id, &run_hub).await,
+    };
+    terminate_if_fatal(run_id, exit);
+}
+
+/// Terminal persistence is a process invariant: once every write attempt fails,
+/// continuing would leave an in-memory producer over an untrustworthy durable
+/// transcript. Preserve the hub and let boot recovery settle the `running` row.
+fn terminate_if_fatal(run_id: Uuid, exit: Exit) {
+    if exit == Exit::FatalPersistence {
+        tracing::error!(event = "worker.fatal_terminal_persistence", %run_id);
+        std::process::exit(1);
     }
 }
 
@@ -344,22 +347,23 @@ async fn resume_manifest_line(
 /// external tools (external-task-views A3) — owned by the caller so the
 /// borrowing manifest can reference it.
 fn external_tools_endpoint(workflow: &Workflow) -> Option<String> {
-    workflow
-        .external_tools
-        .then(crate::ticktick::mcp_endpoint)
+    workflow.external_tools.then(crate::ticktick::mcp_endpoint)
 }
 
 /// The manifest's external-tool config (A3/A5): present iff the Workflow opted
 /// in AND a TickTick credential loaded at boot — a dark lane never ships
 /// endpoint or auth.
-fn external_tools_manifest<'a>(
-    endpoint: &'a Option<String>,
-) -> Option<ExternalToolsManifest<'a>> {
+fn external_tools_manifest<'a>(endpoint: &'a Option<String>) -> Option<ExternalToolsManifest<'a>> {
     let endpoint = endpoint.as_deref()?;
     let connection = crate::ticktick::connection()?;
     Some(ExternalToolsManifest {
         endpoint,
         access_token: &connection.access_token,
+        timeout_ms: crate::config::get()
+            .ticktick_timeout
+            .as_millis()
+            .try_into()
+            .expect("TickTick timeout milliseconds fit u64"),
     })
 }
 
@@ -412,25 +416,33 @@ async fn pre_spawn_delay_if_configured() {
     }
 }
 
-/// Pre-loop spawn-failure path: the Worker produced no output, so terminate the
-/// Run as `worker_disconnected` (ADR-0017) and remove the hub so a subscriber
-/// falls through to the persisted snapshot + `done`.
-async fn finalize_error(pool: &SqlitePool, hubs: &Hubs, run_id: Uuid, run_hub: &RunHub) {
-    // One gated drain (review R9 #1): the errored commit and the hub removal
-    // are atomic w.r.t. an activation waiting on this gate. A persist fault
-    // retries once (review R12 #2) — landing `errored` is what gives retry a
-    // path; a doubly-failed write leaves the bounded zombie paths + boot sweep
-    // to own the residue (holding the hub would spin re-attaching subscribers
-    // against a producerless channel).
+/// Pre-loop spawn-failure path. The terminal write and hub drain use the same
+/// lifecycle → hub-gate order as the run loop. A repeated persistence failure
+/// retains the hub and asks the driver to terminate Core.
+async fn finalize_error(pool: &SqlitePool, hubs: &Hubs, run_id: Uuid, run_hub: &RunHub) -> Exit {
+    let lifecycle = hub::lifecycle(hubs, run_id).await;
     let guard = run_hub.gate().await;
-    if let Err(e) = db::error_run(pool, run_id, db::now_ms()).await {
-        tracing::error!(event = "worker.error_run_failed", %run_id, error = ?e);
-        if let Err(e) = db::error_run(pool, run_id, db::now_ms()).await {
-            tracing::error!(event = "worker.terminal_persist_lost", %run_id, error = ?e);
+    let now_ms = db::now_ms();
+    let result = match db::error_run(pool, run_id, now_ms).await {
+        Ok(terminal) => Ok(terminal),
+        Err(first) => {
+            tracing::error!(event = "worker.error_run_failed", %run_id, error = ?first);
+            db::error_run(pool, run_id, now_ms).await.map_err(|e| {
+                tracing::error!(event = "worker.terminal_persist_lost", %run_id, error = ?e);
+                e
+            })
         }
+    };
+
+    if result.is_err() {
+        drop(guard);
+        drop(lifecycle);
+        return Exit::FatalPersistence;
     }
-    crate::hub::remove_own(hubs, run_id, run_hub);
+    hub::remove_own(hubs, run_id, run_hub, &lifecycle);
     drop(guard);
+    drop(lifecycle);
+    Exit::Disconnected
 }
 
 #[cfg(test)]
@@ -448,6 +460,23 @@ mod tests {
             tools: tools.iter().map(|s| s.to_string()).collect(),
             external_tools: false,
         }
+    }
+
+    #[tokio::test]
+    async fn finalize_error_keeps_the_hub_when_terminal_persistence_fails() {
+        let pool = crate::db::test_support::memory_pool().await;
+        let wf = super::test_support::test_workflow(&[]);
+        let (run_id, _thread_id, _assistant_id) = super::test_support::seed_run(&pool, &wf).await;
+        let (hubs, run_hub) = super::test_support::fixtures(run_id);
+
+        pool.close().await;
+        let exit = finalize_error(&pool, &hubs, run_id, &run_hub).await;
+
+        assert_eq!(exit, Exit::FatalPersistence);
+        assert!(
+            hub::get(&hubs, run_id).is_some(),
+            "a failed terminal write must not drain the live generation"
+        );
     }
 
     /// The manifest builder injects the scanned skills' name+description into the
@@ -603,7 +632,8 @@ mod tests {
             manifest["external_tools"],
             serde_json::json!({
                 "endpoint": "http://127.0.0.1:1/mcp",
-                "access_token": "tok_ticktick"
+                "access_token": "tok_ticktick",
+                "timeout_ms": 30_000
             })
         );
         // Resume ships the same config from the same boot-read state.

@@ -8,7 +8,8 @@
   ],
   "external_tools": {
     "access_token": "tok_ticktick",
-    "endpoint": "https://mcp.ticktick.com/"
+    "endpoint": "https://mcp.ticktick.com/",
+    "timeout_ms": 30000
   },
   "messages": [
     {

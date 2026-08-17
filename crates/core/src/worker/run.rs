@@ -7,6 +7,7 @@
 use sqlx::SqlitePool;
 use uuid::Uuid;
 
+use super::external::{self, FrameFailure, publish_interrupted};
 use super::port::{Exit, WorkerPort};
 use crate::db;
 use crate::db::TerminalReason;
@@ -15,20 +16,11 @@ use crate::protocol::{
     RunEvent, ToolCallStatus, ToolErrorWire, ToolOutcome, ToolResult, WorkerStdout,
 };
 use crate::workflow::Workflow;
-use super::external::{
-    begin_external_and_publish, finish_external_and_publish, publish_interrupted,
-};
 
 /// The live `RunEvent::Error` message published when the Worker's stdout closed
 /// without a `done` (it died/was killed/hung up). Mirrors the persisted
 /// `error_message` (`error_run`) so a live tail and a reload agree.
 pub(crate) const WORKER_DISCONNECTED_MESSAGE: &str = "worker exited without emitting done event";
-
-/// Terminal `error` message when Core could not PERSIST an external call's
-/// lifecycle row (review R12 #2): the Worker is stopped rather than letting the
-/// model run ahead of the durable transcript.
-pub(crate) const EXTERNAL_PERSIST_FAILED_MESSAGE: &str =
-    "core could not persist an external tool call";
 
 /// Drive a spawned Worker to a terminal state. Appends each `text_delta` under
 /// the per-run gate (ADR-0022), executes or parks `tool_request`s
@@ -66,19 +58,26 @@ pub(super) async fn run_loop<P: WorkerPort + Send>(
     }
 
     while !cancelled_by_core {
-        let Some(msg) = (tokio::select! {
+        let received = tokio::select! {
             changed = cancel_rx.changed() => {
                 if changed.is_ok() && *cancel_rx.borrow() {
                     worker.shutdown().await;
                     cancelled_by_core = true;
-                    None
+                    Ok(None)
                 } else {
                     continue;
                 }
             }
             msg = worker.recv() => msg,
-        }) else {
-            break;
+        };
+        let msg = match received {
+            Ok(Some(msg)) => msg,
+            Ok(None) => break,
+            Err(()) => {
+                worker_error = Some(external::WORKER_PROTOCOL_FAILED_MESSAGE.to_string());
+                worker.shutdown().await;
+                break;
+            }
         };
         if *cancel_rx.borrow() {
             worker.shutdown().await;
@@ -155,16 +154,21 @@ pub(super) async fn run_loop<P: WorkerPort + Send>(
                         worker.shutdown().await;
                         break;
                     }
+                    let lifecycle = crate::hub::lifecycle(&hubs, run_id).await;
                     let guard = run_hub.gate().await;
+                    if *cancel_rx.borrow() {
+                        drop(guard);
+                        drop(lifecycle);
+                        worker.shutdown().await;
+                        cancelled_by_core = true;
+                        break;
+                    }
                     parked = park_on_proposal(&pool, run_id, &tool_call_id, &name, &params).await;
                     if parked {
-                        // Drain atomically (review R9 #1): the park commit and the
-                        // hub removal are ONE gated section, so a decide-driven
-                        // resume activating in this instant waits on this gate and
-                        // then finds the slot drained — never a half-parked zombie.
-                        crate::hub::remove_own(&hubs, run_id, &run_hub);
+                        crate::hub::remove_own(&hubs, run_id, &run_hub, &lifecycle);
                     }
                     drop(guard);
+                    drop(lifecycle);
                     worker.shutdown().await;
                     break;
                 }
@@ -225,53 +229,31 @@ pub(super) async fn run_loop<P: WorkerPort + Send>(
                 }
                 worker.send_tool_result(result).await;
             }
-            // External-call lifecycle frames (external-task-views A4): the
-            // Worker executed an MCP tool itself; Core only observes. The
-            // started frame persists the pending row (same seq machinery as a
-            // Core tool) and publishes the started event; the finished frame
-            // resolves the row — `tool_calls.status` derives from
-            // `result.is_error` — and publishes the terminal event CARRYING the
-            // result, so the live expandable row matches reload.
+            // External MCP execution is a durable request/ack protocol. pi
+            // awaits each event sink, so the started ACK gates execution and the
+            // finished ACK gates the next model turn.
             WorkerStdout::ExternalToolStarted {
                 tool_call_id,
                 name,
                 arguments,
             } => {
-                // Seal both open segments (ADR-0045): the call's own run_steps
-                // row lands at the next seq, exactly like a Core tool boundary.
                 open_text_part = None;
                 open_reasoning_part = None;
-                if !crate::tools::is_external(&name) {
-                    // Only the reserved prefix marks a call external at every
-                    // consumer; an unprefixed name here is a Worker bug.
-                    tracing::error!(
-                        event = "worker.external_frame_name_unreserved",
-                        %run_id, tool_call_id, name
-                    );
-                    continue;
-                }
-                let request_payload = arguments.to_string();
-                // Guarded begin+publish (external-task-views A4, review #1): the
-                // row lands and the started event publishes as ONE gated critical
-                // section, so a concurrent cancel cannot interleave between them;
-                // the insert wins only while the Run is still `running`. A DB
-                // fault STOPS the Worker (review R12 #2) — the model must not
-                // proceed on a call Core could not persist.
-                if let Err(e) = begin_external_and_publish(
+                if let Err(failure) = external::handle_started(
+                    &mut worker,
                     &pool,
                     run_id,
                     &run_hub,
                     &tool_call_id,
                     &name,
-                    &request_payload,
+                    &arguments,
                 )
                 .await
                 {
-                    tracing::error!(
-                        event = "worker.begin_external_tool_call_failed",
-                        %run_id, tool_call_id, error = ?e
-                    );
-                    worker_error = Some(EXTERNAL_PERSIST_FAILED_MESSAGE.to_string());
+                    match failure {
+                        FrameFailure::Cancelled => cancelled_by_core = true,
+                        FrameFailure::Terminal(message) => worker_error = Some(message.to_string()),
+                    }
                     worker.shutdown().await;
                     break;
                 }
@@ -280,24 +262,20 @@ pub(super) async fn run_loop<P: WorkerPort + Send>(
                 tool_call_id,
                 result,
             } => {
-                // Guarded finish+publish (external-task-views A4, review #1): the
-                // resolve and the terminal event are ONE gated critical section
-                // (see `finish_external_and_publish`) — the `status='pending'`
-                // guard re-pairs the finished frame with its row and hands back
-                // its name (review M1), so a finish that races a cancel/EOF settle
-                // loses and emits nothing, and a won finish is ordered before
-                // `Cancelled`. A DB fault STOPS the Worker (review R12 #2) — a
-                // consumed result whose row stayed `pending` would reload as
-                // "not executed".
-                if let Err(e) =
-                    finish_external_and_publish(&pool, run_id, &run_hub, &tool_call_id, result)
-                        .await
+                if let Err(failure) = external::handle_finished(
+                    &mut worker,
+                    &pool,
+                    run_id,
+                    &run_hub,
+                    &tool_call_id,
+                    result,
+                )
+                .await
                 {
-                    tracing::error!(
-                        event = "worker.finish_external_tool_call_failed",
-                        %run_id, tool_call_id, error = ?e
-                    );
-                    worker_error = Some(EXTERNAL_PERSIST_FAILED_MESSAGE.to_string());
+                    match failure {
+                        FrameFailure::Cancelled => cancelled_by_core = true,
+                        FrameFailure::Terminal(message) => worker_error = Some(message.to_string()),
+                    }
                     worker.shutdown().await;
                     break;
                 }
@@ -305,69 +283,46 @@ pub(super) async fn run_loop<P: WorkerPort + Send>(
         }
     }
 
-    // Terminal-state tx (ADR-0017 atomic recovery). A worker-emitted `error`
-    // takes precedence over EOF-without-done and carries its message. Park
-    // (ADR-0025) short-circuits this entirely (it is non-terminal).
+    // Terminal-state tx (ADR-0017 atomic recovery). A lifecycle guard pins this
+    // generation while the hub gate makes settle + publish + removal atomic with
+    // subscribers. Park and cancellation are drained by their owning paths.
     if !parked && !cancelled_by_core {
-        // The terminal tx, the interrupted-settlement publications, and the
-        // terminal event are ONE gated critical section (review P1 #3). Holding
-        // the gate across the commit AND the raw `send`s makes a subscriber's
-        // `snapshot_then_attach` atomic w.r.t. the whole sequence — it either
-        // snapshots the pre-terminal state and then receives every event on its
-        // tail, or snapshots the settled/terminal state; it can never snapshot a
-        // pending call, miss the raw interrupted event, then see only the
-        // terminal one. (Raw `send` under the held gate — it is not re-entrant.)
+        let lifecycle = crate::hub::lifecycle(&hubs, run_id).await;
         let guard = run_hub.gate().await;
         let now_ms = db::now_ms();
-        let result = if let Some(ref message) = worker_error {
-            db::error_run_with_message(
-                &pool,
-                run_id,
-                TerminalReason::Errored,
-                "worker_error",
-                message,
-                now_ms,
-            )
-            .await
-        } else if saw_done {
-            db::complete_run(&pool, run_id, now_ms).await
-        } else {
-            db::error_run(&pool, run_id, now_ms).await
+        let persist = || async {
+            if let Some(ref message) = worker_error {
+                db::error_run_with_message(
+                    &pool,
+                    run_id,
+                    TerminalReason::Errored,
+                    "worker_error",
+                    message,
+                    now_ms,
+                )
+                .await
+            } else if saw_done {
+                db::complete_run(&pool, run_id, now_ms).await
+            } else {
+                db::error_run(&pool, run_id, now_ms).await
+            }
         };
-        // A terminal-persist fault must not strand a durable `running` row with
-        // no producer and no retry path (review R12 #2): retry once, then fall
-        // back to the simplest durable transition (`error_run`) so the Run lands
-        // `errored` — the state retry can act on. Only if even that fails does
-        // the drain proceed with the row still `running` (the bounded zombie
-        // paths + the boot sweep own that residue).
-        let result = match result {
+
+        let result = match persist().await {
             Err(first) => {
                 tracing::error!(event = "worker.terminal_tx_failed", %run_id, error = ?first);
-                let retried = if let Some(ref message) = worker_error {
-                    db::error_run_with_message(
-                        &pool,
-                        run_id,
-                        TerminalReason::Errored,
-                        "worker_error",
-                        message,
-                        now_ms,
-                    )
-                    .await
-                } else if saw_done {
-                    db::complete_run(&pool, run_id, now_ms).await
-                } else {
-                    db::error_run(&pool, run_id, now_ms).await
-                };
-                match retried {
+                match persist().await {
                     Err(second) => {
                         tracing::error!(
                             event = "worker.terminal_tx_retry_failed",
-                            %run_id, error = ?second
+                            %run_id,
+                            error = ?second
                         );
                         db::error_run(&pool, run_id, now_ms).await.map_err(|e| {
                             tracing::error!(
                                 event = "worker.terminal_persist_lost",
-                                %run_id, error = ?e
+                                %run_id,
+                                error = ?e
                             );
                             e
                         })
@@ -378,51 +333,39 @@ pub(super) async fn run_loop<P: WorkerPort + Send>(
             ok => ok,
         };
 
-        // Publish the terminal Run Event ONLY AFTER this loop's terminal tx
-        // wins. If cancellation already committed, the guarded transition loses
-        // and `run/cancel` owns the terminal `cancelled` event.
-        if let Ok(db::Terminal::Won { interrupted }) = result {
-            {
-                // External calls the settle interrupted (external-task-views
-                // A4) publish BEFORE the terminal event, so the live tab
-                // settles each row with the same result reload will render.
-                publish_interrupted(&run_hub, interrupted);
-                match (&worker_error, saw_done) {
-                    (Some(message), _) => {
-                        run_hub.send(RunEvent::Error {
-                            message: message.clone(),
-                        });
-                    }
-                    (None, true) => {
-                        run_hub.send(RunEvent::Done);
-                    }
-                    // EOF without `done` (the Worker died/hung up) settled the
-                    // Run `errored` above — publish `Error`, NOT nothing, so a
-                    // live tail sees the failure. Previously this published no
-                    // event and `run/subscribe` mis-reported it as `done`.
-                    (None, false) => {
-                        run_hub.send(RunEvent::Error {
-                            message: WORKER_DISCONNECTED_MESSAGE.to_string(),
-                        });
-                    }
-                }
+        let terminal = match result {
+            Ok(terminal) => terminal,
+            Err(_) => {
+                // Keep the registered hub as evidence that this generation was
+                // never durably drained. The driver exits the process; boot
+                // recovery owns the remaining durable `running` row.
+                drop(guard);
+                drop(lifecycle);
+                return Exit::FatalPersistence;
+            }
+        };
+
+        if let db::Terminal::Won { interrupted } = terminal {
+            publish_interrupted(&run_hub, interrupted);
+            match (&worker_error, saw_done) {
+                (Some(message), _) => run_hub.send(RunEvent::Error {
+                    message: message.clone(),
+                }),
+                (None, true) => run_hub.send(RunEvent::Done),
+                (None, false) => run_hub.send(RunEvent::Error {
+                    message: WORKER_DISCONNECTED_MESSAGE.to_string(),
+                }),
             }
         }
-        // Drain atomically (review R9 #1): the terminal commit, its publishes,
-        // AND the hub removal are ONE gated section — a retry activating in this
-        // instant waits on this gate, then finds the slot drained and runs its
-        // errored→running CAS against the committed status (registry occupancy
-        // never substitutes for the CAS). Attached subscribers still observe the
-        // channel close only after draining the tail: removal drops the MAP's
-        // sender clone; this loop's own clone drops on return.
-        crate::hub::remove_own(&hubs, run_id, &run_hub);
+        crate::hub::remove_own(&hubs, run_id, &run_hub, &lifecycle);
         drop(guard);
+        drop(lifecycle);
+    } else {
+        // Cancellation owns its durable transition; parking removed the hub in
+        // the guarded park block. Identity-checked retirement is a no-op if the
+        // owning path already drained this generation.
+        crate::hub::retire(&hubs, run_id, &run_hub).await;
     }
-
-    // Catch-all for the exits whose drain someone else owns (a cancel's gated
-    // section removed the hub; a park removed it above): identity-checked, so
-    // this is a no-op when already drained and never deletes a newer activation.
-    crate::hub::remove_own(&hubs, run_id, &run_hub);
 
     if cancelled_by_core {
         Exit::Cancelled
@@ -747,6 +690,42 @@ mod tests {
         assert!(
             !events.iter().any(|e| matches!(e, RunEvent::Done)),
             "EOF is not reported as done"
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_worker_frame_terminates_instead_of_becoming_clean_eof() {
+        let pool = memory_pool().await;
+        let wf = test_workflow(&[]);
+        let (run_id, _thread_id, assistant_id) = seed_run(&pool, &wf).await;
+        let (hubs, run_hub) = fixtures(run_id);
+        let (worker, _sent, shutdowns, _acks) = ScriptedWorker::new_with_results(vec![Err(())]);
+
+        let exit = run_loop(
+            worker,
+            run_id,
+            wf,
+            pool.clone(),
+            assistant_id,
+            hubs,
+            run_hub,
+        )
+        .await;
+
+        assert_eq!(
+            exit,
+            Exit::Errored(external::WORKER_PROTOCOL_FAILED_MESSAGE.to_string())
+        );
+        assert_eq!(
+            db::run_status(&pool, run_id)
+                .await
+                .unwrap()
+                .map(db::RunStatus::as_str),
+            Some("errored")
+        );
+        assert!(
+            *shutdowns.lock().unwrap() >= 1,
+            "a protocol violation shuts the Worker down"
         );
     }
 

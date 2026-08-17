@@ -295,7 +295,7 @@ fn stalled_upstream_is_bounded_by_the_timeout_knob() {
             "a stalled read maps to an error response — body: {list}"
         );
         assert!(
-            started.elapsed() < std::time::Duration::from_secs(10),
+            started.elapsed() < std::time::Duration::from_secs(1),
             "the knob bounds the stall (not the 30s default)"
         );
     });

@@ -1022,6 +1022,24 @@ mod parity_fixtures {
                     },
                 }
             ),
+            fx!(
+                "external_tool_ack.started.json",
+                ExternalToolAck {
+                    kind: "external_tool_ack",
+                    tool_call_id: "tc_ext".to_string(),
+                    phase: ExternalToolPhase::Started,
+                    ok: true,
+                }
+            ),
+            fx!(
+                "external_tool_ack.finished_nack.json",
+                ExternalToolAck {
+                    kind: "external_tool_ack",
+                    tool_call_id: "tc_ext".to_string(),
+                    phase: ExternalToolPhase::Finished,
+                    ok: false,
+                }
+            ),
             // WorkerManifest (ser-only, borrowed-lifetime <'a> — owned literals live
             // to the serialize call inside `fx!`). Maximal: resume mode, all THREE
             // ManifestMessage variants (user / assistant-with-tool_calls /
@@ -1071,6 +1089,7 @@ mod parity_fixtures {
                     external_tools: Some(ExternalToolsManifest {
                         endpoint: "https://mcp.ticktick.com/",
                         access_token: "tok_ticktick",
+                        timeout_ms: 30_000,
                     }),
                 }
             ),
@@ -1250,6 +1269,8 @@ mod parity_fixtures {
             "run_event.reasoning_delta.json",
             "tool_result.ok.json",
             "tool_result.err.json",
+            "external_tool_ack.started.json",
+            "external_tool_ack.finished_nack.json",
             "worker_manifest.json",
             "worker_manifest.bare.json",
             "ticktick_status_result.connected.json",
@@ -1473,6 +1494,7 @@ mod parity_fixtures {
         "SettingsSetParams",
         "RunEvent",
         "ToolResult",
+        "ExternalToolAck",
         "WorkerStdout",
         "WorkerManifest",
         "HelperLine",
@@ -1511,6 +1533,10 @@ mod parity_fixtures {
         ("AgentToolResult", "tool_result.ok.json"),
         ("ToolTextContent", "tool_result.ok.json"),
         ("ToolErrorWire", "tool_result.err.json"),
+        (
+            "ExternalToolPhase",
+            "external_tool_ack.started.json / external_tool_ack.finished_nack.json",
+        ),
         ("ProviderStatus", "provider_status_result.json"),
         ("ModelInfo", "model_catalog_result.json"),
         ("ProviderModels", "model_catalog_result.json"),

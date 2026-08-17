@@ -209,6 +209,7 @@ mod tests {
         env.insert("INKSTONE_LOG_DIR", "/tmp/logs");
         env.insert("INKSTONE_TITLE_TIMEOUT_MS", "5000");
         env.insert("INKSTONE_PROVIDER_TEST_TIMEOUT_MS", "3000");
+        env.insert("INKSTONE_TICKTICK_TIMEOUT_MS", "250");
         env.insert("INKSTONE_WORKER_PRE_SPAWN_DELAY_MS", "100");
         env.insert("INKSTONE_WORKER_LOG_PATH", "/tmp/worker.jsonl");
         env.insert("INKSTONE_PUBLIC_ORIGIN", "https://inkstone.example.com");
@@ -231,6 +232,7 @@ mod tests {
         assert_eq!(cfg.log_dir_override, Some(PathBuf::from("/tmp/logs")));
         assert_eq!(cfg.title_timeout, Duration::from_millis(5000));
         assert_eq!(cfg.provider_test_timeout, Duration::from_millis(3000));
+        assert_eq!(cfg.ticktick_timeout, Duration::from_millis(250));
         assert_eq!(cfg.worker_pre_spawn_delay, Some(Duration::from_millis(100)));
         assert_eq!(
             cfg.worker_log_path,
@@ -263,6 +265,7 @@ mod tests {
         assert_eq!(cfg.log_dir_override, None);
         assert_eq!(cfg.title_timeout, Duration::from_millis(15_000));
         assert_eq!(cfg.provider_test_timeout, Duration::from_millis(15_000));
+        assert_eq!(cfg.ticktick_timeout, Duration::from_millis(30_000));
         assert_eq!(cfg.worker_pre_spawn_delay, None);
         assert_eq!(cfg.worker_log_path, None);
         assert_eq!(cfg.public_origin, None);
@@ -289,11 +292,13 @@ mod tests {
         let mut env = HashMap::new();
         env.insert("INKSTONE_TITLE_TIMEOUT_MS", "0");
         env.insert("INKSTONE_PROVIDER_TEST_TIMEOUT_MS", "0");
+        env.insert("INKSTONE_TICKTICK_TIMEOUT_MS", "0");
 
         let cfg = Config::from_lookup(lookup(&env));
 
         assert_eq!(cfg.title_timeout, Duration::from_millis(15_000));
         assert_eq!(cfg.provider_test_timeout, Duration::from_millis(15_000));
+        assert_eq!(cfg.ticktick_timeout, Duration::from_millis(30_000));
     }
 
     #[test]
@@ -301,11 +306,13 @@ mod tests {
         let mut env = HashMap::new();
         env.insert("INKSTONE_TITLE_TIMEOUT_MS", "not-a-number");
         env.insert("INKSTONE_PROVIDER_TEST_TIMEOUT_MS", "abc");
+        env.insert("INKSTONE_TICKTICK_TIMEOUT_MS", "invalid");
 
         let cfg = Config::from_lookup(lookup(&env));
 
         assert_eq!(cfg.title_timeout, Duration::from_millis(15_000));
         assert_eq!(cfg.provider_test_timeout, Duration::from_millis(15_000));
+        assert_eq!(cfg.ticktick_timeout, Duration::from_millis(30_000));
     }
 
     #[test]

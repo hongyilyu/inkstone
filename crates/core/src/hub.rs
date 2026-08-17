@@ -10,7 +10,7 @@
 
 use std::collections::HashMap;
 use std::future::Future;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
 use tokio::sync::{broadcast, watch};
 use uuid::Uuid;
@@ -174,14 +174,57 @@ impl RunTail {
     }
 }
 
-/// Shared map of in-flight Runs. `std::sync::Mutex` is fine: touched only at
-/// spawn / subscribe / terminal (never per-delta), so the critical section never
-/// spans an `.await`. `Arc` keeps `AppState` `Clone`.
-pub type Hubs = Arc<Mutex<HashMap<Uuid, RunHub>>>;
+/// Shared registry of in-flight Runs and their transient lifecycle locks.
+///
+/// The per-run lifecycle lock linearizes generation changes with cancel and
+/// subscribe classification. Its registry entry is weak: once no operation
+/// holds or waits for the lock, a later lookup prunes it, so completed Run ids
+/// do not accumulate forever. The inner `std::sync::Mutex` is held only for map
+/// access and never across an `.await`.
+#[derive(Clone)]
+pub struct Hubs {
+    inner: Arc<Mutex<Registry>>,
+}
+
+#[derive(Default)]
+struct Registry {
+    active: HashMap<Uuid, RunHub>,
+    lifecycle: HashMap<Uuid, Weak<tokio::sync::Mutex<()>>>,
+}
+
+/// Proof that the caller owns one Run's lifecycle transition slot. Operations
+/// which change the active generation require this guard, making the lock order
+/// structural: lifecycle first, then the [`RunHub`] snapshot gate.
+pub struct LifecycleGuard {
+    run_id: Uuid,
+    _guard: tokio::sync::OwnedMutexGuard<()>,
+}
 
 /// A fresh, empty hub map.
 pub fn new_hubs() -> Hubs {
-    Arc::new(Mutex::new(HashMap::new()))
+    Hubs {
+        inner: Arc::new(Mutex::new(Registry::default())),
+    }
+}
+
+/// Acquire the transient lifecycle slot for `run_id`.
+pub async fn lifecycle(hubs: &Hubs, run_id: Uuid) -> LifecycleGuard {
+    let slot = {
+        let mut registry = hubs.inner.lock().expect("hubs mutex not poisoned");
+        registry.lifecycle.retain(|_, weak| weak.strong_count() > 0);
+        match registry.lifecycle.get(&run_id).and_then(Weak::upgrade) {
+            Some(slot) => slot,
+            None => {
+                let slot = Arc::new(tokio::sync::Mutex::new(()));
+                registry.lifecycle.insert(run_id, Arc::downgrade(&slot));
+                slot
+            }
+        }
+    };
+    LifecycleGuard {
+        run_id,
+        _guard: slot.lock_owned().await,
+    }
 }
 
 /// Register a fresh hub for `run_id` — ONLY if none is registered (review R8 #1).
@@ -204,8 +247,10 @@ pub fn register(hubs: &Hubs, run_id: Uuid) -> Option<RunHub> {
 /// is never visible un-gated mid-activation.
 fn register_candidate(hubs: &Hubs, run_id: Uuid, candidate: &RunHub) -> bool {
     match hubs
+        .inner
         .lock()
         .expect("hubs mutex not poisoned")
+        .active
         .entry(run_id)
     {
         std::collections::hash_map::Entry::Occupied(_) => false,
@@ -231,76 +276,50 @@ fn register_candidate(hubs: &Hubs, run_id: Uuid, candidate: &RunHub) -> bool {
 /// from-state, so backing off is the CAS's own answer, not a substitute. A lost
 /// or faulted CAS deregisters under the gate — identity-checked, never deleting
 /// a later activation's hub. `Ok(None)` = not activated; `Err` = CAS fault.
-pub async fn activate<E, F, Fut>(
-    hubs: &Hubs,
-    run_id: Uuid,
-    cas: F,
-) -> Result<Option<RunHub>, E>
+pub async fn activate<E, F, Fut>(hubs: &Hubs, run_id: Uuid, cas: F) -> Result<Option<RunHub>, E>
 where
     F: FnOnce() -> Fut,
     Fut: Future<Output = Result<bool, E>>,
 {
-    let (hub, guard) = loop {
-        // The candidate hub is GATE-LOCKED BEFORE it becomes visible in the map
-        // (review R10 #2): a subscriber that finds it blocks in
-        // `snapshot_then_attach` until the CAS settles, so it can never snapshot
-        // the pre-CAS status (e.g. the old `errored` a retry is about to flip)
-        // against the new generation's channel. The acquire is uncontended —
-        // the hub is not shared yet.
-        let candidate = RunHub::new();
-        let guard = candidate.gate_owned().await;
-        if register_candidate(hubs, run_id, &candidate) {
-            break (candidate, guard);
-        }
-        drop(guard);
-        // Occupied. Wait out any in-flight gated drain, then re-check: the SAME
-        // hub still registered means a live producer owns the run — back off. A
-        // turned-over slot (drained, or replaced by another activation) retries.
-        let Some(existing) = get(hubs, run_id) else {
-            continue;
-        };
-        drop(existing.gate().await);
-        match get(hubs, run_id) {
-            Some(current) if current.same(&existing) => return Ok(None),
-            _ => {}
-        }
-    };
+    let lifecycle = lifecycle(hubs, run_id).await;
+    if get(hubs, run_id).is_some() {
+        return Ok(None);
+    }
+
+    // Lock the candidate's snapshot gate before publishing it. A subscriber
+    // therefore cannot read the pre-CAS status against this generation.
+    let hub = RunHub::new();
+    let guard = hub.gate_owned().await;
+    let inserted = register_candidate(hubs, run_id, &hub);
+    debug_assert!(inserted, "lifecycle guard keeps the active slot vacant");
     let result = cas().await;
     match result {
         Ok(true) => {
             drop(guard);
+            drop(lifecycle);
             Ok(Some(hub))
         }
         Ok(false) => {
-            remove_own(hubs, run_id, &hub);
+            remove_own(hubs, run_id, &hub, &lifecycle);
             drop(guard);
             Ok(None)
         }
         Err(e) => {
-            remove_own(hubs, run_id, &hub);
+            remove_own(hubs, run_id, &hub, &lifecycle);
             drop(guard);
             Err(e)
         }
     }
 }
 
-/// Whether `hub` IS the currently registered generation for `run_id` — the
-/// post-gate revalidation cancel/subscribe use (review R11): a gate wait can
-/// span a drain + a new activation, and a decision made against a stale
-/// generation would commit against the new one while signalling the old.
-pub fn is_current(hubs: &Hubs, run_id: Uuid, hub: &RunHub) -> bool {
-    hubs.lock()
-        .expect("hubs mutex not poisoned")
-        .get(&run_id)
-        .is_some_and(|entry| entry.same(hub))
-}
-
 /// Look up the hub for `run_id`, cloning the handle if present. `None` means the
 /// Run is terminal/removed (or never existed), so the subscribe handler serves a
 /// tier-2 snapshot and the persisted terminal outcome.
 pub fn get(hubs: &Hubs, run_id: Uuid) -> Option<RunHub> {
-    hubs.lock()
+    hubs.inner
+        .lock()
         .expect("hubs mutex not poisoned")
+        .active
         .get(&run_id)
         .cloned()
 }
@@ -310,11 +329,25 @@ pub fn get(hubs: &Hubs, run_id: Uuid) -> Option<RunHub> {
 /// finishing Worker's cleanup can never delete a hub a newer activation (e.g. a
 /// retry racing the old Worker's exit) registered for the same run (review R8
 /// #1). A stale-identity call is a no-op.
-pub fn remove_own(hubs: &Hubs, run_id: Uuid, own: &RunHub) {
-    let mut map = hubs.lock().expect("hubs mutex not poisoned");
-    if map.get(&run_id).is_some_and(|entry| entry.same(own)) {
-        map.remove(&run_id);
+pub fn remove_own(hubs: &Hubs, run_id: Uuid, own: &RunHub, lifecycle: &LifecycleGuard) {
+    debug_assert_eq!(lifecycle.run_id, run_id);
+    let mut registry = hubs.inner.lock().expect("hubs mutex not poisoned");
+    if registry
+        .active
+        .get(&run_id)
+        .is_some_and(|entry| entry.same(own))
+    {
+        registry.active.remove(&run_id);
     }
+}
+
+/// Remove a generation when no durable transition accompanies the cleanup.
+/// The lifecycle/gate acquisition order matches every transition path.
+pub async fn retire(hubs: &Hubs, run_id: Uuid, own: &RunHub) {
+    let lifecycle = lifecycle(hubs, run_id).await;
+    let gate = own.gate().await;
+    remove_own(hubs, run_id, own, &lifecycle);
+    drop(gate);
 }
 
 #[cfg(test)]
@@ -478,70 +511,56 @@ mod tests {
         );
     }
 
-    /// The terminal-commit-before-hub-removal retry barrier (review R9 #1): a
-    /// Worker's drain (terminal commit + hub removal) is ONE gated section, and
-    /// an activation that finds the slot occupied WAITS on that gate instead of
-    /// backing off — registry occupancy never substitutes for the durable CAS.
-    /// Under the OLD semantics this activation returned `Ok(None)` (a valid
-    /// retry surfaced as PersistRaceLost/not_errored); now it activates.
+    /// A drain owns the lifecycle slot before the hub gate. An activation for
+    /// the next generation therefore waits until the terminal commit and hub
+    /// removal are both complete before it runs its own durable CAS.
     #[tokio::test]
     async fn activation_waits_out_an_inflight_drain_and_then_wins() {
         let hubs = new_hubs();
         let run_id = Uuid::now_v7();
-
-        // The dying producer: its run's terminal commit has happened; its gated
-        // drain (commit + removal in one section) is IN FLIGHT — gate held.
         let dying = register(&hubs, run_id).expect("producer registers");
+        let lifecycle = lifecycle(&hubs, run_id).await;
         let drain_guard = dying.gate().await;
 
-        // A retry activates NOW: the slot is occupied, so it must wait on the
-        // producer's gate — not back off.
         let task = tokio::spawn({
             let hubs = hubs.clone();
             async move { activate(&hubs, run_id, || async { Ok::<_, ()>(true) }).await }
         });
 
-        // Complete the drain under the held gate, then release it.
-        remove_own(&hubs, run_id, &dying);
+        remove_own(&hubs, run_id, &dying, &lifecycle);
         drop(drain_guard);
+        drop(lifecycle);
 
-        // The retry activated (Ok(Some)) — under the old back-off semantics this
-        // was Ok(None). The registered hub is the retry's fresh one, not the
-        // dying producer's.
         let hub = tokio::time::timeout(Duration::from_secs(5), task)
             .await
             .expect("activation completes once the drain finishes")
             .expect("task joins")
             .expect("no CAS fault")
-            .expect("the retry ACTIVATES — occupancy did not masquerade as a lost CAS");
+            .expect("the retry activates after the prior generation drains");
         let registered = get(&hubs, run_id).expect("the retry's hub is registered");
-        assert!(registered.same(&hub), "the slot holds the retry's fresh hub");
+        assert!(
+            registered.same(&hub),
+            "the slot holds the retry's fresh hub"
+        );
         assert!(!registered.same(&dying), "the dying producer's hub is gone");
     }
 
-    /// Identity-checked removal (review R8 #1, the old-worker-cleanup shape): a
-    /// finishing Worker's cleanup carries ITS hub; if a retry has already
-    /// registered a NEW hub for the same run id, the old cleanup is a no-op —
-    /// key-only removal deleted the retry's hub here.
+    /// Identity-checked removal: a late cleanup carries its own hub identity and
+    /// cannot delete a newer generation registered for the same Run.
     #[tokio::test]
     async fn remove_own_ignores_a_stale_hub_identity() {
         let hubs = new_hubs();
         let run_id = Uuid::now_v7();
 
-        // The old Worker's hub: registered, then its run went terminal and a
-        // retry re-registered before the old cleanup ran. Simulate by removing
-        // the old registration and registering the retry's fresh hub.
         let old = register(&hubs, run_id).expect("old registration");
-        remove_own(&hubs, run_id, &old);
+        retire(&hubs, run_id, &old).await;
         let fresh = register(&hubs, run_id).expect("retry re-registers");
 
-        // The old Worker's (late) cleanup: identity mismatch → no-op.
-        remove_own(&hubs, run_id, &old);
+        retire(&hubs, run_id, &old).await;
         let survivor = get(&hubs, run_id).expect("the retry's hub survives");
         assert!(survivor.same(&fresh), "the surviving hub is the retry's");
 
-        // The retry's own cleanup still works.
-        remove_own(&hubs, run_id, &fresh);
+        retire(&hubs, run_id, &fresh).await;
         assert!(get(&hubs, run_id).is_none(), "own removal removes");
     }
 

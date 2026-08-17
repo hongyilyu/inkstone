@@ -75,13 +75,13 @@ pub(crate) use queries::PartType;
 // `RunSnapshot` is not re-exported: its one consumer (`run/subscribe`) reads
 // fields off `select_run_snapshot`'s return without naming the type.
 pub use runs::{
-    AttachmentSeed, TimelineStep, append_assistant_part, assistant_message_id_for_run,
-    begin_external_tool_call, cancel_parked_run, cancel_running_run, complete_run, error_run,
-    error_run_with_message, finish_external_tool_call, history_for_run, list_run_history,
-    mark_run_running, open_assistant_part, persist_initial_run, persist_thread_with_first_run,
-    persist_tool_call, prepare_retry, read_run_timeline, recover_interrupted_runs,
-    resolve_tool_call, run_prompt_and_thread, run_status, run_workflow_snapshot,
-    select_run_snapshot,
+    AttachmentSeed, ExternalToolFinish, TimelineStep, append_assistant_part,
+    assistant_message_id_for_run, begin_external_tool_call, cancel_parked_run, cancel_running_run,
+    complete_run, error_run, error_run_with_message, finish_external_tool_call, history_for_run,
+    list_run_history, mark_run_running, open_assistant_part, persist_initial_run,
+    persist_thread_with_first_run, persist_tool_call, prepare_retry, read_run_timeline,
+    recover_interrupted_runs, resolve_tool_call, run_prompt_and_thread, run_status,
+    run_workflow_snapshot, select_run_snapshot,
 };
 // Result/row types no caller names (`Backlinks`, `CurrentEntityRow`,
 // `ResolvedEntityRef`) and the V0-internal GTD reads (`todos_by_*`, consumed

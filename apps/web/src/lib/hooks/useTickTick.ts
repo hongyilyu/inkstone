@@ -1,11 +1,12 @@
 import type {
+	TickTickStatusResult,
 	TickTickTaskRow,
 	TickTickTasksListResult,
 } from "@inkstone/protocol";
 import { type ConnectionStatus, WsClient } from "@inkstone/ui-sdk";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Effect, Fiber, Stream } from "effect";
-import { useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useRuntime } from "@/runtime";
 
 // The Web lane's TanStack integration (external-task-views A2). The connection
@@ -87,6 +88,23 @@ export function TickTickReconnectSync(): null {
  * fresh id resolves, so the task read can never fire under a stale account's key. */
 export function useTickTick() {
 	const runtime = useRuntime();
+	const queryClient = useQueryClient();
+	const [manualRefreshing, setManualRefreshing] = useState(false);
+
+	const readStatus = useCallback(
+		() =>
+			runtime.runPromise(
+				Effect.flatMap(WsClient, (client) => client.tickTickStatus()),
+			),
+		[runtime],
+	);
+	const readTasks = useCallback(
+		() =>
+			runtime.runPromise(
+				Effect.flatMap(WsClient, (client) => client.tickTickTasksList()),
+			),
+		[runtime],
+	);
 
 	const status = useQuery({
 		queryKey: STATUS_KEY,
@@ -94,10 +112,7 @@ export function useTickTick() {
 		// change across a Core restart, and the WS `connected` transition below
 		// RESETS this query then — NOT every window focus (review M4). A plain
 		// focus must never refetch status and blank the Tasks surface.
-		queryFn: () =>
-			runtime.runPromise(
-				Effect.flatMap(WsClient, (client) => client.tickTickStatus()),
-			),
+		queryFn: readStatus,
 	});
 
 	// The connection ID keys the task read. It is `undefined` until status
@@ -114,11 +129,30 @@ export function useTickTick() {
 		staleTime: 60_000,
 		refetchOnWindowFocus: true,
 		refetchOnReconnect: true,
-		queryFn: () =>
-			runtime.runPromise(
-				Effect.flatMap(WsClient, (client) => client.tickTickTasksList()),
-			),
+		queryFn: readTasks,
 	});
+
+	const refresh = useCallback(() => {
+		setManualRefreshing(true);
+		queryClient.removeQueries({ queryKey: TASKS_KEY_PREFIX });
+
+		void queryClient
+			.resetQueries({ queryKey: STATUS_KEY, exact: true })
+			.then(() => {
+				const fresh =
+					queryClient.getQueryData<TickTickStatusResult>(STATUS_KEY);
+				if (fresh?.state !== "connected") return;
+				return queryClient.fetchQuery({
+					queryKey: tasksKey(fresh.connection_id),
+					queryFn: readTasks,
+					staleTime: 0,
+				});
+			})
+			.catch(() => undefined)
+			.finally(() => {
+				setManualRefreshing(false);
+			});
+	}, [queryClient, readTasks]);
 
 	// #4: a FAILED background refetch keeps the last-good rows (TanStack retains
 	// `data` on error), so distinguish it from an initial failure with no rows.
@@ -134,14 +168,9 @@ export function useTickTick() {
 		// Initial-vs-stale failure split (review #4): see `classifyTasksError`.
 		...classifyTasksError(tasks.isError, tasks.data),
 		tasksLoading: tasks.isLoading && connectionId !== undefined,
-		// Manual refresh (A2, review R12 #4): re-resolve status AND re-read the
-		// task list on demand — the retry affordance for every error state too
-		// (a failed status read re-runs through the same command; the disabled
-		// task query no-ops until the id resolves).
-		refresh: () => {
-			void status.refetch();
-			void tasks.refetch();
-		},
-		refreshing: status.isFetching || tasks.isFetching,
+		// Status-first manual refresh: task cache purge → fresh status → fresh-key
+		// task read. A disabled task observer is never refetched.
+		refresh,
+		refreshing: manualRefreshing || status.isFetching || tasks.isFetching,
 	};
 }

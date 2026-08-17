@@ -78,7 +78,7 @@ export function runInterpreter(
 ): Effect.Effect<void, never, WorkerTransport> {
 	return Effect.gen(function* () {
 		// Both channels feed pi's callbacks, which run outside the Effect context (ADR-0027).
-		const { emit, callTool } = yield* WorkerTransport;
+		const { emit, syncExternalTool, callTool } = yield* WorkerTransport;
 
 		const model = deps.resolveModel(manifest.workflow);
 		// Current-turn images ride the manifest as raw base64 (never data:-prefixed
@@ -161,14 +161,14 @@ export function runInterpreter(
 						m.role === "toolResult",
 				),
 		};
-		const onEvent: AgentEventSink = (event) => {
+		const onEvent: AgentEventSink = async (event) => {
 			// External-call lifecycle frames (external-task-views A4): sourced from
 			// pi's own tool-execution events — never hand-assembled state. The
 			// mapping (and its text-block narrowing) lives in external-tools.ts;
 			// only `ticktick_*` calls yield a frame (review M3).
 			const externalFrame = externalFrameFor(event);
 			if (externalFrame !== undefined) {
-				emit(externalFrame);
+				await syncExternalTool(externalFrame);
 				return;
 			}
 			if (

@@ -604,6 +604,33 @@ describe("WorkerManifest", () => {
 		expect(S.decodeUnknownSync(WorkerManifest)(valid)).toEqual(valid);
 	});
 
+	it("requires the external-tool timeout beside endpoint and auth", () => {
+		const external = {
+			...valid,
+			external_tools: {
+				endpoint: "https://mcp.ticktick.com/",
+				access_token: "tok_ticktick",
+				timeout_ms: 250,
+			},
+		};
+		expect(S.decodeUnknownSync(WorkerManifest)(external)).toEqual(external);
+		const { timeout_ms: _omit, ...withoutTimeout } = external.external_tools;
+		expect(() =>
+			S.decodeUnknownSync(WorkerManifest)({
+				...external,
+				external_tools: withoutTimeout,
+			}),
+		).toThrow();
+		for (const timeout_ms of [0, -1, 1.5]) {
+			expect(() =>
+				S.decodeUnknownSync(WorkerManifest)({
+					...external,
+					external_tools: { ...external.external_tools, timeout_ms },
+				}),
+			).toThrow();
+		}
+	});
+
 	it("decodes a manifest without an access token (faux/env providers)", () => {
 		const { access_token: _omit, ...noToken } = valid;
 		expect(S.decodeUnknownSync(WorkerManifest)(noToken)).toEqual(noToken);

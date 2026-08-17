@@ -5,7 +5,7 @@ import type {
 import type { ConnectionStatus } from "@inkstone/ui-sdk";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { makeCoreRuntime } from "@test/test-utils/renderWithCore";
-import { render, renderHook, waitFor } from "@testing-library/react";
+import { act, render, renderHook, waitFor } from "@testing-library/react";
 import { Effect, Queue, Stream } from "effect";
 import type { ReactNode } from "react";
 import { describe, expect, it } from "vitest";
@@ -24,6 +24,8 @@ import { RuntimeProvider } from "@/runtime";
 function wrapper(opts: {
 	status?: TickTickStatusResult;
 	tasks?: TickTickTasksListResult;
+	statusRead?: () => Effect.Effect<TickTickStatusResult>;
+	tasksRead?: () => Effect.Effect<TickTickTasksListResult>;
 	onTasksCall?: () => void;
 	connectionStatus?: Stream.Stream<ConnectionStatus>;
 	queryClient: QueryClient;
@@ -31,12 +33,18 @@ function wrapper(opts: {
 	const connectionStatus = opts.connectionStatus;
 	const runtime = makeCoreRuntime({
 		overrides: {
-			tickTickStatus: () =>
-				Effect.succeed(opts.status ?? { state: "not_connected" }),
+			tickTickStatus:
+				opts.statusRead ??
+				(() => Effect.succeed(opts.status ?? { state: "not_connected" })),
 			tickTickTasksList: () =>
-				Effect.sync(() => {
+				Effect.suspend(() => {
 					opts.onTasksCall?.();
-					return opts.tasks ?? { tasks: [], source_limit_reached: false };
+					return (
+						opts.tasksRead?.() ??
+						Effect.succeed(
+							opts.tasks ?? { tasks: [], source_limit_reached: false },
+						)
+					);
 				}),
 			...(connectionStatus ? { connectionStatus: () => connectionStatus } : {}),
 		},
@@ -47,6 +55,15 @@ function wrapper(opts: {
 		</QueryClientProvider>
 	);
 }
+
+const task = (id: string, title: string) => ({
+	id,
+	title,
+	kind: "TEXT" as const,
+	priority: 0,
+	tags: [],
+	checklist_items: [],
+});
 
 describe("useTickTick task-read gating", () => {
 	it("gates the task read on a known connection id (never fetches while not connected)", async () => {
@@ -69,6 +86,122 @@ describe("useTickTick task-read gating", () => {
 		// The task read is `enabled` only once an id is known — it never fired.
 		expect(tasksCalls).toBe(0);
 		expect(result.current.rows).toEqual([]);
+	});
+
+	it("a retry from disconnected awaits fresh status and then fetches the fresh key", async () => {
+		let statusCalls = 0;
+		let tasksCalls = 0;
+		const queryClient = new QueryClient({
+			defaultOptions: { queries: { retry: false } },
+		});
+		const { result } = renderHook(() => useTickTick(), {
+			wrapper: wrapper({
+				statusRead: () =>
+					Effect.sync(() => {
+						statusCalls += 1;
+						return statusCalls === 1
+							? ({ state: "not_connected" } as const)
+							: ({ state: "connected", connection_id: "acct-B" } as const);
+					}),
+				tasksRead: () =>
+					Effect.sync(() => {
+						tasksCalls += 1;
+						return {
+							tasks: [task("b-1", "B task")],
+							source_limit_reached: false,
+						};
+					}),
+				queryClient,
+			}),
+		});
+
+		await waitFor(() => expect(result.current.statusResolved).toBe(true));
+		expect(result.current.connected).toBe(false);
+		expect(tasksCalls).toBe(0);
+
+		act(() => result.current.refresh());
+
+		await waitFor(() =>
+			expect(result.current.rows.map((row) => row.id)).toEqual(["b-1"]),
+		);
+		expect(statusCalls).toBe(2);
+		expect(tasksCalls).toBe(1);
+		expect(
+			queryClient.getQueryData(["ticktick", "tasks", "acct-B"]),
+		).toMatchObject({ tasks: [{ id: "b-1" }] });
+	});
+
+	it("clears account A immediately and waits for delayed account B status before fetching", async () => {
+		let resolveFreshStatus!: (status: TickTickStatusResult) => void;
+		const freshStatus = new Promise<TickTickStatusResult>((resolve) => {
+			resolveFreshStatus = resolve;
+		});
+		let statusCalls = 0;
+		let tasksCalls = 0;
+		const queryClient = new QueryClient({
+			defaultOptions: { queries: { retry: false } },
+		});
+		const { result } = renderHook(() => useTickTick(), {
+			wrapper: wrapper({
+				statusRead: () => {
+					statusCalls += 1;
+					return statusCalls === 1
+						? Effect.succeed({
+								state: "connected",
+								connection_id: "acct-A",
+							} as const)
+						: Effect.promise(() => freshStatus);
+				},
+				tasksRead: () =>
+					Effect.sync(() => {
+						tasksCalls += 1;
+						return tasksCalls === 1
+							? {
+									tasks: [task("a-1", "A task")],
+									source_limit_reached: false,
+								}
+							: {
+									tasks: [task("b-1", "B task")],
+									source_limit_reached: false,
+								};
+					}),
+				queryClient,
+			}),
+		});
+
+		await waitFor(() =>
+			expect(result.current.rows.map((row) => row.id)).toEqual(["a-1"]),
+		);
+		expect(tasksCalls).toBe(1);
+
+		act(() => result.current.refresh());
+
+		await waitFor(() => expect(result.current.rows).toEqual([]));
+		expect(
+			queryClient.getQueryData(["ticktick", "tasks", "acct-A"]),
+		).toBeUndefined();
+		expect(tasksCalls).toBe(1);
+		expect(result.current.refreshing).toBe(true);
+
+		await act(async () => {
+			resolveFreshStatus({
+				state: "connected",
+				connection_id: "acct-B",
+			});
+			await freshStatus;
+		});
+
+		await waitFor(() =>
+			expect(result.current.rows.map((row) => row.id)).toEqual(["b-1"]),
+		);
+		expect(statusCalls).toBe(2);
+		expect(tasksCalls).toBe(2);
+		expect(
+			queryClient.getQueryData(["ticktick", "tasks", "acct-A"]),
+		).toBeUndefined();
+		expect(
+			queryClient.getQueryData(["ticktick", "tasks", "acct-B"]),
+		).toMatchObject({ tasks: [{ id: "b-1" }] });
 	});
 });
 

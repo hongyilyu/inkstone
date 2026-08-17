@@ -14,7 +14,7 @@ use uuid::Uuid;
 use super::port::WorkerPort;
 use crate::db;
 use crate::hub::Hubs;
-use crate::protocol::{RunEvent, ToolResult, TranscriptToolResult, WorkerStdout};
+use crate::protocol::{ExternalToolAck, RunEvent, ToolResult, TranscriptToolResult, WorkerStdout};
 use crate::workflow::Workflow;
 
 pub(crate) fn test_workflow(tools: &[&str]) -> Workflow {
@@ -58,31 +58,67 @@ pub(crate) async fn seed_run(pool: &SqlitePool, workflow: &Workflow) -> (Uuid, U
 /// the `tool_call_id` of every Tool Result sent back. `sent`/`shutdowns`
 /// are shared so the test can inspect them after `run_loop` consumes it.
 pub(crate) struct ScriptedWorker {
-    inbound: VecDeque<WorkerStdout>,
+    inbound: VecDeque<Result<WorkerStdout, ()>>,
     sent: Arc<Mutex<Vec<String>>>,
     shutdowns: Arc<Mutex<u32>>,
+    acks: Arc<Mutex<Vec<ExternalToolAck>>>,
 }
 
 impl ScriptedWorker {
-    pub(crate) fn new(frames: Vec<WorkerStdout>) -> (Self, Arc<Mutex<Vec<String>>>, Arc<Mutex<u32>>) {
+    pub(crate) fn new(
+        frames: Vec<WorkerStdout>,
+    ) -> (Self, Arc<Mutex<Vec<String>>>, Arc<Mutex<u32>>) {
+        let (worker, sent, shutdowns, _acks) = Self::new_with_acks(frames);
+        (worker, sent, shutdowns)
+    }
+
+    pub(crate) fn new_with_acks(
+        frames: Vec<WorkerStdout>,
+    ) -> (
+        Self,
+        Arc<Mutex<Vec<String>>>,
+        Arc<Mutex<u32>>,
+        Arc<Mutex<Vec<ExternalToolAck>>>,
+    ) {
+        Self::new_with_results(frames.into_iter().map(Ok).collect())
+    }
+
+    pub(crate) fn new_with_results(
+        frames: Vec<Result<WorkerStdout, ()>>,
+    ) -> (
+        Self,
+        Arc<Mutex<Vec<String>>>,
+        Arc<Mutex<u32>>,
+        Arc<Mutex<Vec<ExternalToolAck>>>,
+    ) {
         let sent = Arc::new(Mutex::new(Vec::new()));
         let shutdowns = Arc::new(Mutex::new(0));
+        let acks = Arc::new(Mutex::new(Vec::new()));
         let worker = Self {
             inbound: frames.into(),
             sent: sent.clone(),
             shutdowns: shutdowns.clone(),
+            acks: acks.clone(),
         };
-        (worker, sent, shutdowns)
+        (worker, sent, shutdowns, acks)
     }
 }
 
 impl WorkerPort for ScriptedWorker {
-    async fn recv(&mut self) -> Option<WorkerStdout> {
-        self.inbound.pop_front()
+    async fn recv(&mut self) -> Result<Option<WorkerStdout>, ()> {
+        match self.inbound.pop_front() {
+            Some(frame) => frame.map(Some),
+            None => Ok(None),
+        }
     }
 
     async fn send_tool_result(&mut self, result: ToolResult) {
         self.sent.lock().unwrap().push(result.tool_call_id);
+    }
+
+    async fn send_external_tool_ack(&mut self, ack: ExternalToolAck) -> Result<(), ()> {
+        self.acks.lock().unwrap().push(ack);
+        Ok(())
     }
 
     async fn shutdown(&mut self) {
@@ -101,6 +137,7 @@ pub(crate) struct CancelingWorker {
     idx: usize,
     sent: Arc<Mutex<Vec<String>>>,
     shutdowns: Arc<Mutex<u32>>,
+    acks: Arc<Mutex<Vec<ExternalToolAck>>>,
 }
 
 impl CancelingWorker {
@@ -118,22 +155,28 @@ impl CancelingWorker {
             idx: 0,
             sent: sent.clone(),
             shutdowns: shutdowns.clone(),
+            acks: Arc::new(Mutex::new(Vec::new())),
         };
         (worker, sent, shutdowns)
     }
 }
 
 impl WorkerPort for CancelingWorker {
-    async fn recv(&mut self) -> Option<WorkerStdout> {
+    async fn recv(&mut self) -> Result<Option<WorkerStdout>, ()> {
         if self.idx == self.cancel_before {
             self.hub.cancel();
         }
         self.idx += 1;
-        self.inbound.pop_front()
+        Ok(self.inbound.pop_front())
     }
 
     async fn send_tool_result(&mut self, result: ToolResult) {
         self.sent.lock().unwrap().push(result.tool_call_id);
+    }
+
+    async fn send_external_tool_ack(&mut self, ack: ExternalToolAck) -> Result<(), ()> {
+        self.acks.lock().unwrap().push(ack);
+        Ok(())
     }
 
     async fn shutdown(&mut self) {

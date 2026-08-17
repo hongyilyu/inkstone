@@ -380,13 +380,19 @@ pub async fn begin_external_tool_call(
     Ok(Moved::Won)
 }
 
-/// Finish an EXTERNAL tool call (external-task-views A4): flip its row to
-/// `completed`/`errored` with the persisted result, GUARDED on `run_id` +
-/// `status='pending'`. Returns the resolved row's `name` (`Some`) when this
-/// resolve owned the row, `None` when a terminal settle (cancel/EOF →
-/// interrupted) already claimed it or no such pending row exists — the caller
-/// publishes the finished event ONLY on `Some`, so a late result can never
-/// overwrite an interrupted settle or diverge live from reload.
+/// The authoritative outcome of pairing an external finished frame with its
+/// durable started row.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ExternalToolFinish {
+    Resolved(String),
+    AlreadySettled,
+    Missing,
+}
+
+/// Finish an EXTERNAL tool call, distinguishing a resolved pending row from an
+/// already-settled row and a frame that was never started. The update + fallback
+/// classification share one transaction, so cancellation cannot change the
+/// answer between them.
 pub async fn finish_external_tool_call(
     pool: &SqlitePool,
     run_id: Uuid,
@@ -394,9 +400,26 @@ pub async fn finish_external_tool_call(
     status: &str,
     result_payload: &str,
     now_ms: i64,
-) -> sqlx::Result<Option<String>> {
-    queries::resolve_external_tool_call(pool, tool_call_id, run_id, status, result_payload, now_ms)
-        .await
+) -> sqlx::Result<ExternalToolFinish> {
+    let mut tx = pool.begin().await?;
+    let resolved = queries::resolve_external_tool_call(
+        &mut *tx,
+        tool_call_id,
+        run_id,
+        status,
+        result_payload,
+        now_ms,
+    )
+    .await?;
+    let outcome = match resolved {
+        Some(name) => ExternalToolFinish::Resolved(name),
+        None => match queries::external_tool_call_status(&mut *tx, tool_call_id, run_id).await? {
+            Some(_) => ExternalToolFinish::AlreadySettled,
+            None => ExternalToolFinish::Missing,
+        },
+    };
+    tx.commit().await?;
+    Ok(outcome)
 }
 
 /// Read a Run's [`RunStatus`] (ADR-0025); `None` when the Run does not exist.

@@ -12,6 +12,8 @@ import {
 	adaptMcpResult,
 	buildExternalTools,
 	callExternalTool,
+	connectExternalTools,
+	discoverExternalTools,
 	EXTERNAL_READ_ALLOWLIST,
 } from "../src/external-tools.js";
 import { fauxInterpreterDeps } from "../src/faux/faux-deps.js";
@@ -130,6 +132,29 @@ function startFakeMcp(
 	});
 }
 
+function startStalledMcp(): Promise<{
+	url: string;
+	close: () => Promise<void>;
+}> {
+	const server = createServer((req) => {
+		// Consume the initialize request but never answer it.
+		req.resume();
+	});
+	return new Promise((resolve) => {
+		server.listen(0, "127.0.0.1", () => {
+			const { port } = server.address() as AddressInfo;
+			resolve({
+				url: `http://127.0.0.1:${port}/mcp`,
+				close: () =>
+					new Promise((done) => {
+						server.closeAllConnections();
+						server.close(() => done());
+					}),
+			});
+		});
+	});
+}
+
 let cleanup: (() => Promise<void>) | undefined;
 afterEach(async () => {
 	await cleanup?.();
@@ -150,7 +175,11 @@ function externalManifest(url: string): WorkerManifest {
 		},
 		prompt: "how many tasks tomorrow?",
 		messages: [],
-		external_tools: { endpoint: url, access_token: "tok_test" },
+		external_tools: {
+			endpoint: url,
+			access_token: "tok_test",
+			timeout_ms: 30_000,
+		},
 	};
 }
 
@@ -197,6 +226,7 @@ describe("dual read-allowlist", () => {
 		const tools = buildExternalTools(
 			{ callTool: () => Promise.resolve({ content: [] }) },
 			SERVER_TOOLS,
+			30_000,
 		);
 		expect(tools.map((t) => t.name)).toEqual([
 			"ticktick_list_projects",
@@ -219,10 +249,70 @@ describe("dual read-allowlist", () => {
 				return Promise.resolve({ content: [] });
 			},
 		};
-		await expect(callExternalTool(caller, "create_task", {})).rejects.toThrow(
-			/not in the read allowlist/,
-		);
+		await expect(
+			callExternalTool(caller, "create_task", {}, 30_000),
+		).rejects.toThrow(/not in the read allowlist/);
 		expect(calls).toEqual([]);
+	});
+
+	it("applies the manifest timeout to an allowlisted tool call", async () => {
+		let timeout: number | undefined;
+		await callExternalTool(
+			{
+				callTool: (_params, _schema, options) => {
+					timeout = options?.timeout;
+					return Promise.resolve({ content: [] });
+				},
+			},
+			"filter_tasks",
+			{},
+			321,
+		);
+		expect(timeout).toBe(321);
+	});
+});
+
+describe("external discovery pagination", () => {
+	it("applies the timeout to every page and rejects a repeated cursor", async () => {
+		const timeouts: Array<number | undefined> = [];
+		let calls = 0;
+		await expect(
+			discoverExternalTools(
+				{
+					listTools: (_params, options) => {
+						timeouts.push(options?.timeout);
+						calls += 1;
+						return Promise.resolve({
+							tools: [],
+							nextCursor: "same-cursor",
+						});
+					},
+				},
+				456,
+			),
+		).rejects.toThrow(/repeated cursor/);
+		expect(calls).toBe(2);
+		expect(timeouts).toEqual([456, 456]);
+	});
+
+	it("rejects an endless sequence of unique cursors at a finite page cap", async () => {
+		let calls = 0;
+		await expect(
+			discoverExternalTools(
+				{
+					listTools: () => {
+						calls += 1;
+						return Promise.resolve({
+							tools: [],
+							nextCursor: `cursor-${calls}`,
+						});
+					},
+				},
+				789,
+			),
+		).rejects.toThrow(/page limit/);
+		expect(calls).toBeGreaterThan(1);
+		expect(calls).toBeLessThan(1_000);
 	});
 });
 
@@ -398,6 +488,145 @@ describe("interpreter with external tools (fake MCP server)", () => {
 			"start:tc_b",
 			"end:tc_b",
 		]);
+	});
+
+	it("waits for the started ACK before executing the MCP call", async () => {
+		const fake = await startFakeMcp(() => ({
+			content: [{ type: "text", text: "one task" }],
+			isError: false,
+		}));
+		cleanup = fake.close;
+
+		const faux = fauxProvider({ provider: "faux" });
+		faux.setResponses([
+			fauxAssistantMessage(
+				[
+					fauxToolCall(
+						"ticktick_filter_tasks",
+						{ filter: { status: [0] } },
+						{ id: "tc-start-gate" },
+					),
+				],
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("done"),
+		]);
+
+		let releaseStart = (): void => {};
+		const startGate = new Promise<void>((resolve) => {
+			releaseStart = resolve;
+		});
+		let observeStart = (): void => {};
+		const startObserved = new Promise<void>((resolve) => {
+			observeStart = resolve;
+		});
+		const events: WorkerEmit[] = [];
+		const requests: {
+			toolCallId: string;
+			name: string;
+			params: unknown;
+		}[] = [];
+		const run = Effect.runPromise(
+			runInterpreter(
+				externalManifest(fake.url),
+				fauxInterpreterDeps(faux),
+			).pipe(
+				Effect.provide(
+					InMemoryTransport(
+						events,
+						{ results: {}, requests },
+						async (frame) => {
+							if (frame.kind === "external_tool_started") {
+								observeStart();
+								await startGate;
+							}
+						},
+					),
+				),
+			),
+		);
+
+		await startObserved;
+		expect(fake.calls).toEqual([]);
+		releaseStart();
+		await run;
+		expect(fake.calls).toEqual([
+			{ name: "filter_tasks", args: { filter: { status: [0] } } },
+		]);
+	});
+
+	it("waits for the finished ACK before starting the next model turn", async () => {
+		const fake = await startFakeMcp(() => ({
+			content: [{ type: "text", text: "one task" }],
+			isError: false,
+		}));
+		cleanup = fake.close;
+
+		let nextTurnStarted = false;
+		const faux = fauxProvider({ provider: "faux" });
+		faux.setResponses([
+			fauxAssistantMessage(
+				[
+					fauxToolCall(
+						"ticktick_filter_tasks",
+						{ filter: { status: [0] } },
+						{ id: "tc-finish-gate" },
+					),
+				],
+				{ stopReason: "toolUse" },
+			),
+			() => {
+				nextTurnStarted = true;
+				return fauxAssistantMessage("done");
+			},
+		]);
+
+		let releaseFinish = (): void => {};
+		const finishGate = new Promise<void>((resolve) => {
+			releaseFinish = resolve;
+		});
+		let observeFinish = (): void => {};
+		const finishObserved = new Promise<void>((resolve) => {
+			observeFinish = resolve;
+		});
+		const events: WorkerEmit[] = [];
+		const run = Effect.runPromise(
+			runInterpreter(
+				externalManifest(fake.url),
+				fauxInterpreterDeps(faux),
+			).pipe(
+				Effect.provide(
+					InMemoryTransport(events, undefined, async (frame) => {
+						if (frame.kind === "external_tool_finished") {
+							observeFinish();
+							await finishGate;
+						}
+					}),
+				),
+			),
+		);
+
+		await finishObserved;
+		expect(fake.calls).toHaveLength(1);
+		expect(nextTurnStarted).toBe(false);
+		releaseFinish();
+		await run;
+		expect(nextTurnStarted).toBe(true);
+	});
+
+	it("bounds MCP initialization with the manifest timeout", async () => {
+		const fake = await startStalledMcp();
+		cleanup = fake.close;
+		const started = performance.now();
+
+		await expect(
+			connectExternalTools({
+				endpoint: fake.url,
+				access_token: "tok_test",
+				timeout_ms: 50,
+			}),
+		).rejects.toThrow();
+		expect(performance.now() - started).toBeLessThan(1_000);
 	});
 
 	it("a connect failure rejects (worker-main maps it to the terminal error)", async () => {

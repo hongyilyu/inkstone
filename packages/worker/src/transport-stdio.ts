@@ -1,7 +1,8 @@
 import { createInterface } from "node:readline";
 import type { Readable, Writable } from "node:stream";
 import {
-	ToolResult,
+	type ExternalToolAck,
+	WorkerInbound,
 	WorkerManifest,
 	type WorkerOutbound,
 } from "@inkstone/protocol";
@@ -45,20 +46,34 @@ const rawRunId = (line: string): string | undefined => {
 	}
 };
 
-/** Best-effort tool_call_id from a raw inbound line, for when a `tool_result`
- * parsed as JSON but failed the {@link ToolResult} schema: lets the seam settle
- * the awaiting call LOUD (mirrors {@link rawRunId}). `undefined` on a JSON syntax
- * error or a non-string tool_call_id. */
-const rawToolCallId = (line: string): string | undefined => {
-	try {
-		const id = (JSON.parse(line) as { tool_call_id?: unknown }).tool_call_id;
-		return typeof id === "string" ? id : undefined;
-	} catch {
-		return undefined;
-	}
+interface RawInboundCorrelation {
+	readonly kind: string | undefined;
+	readonly toolCallId: string | undefined;
+	readonly phase: string | undefined;
+}
+
+const rawInboundCorrelation = (value: unknown): RawInboundCorrelation => {
+	const record =
+		typeof value === "object" && value !== null
+			? (value as Record<string, unknown>)
+			: {};
+	return {
+		kind: typeof record.kind === "string" ? record.kind : undefined,
+		toolCallId:
+			typeof record.tool_call_id === "string" ? record.tool_call_id : undefined,
+		phase: typeof record.phase === "string" ? record.phase : undefined,
+	};
 };
 
-const decodeToolResult = S.decodeUnknownEither(ToolResult);
+const decodeWorkerInbound = S.decodeUnknownEither(WorkerInbound);
+const EXTERNAL_ACK_REJECTED = "Core rejected an external tool lifecycle frame";
+const EXTERNAL_ACK_INVALID =
+	"Core sent an invalid external tool acknowledgement";
+const EXTERNAL_ACK_CLOSED =
+	"Core closed before acknowledging an external tool frame";
+type ExternalPhase = ExternalToolAck["phase"];
+const externalAckKey = (toolCallId: string, phase: ExternalPhase): string =>
+	`${phase}\u0000${toolCallId}`;
 
 /** Production transport (ADR-0027): the Worker's stdio behind the {@link WorkerTransport} seam, over injected streams for testability. See docs/design/worker-transport.md. */
 const makeStdioService = (
@@ -72,8 +87,13 @@ const makeStdioService = (
 		output.write(`${JSON.stringify(frame)}\n`);
 	};
 
-	// Bidirectional stdio: first stdin line is the manifest, rest are tool_result frames — see docs/design/worker-transport.md.
+	// Bidirectional stdio: first stdin line is the manifest; subsequent lines are
+	// tool results or external lifecycle acknowledgements.
 	const pendingTools = new Map<string, (resp: ToolCallResponse) => void>();
+	const pendingExternal = new Map<
+		string,
+		{ resolve: () => void; reject: (error: Error) => void }
+	>();
 	let resolveManifest!: (line: string | null) => void;
 	const manifestLine = new Promise<string | null>((resolve) => {
 		resolveManifest = resolve;
@@ -99,32 +119,72 @@ const makeStdioService = (
 			});
 			return;
 		}
-		// Strict decode against the single-source ToolResult schema: a skewed frame
-		// (e.g. outcome:{}) no longer slips past a truthiness guard to resolve the
-		// call with junk that later throws inside the proxy and reads as a
-		// misattributed tool error — it fails loud here, at the seam.
-		const decoded = decodeToolResult(parsed);
+		const decoded = decodeWorkerInbound(parsed);
 		if (Either.isRight(decoded)) {
-			const result = decoded.right;
-			const pending = pendingTools.get(result.tool_call_id);
-			if (pending) {
-				pendingTools.delete(result.tool_call_id);
-				pending(result.outcome);
+			const inbound = decoded.right;
+			if (inbound.kind === "external_tool_ack") {
+				const key = externalAckKey(inbound.tool_call_id, inbound.phase);
+				const pending = pendingExternal.get(key);
+				if (pending === undefined) {
+					logWorkerFault("worker.external_ack_no_pending", runId, {
+						tool_call_id: inbound.tool_call_id,
+						phase: inbound.phase,
+					});
+					return;
+				}
+				pendingExternal.delete(key);
+				if (inbound.ok) {
+					pending.resolve();
+				} else {
+					pending.reject(new Error(EXTERNAL_ACK_REJECTED));
+				}
+				return;
+			}
+
+			const pending = pendingTools.get(inbound.tool_call_id);
+			if (pending !== undefined) {
+				pendingTools.delete(inbound.tool_call_id);
+				pending(inbound.outcome);
 			} else {
 				// A tool_result arrived with no awaiting call — silently dropped before.
 				logWorkerFault("worker.tool_result_no_pending", runId, {
-					tool_call_id: result.tool_call_id,
+					tool_call_id: inbound.tool_call_id,
 				});
 			}
 			return;
 		}
+
+		const raw = rawInboundCorrelation(parsed);
+		if (raw.kind === "external_tool_ack" && raw.toolCallId !== undefined) {
+			const phases: readonly ExternalPhase[] =
+				raw.phase === "started" || raw.phase === "finished"
+					? [raw.phase]
+					: ["started", "finished"];
+			const matches = phases.flatMap((phase) => {
+				const key = externalAckKey(raw.toolCallId as string, phase);
+				const pending = pendingExternal.get(key);
+				return pending === undefined ? [] : [{ key, pending }];
+			});
+			if (matches.length === 1) {
+				const [{ key, pending }] = matches;
+				pendingExternal.delete(key);
+				pending.reject(new Error(EXTERNAL_ACK_INVALID));
+			}
+			logWorkerFault("worker.external_ack_undecodable", runId, {
+				tool_call_id: raw.toolCallId,
+				...(raw.phase === undefined ? {} : { phase: raw.phase }),
+				preview: line.slice(0, 200),
+			});
+			return;
+		}
+
 		// Parsed as JSON but failed the ToolResult schema. Salvage the correlation
 		// id and SETTLE the awaiting call with an `err` outcome: the proxy throws on
 		// `err`, so the model sees a correctly-attributed decode failure (which pi
 		// feeds back as an error tool result, ADR-0018) instead of a truthiness guard
 		// waving junk through. The settle is what makes it fail loud — it stops the
 		// call hanging; the fault log makes it observable.
-		const toolCallId = rawToolCallId(line);
+		const toolCallId = raw.toolCallId;
 		const pending =
 			toolCallId === undefined ? undefined : pendingTools.get(toolCallId);
 		if (toolCallId !== undefined && pending) {
@@ -160,6 +220,10 @@ const makeStdioService = (
 			gotManifest = true;
 			resolveManifest(null);
 		}
+		for (const pending of pendingExternal.values()) {
+			pending.reject(new Error(EXTERNAL_ACK_CLOSED));
+		}
+		pendingExternal.clear();
 	});
 
 	return {
@@ -183,6 +247,18 @@ const makeStdioService = (
 			return manifest;
 		}),
 		emit: (event) => writeLine(event),
+		syncExternalTool: (event) =>
+			new Promise<void>((resolve, reject) => {
+				const phase: ExternalPhase =
+					event.kind === "external_tool_started" ? "started" : "finished";
+				const key = externalAckKey(event.tool_call_id, phase);
+				if (pendingExternal.has(key)) {
+					reject(new Error(EXTERNAL_ACK_INVALID));
+					return;
+				}
+				pendingExternal.set(key, { resolve, reject });
+				writeLine(event);
+			}),
 		callTool: (toolCallId, name, params) =>
 			new Promise<ToolCallResponse>((resolve) => {
 				pendingTools.set(toolCallId, resolve);

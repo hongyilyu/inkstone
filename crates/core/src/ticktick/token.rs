@@ -4,6 +4,9 @@
 //! accounts under a live connection ID; credential changes require a Core
 //! restart.
 
+use std::fs::File;
+use std::io::{self, Read};
+use std::path::Path;
 use std::sync::OnceLock;
 
 use serde::Deserialize;
@@ -53,6 +56,53 @@ pub fn connection() -> Option<&'static Connection> {
     CONNECTION.get().and_then(Option::as_ref)
 }
 
+enum CredentialOpenError {
+    Io(io::Error),
+    Custody(&'static str),
+    Mode(u32),
+}
+
+#[cfg(unix)]
+fn open_credential(path: &Path) -> Result<File, CredentialOpenError> {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+        .map_err(|error| {
+            if error.raw_os_error() == Some(libc::ELOOP) {
+                CredentialOpenError::Custody("symlink")
+            } else {
+                CredentialOpenError::Io(error)
+            }
+        })?;
+    let metadata = file.metadata().map_err(CredentialOpenError::Io)?;
+    if !metadata.is_file() {
+        return Err(CredentialOpenError::Custody("not a regular file"));
+    }
+    let mode = metadata.permissions().mode() & 0o777;
+    if mode & 0o077 != 0 {
+        return Err(CredentialOpenError::Mode(mode));
+    }
+    Ok(file)
+}
+
+#[cfg(not(unix))]
+fn open_credential(path: &Path) -> Result<File, CredentialOpenError> {
+    // There is no portable O_NOFOLLOW equivalent. Preserve the pre-open link
+    // rejection on non-Unix platforms, then validate the opened descriptor too.
+    let metadata = std::fs::symlink_metadata(path).map_err(CredentialOpenError::Io)?;
+    if !metadata.is_file() {
+        return Err(CredentialOpenError::Custody("not a regular file"));
+    }
+    let file = File::open(path).map_err(CredentialOpenError::Io)?;
+    if !file.metadata().map_err(CredentialOpenError::Io)?.is_file() {
+        return Err(CredentialOpenError::Custody("not a regular file"));
+    }
+    Ok(file)
+}
+
 fn load() -> Option<Connection> {
     let path = match crate::credentials::credential_path(TICKTICK) {
         Ok(path) => path,
@@ -61,47 +111,33 @@ fn load() -> Option<Connection> {
             return None;
         }
     };
-    // Custody gate (review R12 #5): this is a `tasks:write`-capable secret, so
-    // enforce the repo's 0600 policy at READ time too — a regular file (never a
-    // symlink out of the credentials dir), owner-only on unix. Violations are
-    // treated as NOT CONNECTED, never read-anyway.
-    match std::fs::symlink_metadata(&path) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
-        Err(e) => {
-            tracing::warn!(event = "ticktick.credential_unreadable", error = ?e);
+    let mut file = match open_credential(&path) {
+        Err(CredentialOpenError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
             return None;
         }
-        Ok(meta) => {
-            if !meta.is_file() {
-                tracing::warn!(
-                    event = "ticktick.credential_custody_rejected",
-                    reason = "not a regular file (symlink?)"
-                );
-                return None;
-            }
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let mode = meta.permissions().mode() & 0o777;
-                if mode & 0o077 != 0 {
-                    tracing::warn!(
-                        event = "ticktick.credential_custody_rejected",
-                        reason = "group/world-accessible mode",
-                        mode = format!("{mode:o}")
-                    );
-                    return None;
-                }
-            }
-        }
-    }
-    let body = match std::fs::read_to_string(&path) {
-        Ok(body) => body,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
-        Err(e) => {
-            tracing::warn!(event = "ticktick.credential_unreadable", error = ?e);
+        Err(CredentialOpenError::Io(error)) => {
+            tracing::warn!(event = "ticktick.credential_unreadable", error = ?error);
             return None;
         }
+        Err(CredentialOpenError::Custody(reason)) => {
+            tracing::warn!(event = "ticktick.credential_custody_rejected", reason);
+            return None;
+        }
+        Err(CredentialOpenError::Mode(mode)) => {
+            tracing::warn!(
+                event = "ticktick.credential_custody_rejected",
+                reason = "group/world-accessible mode",
+                mode = format!("{mode:o}")
+            );
+            return None;
+        }
+        Ok(file) => file,
     };
+    let mut body = String::new();
+    if let Err(error) = file.read_to_string(&mut body) {
+        tracing::warn!(event = "ticktick.credential_unreadable", error = ?error);
+        return None;
+    }
     match serde_json::from_str::<TokenFile>(&body) {
         Ok(token) if token.access_token.trim().is_empty() => {
             tracing::warn!(

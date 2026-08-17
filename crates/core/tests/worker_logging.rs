@@ -64,15 +64,13 @@ fn worker_unknown_line_carries_run_id() {
             .expect("send subscribe frame");
         let _sub_response = next_text(&mut ws).await;
 
-        // Drive the Run to `done`. Because the worker's stdout is read
-        // sequentially, `done` can only arrive AFTER the malformed line was read
-        // and skipped — a deterministic barrier that the trail now holds the
-        // `worker.unknown_line` event.
+        // The malformed frame is terminal. Waiting for Core's error event is the
+        // deterministic barrier that the unknown-line diagnostic was emitted.
         loop {
             let body = next_text(&mut ws).await;
             let v: serde_json::Value = serde_json::from_str(&body)
                 .unwrap_or_else(|e| panic!("event is JSON: {e} — body: {body}"));
-            if v["params"]["event"]["kind"].as_str() == Some("done") {
+            if v["params"]["event"]["kind"].as_str() == Some("error") {
                 break;
             }
         }

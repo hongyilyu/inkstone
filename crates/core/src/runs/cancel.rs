@@ -1,13 +1,13 @@
 //! `run/cancel` handler (ADR-0014): the thin JSON-RPC shell over the
 //! [`crate::cancel`] verb (ADR-0029, the `proposal/decide` → [`crate::decide`]
 //! precedent applied to cancel). Decode params → call [`crate::cancel::cancel`],
-//! injecting `hub::get` as the hub lookup AND a `respond` closure that frames the
-//! unchanged `RunCancelResult` wire strings (`accepted` / `already_terminal` /
+//! injecting a `respond` closure that frames the unchanged `RunCancelResult`
+//! wire strings (`accepted` / `already_terminal` /
 //! `unknown_run`) with `live_tail`.
 //!
 //! The whole decision, the settle transition, the interrupted publications, and
 //! the terminal `Cancelled` publish live in the verb — for a running-cancel, all
-//! under ONE hub-gate acquisition (review P1 #3). The verb calls the injected
+//! under ONE lifecycle-slot + hub-gate acquisition. The verb calls the injected
 //! `respond` at the right point (inside the gate, BEFORE the events) so the wire
 //! order `response → interrupted → cancelled` holds. A DB fault rides
 //! `anyhow::Error` and is framed here as `Internal` (`-32603`); a malformed
@@ -19,7 +19,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use super::handler::{self, HandlerError};
 use super::reply::send_response;
 use crate::cancel;
-use crate::hub::{self, Hubs};
+use crate::hub::Hubs;
 use crate::protocol::{RunCancelParams, RunCancelResult};
 
 pub(super) async fn handle_cancel(
@@ -45,19 +45,16 @@ pub(super) async fn handle_cancel(
         pool,
         hubs,
         run_id,
-        |id| hub::get(hubs, id),
-        |outcome, live_tail| {
-            match serde_json::to_value(RunCancelResult {
-                outcome: outcome.to_string(),
-                live_tail,
-            }) {
-                Ok(value) => send_response(out_tx, respond_id, value),
-                Err(e) => handler::frame_error(
-                    out_tx,
-                    respond_id,
-                    HandlerError::Internal(anyhow::Error::new(e)),
-                ),
-            }
+        |outcome, live_tail| match serde_json::to_value(RunCancelResult {
+            outcome: outcome.to_string(),
+            live_tail,
+        }) {
+            Ok(value) => send_response(out_tx, respond_id, value),
+            Err(e) => handler::frame_error(
+                out_tx,
+                respond_id,
+                HandlerError::Internal(anyhow::Error::new(e)),
+            ),
         },
     )
     .await;

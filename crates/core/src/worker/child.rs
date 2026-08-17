@@ -9,7 +9,7 @@ use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use uuid::Uuid;
 
 use super::port::WorkerPort;
-use crate::protocol::{ToolResult, WorkerStdout};
+use crate::protocol::{ExternalToolAck, ToolResult, WorkerStdout};
 
 /// A spawned Worker child process with its stdio framed as NDJSON. Holds the
 /// `Child` so the process stays alive for the Run; spawned `kill_on_drop(true)`,
@@ -101,52 +101,78 @@ impl ChildWorker {
     }
 }
 
+async fn write_frame<T: serde::Serialize>(
+    stdin: &mut Option<ChildStdin>,
+    run_id: Uuid,
+    frame: &T,
+    serialize_event: &'static str,
+    write_event: &'static str,
+) -> Result<(), ()> {
+    let Some(stdin) = stdin.as_mut() else {
+        return Err(());
+    };
+    let mut line = serde_json::to_string(frame).map_err(|e| {
+        tracing::error!(event = serialize_event, %run_id, error = ?e);
+    })?;
+    line.push('\n');
+    stdin.write_all(line.as_bytes()).await.map_err(|e| {
+        tracing::error!(event = write_event, %run_id, error = ?e);
+    })?;
+    stdin.flush().await.map_err(|e| {
+        tracing::error!(event = write_event, %run_id, error = ?e);
+    })
+}
+
 impl WorkerPort for ChildWorker {
-    async fn recv(&mut self) -> Option<WorkerStdout> {
-        loop {
-            match self.lines.next_line().await {
-                Ok(Some(line)) => match serde_json::from_str::<WorkerStdout>(&line) {
-                    Ok(msg) => return Some(msg),
-                    Err(e) => {
-                        tracing::warn!(
-                            event = "worker.unknown_line",
-                            run_id = %self.run_id,
-                            line_preview = %line_preview(&line),
-                            error = ?e
-                        );
-                        continue;
-                    }
-                },
-                Ok(None) => return None,
+    async fn recv(&mut self) -> Result<Option<WorkerStdout>, ()> {
+        match self.lines.next_line().await {
+            Ok(Some(line)) => match serde_json::from_str::<WorkerStdout>(&line) {
+                Ok(msg) => Ok(Some(msg)),
                 Err(e) => {
-                    tracing::error!(event = "worker.stdout_read_failed", run_id = %self.run_id, error = ?e);
-                    return None;
+                    tracing::warn!(
+                        event = "worker.unknown_line",
+                        run_id = %self.run_id,
+                        line_preview = %line_preview(&line),
+                        error = ?e
+                    );
+                    Err(())
                 }
+            },
+            Ok(None) => Ok(None),
+            Err(e) => {
+                tracing::error!(
+                    event = "worker.stdout_read_failed",
+                    run_id = %self.run_id,
+                    error = ?e
+                );
+                Err(())
             }
         }
     }
 
     async fn send_tool_result(&mut self, result: ToolResult) {
-        let Some(stdin) = self.stdin.as_mut() else {
-            return;
-        };
-        match serde_json::to_string(&result) {
-            Ok(mut line) => {
-                line.push('\n');
-                if let Err(e) = stdin.write_all(line.as_bytes()).await {
-                    tracing::error!(event = "worker.tool_result_write_failed", run_id = %self.run_id, error = ?e);
-                }
-                let _ = stdin.flush().await;
-            }
-            Err(e) => {
-                tracing::error!(event = "worker.tool_result_serialize_failed", run_id = %self.run_id, error = ?e)
-            }
-        }
+        let _ = write_frame(
+            &mut self.stdin,
+            self.run_id,
+            &result,
+            "worker.tool_result_serialize_failed",
+            "worker.tool_result_write_failed",
+        )
+        .await;
+    }
+
+    async fn send_external_tool_ack(&mut self, ack: ExternalToolAck) -> Result<(), ()> {
+        write_frame(
+            &mut self.stdin,
+            self.run_id,
+            &ack,
+            "worker.external_ack_serialize_failed",
+            "worker.external_ack_write_failed",
+        )
+        .await
     }
 
     async fn shutdown(&mut self) {
-        // Drop stdin → EOF: the Worker (blocked awaiting a tool_result, or done)
-        // exits and closes stdout, ending the read loop.
         self.stdin = None;
     }
 }

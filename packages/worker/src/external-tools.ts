@@ -25,11 +25,6 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
  * filtering, keyword search, and detail lookup. No
  * create/update/complete/move/assign/comment-write/delete tool is ever exposed
  * or executed. */
-/** A7's per-request bound for the MCP lane (review R12 #6): the SDK default is
- * 60s; pin the SAME 30s policy the OpenAPI lane's boot-resolved knob defaults
- * to, so both TickTick reads share one explicit timeout. */
-const MCP_REQUEST_TIMEOUT_MS = 30_000;
-
 export const EXTERNAL_READ_ALLOWLIST: readonly string[] = [
 	"list_projects",
 	"list_tags",
@@ -154,6 +149,27 @@ export interface ExternalCaller {
 	): Promise<unknown>;
 }
 
+interface DiscoveredExternalTool {
+	readonly name: string;
+	readonly description?: string;
+	readonly inputSchema: unknown;
+}
+
+export interface ExternalDiscoveryCaller {
+	listTools(
+		params?: { cursor?: string },
+		options?: { timeout?: number },
+	): Promise<{
+		tools: DiscoveredExternalTool[];
+		nextCursor?: string;
+	}>;
+}
+
+/** A corrupt server must not keep a Worker in discovery forever even if every
+ * cursor is unique. This is deliberately far above the five-tool expected
+ * surface while still giving the loop a hard end. */
+const EXTERNAL_DISCOVERY_PAGE_LIMIT = 100;
+
 /** Execute one allowlisted external call: gate #2 (the exact allowlist again,
  * immediately before execution — defense in depth on top of the discovery
  * filter), then the server call, then the adapter. The MCP result's own
@@ -163,6 +179,7 @@ export async function callExternalTool(
 	caller: ExternalCaller,
 	serverName: string,
 	params: unknown,
+	timeoutMs: number,
 ): Promise<AgentToolResult<ExternalCallDetails>> {
 	if (!EXTERNAL_READ_ALLOWLIST.includes(serverName)) {
 		throw new Error(`external tool ${serverName} is not in the read allowlist`);
@@ -173,7 +190,7 @@ export async function callExternalTool(
 			arguments: (params ?? {}) as Record<string, unknown>,
 		},
 		undefined,
-		{ timeout: MCP_REQUEST_TIMEOUT_MS },
+		{ timeout: timeoutMs },
 	);
 	const adapted = adaptMcpResult(result);
 	return {
@@ -182,16 +199,48 @@ export async function callExternalTool(
 	};
 }
 
+/** Discover every page under one timeout policy. Repeated cursors fail before
+ * another request; endlessly unique cursors hit a finite page ceiling. */
+export async function discoverExternalTools(
+	caller: ExternalDiscoveryCaller,
+	timeoutMs: number,
+): Promise<DiscoveredExternalTool[]> {
+	const discovered: DiscoveredExternalTool[] = [];
+	const seenCursors = new Set<string>();
+	let cursor: string | undefined;
+
+	for (
+		let pageNumber = 0;
+		pageNumber < EXTERNAL_DISCOVERY_PAGE_LIMIT;
+		pageNumber++
+	) {
+		const page = await caller.listTools(
+			cursor === undefined ? undefined : { cursor },
+			{ timeout: timeoutMs },
+		);
+		discovered.push(...page.tools);
+
+		const nextCursor = page.nextCursor;
+		if (nextCursor === undefined) return discovered;
+		if (seenCursors.has(nextCursor)) {
+			throw new Error("MCP discovery returned a repeated cursor");
+		}
+		seenCursors.add(nextCursor);
+		cursor = nextCursor;
+	}
+
+	throw new Error(
+		`MCP discovery exceeded the ${EXTERNAL_DISCOVERY_PAGE_LIMIT}-page limit`,
+	);
+}
+
 /** Build the namespaced `AgentTool`s from a discovered tool list: gate #1 —
  * only the exact allowlisted names survive, so the model never sees a write
  * tool's schema. Exported for the discovery-filter unit tests. */
 export function buildExternalTools(
 	caller: ExternalCaller,
-	discovered: ReadonlyArray<{
-		name: string;
-		description?: string;
-		inputSchema: unknown;
-	}>,
+	discovered: ReadonlyArray<DiscoveredExternalTool>,
+	timeoutMs: number,
 ): AgentTool[] {
 	return discovered
 		.filter((tool) => EXTERNAL_READ_ALLOWLIST.includes(tool.name))
@@ -203,7 +252,7 @@ export function buildExternalTools(
 				label: `TickTick ${serverName.replaceAll("_", " ")}`,
 				parameters: tool.inputSchema as AgentTool["parameters"],
 				execute: (_toolCallId, params) =>
-					callExternalTool(caller, serverName, params),
+					callExternalTool(caller, serverName, params, timeoutMs),
 			};
 		});
 }
@@ -226,52 +275,33 @@ export async function connectExternalTools(
 			},
 		},
 	);
-	await client.connect(transport);
-	let discovered: Awaited<ReturnType<typeof client.listTools>>["tools"];
 	try {
-		// Paginate discovery to EXHAUSTION (review R12 #3): `listTools()` once
-		// accepts a partial first page, and an allowlisted tool on a later page
-		// would silently vanish from the model's surface.
-		discovered = [];
-		let cursor: string | undefined;
-		do {
-			const page = await client.listTools(
-				cursor === undefined ? undefined : { cursor },
-				{ timeout: MCP_REQUEST_TIMEOUT_MS },
+		await client.connect(transport, { timeout: config.timeout_ms });
+		const discovered = await discoverExternalTools(client, config.timeout_ms);
+
+		const names = discovered.map((tool) => tool.name);
+		if (new Set(names).size !== names.length) {
+			throw new Error("MCP discovery returned duplicate tool names");
+		}
+		const tools = buildExternalTools(client, discovered, config.timeout_ms);
+		if (tools.length !== EXTERNAL_READ_ALLOWLIST.length) {
+			const offered = new Set(names);
+			const missing = EXTERNAL_READ_ALLOWLIST.filter(
+				(name) => !offered.has(name),
 			);
-			discovered.push(...page.tools);
-			cursor = page.nextCursor;
-		} while (cursor !== undefined);
+			throw new Error(
+				`MCP discovery is missing allowlisted tool(s): ${missing.join(", ")}`,
+			);
+		}
+
+		return {
+			tools,
+			close: () => client.close(),
+		};
 	} catch (error) {
-		// Discovery failed AFTER the transport opened: the caller never receives
-		// `close`, so close here before rethrowing — an open MCP transport must
-		// not keep the Worker alive past its terminal error (CodeRabbit #336).
+		// The caller never receives `close` on any connect/discovery/validation
+		// failure, so this branch owns cleanup for all of them.
 		await client.close().catch(() => undefined);
 		throw error;
 	}
-	// A duplicated name is an upstream contract break — with two same-name
-	// definitions the executed schema/behavior is ambiguous. Fail loud.
-	const names = discovered.map((tool) => tool.name);
-	if (new Set(names).size !== names.length) {
-		await client.close().catch(() => undefined);
-		throw new Error("MCP discovery returned duplicate tool names");
-	}
-	const tools = buildExternalTools(client, discovered);
-	// The Workflow opted into external tools: EVERY pinned read tool must be
-	// present (review R12 #3) — starting with a partial allowlist would fail
-	// deep in a turn instead of loudly at spawn.
-	if (tools.length !== EXTERNAL_READ_ALLOWLIST.length) {
-		const offered = new Set(names);
-		const missing = EXTERNAL_READ_ALLOWLIST.filter(
-			(name) => !offered.has(name),
-		);
-		await client.close().catch(() => undefined);
-		throw new Error(
-			`MCP discovery is missing allowlisted tool(s): ${missing.join(", ")}`,
-		);
-	}
-	return {
-		tools,
-		close: () => client.close(),
-	};
 }

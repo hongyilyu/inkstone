@@ -2617,15 +2617,26 @@ where
     .await
 }
 
+/// Read the status of one external call scoped to its Run. Used only after a
+/// guarded resolve matched no pending row, to distinguish settled from missing.
+pub(super) async fn external_tool_call_status<'e, E>(
+    executor: E,
+    id: &str,
+    run_id: Uuid,
+) -> sqlx::Result<Option<String>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_scalar("SELECT status FROM tool_calls WHERE id = ? AND run_id = ?")
+        .bind(id)
+        .bind(run_id.to_string())
+        .fetch_optional(executor)
+        .await
+}
+
 /// Settle every still-pending EXTERNAL (`ticktick_*`) call of a terminating
-/// Run with the Core-generated interrupted result (external-task-views A4):
-/// Worker death can land between `external_tool_started` and its finished
-/// frame, so the row settles as an error in the SAME transition that settles
-/// the Run. Returns the settled `(id, name)` pairs so the caller can publish
-/// the matching `tool_call` events after the commit. The prefix predicate
-/// binds [`crate::tools::EXTERNAL_TOOL_PREFIX`] — Core-tool rows are never
-/// touched (a crashed-mid-write Core row stays `pending` for the reload
-/// filter, as before).
+/// Run with the Core-generated interrupted result. Returns the settled
+/// `(id, name)` pairs for post-commit publication.
 pub(super) async fn settle_pending_external_tool_calls<'e, E>(
     executor: E,
     run_id: Uuid,

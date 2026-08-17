@@ -42,6 +42,21 @@ export const ToolResult = S.Struct({
 
 export type ToolResult = S.Schema.Type<typeof ToolResult>;
 
+/** Core → Worker: durable acceptance or rejection of one external lifecycle
+ * frame. No failure detail crosses this boundary; Core logs the cause. */
+export const ExternalToolAck = S.Struct({
+	kind: S.Literal("external_tool_ack"),
+	tool_call_id: S.String,
+	phase: S.Literal("started", "finished"),
+	ok: S.Boolean,
+});
+
+export type ExternalToolAck = S.Schema.Type<typeof ExternalToolAck>;
+
+/** Every post-manifest frame Core can write to the Worker. */
+export const WorkerInbound = S.Union(ToolResult, ExternalToolAck);
+export type WorkerInbound = S.Schema.Type<typeof WorkerInbound>;
+
 /** One tool the Workflow exposes; shipped in the WorkflowManifest. */
 export const CoreToolDescriptor = S.Struct({
 	name: S.String,
@@ -166,7 +181,14 @@ export const WorkerManifest = S.Struct({
 	 * the TickTick MCP endpoint + auth Core hands the Worker at spawn from its
 	 * boot-read credential state. Absent = no external tools this Run. */
 	external_tools: S.optional(
-		S.Struct({ endpoint: S.String, access_token: S.String }),
+		S.Struct({
+			endpoint: S.String,
+			access_token: S.String,
+			timeout_ms: S.Number.pipe(
+				S.int({ description: undefined }),
+				S.greaterThanOrEqualTo(1, { description: undefined }),
+			),
+		}),
 	),
 });
 

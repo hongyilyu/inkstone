@@ -98,6 +98,24 @@ pub struct ToolResult {
     pub outcome: ToolOutcome,
 }
 
+/// Which external lifecycle frame Core is acknowledging.
+#[derive(Debug, Serialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExternalToolPhase {
+    Started,
+    Finished,
+}
+
+/// Core → Worker: durable acceptance or rejection of one external lifecycle
+/// frame. Failure detail stays in Core's diagnostic log.
+#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+pub struct ExternalToolAck {
+    pub kind: &'static str,
+    pub tool_call_id: String,
+    pub phase: ExternalToolPhase,
+    pub ok: bool,
+}
+
 /// What Core reads off the Worker's stdout: the one-way `RunEvent`s plus the
 /// bidirectional `tool_request`. The `tool_request`'s `run_id` is Core-ignored
 /// (Core uses the spawn's authoritative run id) — kept for symmetry with the TS
@@ -267,6 +285,7 @@ pub struct WorkerManifest<'a> {
 pub struct ExternalToolsManifest<'a> {
     pub endpoint: &'a str,
     pub access_token: &'a str,
+    pub timeout_ms: u64,
 }
 
 impl std::fmt::Debug for ExternalToolsManifest<'_> {
@@ -274,6 +293,7 @@ impl std::fmt::Debug for ExternalToolsManifest<'_> {
         f.debug_struct("ExternalToolsManifest")
             .field("endpoint", &self.endpoint)
             .field("access_token", &"<redacted>")
+            .field("timeout_ms", &self.timeout_ms)
             .finish()
     }
 }
@@ -382,10 +402,30 @@ mod mirror_tests {
     }
 
     #[test]
+    fn external_tool_ack_serializes() {
+        let ack = ExternalToolAck {
+            kind: "external_tool_ack",
+            tool_call_id: "tc_ext".to_string(),
+            phase: ExternalToolPhase::Started,
+            ok: true,
+        };
+        assert_eq!(
+            serde_json::to_value(ack).unwrap(),
+            json!({
+                "kind": "external_tool_ack",
+                "tool_call_id": "tc_ext",
+                "phase": "started",
+                "ok": true
+            })
+        );
+    }
+
+    #[test]
     fn external_tools_manifest_debug_redacts_the_token() {
         let manifest = ExternalToolsManifest {
             endpoint: "https://mcp.ticktick.com/",
             access_token: "SECRET_TICKTICK_TOKEN",
+            timeout_ms: 30_000,
         };
         let rendered = format!("{manifest:?}");
         assert!(
@@ -454,12 +494,17 @@ mod mirror_tests {
             external_tools: Some(ExternalToolsManifest {
                 endpoint: "https://mcp.ticktick.com/",
                 access_token: "tok",
+                timeout_ms: 30_000,
             }),
         };
         let wire = serde_json::to_value(&manifest).unwrap();
         assert_eq!(
             wire["external_tools"],
-            json!({ "endpoint": "https://mcp.ticktick.com/", "access_token": "tok" })
+            json!({
+                "endpoint": "https://mcp.ticktick.com/",
+                "access_token": "tok",
+                "timeout_ms": 30_000
+            })
         );
 
         let manifest = WorkerManifest {

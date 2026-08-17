@@ -4,12 +4,10 @@
 // `INKSTONE_WORKER_CMD`), but deliberately writes ONE malformed, non-NDJSON
 // line to stdout BEFORE its real frames. Core's `child.rs` stdout reader fails
 // to deserialize that line as a `WorkerStdout`, hits the "worker emitted unknown
-// line" arm — `tracing::warn!(event="worker.unknown_line", …)` — and `continue`s
-// to the next line. The fixture then emits a normal `text_delta` + `done`, so
-// the Run still completes; the test drives the Run to `done` (which can only
-// arrive AFTER the bad line was read and skipped), then reads the trail and
-// asserts the `worker.unknown_line` event carries the Run's `run_id` as a
-// top-level field — proving run_id correlation reaches a child.rs site
+// line" arm — `tracing::warn!(event="worker.unknown_line", …)` — and terminates
+// the Run. The test waits for Core's error event, then asserts the diagnostic
+// carries the Run's `run_id` as a top-level field, proving correlation reaches
+// a child.rs site
 // (threaded into `ChildWorker::spawn`; the `worker_run` span is retained for
 // transitive dep events). See ADR-0038.
 //
@@ -28,12 +26,10 @@ const main = async (): Promise<void> => {
 	const inbound = JSON.parse(line) as { prompt: string };
 
 	// The malformed line: valid UTF-8, but NOT a JSON `WorkerStdout` frame, so
-	// `serde_json::from_str::<WorkerStdout>` fails and Core logs + skips it.
+	// `serde_json::from_str::<WorkerStdout>` fails and Core terminates the Run.
 	process.stdout.write("this is not a worker frame\n");
 
-	// A real frame + terminal done so the Run completes normally. Because Core's
-	// reader is sequential, `done` is only delivered after the bad line above was
-	// read and skipped — making the test's wait-for-done a deterministic barrier.
+	// These frames prove Core does not continue after the protocol violation.
 	emit({ kind: "text_delta", delta: `echo: ${inbound.prompt}` });
 	emit({ kind: "done" });
 };

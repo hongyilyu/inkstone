@@ -9,6 +9,7 @@ rust-version = "1.88"
 anyhow = "1"
 axum = { version = "0.8", features = ["ws"] }
 base64 = "0.22"
+libc = "0.2"
 reqwest = { version = "0.12", features = ["json"] }
 rust-embed = { version = "8", features = ["mime-guess"] }
 schemars = "0.8"

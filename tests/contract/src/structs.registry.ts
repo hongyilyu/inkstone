@@ -25,6 +25,7 @@ import {
 	EntityListResult,
 	EntityMutateParams,
 	EntityMutateResult,
+	ExternalToolAck,
 	JournalEntryRescanParams,
 	JournalEntryRescanResult,
 	MediaUploadParams,
@@ -766,6 +767,18 @@ export const fixtures: readonly FixtureEntry[] = [
 		dir: "emitted",
 	},
 	{
+		message: "ExternalToolAck",
+		file: "external_tool_ack.started.json",
+		schema: ExternalToolAck,
+		dir: "emitted",
+	},
+	{
+		message: "ExternalToolAck",
+		file: "external_tool_ack.finished_nack.json",
+		schema: ExternalToolAck,
+		dir: "emitted",
+	},
+	{
 		message: "WorkerManifest",
 		file: "worker_manifest.json",
 		schema: WorkerManifest,
@@ -945,9 +958,10 @@ export const CANONICAL_MESSAGES: readonly string[] = [
 	"ModelCatalogResult",
 	"SettingsResult",
 	"ProviderTestResult",
-	// slice 4 — worker↔core protocol (4 messages)
+	// slice 4 — worker↔core protocol (5 messages)
 	"RunEvent",
 	"ToolResult",
+	"ExternalToolAck",
 	"WorkerManifest",
 	"WorkerStdout",
 	// provider-helper stdout protocol (ADR-0023)
@@ -979,6 +993,8 @@ export const UNION_VARIANTS: Readonly<Record<string, number>> = {
 	RunEvent: 11,
 	// ToolResult carries the ToolOutcome union (ok / err) = 2 fixtures.
 	ToolResult: 2,
+	// ExternalToolAck covers both phase literals and both acceptance outcomes.
+	ExternalToolAck: 2,
 	// WorkerStdout (7 variants): text_delta, done, error, tool_request,
 	//   reasoning_delta, external_tool_started, external_tool_finished = 7.
 	WorkerStdout: 7,

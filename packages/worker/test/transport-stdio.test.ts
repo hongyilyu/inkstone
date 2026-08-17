@@ -88,6 +88,74 @@ describe("StdioTransportLive (over injected streams)", () => {
 		expect(resp).toEqual({ ok: { content: [{ type: "text", text: "ok" }] } });
 	});
 
+	it("round-trips external lifecycle ACKs and rejects a NACK without Core detail", async () => {
+		const input = new PassThrough();
+		const { output, written } = capturingWritable();
+		input.write(`${manifestJson}\n`);
+
+		const result = await Effect.runPromise(
+			Effect.gen(function* () {
+				const t = yield* WorkerTransport;
+				yield* t.readManifest;
+
+				const started = t.syncExternalTool({
+					kind: "external_tool_started",
+					tool_call_id: "tc-ext",
+					name: "ticktick_filter_tasks",
+					arguments: { filter: { status: [0] } },
+				});
+				input.write(
+					`${JSON.stringify({
+						kind: "external_tool_ack",
+						tool_call_id: "tc-ext",
+						phase: "started",
+						ok: true,
+					})}\n`,
+				);
+				yield* Effect.promise(() => started);
+
+				const finished = t.syncExternalTool({
+					kind: "external_tool_finished",
+					tool_call_id: "tc-ext",
+					result: {
+						content: [{ type: "text", text: "one task" }],
+						is_error: false,
+					},
+				});
+				input.write(
+					`${JSON.stringify({
+						kind: "external_tool_ack",
+						tool_call_id: "tc-ext",
+						phase: "finished",
+						ok: false,
+					})}\n`,
+				);
+				return yield* Effect.promise(() =>
+					finished.then(
+						() => ({ rejected: false, message: "" }),
+						(error: unknown) => ({
+							rejected: true,
+							message: error instanceof Error ? error.message : String(error),
+						}),
+					),
+				);
+			}).pipe(Effect.provide(makeStdioTransport(input, output))),
+		);
+
+		expect(result).toEqual({
+			rejected: true,
+			message: "Core rejected an external tool lifecycle frame",
+		});
+		const frames = written()
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line));
+		expect(frames.map((frame) => frame.kind)).toEqual([
+			"external_tool_started",
+			"external_tool_finished",
+		]);
+	});
+
 	it("settles the pending call LOUD when an inbound tool_result fails schema decode", async () => {
 		const input = new PassThrough();
 		const { output } = capturingWritable();

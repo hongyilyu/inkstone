@@ -8,7 +8,7 @@
 
 use std::future::Future;
 
-use crate::protocol::{ToolResult, WorkerStdout};
+use crate::protocol::{ExternalToolAck, ToolResult, WorkerStdout};
 
 /// Which terminal branch the run loop took, so callers and tests can assert the
 /// outcome. The loop commits the matching terminal transaction itself, except
@@ -29,19 +29,28 @@ pub(crate) enum Exit {
     /// Core accepted cancellation and signalled the live Worker. The terminal
     /// transaction and `cancelled` event were owned by `run/cancel`.
     Cancelled,
+    /// Every attempt to persist the terminal transition failed. The hub remains
+    /// registered and the driver terminates Core so boot recovery can settle it.
+    FatalPersistence,
 }
 
 /// Everything Core's run loop needs from a spawned Worker (ADR-0026). Futures
 /// are `Send` so the generic loop can run inside `tokio::spawn`.
 pub(crate) trait WorkerPort {
-    /// The next Worker stdout frame, or `None` once stdout closes (EOF) or
-    /// faults. The adapter skips frames that fail to decode, so the loop only
-    /// sees well-formed [`WorkerStdout`] values.
-    fn recv(&mut self) -> impl Future<Output = Option<WorkerStdout>> + Send;
+    /// The next Worker stdout frame, `Ok(None)` on EOF, or `Err(())` when
+    /// stdout faults or a frame violates the protocol. Invalid frames terminate
+    /// the Run; they are never skipped.
+    fn recv(&mut self) -> impl Future<Output = Result<Option<WorkerStdout>, ()>> + Send;
 
     /// Write a Tool Result back over the Worker's kept-open stdin (ADR-0013).
     /// A no-op once the Worker has been shut down.
     fn send_tool_result(&mut self, result: ToolResult) -> impl Future<Output = ()> + Send;
+
+    /// Acknowledge one external lifecycle frame after its durable transition.
+    fn send_external_tool_ack(
+        &mut self,
+        ack: ExternalToolAck,
+    ) -> impl Future<Output = Result<(), ()>> + Send;
 
     /// Shut the Worker down — drop stdin so the Worker sees EOF and exits
     /// (ADR-0013). Idempotent.

@@ -10,9 +10,120 @@
 use sqlx::SqlitePool;
 use uuid::Uuid;
 
+use super::port::WorkerPort;
 use crate::db;
 use crate::hub::RunHub;
-use crate::protocol::{RunEvent, ToolCallStatus, TranscriptToolResult};
+use crate::protocol::{
+    ExternalToolAck, ExternalToolPhase, RunEvent, ToolCallStatus, TranscriptToolResult,
+};
+
+pub(super) const EXTERNAL_PERSIST_FAILED_MESSAGE: &str =
+    "core could not persist an external tool call";
+pub(super) const WORKER_PROTOCOL_FAILED_MESSAGE: &str =
+    "worker emitted an invalid external tool lifecycle frame";
+
+pub(super) enum FrameFailure {
+    Cancelled,
+    Terminal(&'static str),
+}
+
+async fn send_ack<P: WorkerPort>(
+    worker: &mut P,
+    tool_call_id: &str,
+    phase: ExternalToolPhase,
+    ok: bool,
+) -> Result<(), ()> {
+    worker
+        .send_external_tool_ack(ExternalToolAck {
+            kind: "external_tool_ack",
+            tool_call_id: tool_call_id.to_string(),
+            phase,
+            ok,
+        })
+        .await
+}
+
+async fn reject<P: WorkerPort>(
+    worker: &mut P,
+    tool_call_id: &str,
+    phase: ExternalToolPhase,
+    failure: FrameFailure,
+) -> FrameFailure {
+    let _ = send_ack(worker, tool_call_id, phase, false).await;
+    failure
+}
+
+pub(super) async fn handle_started<P: WorkerPort>(
+    worker: &mut P,
+    pool: &SqlitePool,
+    run_id: Uuid,
+    run_hub: &RunHub,
+    tool_call_id: &str,
+    name: &str,
+    arguments: &serde_json::Value,
+) -> Result<(), FrameFailure> {
+    if !crate::tools::is_external(name) {
+        tracing::error!(
+            event = "worker.external_frame_name_unreserved",
+            %run_id,
+            tool_call_id,
+            name
+        );
+        return Err(reject(
+            worker,
+            tool_call_id,
+            ExternalToolPhase::Started,
+            FrameFailure::Terminal(WORKER_PROTOCOL_FAILED_MESSAGE),
+        )
+        .await);
+    }
+
+    match begin_external_and_publish(
+        pool,
+        run_id,
+        run_hub,
+        tool_call_id,
+        name,
+        &arguments.to_string(),
+    )
+    .await
+    {
+        Ok(db::Moved::Won) => send_ack(worker, tool_call_id, ExternalToolPhase::Started, true)
+            .await
+            .map_err(|()| FrameFailure::Terminal(WORKER_PROTOCOL_FAILED_MESSAGE)),
+        Ok(db::Moved::Lost) => {
+            let failure = if run_hub.is_cancelled() {
+                FrameFailure::Cancelled
+            } else {
+                FrameFailure::Terminal(WORKER_PROTOCOL_FAILED_MESSAGE)
+            };
+            Err(reject(worker, tool_call_id, ExternalToolPhase::Started, failure).await)
+        }
+        Err(error) => {
+            tracing::error!(
+                event = "worker.begin_external_tool_call_failed",
+                %run_id,
+                tool_call_id,
+                error = ?error
+            );
+            let message = if error
+                .as_database_error()
+                .is_some_and(|db| db.is_unique_violation())
+            {
+                WORKER_PROTOCOL_FAILED_MESSAGE
+            } else {
+                EXTERNAL_PERSIST_FAILED_MESSAGE
+            };
+            Err(reject(
+                worker,
+                tool_call_id,
+                ExternalToolPhase::Started,
+                FrameFailure::Terminal(message),
+            )
+            .await)
+        }
+    }
+}
 
 /// Persist an external call's started row AND publish its `Started` event as ONE
 /// gated critical section (external-task-views A4, review #1). Holding the
@@ -31,7 +142,7 @@ pub(super) async fn begin_external_and_publish(
     tool_call_id: &str,
     name: &str,
     request_payload: &str,
-) -> sqlx::Result<()> {
+) -> sqlx::Result<db::Moved> {
     let guard = run_hub.gate().await;
     let outcome = db::begin_external_tool_call(
         pool,
@@ -41,29 +152,18 @@ pub(super) async fn begin_external_and_publish(
         request_payload,
         db::now_ms(),
     )
-    .await;
-    let result = match outcome {
-        Ok(moved) if moved.won() => {
-            run_hub.send(RunEvent::ToolCall {
-                tool_call_id: tool_call_id.to_string(),
-                name: name.to_string(),
-                status: ToolCallStatus::Started,
-                arg: None,
-                result: None,
-            });
-            Ok(())
-        }
-        Ok(_) => {
-            tracing::warn!(
-                event = "worker.external_started_after_terminal",
-                %run_id, tool_call_id
-            );
-            Ok(())
-        }
-        Err(e) => Err(e),
-    };
+    .await?;
+    if outcome.won() {
+        run_hub.send(RunEvent::ToolCall {
+            tool_call_id: tool_call_id.to_string(),
+            name: name.to_string(),
+            status: ToolCallStatus::Started,
+            arg: None,
+            result: None,
+        });
+    }
     drop(guard);
-    result
+    Ok(outcome)
 }
 
 /// Resolve an external call's row AND publish its terminal event as ONE gated
@@ -82,52 +182,92 @@ pub(super) async fn finish_external_and_publish(
     run_hub: &RunHub,
     tool_call_id: &str,
     result: TranscriptToolResult,
-) -> sqlx::Result<()> {
-    let status = if result.is_error { "errored" } else { "completed" };
+) -> sqlx::Result<db::ExternalToolFinish> {
+    let status = if result.is_error {
+        "errored"
+    } else {
+        "completed"
+    };
     let payload = serde_json::to_string(&result).expect("TranscriptToolResult serializes");
     let guard = run_hub.gate().await;
     let outcome =
         db::finish_external_tool_call(pool, run_id, tool_call_id, status, &payload, db::now_ms())
-            .await;
-    let flow = match outcome {
-        Ok(Some(name)) => {
-            run_hub.send(RunEvent::ToolCall {
-                tool_call_id: tool_call_id.to_string(),
-                name,
-                status: if result.is_error {
-                    ToolCallStatus::Error
-                } else {
-                    ToolCallStatus::Completed
-                },
-                arg: None,
-                result: Some(result),
-            });
-            Ok(())
-        }
-        // No pending row: a terminal settle already claimed it, OR the frame was
-        // unpaired (a Worker-contract violation pi's sequential mode prevents).
-        // Both are benign here — the row, if any, is already settled.
-        Ok(None) => {
-            tracing::debug!(
-                event = "worker.external_finished_lost_to_settle",
-                %run_id, tool_call_id
-            );
-            Ok(())
-        }
-        Err(e) => Err(e),
-    };
+            .await?;
+    if let db::ExternalToolFinish::Resolved(ref name) = outcome {
+        run_hub.send(RunEvent::ToolCall {
+            tool_call_id: tool_call_id.to_string(),
+            name: name.clone(),
+            status: if result.is_error {
+                ToolCallStatus::Error
+            } else {
+                ToolCallStatus::Completed
+            },
+            arg: None,
+            result: Some(result),
+        });
+    }
     drop(guard);
-    flow
+    Ok(outcome)
+}
+
+pub(super) async fn handle_finished<P: WorkerPort>(
+    worker: &mut P,
+    pool: &SqlitePool,
+    run_id: Uuid,
+    run_hub: &RunHub,
+    tool_call_id: &str,
+    result: TranscriptToolResult,
+) -> Result<(), FrameFailure> {
+    match finish_external_and_publish(pool, run_id, run_hub, tool_call_id, result).await {
+        Ok(db::ExternalToolFinish::Resolved(_)) => {
+            send_ack(worker, tool_call_id, ExternalToolPhase::Finished, true)
+                .await
+                .map_err(|()| FrameFailure::Terminal(WORKER_PROTOCOL_FAILED_MESSAGE))
+        }
+        Ok(db::ExternalToolFinish::AlreadySettled) if run_hub.is_cancelled() => Err(reject(
+            worker,
+            tool_call_id,
+            ExternalToolPhase::Finished,
+            FrameFailure::Cancelled,
+        )
+        .await),
+        Ok(db::ExternalToolFinish::AlreadySettled | db::ExternalToolFinish::Missing) => {
+            tracing::error!(
+                event = "worker.external_finished_unpaired",
+                %run_id,
+                tool_call_id
+            );
+            Err(reject(
+                worker,
+                tool_call_id,
+                ExternalToolPhase::Finished,
+                FrameFailure::Terminal(WORKER_PROTOCOL_FAILED_MESSAGE),
+            )
+            .await)
+        }
+        Err(error) => {
+            tracing::error!(
+                event = "worker.finish_external_tool_call_failed",
+                %run_id,
+                tool_call_id,
+                error = ?error
+            );
+            Err(reject(
+                worker,
+                tool_call_id,
+                ExternalToolPhase::Finished,
+                FrameFailure::Terminal(EXTERNAL_PERSIST_FAILED_MESSAGE),
+            )
+            .await)
+        }
+    }
 }
 
 /// Publish the interrupted `tool_call {status: error, result}` event for each
 /// external call a terminal transition settled (external-task-views A4) —
 /// after that tx committed, before the terminal Run Event. Shared by the
 /// loop's own terminal branch and `run/cancel`'s post-response publish.
-pub(crate) fn publish_interrupted(
-    run_hub: &RunHub,
-    interrupted: Vec<db::InterruptedExternalCall>,
-) {
+pub(crate) fn publish_interrupted(run_hub: &RunHub, interrupted: Vec<db::InterruptedExternalCall>) {
     for call in interrupted {
         run_hub.send(RunEvent::ToolCall {
             tool_call_id: call.tool_call_id,
@@ -148,6 +288,15 @@ mod tests {
     use crate::worker::run::run_loop;
     use crate::worker::test_support::*;
 
+    fn ack(id: &str, phase: ExternalToolPhase, ok: bool) -> ExternalToolAck {
+        ExternalToolAck {
+            kind: "external_tool_ack",
+            tool_call_id: id.to_string(),
+            phase,
+            ok,
+        }
+    }
+
     /// An external call's two frames persist one row — pending on `started`,
     /// resolved on `finished` with `tool_calls.status` DERIVED from
     /// `result.is_error` — and publish started + terminal `tool_call` events,
@@ -160,7 +309,7 @@ mod tests {
         let (run_id, _t, amid) = seed_run(&pool, &wf).await;
         let (hubs, run_hub) = fixtures(run_id);
         let mut rx = run_hub.subscribe_raw();
-        let (worker, sent, _sd) = ScriptedWorker::new(vec![
+        let (worker, sent, _sd, acks) = ScriptedWorker::new_with_acks(vec![
             external_started("tc-ok", "ticktick_filter_tasks"),
             external_finished("tc-ok", "1 task found", false),
             external_started("tc-bad", "ticktick_search_task"),
@@ -182,6 +331,17 @@ mod tests {
         assert_eq!(exit, Exit::Done);
         // Core only observes — no Tool Protocol round-trip happened.
         assert!(sent.lock().unwrap().is_empty(), "no tool_result was sent");
+
+        assert_eq!(
+            *acks.lock().unwrap(),
+            vec![
+                ack("tc-ok", ExternalToolPhase::Started, true),
+                ack("tc-ok", ExternalToolPhase::Finished, true),
+                ack("tc-bad", ExternalToolPhase::Started, true),
+                ack("tc-bad", ExternalToolPhase::Finished, true),
+            ],
+            "each durable transition is acknowledged in source order"
+        );
 
         // Persisted rows: status derives from result.is_error; the payload is
         // the TranscriptToolResult JSON.
@@ -326,8 +486,8 @@ mod tests {
         .await
         .unwrap();
         assert!(
-            finished.is_none(),
-            "a finish racing a committed settle loses (no pending row to resolve)"
+            matches!(finished, db::ExternalToolFinish::AlreadySettled),
+            "a finish racing a committed settle reports the settled row"
         );
         let (_, status, payload) = tool_call_row(&pool, "tc-x").await.expect("row");
         assert_eq!(status, "errored", "the interrupted settle stands");
@@ -591,10 +751,137 @@ mod tests {
         );
     }
 
-    /// Fault injection (review R12 #2): a DB fault on the external BEGIN write
-    /// STOPS the Worker — the model must not run ahead of the durable
-    /// transcript. A closed pool makes every acquire fail; the loop must exit
-    /// `Errored` with the persist message, consuming no further frames.
+    async fn drive_protocol_frames(
+        frames: Vec<WorkerStdout>,
+    ) -> (SqlitePool, Uuid, Exit, Vec<ExternalToolAck>, u32) {
+        let pool = memory_pool().await;
+        let wf = test_workflow(&[]);
+        let (run_id, _thread_id, assistant_id) = seed_run(&pool, &wf).await;
+        let (hubs, run_hub) = fixtures(run_id);
+        let (worker, _sent, shutdowns, acks) = ScriptedWorker::new_with_acks(frames);
+
+        let exit = run_loop(
+            worker,
+            run_id,
+            wf,
+            pool.clone(),
+            assistant_id,
+            hubs,
+            run_hub,
+        )
+        .await;
+        let recorded_acks = acks.lock().unwrap().clone();
+        let shutdown_count = *shutdowns.lock().unwrap();
+        (pool, run_id, exit, recorded_acks, shutdown_count)
+    }
+
+    #[tokio::test]
+    async fn unreserved_external_start_is_nacked_and_terminates_the_run() {
+        let (pool, run_id, exit, acks, shutdowns) = drive_protocol_frames(vec![
+            external_started("tc-unreserved", "filter_tasks"),
+            WorkerStdout::Done,
+        ])
+        .await;
+
+        assert_eq!(
+            exit,
+            Exit::Errored(WORKER_PROTOCOL_FAILED_MESSAGE.to_string())
+        );
+        assert_eq!(
+            acks,
+            vec![ack("tc-unreserved", ExternalToolPhase::Started, false)]
+        );
+        assert!(shutdowns >= 1);
+        assert!(tool_call_row(&pool, "tc-unreserved").await.is_none());
+        assert_eq!(
+            db::run_status(&pool, run_id)
+                .await
+                .unwrap()
+                .map(db::RunStatus::as_str),
+            Some("errored")
+        );
+    }
+
+    #[tokio::test]
+    async fn duplicate_external_start_is_nacked_and_terminates_the_run() {
+        let (pool, _run_id, exit, acks, _shutdowns) = drive_protocol_frames(vec![
+            external_started("tc-duplicate", "ticktick_filter_tasks"),
+            external_started("tc-duplicate", "ticktick_filter_tasks"),
+            WorkerStdout::Done,
+        ])
+        .await;
+
+        assert_eq!(
+            exit,
+            Exit::Errored(WORKER_PROTOCOL_FAILED_MESSAGE.to_string())
+        );
+        assert_eq!(
+            acks,
+            vec![
+                ack("tc-duplicate", ExternalToolPhase::Started, true),
+                ack("tc-duplicate", ExternalToolPhase::Started, false),
+            ]
+        );
+        let (_, status, payload) = tool_call_row(&pool, "tc-duplicate").await.unwrap();
+        assert_eq!(status, "errored");
+        assert_eq!(
+            serde_json::from_str::<TranscriptToolResult>(&payload.unwrap()).unwrap(),
+            TranscriptToolResult::interrupted()
+        );
+    }
+
+    #[tokio::test]
+    async fn finish_without_start_is_nacked_and_terminates_the_run() {
+        let (pool, _run_id, exit, acks, _shutdowns) = drive_protocol_frames(vec![
+            external_finished("tc-missing", "result", false),
+            WorkerStdout::Done,
+        ])
+        .await;
+
+        assert_eq!(
+            exit,
+            Exit::Errored(WORKER_PROTOCOL_FAILED_MESSAGE.to_string())
+        );
+        assert_eq!(
+            acks,
+            vec![ack("tc-missing", ExternalToolPhase::Finished, false)]
+        );
+        assert!(tool_call_row(&pool, "tc-missing").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn duplicate_external_finish_is_nacked_without_clobbering_the_result() {
+        let (pool, _run_id, exit, acks, _shutdowns) = drive_protocol_frames(vec![
+            external_started("tc-finished", "ticktick_search_task"),
+            external_finished("tc-finished", "first", false),
+            external_finished("tc-finished", "second", false),
+            WorkerStdout::Done,
+        ])
+        .await;
+
+        assert_eq!(
+            exit,
+            Exit::Errored(WORKER_PROTOCOL_FAILED_MESSAGE.to_string())
+        );
+        assert_eq!(
+            acks,
+            vec![
+                ack("tc-finished", ExternalToolPhase::Started, true),
+                ack("tc-finished", ExternalToolPhase::Finished, true),
+                ack("tc-finished", ExternalToolPhase::Finished, false),
+            ]
+        );
+        let (_, status, payload) = tool_call_row(&pool, "tc-finished").await.unwrap();
+        assert_eq!(status, "completed");
+        assert_eq!(
+            serde_json::from_str::<TranscriptToolResult>(&payload.unwrap()).unwrap(),
+            TranscriptToolResult::text("first", false)
+        );
+    }
+
+    /// Fault injection: a DB fault on the external BEGIN stops the Worker, then
+    /// every terminal write fails against the same closed pool. The loop reports
+    /// fatal persistence and retains the hub for the process-level recovery path.
     #[tokio::test]
     async fn begin_persist_fault_stops_the_worker() {
         let pool = memory_pool().await;
@@ -616,15 +903,19 @@ mod tests {
             wf,
             pool.clone(),
             amid,
-            hubs,
+            hubs.clone(),
             run_hub.clone(),
         )
         .await;
 
         assert_eq!(
             exit,
-            Exit::Errored(super::super::run::EXTERNAL_PERSIST_FAILED_MESSAGE.to_string()),
-            "a lifecycle-persist fault is run-fatal, not telemetry"
+            Exit::FatalPersistence,
+            "a terminal write failure is process-fatal"
+        );
+        assert!(
+            crate::hub::get(&hubs, run_id).is_some(),
+            "the undrained generation remains registered"
         );
         assert!(
             *shutdowns.lock().unwrap() >= 1,
