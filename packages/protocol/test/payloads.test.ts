@@ -1,4 +1,4 @@
-// The promoted payload-schema registry (ADR-0009): the 15 agent-proposable wire
+// The promoted payload-schema registry (ADR-0009): the 12 agent-proposable wire
 // kinds moved here from `tests/contract`, plus the 3 ungated media schemas
 // (ADR-0059) the Web codec consumes. This test pins the promotion (the registry
 // is intact and decodes) and guards the ungated boundary (media is NOT in
@@ -17,7 +17,7 @@ import {
 	type WireKind,
 } from "../src/index.js";
 
-/** The 15 agent-proposable wire kinds (mirrors `completeness.test`'s lock). */
+/** The 12 agent-proposable wire kinds (mirrors `completeness.test`'s lock). */
 const WIRE_KINDS = [
 	"create_journal_entry",
 	"update_journal_entry",

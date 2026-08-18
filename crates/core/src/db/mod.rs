@@ -83,10 +83,10 @@ pub use runs::{
     recover_interrupted_runs, resolve_tool_call, run_prompt_and_thread, run_status,
     run_workflow_snapshot, select_run_snapshot,
 };
-// Result/row types no caller names (`Backlinks`, `CurrentEntityRow`,
-// `ResolvedEntityRef`) are NOT re-exported — callers destructure the returning
-// fns' fields, and in a binary-only crate an unreachable re-export trips
-// `unused_imports`. Re-add a name here when a real caller lands.
+// Result/row types no caller names (`CurrentEntityRow`, `ResolvedEntityRef`) are
+// NOT re-exported — callers destructure the returning fns' fields, and in a
+// binary-only crate an unreachable re-export trips `unused_imports`. Re-add a
+// name here when a real caller lands.
 pub use entities_read::{
     EntityProvenance, EntityRow, backlinks_for_entity, current_entity_review_data,
     current_thread_journal_entries, entity_is_type, entity_type_by_id, list_by_type,

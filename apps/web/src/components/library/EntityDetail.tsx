@@ -1,3 +1,4 @@
+import type { EntityMutationKind } from "@inkstone/protocol";
 import { useNavigate } from "@tanstack/react-router";
 import {
 	ArrowUpRight,
@@ -67,10 +68,9 @@ export function EntityDetail({
  * The `entity/mutate` delete kind per Library kind (ADR-0033). Derived from
  * `entity.kind` inside the shell — like `KIND_META[kind].slug` — so the entity
  * on screen is the single source of truth and a kind/delete-kind mismatch is
- * unrepresentable. The wire type is an opaque `string`; this total map is the
- * local typo guard.
+ * unrepresentable.
  */
-const DELETE_KIND: Record<LibraryItemKind, string> = {
+const DELETE_KIND: Record<LibraryItemKind, EntityMutationKind> = {
 	person: "delete_person",
 	project: "delete_project",
 	journal_entry: "delete_journal_entry",

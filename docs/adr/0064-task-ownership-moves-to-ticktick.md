@@ -2,9 +2,9 @@
 
 Status: Accepted
 
-/ supersedes in part [ADR-0031](./0031-gtd-todo-person-project-model.md), [ADR-0032](./0032-gtd-relations-on-entity-list.md), [ADR-0055](./0055-gtd-ownership-and-relation-model.md)
+/ supersedes in part [ADR-0031](./0031-gtd-todo-person-project-model.md), [ADR-0032](./0032-gtd-relations-on-entity-list.md), [ADR-0033](./0033-user-initiated-entity-crud-writes-directly.md), [ADR-0042](./0042-intent-graph-journal-extraction.md), [ADR-0050](./0050-entity-backlinks-read-seam.md), [ADR-0055](./0055-gtd-ownership-and-relation-model.md)
 / supersedes [ADR-0037](./0037-todo-recurrence-rule.md), [ADR-0039](./0039-recurring-todo-occurrence-generation.md)
-/ builds on [ADR-0018](./0018-workflow-and-tools-definition.md), [ADR-0023](./0023-credential-helper-and-storage.md), [ADR-0025](./0025-proposal-park-and-resume.md), [ADR-0042](./0042-intent-graph-capture.md)
+/ builds on [ADR-0018](./0018-workflow-and-tools-definition.md), [ADR-0023](./0023-provider-oauth-core-owned-credentials.md), [ADR-0025](./0025-proposal-park-and-resume.md)
 
 Inkstone built a native GTD task model — Todo/Person/Project entities, Todo Person
 References, recurrence rules and successor generation, Project Review, and a set of
@@ -79,7 +79,7 @@ mutation for a reminder/task.
   — recurrence, retired whole with the Todo.
 - [ADR-0055](./0055-gtd-ownership-and-relation-model.md) — the GTD ownership/relation
   read; its todo-ownership half retires, the Project relation reads survive.
-- [ADR-0042](./0042-intent-graph-capture.md) — the intent graph, now Person/Project +
+- [ADR-0042](./0042-intent-graph-journal-extraction.md) — the intent graph, now Person/Project +
   `journal_ref` only.
 - [ADR-0018](./0018-workflow-and-tools-definition.md) — the Workflow manifest that
   carries the external-tool endpoint + auth.

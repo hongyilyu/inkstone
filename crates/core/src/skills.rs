@@ -12,8 +12,8 @@
 //!    `system_prompt`. The bodies ride back later as `load_skill` tool output.
 //! 3. **Seeding** — [`seed_if_absent`] writes the bundled example Skills into the
 //!    Core-managed skills dir on first run, so the feature is live on a fresh
-//!    install without defeating drop-in (it never re-seeds an existing dir, so
-//!    user edits/deletes survive).
+//!    install. On an existing dir it upgrades or removes only byte-identical
+//!    legacy bundles; user edits and deletes survive.
 //!
 //! The skills dir is `<OS data dir>/inkstone/skills/`, overridable with
 //! `INKSTONE_SKILLS_DIR` (the same env-override-or-data-dir shape as
@@ -23,21 +23,37 @@
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 
 use crate::workflow::Workflow;
+
+const WEEKLY_REVIEW_SKILL: &str = include_str!("../skills/weekly-review/SKILL.md");
 
 /// The bundled example Skills shipped in-repo (`crates/core/skills/`), embedded
 /// at compile time so a release binary carries them with no external files.
 /// [`seed_if_absent`] writes these into the skills dir on first run.
-const SEED_SKILLS: &[(&str, &str)] = &[
-    (
-        "weekly-review",
-        include_str!("../skills/weekly-review/SKILL.md"),
-    ),
-    (
-        "inbox-triage",
-        include_str!("../skills/inbox-triage/SKILL.md"),
-    ),
+const SEED_SKILLS: &[(&str, &str)] = &[("weekly-review", WEEKLY_REVIEW_SKILL)];
+
+/// One migration for a previously bundled `SKILL.md`. The digest is over the
+/// exact legacy bytes: `replacement = Some` upgrades an untouched old bundle,
+/// while `None` retires it. Any user edit changes the digest and is preserved.
+struct LegacySeedMigration {
+    name: &'static str,
+    sha256: &'static str,
+    replacement: Option<&'static str>,
+}
+
+const LEGACY_SEED_MIGRATIONS: &[LegacySeedMigration] = &[
+    LegacySeedMigration {
+        name: "weekly-review",
+        sha256: "9f27a9c0769376ed39daa3e69d4ec72b88b064e2669f674ef878c77c2a82cd83",
+        replacement: Some(WEEKLY_REVIEW_SKILL),
+    },
+    LegacySeedMigration {
+        name: "inbox-triage",
+        sha256: "3da7fe1f16f77a53b3780aa2e240b6191562ff35b5303bfe8b9479b0c89f00b6",
+        replacement: None,
+    },
 ];
 
 /// The instruction prefacing the injected `<available_skills>` block (ADR-0036
@@ -587,9 +603,10 @@ fn matched_phrase(prompt: &str, skill: &ScannedSkill) -> Option<String> {
         .map(|phrase| phrase.join(" "))
 }
 
-/// On first run, write the bundled example Skills into the skills dir — but
-/// ONLY when the dir does not yet exist. Once it exists it is the user's: edits
-/// and deletes survive and we never re-seed (ADR-0036 drop-in ownership).
+/// On first run, write the bundled example Skills into the skills dir. On later
+/// boots, migrate only exact legacy bundled files: upgrade bundles that still
+/// ship and remove retired ones. Missing or customized files stay untouched
+/// (ADR-0036 drop-in ownership).
 /// Best-effort: a failure is logged, never fatal (the feature simply ships no
 /// skills until one is dropped in), mirroring the fail-soft scan posture.
 pub fn seed_if_absent() {
@@ -601,6 +618,7 @@ pub fn seed_if_absent() {
         }
     };
     if dir.exists() {
+        migrate_legacy_seeds(&dir);
         return;
     }
     for (name, body) in SEED_SKILLS {
@@ -614,6 +632,48 @@ pub fn seed_if_absent() {
         }
     }
     tracing::info!(event = "skills.seeded", count = SEED_SKILLS.len());
+}
+
+fn migrate_legacy_seeds(dir: &Path) {
+    for migration in LEGACY_SEED_MIGRATIONS {
+        let skill_md = dir.join(migration.name).join("SKILL.md");
+        let bytes = match std::fs::read(&skill_md) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => {
+                tracing::warn!(
+                    event = "skills.seed_migration_failed",
+                    skill = migration.name,
+                    error = ?e
+                );
+                continue;
+            }
+        };
+        if format!("{:x}", Sha256::digest(&bytes)) != migration.sha256 {
+            continue;
+        }
+
+        let result = match migration.replacement {
+            Some(replacement) => std::fs::write(&skill_md, replacement),
+            None => std::fs::remove_file(&skill_md),
+        };
+        match result {
+            Ok(()) => tracing::info!(
+                event = "skills.seed_migrated",
+                skill = migration.name,
+                action = if migration.replacement.is_some() {
+                    "upgraded"
+                } else {
+                    "removed"
+                }
+            ),
+            Err(e) => tracing::warn!(
+                event = "skills.seed_migration_failed",
+                skill = migration.name,
+                error = ?e
+            ),
+        }
+    }
 }
 
 /// Point this thread's Config `skills_dir_override` at `dir` for one test,
@@ -632,6 +692,11 @@ pub(crate) fn test_skills_dir(dir: &Path) -> crate::config::test_override::Confi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const LEGACY_WEEKLY_REVIEW: &str =
+        include_str!("skills/testdata/legacy-weekly-review.md");
+    const LEGACY_INBOX_TRIAGE: &str =
+        include_str!("skills/testdata/legacy-inbox-triage.md");
 
     /// Seed `<dir>/<name>/SKILL.md` with `content`.
     fn seed(dir: &Path, name: &str, content: &str) {
@@ -681,8 +746,8 @@ mod tests {
         );
         seed(
             tmp.path(),
-            "inbox-triage",
-            "---\nname: inbox-triage\ndescription: Triage loose notes.\n---\n\n# Inbox\n",
+            "example-skill",
+            "---\nname: example-skill\ndescription: An example skill.\n---\n\n# Example\n",
         );
         // Ineligible: missing description, unclosed frontmatter, no frontmatter,
         // a frontmatter name that disagrees with the directory, and well-fenced
@@ -704,8 +769,8 @@ mod tests {
             metas,
             vec![
                 SkillMeta {
-                    name: "inbox-triage".to_string(),
-                    description: "Triage loose notes.".to_string(),
+                    name: "example-skill".to_string(),
+                    description: "An example skill.".to_string(),
                 },
                 SkillMeta {
                     name: "weekly-review".to_string(),
@@ -830,8 +895,8 @@ mod tests {
                 description: "Guide a GTD weekly review.".to_string(),
             },
             SkillMeta {
-                name: "inbox-triage".to_string(),
-                description: "Triage loose notes.".to_string(),
+                name: "example-skill".to_string(),
+                description: "An example skill.".to_string(),
             },
         ])
         .expect("non-empty → a block");
@@ -839,7 +904,7 @@ mod tests {
         assert!(block.ends_with("</available_skills>"));
         assert!(block.contains("load_skill"), "instructs how to load");
         assert!(block.contains("- weekly-review: Guide a GTD weekly review."));
-        assert!(block.contains("- inbox-triage: Triage loose notes."));
+        assert!(block.contains("- example-skill: An example skill."));
     }
 
     #[test]
@@ -869,20 +934,11 @@ mod tests {
             names.contains(&"weekly-review".to_string()),
             "weekly-review seed is eligible — got {names:?}"
         );
-        assert!(
-            names.contains(&"inbox-triage".to_string()),
-            "inbox-triage seed is eligible — got {names:?}"
-        );
-        // The seeds ship trigger phrases (ADR-0063), so a natural prompt routes.
+        // The seed ships trigger phrases (ADR-0063), so a natural prompt routes.
         assert_eq!(
             match_trigger("let's do my weekly review", &scanned).map(|s| s.meta.name.as_str()),
             Some("weekly-review"),
             "the weekly-review seed's trigger fires"
-        );
-        assert_eq!(
-            match_trigger("time to triage my inbox", &scanned).map(|s| s.meta.name.as_str()),
-            Some("inbox-triage"),
-            "the inbox-triage seed's trigger fires"
         );
     }
 
@@ -1104,20 +1160,66 @@ mod tests {
         let dir = tmp.path().join("skills");
         let _config = test_skills_dir(&dir);
 
-        // First run: the dir is absent → seed both bundled skills.
+        // First run: the dir is absent → seed the bundled skill.
         seed_if_absent();
-        let mut names: Vec<String> = scan(&dir).into_iter().map(|s| s.meta.name).collect();
-        names.sort();
-        assert_eq!(names, vec!["inbox-triage", "weekly-review"]);
+        let names: Vec<String> = scan(&dir).into_iter().map(|s| s.meta.name).collect();
+        assert_eq!(names, vec!["weekly-review"]);
 
-        // User deletes a skill; the dir still exists → no re-seed.
+        // User deletes the skill; the dir still exists → no re-seed (it would
+        // otherwise repopulate weekly-review).
         std::fs::remove_dir_all(dir.join("weekly-review")).expect("remove a seeded skill");
         seed_if_absent();
         let remaining: Vec<String> = scan(&dir).into_iter().map(|s| s.meta.name).collect();
+        assert!(
+            remaining.is_empty(),
+            "deleted bundled skills survive later boots"
+        );
+    }
+
+    #[test]
+    fn seed_if_absent_migrates_untouched_legacy_bundles() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path().join("skills");
+        let _config = test_skills_dir(&dir);
+
+        seed(&dir, "weekly-review", LEGACY_WEEKLY_REVIEW);
+        seed(&dir, "inbox-triage", LEGACY_INBOX_TRIAGE);
+
+        seed_if_absent();
+
         assert_eq!(
-            remaining,
-            vec!["inbox-triage"],
-            "an existing dir is the user's — deletes survive, no re-seed"
+            std::fs::read_to_string(dir.join("weekly-review/SKILL.md"))
+                .expect("read upgraded weekly review"),
+            WEEKLY_REVIEW_SKILL
+        );
+        assert!(
+            !dir.join("inbox-triage/SKILL.md").exists(),
+            "the untouched retired bundle is removed"
+        );
+    }
+
+    #[test]
+    fn seed_if_absent_preserves_customized_legacy_bundles() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path().join("skills");
+        let _config = test_skills_dir(&dir);
+        let weekly = format!("{LEGACY_WEEKLY_REVIEW}\nMy custom review step.\n");
+        let inbox = format!("{LEGACY_INBOX_TRIAGE}\nMy custom triage step.\n");
+
+        seed(&dir, "weekly-review", &weekly);
+        seed(&dir, "inbox-triage", &inbox);
+
+        seed_if_absent();
+
+        assert_eq!(
+            std::fs::read_to_string(dir.join("weekly-review/SKILL.md"))
+                .expect("read customized weekly review"),
+            weekly
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("inbox-triage/SKILL.md"))
+                .expect("read customized inbox triage"),
+            inbox
         );
     }
 }

@@ -7,7 +7,6 @@ import {
 	candidateSubtitle,
 	draftLabel,
 	draftRequiredEmpty,
-	type GraphLink,
 	type GraphNodeDraft,
 	initialReviewState,
 	isAcceptable,
@@ -457,17 +456,14 @@ describe("parseGraphLinks", () => {
 		const payload = {
 			links: [
 				{ kind: "journal_ref", from: "@je", to: "@morris" },
-				// The retired todo link kinds are no longer known — they must drop.
-				{ kind: "todo_project", from: "@rodeo", to: "@leadads" },
-				{ kind: "todo_person", from: "@rodeo", to: "@morris", role: "related" },
+				// Unknown link kinds must drop.
+				{ kind: "other_ref", from: "@rodeo", to: "@leadads" },
 				{ kind: "bogus", from: "@a", to: "@b" },
 				{ from: "@a" },
 				null,
 			],
 		};
-		expect(parseGraphLinks(payload)).toEqual([
-			{ kind: "journal_ref", from: "@je", to: "@morris" },
-		]);
+		expect(parseGraphLinks(payload)).toEqual([{ from: "@je", to: "@morris" }]);
 	});
 
 	it("degrades a missing/non-array links field to []", () => {
@@ -490,8 +486,8 @@ describe("parseGraphLinks", () => {
 			],
 		};
 		expect(parseGraphLinks(payload)).toEqual([
-			{ kind: "journal_ref", from: "@je", to: "@priya", appendText: "Hi P." },
-			{ kind: "journal_ref", from: "@je", to: "@morris" },
+			{ from: "@je", to: "@priya", appendText: "Hi P." },
+			{ from: "@je", to: "@morris" },
 		]);
 	});
 });
@@ -506,9 +502,8 @@ describe("appendedClauses", () => {
 	const plan = [reusePerson];
 
 	it("surfaces the appended clause for an accepted journal_ref carrying append_text", () => {
-		const links: GraphLink[] = [
+		const links = [
 			{
-				kind: "journal_ref",
 				from: "@je",
 				to: "@priya",
 				appendText: "Followed up with Priya.",
@@ -525,27 +520,22 @@ describe("appendedClauses", () => {
 	});
 
 	it("omits the clause when its target node is staged reject", () => {
-		const links: GraphLink[] = [
-			{ kind: "journal_ref", from: "@je", to: "@priya", appendText: "x." },
-		];
+		const links = [{ from: "@je", to: "@priya", appendText: "x." }];
 		const buffer = setStage(new Map(), reusePerson, "reject");
 		expect(appendedClauses(plan, links, buffer)).toEqual([]);
 	});
 
 	it("ignores a journal_ref with no append_text (the match_text/splice path)", () => {
-		const links: GraphLink[] = [
-			{ kind: "journal_ref", from: "@je", to: "@priya" },
-		];
+		const links = [{ from: "@je", to: "@priya" }];
 		expect(appendedClauses(plan, links, new Map())).toEqual([]);
 	});
 
 	it("emits one clause per link, even for two journal_refs to the SAME entity", () => {
 		// Core appends BOTH clauses (the apply loop iterates every journal_ref), so the
 		// preview must show both — one entry per link, keyed distinctly by the card.
-		const links: GraphLink[] = [
-			{ kind: "journal_ref", from: "@je", to: "@priya", appendText: "Saw P." },
+		const links = [
+			{ from: "@je", to: "@priya", appendText: "Saw P." },
 			{
-				kind: "journal_ref",
 				from: "@je",
 				to: "@priya",
 				appendText: "And P. left.",

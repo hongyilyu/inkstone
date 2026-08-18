@@ -11,13 +11,14 @@
 //! pure and DB-free.
 //!
 //! Two enums, one wide and one narrow:
-//! - [`MutationKind`] — the 21 Entity-like Core-known kinds. The currency of
+//! - [`MutationKind`] — the 18 Entity-like Core-known kinds. The currency of
 //!   `validate`, `mutate`, `apply`, and the target-reference checks.
 //! - [`ProposableMutation`] — the closed set the agent may propose (ADR-0018,
 //!   ADR-0042, ADR-0053). Carries the agent-path-only facets (`supports_edit`,
 //!   `carries_review_context`) so they are total over exactly the kinds that can
 //!   reach the accept path, including non-Entity `record_observations`.
 
+use serde::{Deserialize, Deserializer, de::Error as _};
 use serde_json::Value;
 
 use crate::field_spec::{BodyPolicy, Field, FieldSpec, PayloadSpec};
@@ -451,6 +452,29 @@ impl EntityType {
             spec.search_projection()
                 .map(|projection| (spec, projection))
         })
+    }
+}
+
+/// An Entity Type accepted at the `entity/list` wire boundary. Deserialization
+/// resolves the wire string into the canonical [`EntityType`] immediately.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EntityTypeName(EntityType);
+
+impl EntityTypeName {
+    pub(crate) fn entity_type(self) -> EntityType {
+        self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for EntityTypeName {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = String::deserialize(deserializer)?;
+        EntityType::from_str(&wire)
+            .map(Self)
+            .ok_or_else(|| D::Error::custom(format!("unknown entity type {wire:?}")))
     }
 }
 
@@ -1078,11 +1102,64 @@ const WIRE: &[(&str, MutationKind)] = &[
     ("apply_intent_graph", MutationKind::ApplyIntentGraph),
 ];
 
+/// A [`MutationKind`] accepted by the direct `entity/mutate` boundary. The
+/// proposal-only intent graph cannot enter the user mutation path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DirectMutationKind(MutationKind);
+
+impl DirectMutationKind {
+    pub(crate) fn from_wire(wire: &str) -> Option<Self> {
+        MutationKind::from_wire(wire).and_then(|kind| Self::try_from(kind).ok())
+    }
+
+    pub(crate) fn mutation_kind(self) -> MutationKind {
+        self.0
+    }
+}
+
+impl TryFrom<MutationKind> for DirectMutationKind {
+    type Error = ();
+
+    fn try_from(kind: MutationKind) -> Result<Self, Self::Error> {
+        match kind {
+            MutationKind::CreateJournalEntry
+            | MutationKind::UpdateJournalEntry
+            | MutationKind::DeleteJournalEntry
+            | MutationKind::ReferenceExistingEntityFromJournalEntry
+            | MutationKind::CreatePerson
+            | MutationKind::UpdatePerson
+            | MutationKind::DeletePerson
+            | MutationKind::CreateProject
+            | MutationKind::UpdateProject
+            | MutationKind::DeleteProject
+            | MutationKind::MarkProjectReviewed
+            | MutationKind::CreateMedia
+            | MutationKind::UpdateMedia
+            | MutationKind::DeleteMedia
+            | MutationKind::CreateHabit
+            | MutationKind::UpdateHabit
+            | MutationKind::DeleteHabit => Ok(Self(kind)),
+            MutationKind::ApplyIntentGraph => Err(()),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for DirectMutationKind {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = String::deserialize(deserializer)?;
+        Self::from_wire(&wire)
+            .ok_or_else(|| D::Error::custom(format!("mutation_kind {wire:?} not supported")))
+    }
+}
+
 impl MutationKind {
     /// Resolve the wire `mutation_kind` string into the closed enum. `None` for
-    /// an unknown string — the SINGLE string→type point on each write path. The
-    /// user path maps `None` to a client `Invalid`; the agent path (a stored,
-    /// already-validated `proposals.mutation_kind`) maps it to `Internal`.
+    /// an unknown string. Direct requests narrow this further through
+    /// [`DirectMutationKind`]; the agent path maps an unknown stored value to
+    /// `Internal`.
     pub(crate) fn from_wire(s: &str) -> Option<Self> {
         WIRE.iter()
             .find(|(w, _)| *w == s)
@@ -1303,7 +1380,7 @@ impl MutationKind {
     }
 }
 
-/// The agent-proposable subset (ADR-0018, ADR-0053): the 15 kinds the Worker may emit via
+/// The agent-proposable subset (ADR-0018, ADR-0053): the 12 kinds the Worker may emit via
 /// `propose_workspace_mutation`. Carries the agent-path-only policy facets so each is
 /// total over exactly the kinds that can reach the accept path — the user-only
 /// kind families (`mark_project_reviewed`, media, habits) are simply not in
@@ -1560,6 +1637,35 @@ mod tests {
             );
             assert_eq!(kind.as_wire(), wire_str, "{kind:?} round-trips");
         }
+    }
+
+    #[test]
+    fn entity_wire_domains_match_shared_fixture() {
+        #[derive(serde::Deserialize)]
+        struct EntityWireDomains {
+            entity_type_names: Vec<String>,
+            entity_mutation_kinds: Vec<String>,
+        }
+
+        let fixture: EntityWireDomains = serde_json::from_str(include_str!(
+            "../../../tests/contract/fixtures/domains/entity.json"
+        ))
+        .expect("entity wire-domain fixture parses");
+        let entity_type_names = EntityType::ALL
+            .into_iter()
+            .map(|entity_type| entity_type.as_str().to_string())
+            .collect::<Vec<_>>();
+        let entity_mutation_kinds = WIRE
+            .iter()
+            .filter_map(|&(wire, kind)| {
+                DirectMutationKind::try_from(kind)
+                    .is_ok()
+                    .then(|| wire.to_string())
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(entity_type_names, fixture.entity_type_names);
+        assert_eq!(entity_mutation_kinds, fixture.entity_mutation_kinds);
     }
 
     #[test]

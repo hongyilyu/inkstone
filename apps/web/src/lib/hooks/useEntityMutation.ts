@@ -13,8 +13,8 @@ import { showEntityCue, verbForMutationKind } from "@/store/entityCue";
 /**
  * A user-initiated `entity/mutate` (ADR-0033) that refreshes the Library on success.
  *
- * Generic over `{mutation_kind, payload}` so the rail's Todo/Person/Project/Journal
- * forms all reuse it. A `WsError` rejects the mutation (React Query's `error`); callers
+ * Generic over `{mutation_kind, payload}` so the Library's Entity forms all reuse
+ * it. A `WsError` rejects the mutation (React Query's `error`); callers
  * render it. `onSuccess` invalidates the entity reads (Library list + backlinks) so
  * the changed Entity shows up, then fires the success-feedback cue ("Created"/"Saved"/
  * "Deleted") for the mutation kind. A `WsError` rejects via {@link runSquashed}.

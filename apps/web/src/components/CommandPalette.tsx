@@ -245,7 +245,7 @@ export function CommandPalette() {
 						aria-activedescendant={
 							flat.length > 0 ? `${listboxId}-opt-${active}` : undefined
 						}
-						placeholder="Search threads, people, projects, todos…"
+						placeholder="Search threads, people, projects…"
 					/>
 
 					<div
@@ -256,7 +256,7 @@ export function CommandPalette() {
 						className="min-h-0 flex-1 overflow-y-auto p-2"
 					>
 						{/* The library read failed — say so rather than silently omitting
-						    People/Projects/Todos/Media as if there are none (Media is
+						    People/Projects/Media as if there are none (Media is
 						    client-side searched here like every other kind — it's only
 						    excluded from Core's agent `search_entities`, ADR-0059). Threads
 						    and Messages search independently and still work. */}

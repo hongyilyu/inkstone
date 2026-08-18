@@ -34,7 +34,7 @@ test("mark a due project reviewed → it leaves Review and Core advances next_re
 		},
 	]);
 
-	await page.goto(`${core.url}/library/gtd?filt=review`);
+	await page.goto(`${core.url}/library/projects?review=true`);
 	const review = page.getByRole("region", { name: /review/i });
 	await expect(review.getByText("Quarterly planning")).toBeVisible({
 		timeout: 15_000,
@@ -86,9 +86,10 @@ test("mark a due project reviewed → it leaves Review and Core advances next_re
 	).toBe("1");
 
 	// On RE-ENTRY the snapshot re-derives: the project (now due in the future) is
-	// gone and the queue is empty.
-	await page.goto(`${core.url}/library/gtd?filt=inbox`);
-	await page.goto(`${core.url}/library/gtd?filt=review`);
+	// gone and the queue is empty. Leaving the Project surface and returning
+	// remounts the review queue, forcing the re-derive.
+	await page.goto(`${core.url}/library/people`);
+	await page.goto(`${core.url}/library/projects?review=true`);
 	await expect(review.getByText("All caught up")).toBeVisible({
 		timeout: 15_000,
 	});
@@ -97,9 +98,8 @@ test("mark a due project reviewed → it leaves Review and Core advances next_re
 
 const PROJECT_A = "01900000-0000-7000-8000-000000020010";
 const PROJECT_B = "01900000-0000-7000-8000-000000020011";
-const TODO_A1 = "01900000-0000-7000-8000-000000020012";
 
-test("focused review queue steps between projects and completes a todo inline", async ({
+test("focused review queue steps between projects and marks the last one reviewed", async ({
 	page,
 	core,
 	workspace,
@@ -126,38 +126,17 @@ test("focused review queue steps between projects and completes a todo inline", 
 				next_review_at: "2000-01-02T20:00:00",
 			},
 		},
-		{
-			id: TODO_A1,
-			type: "todo",
-			data: {
-				title: "Ship the alpha",
-				status: "active",
-				project_id: PROJECT_A,
-			},
-		},
 	]);
 
-	await page.goto(`${core.url}/library/gtd?filt=review`);
+	await page.goto(`${core.url}/library/projects?review=true`);
 	const review = page.getByRole("region", { name: /review/i });
 
-	// First project focused, with its cadence, last-reviewed, counter, and its todo.
+	// First project focused, with its cadence, last-reviewed, and counter.
 	await expect(review.getByText("Alpha rollout")).toBeVisible({
 		timeout: 15_000,
 	});
 	await expect(review.getByText("Project 1 of 2")).toBeVisible();
 	await expect(review.getByText("Every week")).toBeVisible();
-	await expect(review.getByText("Ship the alpha")).toBeVisible();
-
-	// Complete the todo inline via its status circle (update_todo).
-	await review.getByRole("button", { name: /mark todo complete/i }).click();
-	await expect
-		.poll(() =>
-			sqliteScalar(
-				dbPath,
-				`SELECT json_extract(data,'$.status') FROM entities WHERE id='${TODO_A1}';`,
-			),
-		)
-		.toBe("completed");
 
 	// Step to the next due project with the chevron.
 	await review.getByRole("button", { name: /next project/i }).click();

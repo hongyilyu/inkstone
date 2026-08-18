@@ -1306,9 +1306,9 @@ const cannedCases: Record<keyof typeof requestDescriptors, CannedCase> = {
 		response: { threads: [] },
 	},
 	listEntities: {
-		args: ["todo"],
+		args: ["person"],
 		method: "entity/list",
-		params: { type: "todo" },
+		params: { type: "person" },
 		response: { entities: [] },
 	},
 	getBacklinks: {
@@ -1335,9 +1335,9 @@ const cannedCases: Record<keyof typeof requestDescriptors, CannedCase> = {
 		response: { observation_id: "o-1" },
 	},
 	entityMutate: {
-		args: [{ mutation_kind: "create_todo", payload: { title: "x" } }],
+		args: [{ mutation_kind: "create_person", payload: { name: "x" } }],
 		method: "entity/mutate",
-		params: { mutation_kind: "create_todo", payload: { title: "x" } },
+		params: { mutation_kind: "create_person", payload: { name: "x" } },
 		response: { entity_id: "e-1" },
 	},
 	rescanJournalEntry: {
@@ -1438,8 +1438,8 @@ const cannedCases: Record<keyof typeof requestDescriptors, CannedCase> = {
 		response: {
 			proposal_id: "p-1",
 			run_id: "r-1",
-			mutation_kind: "create_todo",
-			payload: { title: "x" },
+			mutation_kind: "create_person",
+			payload: { name: "x" },
 			rationale: null,
 			status: "pending",
 		},

@@ -5,7 +5,7 @@ import type { EntityRow } from "@inkstone/protocol";
 // response carries: `data` holds the type's snake_case fields with sensible
 // defaults spread UNDER the caller's partial, so a test states only what it
 // asserts on. `RowOpts` carries the row-level optionals (timestamps, refs,
-// person_refs, source) migrated tests need to override.
+// source) migrated tests need to override.
 
 /** Row-level optionals shared by every builder. */
 export interface RowOpts {

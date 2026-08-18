@@ -5,6 +5,7 @@ import {
 	CoreToolDescriptor,
 	EntityListParams,
 	EntityListResult,
+	EntityMutateParams,
 	EntityRow,
 	MessageHit,
 	MessageSearchParams,
@@ -384,6 +385,17 @@ describe("EntityListParams", () => {
 
 	it("rejects a non-string type", () => {
 		expect(() => S.decodeUnknownSync(EntityListParams)({ type: 42 })).toThrow();
+	});
+});
+
+describe("EntityMutateParams", () => {
+	it("rejects a retired mutation kind", () => {
+		expect(() =>
+			S.decodeUnknownSync(EntityMutateParams)({
+				mutation_kind: "create_todo",
+				payload: { title: "Buy milk" },
+			}),
+		).toThrow();
 	});
 });
 

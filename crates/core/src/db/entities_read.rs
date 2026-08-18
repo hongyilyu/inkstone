@@ -129,24 +129,19 @@ fn entity_title(entity_type: &str, data: &serde_json::Value) -> Option<String> {
     EntityType::from_str(entity_type)?.spec().reference_title_from_data(data)
 }
 
-/// The reverse relation set the detail Inspector reads for one Entity
-/// (`entity/backlinks`, ADR-0050): the distinct Journal Entries that reference
-/// it, as full [`EntityRow`]s so the Web client renders them through the
-/// existing entity codec.
-pub struct Backlinks {
-    /// DISTINCT Journal Entries referencing this Entity, newest-occurred first,
-    /// each carrying its `refs` + `source` (the `entity/list` JE assembly).
-    pub mentioned_in: Vec<EntityRow>,
-}
-
-/// Resolve the backlinks for a Person or Project (ADR-0050). A narrow
-/// per-entity read fired on detail-open — it does NOT fatten `entity/list` rows
-/// (ADR-0032's pattern) nor resolve the joined Person→Projects / Project→People /
-/// Progress derivations (those stay client-side). An entity of any other type (or
-/// an absent id) simply yields an empty set.
-pub async fn backlinks_for_entity(pool: &SqlitePool, entity_id: &str) -> sqlx::Result<Backlinks> {
-    let mentioned_in = mentioned_in_journal_entries(pool, entity_id).await?;
-    Ok(Backlinks { mentioned_in })
+/// Resolve the backlinks for a Person or Project (`entity/backlinks`, ADR-0050):
+/// the DISTINCT Journal Entries that reference it, newest-occurred first, as full
+/// [`EntityRow`]s (each carrying its `refs` + `source`, the `entity/list` JE
+/// assembly) so the Web client renders them through the existing entity codec. A
+/// narrow per-entity read fired on detail-open — it does NOT fatten `entity/list`
+/// rows (ADR-0032's pattern) nor resolve the joined Person→Projects /
+/// Project→People / Progress derivations (those stay client-side). An entity of
+/// any other type (or an absent id) simply yields an empty set.
+pub async fn backlinks_for_entity(
+    pool: &SqlitePool,
+    entity_id: &str,
+) -> sqlx::Result<Vec<EntityRow>> {
+    mentioned_in_journal_entries(pool, entity_id).await
 }
 
 /// Build the "Mentioned in" set for `target_entity_id`, reusing the `entity/list`
@@ -617,11 +612,7 @@ mod tests {
             .await
             .expect("backlinks for person");
 
-        let mentioned_ids: Vec<&str> = person
-            .mentioned_in
-            .iter()
-            .map(|row| row.id.as_str())
-            .collect();
+        let mentioned_ids: Vec<&str> = person.iter().map(|row| row.id.as_str()).collect();
         assert_eq!(
             mentioned_ids,
             vec!["je-newer", "je-older"],
@@ -630,7 +621,6 @@ mod tests {
         // Each JE row carries its refs (reuse of the entity/list JE assembly) and
         // its source provenance.
         let je_newer = person
-            .mentioned_in
             .iter()
             .find(|r| r.id == "je-newer")
             .expect("je-newer row");
@@ -651,11 +641,7 @@ mod tests {
         let project = backlinks_for_entity(&pool, "proj-a")
             .await
             .expect("backlinks for project");
-        let proj_mentioned: Vec<&str> = project
-            .mentioned_in
-            .iter()
-            .map(|row| row.id.as_str())
-            .collect();
+        let proj_mentioned: Vec<&str> = project.iter().map(|row| row.id.as_str()).collect();
         assert_eq!(
             proj_mentioned,
             vec!["je-newer", "je-proj"],
@@ -667,7 +653,7 @@ mod tests {
             .await
             .expect("backlinks for zero-backlink person");
         assert!(
-            empty.mentioned_in.is_empty(),
+            empty.is_empty(),
             "a referenced-by-nothing entity yields an empty set"
         );
     }

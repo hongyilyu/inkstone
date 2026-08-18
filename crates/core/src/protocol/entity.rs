@@ -3,11 +3,13 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::mutation::{DirectMutationKind, EntityTypeName};
+
 /// `entity/list` params: the Entity `type` to list, one per call (e.g.
 /// `"person"`). `r#type` serializes as the wire field `"type"`.
 #[derive(Debug, Deserialize)]
 pub struct EntityListParams {
-    pub r#type: String,
+    pub r#type: EntityTypeName,
 }
 
 /// One Entity row in `entity/list` (ADR-0004 tier-2 `entities` columns).
@@ -93,7 +95,7 @@ pub struct EntityBacklinksResult {
 /// at the wire boundary — Core validates it per `mutation_kind`.
 #[derive(Debug, Deserialize)]
 pub struct EntityMutateParams {
-    pub mutation_kind: String,
+    pub mutation_kind: DirectMutationKind,
     pub payload: serde_json::Value,
 }
 
@@ -167,6 +169,25 @@ mod mirror_tests {
     const UUID_A: &str = "0190d3c1-0000-7000-8000-000000000001";
     const UUID_B: &str = "0190d3c1-0000-7000-8000-000000000002";
     const UUID_RUN: &str = "0190d3c1-0000-7000-8000-000000000003";
+
+    #[test]
+    fn entity_params_reject_values_outside_their_closed_domains() {
+        assert!(serde_json::from_value::<EntityListParams>(json!({ "type": "todo" })).is_err());
+        assert!(
+            serde_json::from_value::<EntityMutateParams>(json!({
+                "mutation_kind": "create_todo",
+                "payload": {}
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<EntityMutateParams>(json!({
+                "mutation_kind": "apply_intent_graph",
+                "payload": {}
+            }))
+            .is_err()
+        );
+    }
 
     #[test]
     fn message_search_params_rejects_missing_and_non_string_query() {

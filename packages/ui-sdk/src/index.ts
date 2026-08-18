@@ -3,6 +3,7 @@ import {
 	EntityBacklinksResult,
 	EntityListResult,
 	type EntityMutateParams,
+	type EntityTypeName,
 	EntityMutateResult,
 	JournalEntryRescanResult,
 	MediaUploadResult,
@@ -312,7 +313,7 @@ export const requestDescriptors = {
 	// entity/list (ADR-0004): accepted Entities of one type (e.g. journal_entry, person).
 	listEntities: {
 		method: "entity/list",
-		toParams: (type: string) => ({ type }),
+		toParams: (type: EntityTypeName) => ({ type }),
 		result: EntityListResult,
 	},
 	// entity/backlinks (ADR-0050): the reverse set the detail Inspector shows

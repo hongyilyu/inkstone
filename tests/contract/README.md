@@ -1,16 +1,18 @@
 # @inkstone/contract — wire-schema parity gate
 
 A CI gate that proves the **Rust** and **TypeScript** definitions of the wire
-protocol agree. It has two legs:
+protocol agree. It has three legs:
 
-1. **Payload parity** (schema-vs-schema) — the wire `payload` for the 15
+1. **Payload parity** (schema-vs-schema) — the wire `payload` for the 12
    agent-proposable Workspace mutations, per kind.
 2. **Non-payload parity** (instance-based) — the ~35 plain serde wire messages
    (params, results, notifications, the Worker manifest, the run-event /
    tool-result frames) hand-mirrored in `crates/core/src/protocol.rs` and
    `packages/protocol/src/index.ts`. See "Non-payload structs" below.
+3. **Closed-domain parity** — the Entity Type and direct-mutation literal sets
+   shared by Core and `packages/protocol`.
 
-## Payload parity (the 15 proposable kinds)
+## Payload parity (the 12 proposable kinds)
 
 - **Rust** (`crates/core`) is the schema-of-record. An inline test
   (`regenerate_schema_fixtures` in `src/tools/propose_workspace_mutation.rs`)
@@ -21,7 +23,7 @@ protocol agree. It has two legs:
   the package barrel and consumed by the Web codec at runtime). `parity.test.ts`
   runs each through `JSONSchema.make`, runs both it and the Rust fixture through
   `normalize.ts`, and asserts deep-equality. `completeness.test.ts` locks the
-  registry to the 15 committed fixtures.
+  registry to the 12 committed fixtures.
 
 This implements ADR-0009's already-decided "manually mirrored types + contract
 tests" discipline (this contract-test package lives at `tests/contract`), using
@@ -55,18 +57,17 @@ turns the gate red. The Rust side re-runs in CI and `git diff --exit-code` over
 
 This gate locks the **advertised wire schema's structure**, nothing more.
 
-- **Cross-field invariants.** `status`↔timestamp coupling, the recurrence
-  anchor-presence and inter-field couplings, exactly-one-`entity_ref` per
-  reference, `ended_at >= occurred_at` — none are expressible as a flat schema
-  walk. They live as hand-written hooks in `crates/core/src/entities.rs`, run
-  after the structural check, and are **not** mirrored or compared here.
+- **Cross-field invariants.** Exactly-one-`entity_ref` per reference and
+  `ended_at >= occurred_at` are not expressible as a flat schema walk. They live
+  as hand-written hooks in `crates/core/src/entities.rs`, run after the
+  structural check, and are **not** mirrored or compared here.
 - **Deliberate schema≠validator divergences.** The fixtures mirror the
   *advertised schema* faithfully, including where it intentionally diverges from
   the runtime validator:
-  - `entity_id` / `todo_id` advertise a **bare** `{type:string}` though the
-    validator UUID-checks them;
-  - `aliases` / `tags` / `remove_person_ids` advertise **plain** string elements
-    (no `minLength`) though the validator requires each non-empty.
+  - `entity_id` advertises a **bare** `{type:string}` though the validator
+    UUID-checks it;
+  - `aliases` advertises **plain** string elements (no `minLength`) though the
+    validator requires each non-empty.
   Validators are not compared — only the schema both sides advertise.
 - **The `{mutation_kind, payload, rationale}` envelope** / the top-level `oneOf`
   framing. That is Core-owned (a hand-built `json!` in the tool descriptor) and
@@ -101,11 +102,13 @@ optional on the TS side and absent on the Rust side — and the JSON-RPC envelop
 ## Layout
 
 ```text
-fixtures/<wire_kind>.json          the 15 Rust-emitted payload schemas (schema-of-record)
+fixtures/<wire_kind>.json          the 12 Rust-emitted payload schemas (schema-of-record)
+fixtures/domains/entity.json       shared Entity Type/direct-mutation literal sets
 fixtures/structs/emitted/*.json    Core-emitted non-payload wire values (serialize side)
 fixtures/structs/authored/*.json   hand-authored param wire JSON (deserialize side)
 src/parity.test.ts                 per-kind payload deep-equality (schema-vs-schema)
-src/completeness.test.ts           locks the 15-payload registry/fixtures/canonical sets
+src/completeness.test.ts           locks the 12-payload registry/fixtures/canonical sets
+src/entityDomains.test.ts          locks TS literal sets to the shared domain fixture
 src/normalize.ts                   the dialect-reconciling normalizer (payload leg only)
 src/structs.test.ts                per-message non-payload decode + re-encode (instance-based)
 src/structs.registry.ts            fixture → Effect Schema registry + canonical message list

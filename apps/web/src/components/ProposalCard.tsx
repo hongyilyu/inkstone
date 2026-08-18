@@ -13,8 +13,6 @@ import { libraryItemTitle } from "@/lib/libraryItems";
 import {
 	type CreatePersonDraft,
 	type CreateProjectDraft,
-	type GtdEditVariant,
-	gtdEditVariant,
 	overlayCreatePerson,
 	overlayCreateProject,
 	seedCreatePerson,
@@ -36,6 +34,7 @@ import {
 	DecidedLibraryLink,
 	type DecideHandler,
 	type EditedPayload,
+	type ProposalEditPolicy,
 	proposalView,
 } from "./proposalViews.js";
 import { Button } from "./ui/button.js";
@@ -173,7 +172,7 @@ function SingleEntityProposalCard({
 		: isUpdateProposal
 			? journalPayloadIssue(occurredAt, bodyText, endedAt, entityId)
 			: null;
-	// GTD cards carry no journal-style payload validation — they are always applyable.
+	// Non-journal cards carry no journal-style payload validation.
 	const canApply = payloadIssue === null;
 
 	const [inFlight, setInFlight] = useState<"accept" | "reject" | "edit" | null>(
@@ -235,8 +234,7 @@ function SingleEntityProposalCard({
 		onDecide("edit", decisionPayload);
 	};
 	// Structured edit forms hand back the finished wire payload. Commit it through
-	// the SAME inFlight/lastAttempt/retry plumbing as the journal saveEdit — the
-	// card learns nothing about the GTD per-kind shape.
+	// the SAME inFlight/lastAttempt/retry plumbing as the journal saveEdit.
 	const saveStructuredEdit = (editedPayload: Record<string, unknown>) => {
 		if (inFlight !== null || proposal.status === "deciding") return;
 		setInFlight("edit");
@@ -295,9 +293,9 @@ function SingleEntityProposalCard({
 			</header>
 
 			{editing ? (
-				view.editPolicy === "gtd" ? (
-					<GtdEditForm
-						kind={mutation_kind}
+				view.editPolicy === "person" || view.editPolicy === "project" ? (
+					<EntityEditForm
+						variant={view.editPolicy}
 						payload={payload}
 						submitting={submitting}
 						onSave={saveStructuredEdit}
@@ -470,20 +468,23 @@ function SingleEntityProposalCard({
 	);
 }
 
-// --- GTD inline edit form (the deep module) ---------------------------------
+// --- Person/Project inline edit form ----------------------------------------
 
-// The draft a GtdEditForm holds, discriminated by the slice-1 GTD edit variant so
-// tsc type-checks each render arm and each setter against the right draft shape.
-// The 4 GTD wire kinds collapse to these 2 variants (update_person/update_project
-// share the create person/project variant — their seed/overlay are pure delegations).
-type GtdDraft =
+type EntityEditVariant = Extract<ProposalEditPolicy, "person" | "project">;
+
+// The form draft is discriminated by Entity type so each render arm and setter
+// is checked against the corresponding shape.
+type EntityEditDraft =
 	| { variant: "person"; draft: CreatePersonDraft }
 	| { variant: "project"; draft: CreateProjectDraft };
 
 // Seed the variant's draft from the proposed payload (once, on mount). The form
 // renders only inside the card's `editing` branch, so each open is a fresh mount
 // that re-seeds — that is the re-seed-per-open behavior.
-function seedGtdDraft(variant: GtdEditVariant, payload: unknown): GtdDraft {
+function seedEntityEditDraft(
+	variant: EntityEditVariant,
+	payload: unknown,
+): EntityEditDraft {
 	switch (variant) {
 		case "person":
 			return { variant, draft: seedCreatePerson(payload) };
@@ -494,7 +495,7 @@ function seedGtdDraft(variant: GtdEditVariant, payload: unknown): GtdDraft {
 
 // The variant's required-field gate (Save disabled when it returns true):
 // person/project gate on a blank name.
-function gtdRequiredEmpty(state: GtdDraft): boolean {
+function entityRequiredEmpty(state: EntityEditDraft): boolean {
 	switch (state.variant) {
 		case "person":
 			return state.draft.name.trim() === "";
@@ -507,8 +508,8 @@ function gtdRequiredEmpty(state: GtdDraft): boolean {
 // wire payload. person/project use the create overlay (the update overlays are pure
 // delegations — identical output; the top-level entity_id rides untouched through the
 // clone).
-function gtdOverlay(
-	state: GtdDraft,
+function overlayEntityEdit(
+	state: EntityEditDraft,
 	payload: unknown,
 ): Record<string, unknown> {
 	switch (state.variant) {
@@ -520,49 +521,38 @@ function gtdOverlay(
 }
 
 /**
- * The GTD inline edit form — the deep module. It OWNS the GTD edit end-to-end: it
- * resolves the variant from `kind` (the slice-1 `gtdEditVariant`, the SINGLE source),
- * holds the surfaced fields in ONE `useState` seeded from `payload` on mount, renders
- * exactly the fields the user can change (approval-gate legibility), gates Save on the
- * variant's required field, and on Save runs the variant's overlay against `payload`
- * and hands the finished wire payload back through `onSave`. The card learns only
- * this component plus the proposal-view edit policy.
- *
- * Precondition: the proposal-view edit policy only mounts this for a GTD kind; a
- * non-GTD kind still degrades to null rather than crashing.
+ * The Person/Project inline editor owns its draft, surfaced fields, required-field
+ * gate, and payload overlay. Its variant comes directly from the resolved
+ * proposal-view policy.
  */
-function GtdEditForm({
-	kind,
+function EntityEditForm({
+	variant,
 	payload,
 	submitting,
 	onSave,
 	onCancel,
 }: {
-	kind: string;
+	variant: EntityEditVariant;
 	payload: unknown;
 	submitting: boolean;
 	onSave: (editedPayload: Record<string, unknown>) => void;
 	onCancel: () => void;
 }): ReactNode {
-	const variant = gtdEditVariant(kind);
 	const noteInputId = useId();
 	const statusInputId = useId();
 	const nameInputId = useId();
 	const aliasesInputId = useId();
 	const outcomeInputId = useId();
-	// Seed once from the proposed payload. `variant` is fixed for a card's kind, and
+	// Seed once from the proposed payload. `variant` is fixed for a card's view, and
 	// the form re-mounts on each open, so this initializer is the re-seed.
-	const [state, setState] = useState<GtdDraft | null>(() =>
-		variant === null ? null : seedGtdDraft(variant, payload),
+	const [state, setState] = useState<EntityEditDraft>(() =>
+		seedEntityEditDraft(variant, payload),
 	);
-	// A non-GTD kind has no variant — render nothing (the fork guards this, but the
-	// wire kind is a bare string, so degrade rather than crash).
-	if (state === null) return null;
 
-	const requiredEmpty = gtdRequiredEmpty(state);
+	const requiredEmpty = entityRequiredEmpty(state);
 	const submit = () => {
 		if (submitting || requiredEmpty) return;
-		onSave(gtdOverlay(state, payload));
+		onSave(overlayEntityEdit(state, payload));
 	};
 
 	return (

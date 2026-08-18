@@ -8,8 +8,8 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use super::handler::{self, HandlerError};
 use crate::db;
-use crate::mutate::{self, MutateError};
 use crate::db::EntityProvenance;
+use crate::mutate::{self, MutateError};
 use crate::protocol::{
     EntityBacklinksParams, EntityBacklinksResult, EntityListParams, EntityListResult,
     EntityMutateParams, EntityMutateResult, EntityRow, EntitySourceView, ResolvedEntityRef,
@@ -65,7 +65,8 @@ pub(super) async fn handle_list(
     out_tx: &UnboundedSender<String>,
 ) {
     handler::handle(id, params, out_tx, |params: EntityListParams| async move {
-        let rows = db::list_by_type(pool, &params.r#type)
+        let entity_type = params.r#type.entity_type();
+        let rows = db::list_by_type(pool, entity_type.as_str())
             .await
             .map_err(|e| HandlerError::Internal(e.into()))?;
 
@@ -91,16 +92,12 @@ pub(super) async fn handle_backlinks(
         params,
         out_tx,
         |params: EntityBacklinksParams| async move {
-            let backlinks = db::backlinks_for_entity(pool, &params.entity_id)
+            let mentioned_in = db::backlinks_for_entity(pool, &params.entity_id)
                 .await
                 .map_err(|e| HandlerError::Internal(e.into()))?;
 
             Ok(EntityBacklinksResult {
-                mentioned_in: backlinks
-                    .mentioned_in
-                    .into_iter()
-                    .map(entity_row_to_wire)
-                    .collect(),
+                mentioned_in: mentioned_in.into_iter().map(entity_row_to_wire).collect(),
             })
         },
     )
@@ -118,7 +115,7 @@ pub(super) async fn handle_mutate(
     out_tx: &UnboundedSender<String>,
 ) {
     handler::handle(id, params, out_tx, |params: EntityMutateParams| async move {
-        let outcome = mutate::apply(pool, &params.mutation_kind, &params.payload)
+        let outcome = mutate::apply(pool, params.mutation_kind, &params.payload)
             .await
             .map_err(|e| match e {
                 MutateError::Invalid(reason) => HandlerError::InvalidParams(reason),

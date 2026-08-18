@@ -176,9 +176,11 @@ import path is trivial.
   ships a few canonical examples in-repo (`crates/core/skills/`, embedded with
   `include_str!`) and, at boot, writes them into the skills dir **only when that
   dir does not yet exist**. Once it exists it is the user's: edits and deletes
-  survive and Core never re-seeds (drop-in ownership). This is the minimal
-  delivery mechanism, not the deferred *plugin distribution* concept below — a
-  skill is still a directory you place, the seed just primes the first one.
+  survive and Core never re-seeds (drop-in ownership). Core may upgrade or
+  remove a known legacy bundle only while its bytes still match the shipped
+  digest; any customization remains untouched. This is the minimal delivery
+  mechanism, not the deferred *plugin distribution* concept below — a skill is
+  still a directory you place, the seed just primes the first one.
 
 ## Considered and rejected
 

@@ -44,7 +44,12 @@ export type ProposalKind =
 	| "apply_intent_graph"
 	| "record_observations";
 
-export type ProposalEditPolicy = "journal" | "gtd" | "observation" | "readonly";
+export type ProposalEditPolicy =
+	| "journal"
+	| "person"
+	| "project"
+	| "observation"
+	| "readonly";
 
 // Per-kind presentation for a Proposal — the review card's analogue of KIND_META
 // (lib/libraryItems): one entry concentrates the copy, labels, glyph,
@@ -56,7 +61,7 @@ export type ProposalEditPolicy = "journal" | "gtd" | "observation" | "readonly";
 export interface ProposalView {
 	/** Header glyph — the canonical entity mark. */
 	glyph: LucideIcon;
-	/** Accept-button glyph — GTD kinds show their entity mark, journal kinds a calendar. */
+	/** Accept-button glyph — Person/Project kinds show their entity mark, journal kinds a calendar. */
 	acceptGlyph: LucideIcon;
 	/**
 	 * The card's bold summary line, read from the (unvalidated) payload through the
@@ -77,8 +82,8 @@ export interface ProposalView {
 	rejectBusyLabel: string;
 	/**
 	 * Whether the inline Edit affordance is offered. Journal create/update gate on
-	 * the body carrying no entity_ref (the `bodyHasEntityRef` arg); every GTD
-	 * create/update kind is always editable and ignores the arg. Delete, the
+	 * the body carrying no entity_ref (the `bodyHasEntityRef` arg); Person and
+	 * Project create/update kinds are always editable and ignore the arg. Delete, the
 	 * reference weave, and the fallback view are never editable. A function of the
 	 * already-read `bodyHasEntityRef` rather than the raw payload.
 	 */
@@ -168,7 +173,7 @@ export const PROPOSAL_VIEWS: Record<ProposalKind, ProposalView> = {
 		rejectLabel: "Dismiss",
 		rejectBusyLabel: "Dismissing...",
 		canEdit: () => true,
-		editPolicy: "gtd",
+		editPolicy: "person",
 		renderBody: renderPersonBody,
 	},
 	create_project: {
@@ -183,7 +188,7 @@ export const PROPOSAL_VIEWS: Record<ProposalKind, ProposalView> = {
 		rejectLabel: "Dismiss",
 		rejectBusyLabel: "Dismissing...",
 		canEdit: () => true,
-		editPolicy: "gtd",
+		editPolicy: "project",
 		renderBody: renderProjectBody,
 	},
 	update_person: {
@@ -198,7 +203,7 @@ export const PROPOSAL_VIEWS: Record<ProposalKind, ProposalView> = {
 		rejectLabel: "Keep current Person",
 		rejectBusyLabel: "Keeping current Person...",
 		canEdit: () => true,
-		editPolicy: "gtd",
+		editPolicy: "person",
 		// Full-document REPLACE: the proposed payload is the whole new Person body
 		// (the entity_id rides untouched, not surfaced), so its read-only detail
 		// mirrors create_person's.
@@ -216,7 +221,7 @@ export const PROPOSAL_VIEWS: Record<ProposalKind, ProposalView> = {
 		rejectLabel: "Keep current Project",
 		rejectBusyLabel: "Keeping current Project...",
 		canEdit: () => true,
-		editPolicy: "gtd",
+		editPolicy: "project",
 		// Full-document REPLACE: read-only detail mirrors create_project's.
 		renderBody: renderProjectBody,
 	},

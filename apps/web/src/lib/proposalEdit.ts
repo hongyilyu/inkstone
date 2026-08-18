@@ -7,7 +7,8 @@ import {
 import { localNowString } from "@/lib/libraryItems";
 import { readString, readStringArray } from "@/lib/readPayload";
 
-// Pure overlay builders for the Proposal review card's inline GTD edit (ADR-0025).
+// Pure overlay builders for the Proposal review card's inline Entity edit
+// (ADR-0025).
 //
 // Per editable kind: `seed(payload) → draft` reads the surfaced fields out of the
 // (unvalidated) proposed payload, and `overlay(payload, draft) → editedPayload`
@@ -22,45 +23,6 @@ import { readString, readStringArray } from "@/lib/readPayload";
 // The proposed payload is `unknown` — raw model output that may be null, missing
 // fields, or wrong-typed — so every read degrades like the shared
 // `readString`/`readObject` helpers and never throws.
-
-// ---------------------------------------------------------------------------
-// GTD edit-variant resolver — the SINGLE source of GTD-editability. The card's
-// editor-selector (`isGtdEditKind`) and the GtdEditForm's per-kind dispatch both
-// read it, so there is no second hand-maintained GTD kind list to drift.
-//
-// The 4 GTD wire kinds collapse to 2 behavior variants: update_person and
-// update_project are FULL-DOCUMENT REPLACE that surface the same fields as their
-// create twins, so they reuse the create seed/overlay directly and share the create
-// variant — nothing downstream distinguishes the twins.
-// ---------------------------------------------------------------------------
-
-export type GtdEditVariant = "person" | "project";
-
-const GTD_EDIT_VARIANTS: Record<string, GtdEditVariant> = {
-	create_person: "person",
-	update_person: "person",
-	create_project: "project",
-	update_project: "project",
-};
-
-/**
- * Resolve a wire `mutation_kind` to its GTD edit variant, or `null` for every
- * non-GTD kind. Gate on OWN membership (`Object.hasOwn`), not a bare `?? null`:
- * `kind` is an unvalidated wire string (ADR-0014), and indexing the record with a
- * prototype key ("toString", "constructor", …) would return an inherited
- * Object.prototype member — truthy, so `?? null` would NOT fire and the key would
- * wrongly read as editable (mirrors the `proposalView` guard in ProposalCard.tsx).
- */
-export function gtdEditVariant(kind: string): GtdEditVariant | null {
-	return Object.hasOwn(GTD_EDIT_VARIANTS, kind)
-		? GTD_EDIT_VARIANTS[kind]
-		: null;
-}
-
-/** Whether a wire `mutation_kind` surfaces the GTD inline edit form. */
-export function isGtdEditKind(kind: string): boolean {
-	return gtdEditVariant(kind) !== null;
-}
 
 /**
  * A structured-clone of the proposed payload as a record (`{}` when it is
@@ -135,10 +97,8 @@ export function overlayCreatePerson(
 }
 
 // ---------------------------------------------------------------------------
-// create_project — surfaces Name / Outcome / Note / Status. Mirrors create_todo's
-// status↔timestamp coupling, but over PROJECT statuses (active / on_hold /
-// completed / dropped — note `on_hold`, which Todo lacks). The overlay clones the
-// proposed payload and overwrites only the four surfaced keys; provenance
+// create_project — surfaces Name / Outcome / Note / Status. The overlay clones
+// the proposed payload and overwrites only the four surfaced keys; provenance
 // (`source_journal_entry_id`), the review ritual (`review_every`,
 // `next_review_at`, `last_reviewed_at`), and the dates ride untouched. Blank
 // optional ⇒ omit (ADR-0033).
@@ -214,14 +174,9 @@ export function overlayCreateProject(
 }
 
 // ---------------------------------------------------------------------------
-// update_person / update_project — FULL-DOCUMENT REPLACE. Unlike update_todo (a
-// partial), the proposed payload IS the whole new entity body — the create_person/
-// create_project shape PLUS a top-level `entity_id` routing key. They surface the
-// SAME fields as their create twins (Name/Note/Aliases; Name/Outcome/Note/Status),
-// so the card reuses `seedCreatePerson`/`overlayCreatePerson` (resp. project)
-// DIRECTLY — no separate update seed/overlay exists. `clonePayload` carries every
-// unsurfaced top-level field through untouched: the `entity_id` for both, plus the
-// review cadence (`review_every`/`next_review_at`/`last_reviewed_at`) + dates for
-// project. Omit-empty (ADR-0033): a blanked optional is OMITTED, not sentinel-null —
-// under a full replace, omit ≡ cleared.
+// update_person / update_project — FULL-DOCUMENT REPLACE. The proposed payload is
+// the whole new entity body: the create_person/create_project shape plus a
+// top-level `entity_id` routing key. They surface the same fields as their create
+// twins, so the card reuses the create seed/overlay directly. `clonePayload`
+// carries every unsurfaced top-level field through untouched.
 // ---------------------------------------------------------------------------

@@ -15,8 +15,7 @@ import { readString, readStringArray } from "@/lib/readPayload";
  * picks one of its candidates — the disambiguation picker, #181 — which collapses it
  * to reuse-that-id), the per-node inline EDIT of a create node (the `edited_fields`
  * correction Core merges before minting), the decisions[] the commit sends (and the
- * summary the count/decision derive from), and the reconcile notice when rejecting a
- * node a surviving Todo links to.
+ * summary the count/decision derive from).
  */
 
 /** A node's staged choice in the local buffer (component state, not the store). */
@@ -76,7 +75,7 @@ export function repointFor(
 }
 
 /** The effective stage for a node — the ONE place the ambiguous accept-block is
- * enforced on reads, so rows, notices, and the decision vector can never drift. An
+ * enforced on reads, so rows and the decision vector can never drift. An
  * unacceptable node (an UNPICKED `ambiguous` one, ADR-0042) is always `reject`,
  * even if a stale buffer entry says accept. Otherwise its explicit entry wins, else
  * the default: every acceptable node defaults to `accept` (the common path is
@@ -137,9 +136,8 @@ export type DraftBuffer = ReadonlyMap<string, GraphNodeDraft>;
  * only through dispatched intents ({@link reviewReducer}) and reads per-node facts
  * through {@link nodeView} — so the cross-buffer invariants (a pick sets repoint AND
  * accept; reuse-existing clears repoint+draft AND accepts) live in the reducer, in one
- * place, rather than scattered across card handlers. (The card still reads the buffers
- * for whole-plan derivations — the decision vector, downgrade notices — passing them to
- * the pure `buildDecisions`/`downgradeNotices` helpers unchanged.) */
+ * place, rather than scattered across card handlers. The card still passes the
+ * buffers unchanged to the pure whole-plan derivations.) */
 export interface ReviewState {
 	readonly stages: StagingBuffer;
 	readonly repoints: RepointBuffer;
@@ -486,7 +484,7 @@ export function summarizeDecisions(
 /** A GUARANTEED-distinct disambiguator line for one ambiguous-node candidate in the
  * picker (#181). The candidates share an identical exact-name label (that is WHY the
  * node is ambiguous), so the label alone can't tell two apart. Prefer the resolved
- * library subtitle (person note / project outcome / todo due); but that can be absent
+ * library subtitle (person note / project outcome); but that can be absent
  * (cache still warming) or itself collide (two People with no note both read
  * "Person"), which would render visually identical radios the user could mis-pick. So
  * ALWAYS append a short, stable id fragment as a last-resort distinguisher: the
@@ -501,13 +499,10 @@ export function candidateSubtitle(
 	return trimmed ? `${trimmed} · ${idTag}` : idTag;
 }
 
-/** One intended `journal_ref` link between two graph handles, parsed from the
- * proposal payload (the same `links[]` Core stores). A `journal_ref` may carry
- * `appendText` — a model-proposed clause Core will APPEND to the saved entry's
- * prose (ADR-0042 #221); it is surfaced on the card so the user reviews the new
- * sentence before accepting it. */
-export interface GraphLink {
-	readonly kind: "journal_ref";
+/** One validated `journal_ref` link between two graph handles. `appendText` is
+ * a model-proposed clause Core will append to the saved entry's prose
+ * (ADR-0042 #221). */
+interface JournalRefLink {
 	readonly from: string;
 	readonly to: string;
 	/** A `journal_ref`'s `append_text`: the clause appended to the entry's prose. */
@@ -535,7 +530,7 @@ export interface AppendedClause {
  * contract is "the user sees the new sentence on the card before accepting." */
 export function appendedClauses(
 	plan: readonly ResolvedNode[],
-	links: readonly GraphLink[],
+	links: readonly JournalRefLink[],
 	buffer: StagingBuffer,
 	repoints: RepointBuffer = new Map(),
 ): AppendedClause[] {
@@ -544,7 +539,7 @@ export function appendedClauses(
 	// `linkIndex` is the link's position in the source array — a stable per-link id that
 	// disambiguates two journal_refs to the same entity with identical append_text.
 	links.forEach((link, linkIndex) => {
-		if (link.kind !== "journal_ref" || link.appendText === undefined) return;
+		if (link.appendText === undefined) return;
 		const target = byHandle.get(link.to);
 		if (target === undefined || stageFor(buffer, target, repoints) !== "accept")
 			return;
@@ -557,14 +552,13 @@ export function appendedClauses(
 	return out;
 }
 
-/** Parse the `links[]` from an opaque `apply_intent_graph` payload, degrading any
- * malformed link rather than throwing (the wire payload is unvalidated, ADR-0014).
- * Only the `journal_ref` kind survives. */
-export function parseGraphLinks(payload: unknown): GraphLink[] {
+/** Parse `journal_ref` entries from an opaque `apply_intent_graph` payload,
+ * degrading malformed or unknown links rather than throwing (ADR-0014). */
+export function parseGraphLinks(payload: unknown): JournalRefLink[] {
 	if (!payload || typeof payload !== "object") return [];
 	const raw = (payload as Record<string, unknown>).links;
 	if (!Array.isArray(raw)) return [];
-	const out: GraphLink[] = [];
+	const out: JournalRefLink[] = [];
 	for (const entry of raw) {
 		if (!entry || typeof entry !== "object") continue;
 		const record = entry as Record<string, unknown>;
@@ -578,7 +572,6 @@ export function parseGraphLinks(payload: unknown): GraphLink[] {
 		) {
 			const appendText = record.append_text;
 			out.push({
-				kind,
 				from,
 				to,
 				...(typeof appendText === "string" ? { appendText } : {}),

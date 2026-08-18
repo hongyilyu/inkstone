@@ -5,8 +5,21 @@ import { Schema as S } from "effect";
 
 // entity/* (ADR-0004): the accepted Entities the Library reads; `entity/list` is type-parameterized (one type per call).
 
+/** The closed set of Entity types, mirroring Core's `EntityType`. */
+export const ENTITY_TYPE_NAMES = [
+	"journal_entry",
+	"person",
+	"project",
+	"media",
+	"habit",
+] as const;
+
+export const EntityTypeName = S.Literal(...ENTITY_TYPE_NAMES);
+
+export type EntityTypeName = S.Schema.Type<typeof EntityTypeName>;
+
 /** `entity/list` params: the Entity type to list (one type per call). */
-export const EntityListParams = S.Struct({ type: S.String });
+export const EntityListParams = S.Struct({ type: EntityTypeName });
 
 export type EntityListParams = S.Schema.Type<typeof EntityListParams>;
 
@@ -75,14 +88,37 @@ export const EntityBacklinksResult = S.Struct({
 
 export type EntityBacklinksResult = S.Schema.Type<typeof EntityBacklinksResult>;
 
+/** The closed set of direct `entity/mutate` kinds (Core's `MutationKind`, excluding proposal-only `apply_intent_graph`). */
+export const ENTITY_MUTATION_KINDS = [
+	"create_journal_entry",
+	"update_journal_entry",
+	"delete_journal_entry",
+	"reference_existing_entity_from_journal_entry",
+	"create_person",
+	"update_person",
+	"delete_person",
+	"create_project",
+	"update_project",
+	"delete_project",
+	"mark_project_reviewed",
+	"create_media",
+	"update_media",
+	"delete_media",
+	"create_habit",
+	"update_habit",
+	"delete_habit",
+] as const;
+
+export const EntityMutationKind = S.Literal(...ENTITY_MUTATION_KINDS);
+
+export type EntityMutationKind = S.Schema.Type<typeof EntityMutationKind>;
+
 /**
- * `entity/mutate` params (ADR-0033): a user-initiated CRUD request. `payload` is the
- * same discriminated `{mutation_kind, payload}` envelope the Worker's
- * `propose_workspace_mutation` tool uses (minus rationale), so it stays opaque at the
- * wire boundary — Core validates it per `mutation_kind`.
+ * `entity/mutate` params (ADR-0033): a user-initiated CRUD request. `payload`
+ * stays opaque at the wire boundary; Core validates it per `mutation_kind`.
  */
 export const EntityMutateParams = S.Struct({
-	mutation_kind: S.String,
+	mutation_kind: EntityMutationKind,
 	payload: S.Unknown,
 });
 

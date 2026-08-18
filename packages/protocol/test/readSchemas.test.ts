@@ -3,7 +3,7 @@
 // Each Entity Type's stored `data` blob crosses the wire opaquely (`S.Unknown`).
 // The Web codec decodes it against a RELAXED read schema (`read*Data`). This test
 // pins that read schema as a strict SUPERSET of the write schema's field-set for
-// the gated trio (todo / person / project): it must list every field the write
+// the gated pair (person / project): it must list every field the write
 // `*_core` advertises (so a Rust field-add that reds the write fixture and forces
 // the write schema ALSO reds here until the read schema tracks it), PLUS it must
 // tolerate the sparse/empty rows the write schema rejects.

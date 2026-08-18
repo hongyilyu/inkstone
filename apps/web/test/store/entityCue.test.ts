@@ -1,3 +1,4 @@
+import type { EntityMutationKind } from "@inkstone/protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	CUE_DISMISS_MS,
@@ -18,18 +19,18 @@ afterEach(() => {
 });
 
 describe("verbForMutationKind", () => {
-	const cases: Array<[string, CueVerb]> = [
-		["create_todo", "Created"],
+	const cases: Array<[EntityMutationKind, CueVerb]> = [
+		["create_habit", "Created"],
 		["create_person", "Created"],
 		["create_project", "Created"],
 		["create_media", "Created"],
 		["create_journal_entry", "Created"],
-		["delete_todo", "Deleted"],
+		["delete_habit", "Deleted"],
 		["delete_person", "Deleted"],
 		["delete_project", "Deleted"],
 		["delete_media", "Deleted"],
 		["delete_journal_entry", "Deleted"],
-		["update_todo", "Saved"],
+		["update_habit", "Saved"],
 		["update_person", "Saved"],
 		["update_project", "Saved"],
 		["update_media", "Saved"],

@@ -520,7 +520,7 @@ export const fixtures: readonly FixtureEntry[] = [
 		schema: ObservationGetHistoryResult,
 		dir: "emitted",
 	},
-	// EntityListResult: maximal row (refs + person_refs + message-source) + bare
+	// EntityListResult: maximal row (refs + message-source) + bare
 	// row (all omitted) + je_source row (the journal-entry source branch — the
 	// other exactly-one-kind arm of EntitySourceView).
 	{

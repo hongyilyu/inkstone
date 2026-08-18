@@ -3,7 +3,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ProposalCard } from "@/components/ProposalCard.js";
 import { PROPOSAL_VIEWS } from "@/components/proposalViews.js";
 import type { LibraryItem } from "@/lib/libraryItems";
-import { isGtdEditKind } from "@/lib/proposalEdit";
 import type { PendingProposal } from "@/store/chat";
 
 // The decided card (ADR-0044 entity_id amendment) resolves its named entity live
@@ -2258,35 +2257,12 @@ describe("ProposalCard", () => {
 	});
 });
 
-// The edit-affordance fork routes GTD kinds to GtdEditForm, journal create/update
-// to the journal form, and observation batches to their payload editor. Everything
-// else is read-only. This structural lock catches an editable kind with no editor.
-describe("proposal edit fork partition", () => {
-	const JOURNAL_EDIT_KINDS = new Set([
-		"create_journal_entry",
-		"update_journal_entry",
-	]);
-	const STRUCTURED_EDIT_KINDS = new Set(["record_observations"]);
-
-	it("every GTD-editable kind is also Edit-offered (canEdit and isGtdEditKind agree)", () => {
-		for (const [kind, view] of Object.entries(PROPOSAL_VIEWS)) {
-			if (isGtdEditKind(kind)) {
-				// A GTD kind ignores bodyHasEntityRef and is always editable.
-				expect(view.canEdit(false)).toBe(true);
-				expect(view.canEdit(true)).toBe(true);
+describe("proposal edit policies", () => {
+	it("every editable view declares a non-readonly editor policy", () => {
+		for (const view of Object.values(PROPOSAL_VIEWS)) {
+			if (view.canEdit(false) || view.canEdit(true)) {
+				expect(view.editPolicy).not.toBe("readonly");
 			}
-		}
-	});
-
-	it("every editable kind routes to GtdEditForm or the journal form — none falls through", () => {
-		for (const [kind, view] of Object.entries(PROPOSAL_VIEWS)) {
-			const editable = view.canEdit(false) || view.canEdit(true);
-			if (!editable) continue;
-			expect(
-				isGtdEditKind(kind) ||
-					JOURNAL_EDIT_KINDS.has(kind) ||
-					STRUCTURED_EDIT_KINDS.has(kind),
-			).toBe(true);
 		}
 	});
 });

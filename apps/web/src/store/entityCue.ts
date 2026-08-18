@@ -1,3 +1,4 @@
+import type { EntityMutationKind } from "@inkstone/protocol";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 
@@ -50,7 +51,7 @@ export function resetEntityCueStore(): void {
 /** Map an `entity/mutate` kind to its cue verb. A MAP, not `split("_")[0]`:
  * `mark_project_reviewed` and `reference_existing_entity_from_journal_entry` are
  * real kinds that must read as "Saved". Rules apply in order. */
-export function verbForMutationKind(kind: string): CueVerb {
+export function verbForMutationKind(kind: EntityMutationKind): CueVerb {
 	if (kind.startsWith("delete_")) {
 		return "Deleted";
 	}

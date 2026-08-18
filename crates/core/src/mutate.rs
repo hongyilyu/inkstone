@@ -12,7 +12,7 @@ use sqlx::SqlitePool;
 
 use crate::db;
 use crate::entities;
-use crate::mutation::{MutationKind, TargetRefs, WriteOp};
+use crate::mutation::{DirectMutationKind, TargetRefs, WriteOp};
 use crate::mutation_target::{self, TargetError};
 
 /// A successful user mutation: the affected Entity id, present on create/update
@@ -26,8 +26,8 @@ pub struct Outcome {
 /// `Invalid → -32602`, `Internal → -32603`.
 #[derive(Debug)]
 pub enum MutateError {
-    /// Invalid inputs: an unsupported `mutation_kind`, a payload that fails
-    /// schema validation, or a target reference that does not resolve.
+    /// Invalid inputs: a payload that fails schema validation or a target
+    /// reference that does not resolve.
     Invalid(String),
     /// A DB error or inconsistency. Logged server-side; never surfaced verbatim.
     Internal(anyhow::Error),
@@ -41,14 +41,10 @@ pub enum MutateError {
 /// same-thread Journal guard does not apply to user writes.
 pub async fn apply(
     pool: &SqlitePool,
-    mutation_kind: &str,
+    mutation_kind: DirectMutationKind,
     payload: &serde_json::Value,
 ) -> Result<Outcome, MutateError> {
-    // Resolve the wire string once (the single string→type point on this path):
-    // an unknown kind is a client error (-32602), the old validate `_` arm's role.
-    let kind = MutationKind::from_wire(mutation_kind).ok_or_else(|| {
-        MutateError::Invalid(format!("mutation_kind {mutation_kind:?} not supported"))
-    })?;
+    let kind = mutation_kind.mutation_kind();
     let desc = kind.describe();
 
     (desc.validate)(payload).map_err(MutateError::Invalid)?;
@@ -112,11 +108,23 @@ pub async fn apply(
 
 #[cfg(test)]
 mod tests {
-    use super::{MutateError, apply};
+    use super::{MutateError, apply as apply_direct};
     use crate::db::test_support::memory_pool;
+    use crate::mutation::DirectMutationKind;
     use crate::observations::{
         ObservationRecordInput, RecordObservationsInput, record_observations,
     };
+    use sqlx::SqlitePool;
+
+    async fn apply(
+        pool: &SqlitePool,
+        mutation_kind: &str,
+        payload: &serde_json::Value,
+    ) -> Result<super::Outcome, MutateError> {
+        let kind =
+            DirectMutationKind::from_wire(mutation_kind).expect("test uses a direct mutation kind");
+        apply_direct(pool, kind, payload).await
+    }
 
     // A user `create_person` lands a canonical Entity directly: exactly one
     // `entities` row (type='person', created_by='user', created_via_proposal_id

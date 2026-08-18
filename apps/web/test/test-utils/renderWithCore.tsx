@@ -82,7 +82,7 @@ export function makeCoreRuntime(opts: CoreRuntimeOptions = {}): WsRuntime {
 	const stub = stubWsClient({
 		listEntities: (type) =>
 			Effect.succeed({ entities: opts.entities?.[type] ?? [] }),
-		getBacklinks: () => Effect.succeed({ mentioned_in: [], linked_todos: [] }),
+		getBacklinks: () => Effect.succeed({ mentioned_in: [] }),
 		subscribeRun: () => Stream.empty,
 		...opts.overrides,
 	});

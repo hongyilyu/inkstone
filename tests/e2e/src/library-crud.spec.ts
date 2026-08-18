@@ -14,90 +14,6 @@ import { dbPathFor, seedEntities, sqliteScalar } from "./seed.js";
  * spawned — these are pure Core writes.
  */
 
-const PROJECT_MIGRATION = "01900000-0000-7000-8000-0000000000d1";
-
-test("create a Todo via the rail editor → entity/mutate writes it and the row appears", async ({
-	page,
-	core,
-	workspace,
-}) => {
-	const dbPath = dbPathFor(workspace.path);
-	const library = new LibraryPage(page, core.url);
-
-	await library.gotoCollection("todos");
-	await library.newEntity("todo");
-
-	const rail = library.rail(/new todo/i);
-	await expect(rail).toBeVisible({ timeout: 15_000 });
-	await library.fillField(rail, "Title", "Water the office plants");
-	await library.fillField(rail, "Note", "The fern by the window is wilting");
-	await library.save(rail);
-
-	// The new Todo lands in the live collection.
-	const collection = library.collection(/todos/i);
-	await expect(collection.getByText("Water the office plants")).toBeVisible({
-		timeout: 15_000,
-	});
-
-	// DB ground truth: exactly one Todo with that title, created_by the user.
-	expect(
-		sqliteScalar(
-			dbPath,
-			`SELECT count(*) FROM entities WHERE type='todo' AND created_by='user' AND json_extract(data,'$.title')='Water the office plants';`,
-		),
-	).toBe("1");
-});
-
-test("edit a seeded Todo via the rail editor → update_todo persists across reload", async ({
-	page,
-	core,
-	workspace,
-}) => {
-	const dbPath = dbPathFor(workspace.path);
-	const library = new LibraryPage(page, core.url);
-	const TODO = "01900000-0000-7000-8000-0000000000e1";
-	seedEntities(dbPath, [
-		{
-			id: TODO,
-			type: "todo",
-			data: { title: "Draft the memo", status: "active" },
-		},
-	]);
-
-	await library.gotoCollection("todos", TODO);
-	const detail = library.rail(/Draft the memo details/i);
-	await expect(detail).toBeVisible({ timeout: 15_000 });
-
-	await library.enterEdit(detail, "todo");
-	const title = library.field(detail, "Title");
-	await expect(title).toHaveValue("Draft the memo");
-	await title.fill("Draft the launch memo");
-	await library.save(detail);
-
-	// Live re-read shows the new title; the old one is gone.
-	const collection = library.collection(/todos/i);
-	await expect(collection.getByText("Draft the launch memo")).toBeVisible({
-		timeout: 15_000,
-	});
-	await expect(
-		collection.getByText("Draft the memo", { exact: true }),
-	).toHaveCount(0);
-
-	// Persisted in Core (not just optimistic): the row's data carries the new title.
-	expect(
-		sqliteScalar(
-			dbPath,
-			`SELECT json_extract(data,'$.title') FROM entities WHERE id='${TODO}';`,
-		),
-	).toBe("Draft the launch memo");
-
-	// Survives a reload (proves the write reached tier 2, not just the cache).
-	await page.reload();
-	await expect(
-		library.collection(/todos/i).getByText("Draft the launch memo"),
-	).toBeVisible({ timeout: 15_000 });
-});
-
 test("delete a seeded Person via the inline confirm → delete_person removes it", async ({
 	page,
 	core,
@@ -127,57 +43,6 @@ test("delete a seeded Person via the inline confirm → delete_person removes it
 	expect(
 		sqliteScalar(dbPath, `SELECT count(*) FROM entities WHERE id='${PERSON}';`),
 	).toBe("0");
-});
-
-test("delete a Project unsets project_id on its owning Todo (Core cascade)", async ({
-	page,
-	core,
-	workspace,
-}) => {
-	const dbPath = dbPathFor(workspace.path);
-	const library = new LibraryPage(page, core.url);
-	const TODO = "01900000-0000-7000-8000-0000000000d2";
-	seedEntities(dbPath, [
-		{
-			id: PROJECT_MIGRATION,
-			type: "project",
-			data: { name: "Retire the legacy API", status: "active" },
-		},
-		{
-			id: TODO,
-			type: "todo",
-			data: {
-				title: "Cut over traffic",
-				status: "active",
-				project_id: PROJECT_MIGRATION,
-			},
-		},
-	]);
-
-	await library.gotoCollection("projects", PROJECT_MIGRATION);
-	const detail = library.rail(/Retire the legacy API details/i);
-	await expect(detail).toBeVisible({ timeout: 15_000 });
-
-	await library.deleteEntity(detail, "project");
-
-	const collection = library.collection(/projects/i);
-	await expect(collection.getByText("Retire the legacy API")).toHaveCount(0, {
-		timeout: 15_000,
-	});
-
-	// Core cascade (ADR-0031): the Project is gone and its Todo lost project_id.
-	expect(
-		sqliteScalar(
-			dbPath,
-			`SELECT count(*) FROM entities WHERE id='${PROJECT_MIGRATION}';`,
-		),
-	).toBe("0");
-	expect(
-		sqliteScalar(
-			dbPath,
-			`SELECT coalesce(json_extract(data,'$.project_id'),'NULL') FROM entities WHERE id='${TODO}';`,
-		),
-	).toBe("NULL");
 });
 
 test("edit a seeded Person via the rail editor → update_person full-replace persists", async ({
@@ -271,70 +136,43 @@ test("edit a seeded Project's status via the rail editor → update_project pers
 	).toBe("on_hold");
 });
 
-test("delete a seeded Todo via the inline confirm → delete_todo removes it", async ({
+test("cancel the inline delete confirm → no write, the Project survives", async ({
 	page,
 	core,
 	workspace,
 }) => {
 	const dbPath = dbPathFor(workspace.path);
 	const library = new LibraryPage(page, core.url);
-	const TODO = "01900000-0000-7000-8000-000000010003";
+	const PROJECT = "01900000-0000-7000-8000-000000010007";
 	seedEntities(dbPath, [
 		{
-			id: TODO,
-			type: "todo",
-			data: { title: "Cancel the old subscription", status: "active" },
+			id: PROJECT,
+			type: "project",
+			data: { name: "Keep this project", status: "active" },
 		},
 	]);
 
-	await library.gotoCollection("todos", TODO);
-	const detail = library.rail(/Cancel the old subscription details/i);
-	await expect(detail).toBeVisible({ timeout: 15_000 });
-
-	await library.deleteEntity(detail, "todo");
-
-	await expect(
-		library.collection(/todos/i).getByText("Cancel the old subscription"),
-	).toHaveCount(0, { timeout: 15_000 });
-	expect(
-		sqliteScalar(dbPath, `SELECT count(*) FROM entities WHERE id='${TODO}';`),
-	).toBe("0");
-});
-
-test("cancel the inline delete confirm → no write, the Todo survives", async ({
-	page,
-	core,
-	workspace,
-}) => {
-	const dbPath = dbPathFor(workspace.path);
-	const library = new LibraryPage(page, core.url);
-	const TODO = "01900000-0000-7000-8000-000000010007";
-	seedEntities(dbPath, [
-		{
-			id: TODO,
-			type: "todo",
-			data: { title: "Keep this task", status: "active" },
-		},
-	]);
-
-	await library.gotoCollection("todos", TODO);
-	const detail = library.rail(/Keep this task details/i);
+	await library.gotoCollection("projects", PROJECT);
+	const detail = library.rail(/Keep this project details/i);
 	await expect(detail).toBeVisible({ timeout: 15_000 });
 
 	// Reveal the inline confirm, then back out — the shell resets `confirmingDelete`
 	// (and `del.reset()`) so no `entity/mutate` is sent (ADR-0033, "approval is sacred").
-	await library.deleteButton(detail, "todo").click();
-	await expect(library.deleteConfirmPrompt(detail, "todo")).toBeVisible();
+	await library.deleteButton(detail, "project").click();
+	await expect(library.deleteConfirmPrompt(detail, "project")).toBeVisible();
 	await library.cancelDelete(detail);
 
 	// Confirm dismissed, the delete affordance is back, the rail stayed open (?id kept).
-	await expect(library.deleteConfirmPrompt(detail, "todo")).toHaveCount(0);
-	await expect(library.deleteButton(detail, "todo")).toBeVisible();
+	await expect(library.deleteConfirmPrompt(detail, "project")).toHaveCount(0);
+	await expect(library.deleteButton(detail, "project")).toBeVisible();
 	await expect(detail).toBeVisible();
 
-	// DB ground truth: the Todo is untouched — cancel never wrote.
+	// DB ground truth: the Project is untouched — cancel never wrote.
 	expect(
-		sqliteScalar(dbPath, `SELECT count(*) FROM entities WHERE id='${TODO}';`),
+		sqliteScalar(
+			dbPath,
+			`SELECT count(*) FROM entities WHERE id='${PROJECT}';`,
+		),
 	).toBe("1");
 });
 
@@ -526,18 +364,18 @@ test("delete a seeded Media item via the inline confirm → delete_media removes
 	).toBe("0");
 });
 
-test("create a Todo shows the 'Created' success cue", async ({
+test("create a Project shows the 'Created' success cue", async ({
 	page,
 	core,
 }) => {
 	const library = new LibraryPage(page, core.url);
 
-	await library.gotoCollection("todos");
-	await library.newEntity("todo");
+	await library.gotoCollection("projects");
+	await library.newEntity("project");
 
-	const rail = library.rail(/new todo/i);
+	const rail = library.rail(/new project/i);
 	await expect(rail).toBeVisible({ timeout: 15_000 });
-	await library.fillField(rail, "Title", "Order more coffee filters");
+	await library.fillField(rail, "Name", "Plan the team offsite");
 	await library.save(rail);
 
 	// The success cue announces "Created" once the create round-trips through Core.
@@ -546,27 +384,27 @@ test("create a Todo shows the 'Created' success cue", async ({
 	});
 });
 
-test("delete a seeded Todo shows the 'Deleted' success cue", async ({
+test("delete a seeded Project shows the 'Deleted' success cue", async ({
 	page,
 	core,
 	workspace,
 }) => {
 	const dbPath = dbPathFor(workspace.path);
 	const library = new LibraryPage(page, core.url);
-	const TODO = "01900000-0000-7000-8000-000000010008";
+	const PROJECT = "01900000-0000-7000-8000-000000010008";
 	seedEntities(dbPath, [
 		{
-			id: TODO,
-			type: "todo",
-			data: { title: "Toss the expired snacks", status: "active" },
+			id: PROJECT,
+			type: "project",
+			data: { name: "Retire the old plan", status: "active" },
 		},
 	]);
 
-	await library.gotoCollection("todos", TODO);
-	const detail = library.rail(/Toss the expired snacks details/i);
+	await library.gotoCollection("projects", PROJECT);
+	const detail = library.rail(/Retire the old plan details/i);
 	await expect(detail).toBeVisible({ timeout: 15_000 });
 
-	await library.deleteEntity(detail, "todo");
+	await library.deleteEntity(detail, "project");
 
 	// The delete navigates away (route drops ?id) and unmounts the editor, but the
 	// cue is root-mounted so it survives (slice 2) — it announces "Deleted".
@@ -579,5 +417,5 @@ test("delete a seeded Todo shows the 'Deleted' success cue", async ({
 	// if delete stopped clearing the route, masking a regression in the very
 	// contract ("the cue survives navigation") it claims to prove.
 	await expect(detail).toHaveCount(0, { timeout: 15_000 });
-	await expect(page).toHaveURL(/\/library\/todos$/, { timeout: 15_000 });
+	await expect(page).toHaveURL(/\/library\/projects$/, { timeout: 15_000 });
 });

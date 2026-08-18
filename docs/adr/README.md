@@ -54,7 +54,7 @@ New ADR: copy [`0000-template.md`](./0000-template.md), take the next free numbe
 | 0030 | Journal Entries anchor chat capture; Daily Notes are derived views | Superseded in part by 0042 |
 | 0031 | GTD Todo, Person, and Project entity model | Superseded in part by 0064 |
 | 0032 | GTD relations ride on entity/list; clients derive Project↔Person↔Todo | Superseded in part by 0064 (presentation annotated by 0054) |
-| 0033 | User-initiated Entity CRUD writes directly; Proposals gate only the agent | Accepted |
+| 0033 | User-initiated Entity CRUD writes directly; Proposals gate only the agent | Superseded in part by 0064 |
 | 0034 | Mark-project-reviewed: a Core-owned review-advance write path | Accepted |
 | 0035 | Message search: a substring scan over completed message text | Accepted |
 | 0036 | Skills: drop-in markdown procedures the model loads mid-Run | Accepted |
@@ -63,7 +63,7 @@ New ADR: copy [`0000-template.md`](./0000-template.md), take the next free numbe
 | 0039 | Recurring Todo occurrence generation: completing a recurring Todo spawns its successor | Superseded by 0064 |
 | 0040 | The Provider Helper lives in its own package | Accepted |
 | 0041 | Compiled Worker / Provider-Helper binaries, resolved by Core | Accepted |
-| 0042 | Workspace capture is one intent graph: batched recognition, deterministic resolve, atomic apply | Accepted |
+| 0042 | Workspace capture is one intent graph: batched recognition, deterministic resolve, atomic apply | Superseded in part by 0064 |
 | 0043 | Tool-call activity rehydrates via `thread/get` | Superseded in part by 0045 |
 | 0044 | Decided Proposal outcomes rehydrate via `thread/get` | Superseded in part by 0045 |
 | 0045 | Assistant turn is an ordered segment timeline, sequenced by `run_steps` | Accepted |
@@ -71,7 +71,7 @@ New ADR: copy [`0000-template.md`](./0000-template.md), take the next free numbe
 | 0047 | Run-less server→client notifications ride the originating connection | Accepted |
 | 0048 | Thread-title fallback is a word-boundary slug, not a prompt dump | Accepted |
 | 0049 | Provider OAuth completion rides the connection-notification channel | Accepted |
-| 0050 | Entity backlinks read seam | Accepted |
+| 0050 | Entity backlinks read seam | Superseded in part by 0064 |
 | 0051 | Socket-liveness signal + unbounded reconnect | Accepted |
 | 0052 | Thread archive lifecycle (archive-not-delete, rename) | Accepted |
 | 0053 | Observation records for high-volume tracker facts | Accepted |
@@ -85,13 +85,14 @@ New ADR: copy [`0000-template.md`](./0000-template.md), take the next free numbe
 | 0061 | URL-addressable Threads: the route is the source of truth for thread focus | Accepted |
 | 0062 | Provider auth-kind abstraction | Accepted |
 | 0063 | Deterministic skill triggers: matched-skill directive at dispatch | Accepted |
-| 0064 | Task ownership moves to TickTick: native Todo retirement + two external read paths | Accepted (supersedes 0037/0039; in part 0031/0032/0055) |
+| 0064 | Task ownership moves to TickTick: native Todo retirement + two external read paths | Accepted (supersedes 0037/0039; in part 0031/0032/0033/0042/0050/0055) |
 
 ## Supersession map
 
 - **0060 Bookmark → 0059 Media** — Bookmark replaced outright by the richer Media queue+log type.
 - **0037 + 0039 (Todo recurrence) → 0064** — superseded outright: the native Todo retired, so recurrence and occurrence generation went with it.
 - **0031 / 0032 / 0055 (GTD model) → 0064** — superseded *in part*: the Todo entity, Todo Person References, and todo relation reads retired; Person, Project, and Project Review survive.
+- **0033 / 0042 / 0050 (task-touching contracts) → 0064** — superseded *in part*: 0033's `update_todo` merge path, 0042's `todo_project`/`todo_person` link kinds, and 0050's `linked_todos` backlink lane retired; each ADR's surviving decision (direct-write CRUD, intent-graph Person/Project capture, `mentioned_in` backlinks) stands.
 - **0043 + 0044 (rehydration) → 0045** — superseded *in part*: 0045 replaced their wire
   projection (`MessageView.tool_calls` / `.proposal` → `Segment` timeline); their
   persistence and settled-vs-in-flight rules still hold.

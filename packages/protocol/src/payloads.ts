@@ -216,11 +216,12 @@ const referenceExistingEntityFromJournalEntry = S.Struct({
 //
 // One intent graph: an optional `journal_entry` node, a `minItems:1` array of
 // typed entity nodes (person/project), and an array of `journal_ref` links.
-// Every node is a tagged object; the entity/link/body arrays are `S.Union(...)`
-// of inlined variants → `JSONSchema.make` emits `anyOf` (the normalizer renames
-// to `oneOf`), kept POSITIONAL, so members are declared in the SAME order Rust
-// emits them (`mutation.rs`): entities person→project; body text→entity_ref. Each node carries
-// `additionalProperties:false` (every Effect `S.Struct` does), matching Rust.
+// Every node is a tagged object; the entity/body arrays are `S.Union(...)` of
+// inlined variants → `JSONSchema.make` emits `anyOf` (the normalizer renames to
+// `oneOf`), kept POSITIONAL, so members are declared in the SAME order Rust
+// emits them (`mutation.rs`): entities person→project; body text→entity_ref.
+// Each node carries `additionalProperties:false` (every Effect `S.Struct`
+// does), matching Rust.
 // Deep cross-node validation (handle references, duplicate handles) is the
 // resolver's job — NOT advertised here, mirroring the Rust spec.
 
@@ -274,7 +275,7 @@ const intentGraphJournalEntry = S.Struct({
 	),
 });
 
-/** The ONE link kind (the todo links retired with the TickTick cutover). */
+/** A Journal Entry reference link. */
 const intentGraphJournalRefLink = S.Struct({
 	kind: S.Literal("journal_ref"),
 	from: handle,
@@ -290,7 +291,7 @@ export const applyIntentGraph = S.Struct({
 	entities: S.Array(
 		S.Union(intentGraphPersonNode, intentGraphProjectNode),
 	).pipe(S.minItems(1, { description: undefined })),
-	links: S.Array(S.Union(intentGraphJournalRefLink)),
+	links: S.Array(intentGraphJournalRefLink),
 });
 
 // ── record_observations payload (ADR-0053) ──

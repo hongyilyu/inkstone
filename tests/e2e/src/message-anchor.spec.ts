@@ -47,11 +47,11 @@ test.use({ viewport: { width: 1024, height: 600 } });
 
 const THREAD_ID = "01900000-0000-7000-8000-000000000200";
 const RUN_ID = "01900000-0000-7000-8000-000000000201";
-const TODO_ID = "01900000-0000-7000-8000-000000000202";
+const PROJECT_ID = "01900000-0000-7000-8000-000000000202";
 const SOURCE_ID = "01900000-0000-7000-8000-000000000203";
 
 const THREAD_TITLE = "Trip planning brain dump";
-const TODO_TITLE = "Book the lighthouse tour";
+const PROJECT_NAME = "Plan the Lisbon trip";
 
 // Six EARLIER messages, each long enough that the six together overflow the 600px
 // viewport and fill the top-pinned cold mount, burying the last-position target
@@ -79,11 +79,11 @@ test("a Captured-from link deep-links to the exact capturing message, highlighte
 	const dbPath = dbPathFor(workspace.path);
 	seedThreadEntityAndSource(dbPath);
 
-	// Open the Library Todo's inspector. The detail panel is the complementary
-	// region labelled "<title> details".
-	await page.goto(`${core.url}/library/todos?id=${TODO_ID}`);
+	// Open the Library Project's inspector. The detail panel is the complementary
+	// region labelled "<name> details".
+	await page.goto(`${core.url}/library/projects?id=${PROJECT_ID}`);
 	const detail = page.getByRole("complementary", {
-		name: new RegExp(`${TODO_TITLE} details`, "i"),
+		name: new RegExp(`${PROJECT_NAME} details`, "i"),
 	});
 	await expect(detail).toBeVisible({ timeout: 15_000 });
 
@@ -108,9 +108,9 @@ test("a Captured-from link deep-links to the exact capturing message, highlighte
 });
 
 /**
- * Seed the Todo (via `seedEntities`), then in one tx: a titled thread, one
+ * Seed the Project (via `seedEntities`), then in one tx: a titled thread, one
  * completed run, several user messages (six earlier ones, then the TARGET last), and
- * an `entity_sources` row tying the Todo to the TARGET message (`created_from`).
+ * an `entity_sources` row tying the Project to the TARGET message (`created_from`).
  * The cross-FK between `runs.user_message_id` and `messages.run_id` resolves at
  * COMMIT (both are DEFERRABLE INITIALLY DEFERRED), so the run can name a message
  * inserted after it.
@@ -130,10 +130,14 @@ function seedThreadEntityAndSource(dbPath: string): void {
 
 	// The captured Entity itself must exist BEFORE the `entity_sources` row that
 	// references it (`entity_sources.entity_id` is a non-deferrable FK to
-	// `entities`). It is a plain user-write Todo — its origin is the
+	// `entities`). It is a plain user-write Project — its origin is the
 	// `entity_sources` row below, not a proposal id.
 	seedEntities(dbPath, [
-		{ id: TODO_ID, type: "todo", data: { title: TODO_TITLE } },
+		{
+			id: PROJECT_ID,
+			type: "project",
+			data: { name: PROJECT_NAME, status: "active" },
+		},
 	]);
 
 	const messageStmts = bodies
@@ -162,7 +166,7 @@ function seedThreadEntityAndSource(dbPath: string): void {
 			('${RUN_ID}', '${THREAD_ID}', 'default', '1.0.0', 'faux', 'fake-model', 'off', '${targetMessageId}', 'completed', ${base}, ${base}, 'completed');
 		${messageStmts}
 		INSERT INTO entity_sources (id, entity_id, source_message_id, relation, created_at)
-		VALUES ('${SOURCE_ID}', '${TODO_ID}', '${targetMessageId}', 'created_from', ${base});
+		VALUES ('${SOURCE_ID}', '${PROJECT_ID}', '${targetMessageId}', 'created_from', ${base});
 		COMMIT;
 		`,
 	);

@@ -579,8 +579,8 @@ describe("ChatColumn", () => {
 		setPendingProposal({
 			proposal_id: "p-parked",
 			run_id: "r-parked",
-			mutation_kind: "create_todo",
-			payload: { todo: { title: "Draft" } },
+			mutation_kind: "create_person",
+			payload: { name: "Alice" },
 			rationale: null,
 			status: "pending",
 		});

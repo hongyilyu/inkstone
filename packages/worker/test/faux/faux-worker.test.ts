@@ -31,7 +31,7 @@ afterEach(() => {
 	for (const key of FAUX_ENV_KEYS) delete process.env[key];
 });
 
-// Write a `{ journal_text, person_name?, project_name?, todo? }` scenario JSON to
+// Write a `{ journal_text, person_name?, project_name? }` scenario JSON to
 // a tempfile and point INKSTONE_FAUX_EXTRACT_PARAMS at it; remove the dir after
 // the case.
 function withExtractScenario(scenario: {
@@ -39,12 +39,6 @@ function withExtractScenario(scenario: {
 	person_name?: string;
 	project_name?: string;
 	journal_entry_id_source?: "read_tool" | "decision_result";
-	todo?: {
-		title: string;
-		person_name?: string;
-		person_role?: "waiting_on" | "related";
-		project_name?: string;
-	};
 }): void {
 	const dir = mkdtempSync(path.join(tmpdir(), "faux-extract-"));
 	const file = path.join(dir, "scenario.json");
@@ -58,8 +52,7 @@ function withExtractScenario(scenario: {
 // one create_* proposal sourced from the user Message — no Journal Entry. Mirrors
 // withExtractScenario's tempfile+env shape.
 function withCaptureScenario(scenario: {
-	intent: "todo" | "project" | "person" | "conversation";
-	todo?: { title: string; note?: string; due_at?: string; defer_at?: string };
+	intent: "project" | "person" | "conversation";
 	project?: { name: string; outcome?: string };
 	person?: { name: string; note?: string; aliases?: string[] };
 	enrich?: {
@@ -199,7 +192,7 @@ const EXTRACT_TOOLS: WorkerManifest["workflow"]["tools"] = [
 	},
 	{
 		name: "search_entities",
-		description: "Search accepted People, Projects, and Todos.",
+		description: "Search accepted People and Projects.",
 		label: "Search entities",
 		json_schema: { type: "object", properties: {} },
 	},

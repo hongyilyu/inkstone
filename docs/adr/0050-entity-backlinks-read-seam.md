@@ -1,6 +1,7 @@
 # ADR-0050: Entity backlinks read seam
 
-Status: Accepted
+Status: Superseded in part by ADR-0064
+/ superseded in part by [ADR-0064 (task ownership moves to TickTick)](./0064-task-ownership-moves-to-ticktick.md) — the `linked_todos` backlink lane retired; the `mentioned_in` Journal-Entry lane survives
 Date: 2026-06-24
 Issue: #182
 

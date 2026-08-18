@@ -91,8 +91,8 @@ describe("useEntityMutation", () => {
 		});
 
 		result.current.mutate({
-			mutation_kind: "create_todo",
-			payload: { title: "A" },
+			mutation_kind: "create_habit",
+			payload: { name: "A" },
 		});
 
 		await waitFor(() => expect(result.current.isSuccess).toBe(true));
@@ -111,7 +111,7 @@ describe("useEntityMutation", () => {
 		});
 
 		result.current.mutate({
-			mutation_kind: "delete_todo",
+			mutation_kind: "delete_habit",
 			payload: { entity_id: "01900000-0000-7000-8000-000000000020" },
 		});
 
@@ -131,8 +131,8 @@ describe("useEntityMutation", () => {
 		});
 
 		result.current.mutate({
-			mutation_kind: "create_todo",
-			payload: { title: "A" },
+			mutation_kind: "create_habit",
+			payload: { name: "A" },
 		});
 
 		await waitFor(() => expect(result.current.isError).toBe(true));
