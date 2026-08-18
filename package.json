@@ -17,6 +17,7 @@
 		"eval": "pnpm -C packages/worker eval",
 		"format": "biome format --write .",
 		"lint": "biome lint .",
+		"lint:anti-slop": "oxlint",
 		"biome:fix": "biome check --write ."
 	},
 	"keywords": [],
@@ -32,7 +33,9 @@
 	"type": "module",
 	"devDependencies": {
 		"@biomejs/biome": "2.4.15",
-		"concurrently": "^9.1.2"
+		"@oxlint/plugins": "1.78.0",
+		"concurrently": "^9.1.2",
+		"oxlint": "1.78.0"
 	},
 	"private": true
 }
