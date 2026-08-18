@@ -1,12 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
 	asProjectStatus,
-	asTodoStatus,
 	PROJECT_STATUS_OPTIONS,
 	parseAliases,
-	RECUR_ANCHOR_OPTIONS,
-	RECURRENCE_UNIT_OPTIONS,
-	TODO_STATUS_OPTIONS,
 } from "@/lib/entityFields";
 
 describe("entityFields — single-source entity field surface", () => {
@@ -22,20 +18,6 @@ describe("entityFields — single-source entity field surface", () => {
 		});
 		it("returns the single trimmed token", () => {
 			expect(parseAliases("x")).toEqual(["x"]);
-		});
-	});
-
-	describe("asTodoStatus — degrade to default", () => {
-		it("passes completed/dropped verbatim", () => {
-			expect(asTodoStatus("completed")).toBe("completed");
-			expect(asTodoStatus("dropped")).toBe("dropped");
-		});
-		it("degrades active and everything else to active", () => {
-			expect(asTodoStatus("active")).toBe("active");
-			expect(asTodoStatus(undefined)).toBe("active");
-			expect(asTodoStatus(null)).toBe("active");
-			expect(asTodoStatus("garbage")).toBe("active");
-			expect(asTodoStatus(42)).toBe("active");
 		});
 	});
 
@@ -55,35 +37,12 @@ describe("entityFields — single-source entity field surface", () => {
 	});
 
 	describe("option arrays — exact {value,label} pairs in order", () => {
-		it("Todo status options", () => {
-			expect(TODO_STATUS_OPTIONS).toEqual([
-				{ value: "active", label: "Active" },
-				{ value: "completed", label: "Completed" },
-				{ value: "dropped", label: "Dropped" },
-			]);
-		});
 		it("Project status options", () => {
 			expect(PROJECT_STATUS_OPTIONS).toEqual([
 				{ value: "active", label: "Active" },
 				{ value: "on_hold", label: "On hold" },
 				{ value: "completed", label: "Completed" },
 				{ value: "dropped", label: "Dropped" },
-			]);
-		});
-		it("Recurrence unit options", () => {
-			expect(RECURRENCE_UNIT_OPTIONS).toEqual([
-				{ value: "minute", label: "Minutes" },
-				{ value: "hour", label: "Hours" },
-				{ value: "day", label: "Days" },
-				{ value: "week", label: "Weeks" },
-				{ value: "month", label: "Months" },
-				{ value: "year", label: "Years" },
-			]);
-		});
-		it("Recur anchor options", () => {
-			expect(RECUR_ANCHOR_OPTIONS).toEqual([
-				{ value: "defer_at", label: "Defer date" },
-				{ value: "due_at", label: "Due date" },
 			]);
 		});
 	});

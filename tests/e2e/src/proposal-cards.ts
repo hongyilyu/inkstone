@@ -3,9 +3,9 @@ import type { ChatPage } from "./page-objects/ChatPage.js";
 
 /**
  * Shared proposal-card locators and the accept-the-anchor-Journal-Entry flow
- * used across the extraction/capture specs (person/project/todo extraction,
- * direct capture). Selectors pin on `data-proposal-status`, the stable review
- * card contract.
+ * used across the extraction/capture specs (person/project extraction, direct
+ * capture). Selectors pin on `data-proposal-status`, the stable review card
+ * contract.
  */
 
 /** The newest pending proposal card — used for each follow-up after the first. */

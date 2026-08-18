@@ -1,6 +1,6 @@
-//! The `search_entities` tool. Looks up accepted People, Projects, Todos, and
-//! Habits by type and a case-insensitive substring query, returning compact
-//! lookup rows. Search is over accepted entities only (via
+//! The `search_entities` tool. Looks up accepted People, Projects, and Habits
+//! by type and a case-insensitive substring query, returning compact lookup
+//! rows. Search is over accepted entities only (via
 //! `crate::db::list_by_type`); the tool exposes no arbitrary SQL or table-level
 //! CRUD.
 
@@ -13,7 +13,7 @@ use crate::mutation::{EntityProjectionSpec, EntityType, EntityTypeSpec};
 use crate::protocol::{AgentToolResult, CoreToolDescriptor, ToolTextContent};
 
 pub const NAME: &str = "search_entities";
-const DESCRIPTION: &str = "Search accepted People, Projects, Todos, and Habits by type and query; returns compact lookup rows.";
+const DESCRIPTION: &str = "Search accepted People, Projects, and Habits by type and query; returns compact lookup rows.";
 const LABEL: &str = "Search entities";
 
 /// Default and hard-cap on how many compact rows to return.
@@ -223,14 +223,6 @@ mod tests {
             r#"{"name":"Ship API v2"}"#,
         )
         .await;
-        seed_entity(
-            &pool,
-            "00000000-0000-4000-8000-000000000004",
-            "todo",
-            r#"{"title":"email Alice"}"#,
-        )
-        .await;
-
         // Match by name substring (case-insensitive): "ali" -> Alice only.
         let out = execute(&pool, json!({ "type": "person", "query": "ali" }))
             .await
@@ -270,20 +262,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn todo_matches_title_project_matches_name_no_aliases() {
+    async fn project_matches_name_no_aliases() {
         let pool = memory_pool().await;
         seed_entity(
             &pool,
             "00000000-0000-4000-8000-000000000010",
             "project",
             r#"{"name":"Ship API v2"}"#,
-        )
-        .await;
-        seed_entity(
-            &pool,
-            "00000000-0000-4000-8000-000000000011",
-            "todo",
-            r#"{"title":"email Alice"}"#,
         )
         .await;
 
@@ -298,14 +283,6 @@ mod tests {
             rows[0].get("aliases").is_none(),
             "non-person rows omit aliases, got {rows:?}"
         );
-
-        // Todo label comes from data.title.
-        let out = execute(&pool, json!({ "type": "todo", "query": "EMAIL" }))
-            .await
-            .expect("search ok");
-        let rows = results(&out);
-        assert_eq!(rows.len(), 1, "one todo matches 'EMAIL', got {rows:?}");
-        assert_eq!(rows[0]["label"], "email Alice");
     }
 
     #[tokio::test]
@@ -449,7 +426,7 @@ mod tests {
         let enum_values = &d.json_schema["properties"]["type"]["enum"];
         assert_eq!(
             enum_values,
-            &json!(["person", "project", "todo", "habit"]),
+            &json!(["person", "project", "habit"]),
             "type is a closed searchable Entity Type enum, got {}",
             d.json_schema
         );

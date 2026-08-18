@@ -1,28 +1,21 @@
 import {
 	type EntityMutateParams,
-	type RecurrencePreviewParams,
 	readJournalEntryData,
 	readMediaData,
 	readPersonData,
 	readProjectData,
-	readTodoData,
 } from "@inkstone/protocol";
 import { Schema as S } from "effect";
 import {
 	asMediaMedium,
 	asMediaState,
 	asProjectStatus,
-	asTodoStatus,
 	isMediaTerminalState,
 	type MediaMedium,
 	type MediaState,
 	type ProjectStatus,
 	parseAliases,
-	RECURRENCE_UNITS,
-	type RecurAnchor,
-	type RecurrenceUnit,
 	stampStatusTimestamps,
-	type TodoStatus,
 } from "@/lib/entityFields";
 import {
 	type EntitySource,
@@ -32,20 +25,16 @@ import {
 	type Media,
 	type Person,
 	type Project,
-	type RecurrenceRule,
-	type Todo,
-	type TodoPersonRole,
 } from "@/lib/libraryItems";
 
 // The relaxed read-data schemas (@inkstone/protocol) own each Entity Type's
-// stored `data` FIELD-SET; `readSchemas.test.ts` pins the gated trio as a
+// stored `data` FIELD-SET; `readSchemas.test.ts` pins the gated pair as a
 // superset of the write `*_core`. The codec decodes `row.data` against them
 // (lenient — every field `S.optional(S.Unknown)`, unknown keys ignored) and then
 // COERCES the loose values to the view model below. A decode is total ONLY over a
 // plain object, so `asRecord()` first coerces a null / array / non-object `data`
-// to `{}` — that guard is what keeps the four fail-soft parsers from ever throwing
+// to `{}` — that guard is what keeps the three fail-soft parsers from ever throwing
 // (an `S.Struct` decode rejects a top-level array, `typeof [] === "object"`).
-const decodeTodoData = S.decodeUnknownSync(readTodoData);
 const decodePersonData = S.decodeUnknownSync(readPersonData);
 const decodeProjectData = S.decodeUnknownSync(readProjectData);
 const decodeMediaData = S.decodeUnknownSync(readMediaData);
@@ -61,7 +50,6 @@ export interface LiveEntityRow {
 	readonly data: unknown;
 	readonly created_at: number;
 	readonly refs?: readonly LiveResolvedEntityRef[];
-	readonly person_refs?: readonly LiveTodoPersonRef[];
 	readonly source?: LiveEntitySource;
 }
 
@@ -73,16 +61,11 @@ export interface LiveEntitySource {
 	readonly journal_entry_id?: string;
 }
 
-export interface LiveTodoPersonRef {
-	readonly person_id: string;
-	readonly role: "waiting_on" | "related";
-}
-
 export interface LiveResolvedEntityRef {
 	readonly id: string;
 	readonly source_entity_id: string;
 	readonly target_entity_id: string;
-	readonly target_entity_type: "person" | "project" | "todo";
+	readonly target_entity_type: "person" | "project";
 	readonly target_title?: string;
 	readonly label_snapshot?: string;
 }
@@ -207,64 +190,6 @@ function asString(value: unknown): string | undefined {
 	return typeof value === "string" ? value : undefined;
 }
 
-/**
- * Defensively map a stored snake_case recurrence rule (ADR-0037, slimmed by
- * ADR-0039) to the camelCase view model. Core validates the rule on the way in,
- * so this is parsing not validation: it returns undefined unless the required
- * fields are present and well-typed, and never throws on a partial/missing shape.
- */
-export function asRecurrence(value: unknown): RecurrenceRule | undefined {
-	if (!value || typeof value !== "object") return undefined;
-	const r = value as Record<string, unknown>;
-	if (
-		typeof r.interval !== "number" ||
-		typeof r.unit !== "string" ||
-		!RECURRENCE_UNITS.some((u) => u.value === r.unit) ||
-		(r.anchor !== "defer_at" && r.anchor !== "due_at")
-	) {
-		return undefined;
-	}
-	const rule: RecurrenceRule = {
-		interval: r.interval,
-		unit: r.unit as RecurrenceUnit,
-		anchor: r.anchor,
-	};
-	if (r.end && typeof r.end === "object") {
-		const endRaw = r.end as Record<string, unknown>;
-		const end: { until?: string; afterCount?: number } = {};
-		if (typeof endRaw.until === "string") end.until = endRaw.until;
-		if (typeof endRaw.after_count === "number")
-			end.afterCount = endRaw.after_count;
-		if (end.until !== undefined || end.afterCount !== undefined) rule.end = end;
-	}
-	return rule;
-}
-
-/** Map a live `entity/list` row to the Library `Todo` view model (ADR-0031). */
-function parseTodo(row: LiveEntityRow): Todo {
-	const data = decodeTodoData(asRecord(row.data));
-	return {
-		id: row.id,
-		kind: "todo",
-		title: asString(data.title) ?? "Untitled",
-		note: asString(data.note),
-		status: asTodoStatus(data.status),
-		projectId: asString(data.project_id),
-		deferAt: asString(data.defer_at),
-		dueAt: asString(data.due_at),
-		completedAt: asString(data.completed_at),
-		droppedAt: asString(data.dropped_at),
-		recurrence: asRecurrence(data.recurrence),
-		personRefs: (row.person_refs ?? []).map((ref) => ({
-			personId: ref.person_id,
-			role: ref.role,
-		})),
-		source: parseSource(row.source),
-		recency: row.created_at,
-		createdAt: new Date(row.created_at).toLocaleDateString(),
-	} satisfies Todo;
-}
-
 /** Map a live `entity/list` row to the Library `Person` view model (ADR-0031). */
 function parsePerson(row: LiveEntityRow): Person {
 	const data = decodePersonData(asRecord(row.data));
@@ -365,369 +290,13 @@ export function parseRowsDroppingMalformed<T>(
 }
 
 // ---------------------------------------------------------------------------
-// BUILD direction (draft → mutation payload). The codec OWNS the todo draft↔wire
-// mapping — "one place" for the wire shape. The TODO build is the hardest kind:
-// create OMITS empty optionals (Core rejects explicit-null on create), while
-// update is a HAND-BUILT DIFF whose sentinel-null clears (note/due_at/recurrence/
-// completed_at = null) are a VALIDATOR-ONLY extension the advertised update_todo
-// schema rejects — so this path must NOT be routed through S.encode/S.decode.
+// BUILD direction (draft → mutation payload). The codec OWNS each kind's
+// draft↔wire mapping — "one place" for the wire shape.
 // ---------------------------------------------------------------------------
-
-/** The editable shape of a Todo's scalar fields; `""` means absent/cleared. */
-export interface TodoDraft {
-	title: string;
-	note: string;
-	status: TodoStatus;
-	projectId: string;
-	dueDay: string;
-	deferDay: string;
-	/**
-	 * The Todo's full Person-Reference set (ADR-0031/0032) — any mix of
-	 * `waiting_on`/`related`, at most once per Person. The editor edits this set
-	 * directly; the build emits `person_refs` (create) / `set_person_refs` (update).
-	 */
-	personRefs: { personId: string; role: TodoPersonRole }[];
-	/** The "Repeats" toggle (ADR-0037). The fields below drive only when on. */
-	recurs: boolean;
-	/** Interval as text, like `dueDay` — coerced to a number on build. */
-	recurInterval: string;
-	recurUnit: RecurrenceUnit;
-	recurAnchor: RecurAnchor;
-	/**
-	 * The recurrence END condition (ADR-0037/0039 amendment, #227), surfaced as a
-	 * single mutually-exclusive choice — Core enforces at-most-one of until /
-	 * after_count. `"never"` → no `end`; `"until"` drives `recurUntilDay`;
-	 * `"after"` drives `recurAfterCount`.
-	 */
-	recurEnd: "never" | "until" | "after";
-	/** The `until` bound as a `YYYY-MM-DD` UI date (day granularity, like `dueDay`). */
-	recurUntilDay: string;
-	/**
-	 * The full stored `until` wall-clock string the loaded rule carried (e.g. an
-	 * agent-authored `2026-12-31T23:59:59`), or `""` for a fresh draft. The editor
-	 * only edits the DAY, so when `recurUntilDay` still matches this value's day
-	 * prefix, `buildRecurrence` re-emits this verbatim rather than re-folding to
-	 * midnight — preserving a non-midnight bound through an unrelated edit (#227
-	 * review-fix; mirrors master's verbatim `end` round-trip). Only when the user
-	 * changes the day does it fold to `<day>T00:00:00`.
-	 */
-	recurUntilStored: string;
-	/** The `after_count` as text, like `recurInterval` — coerced to a number on build. */
-	recurAfterCount: string;
-}
 
 /** A `YYYY-MM-DD` UI date → the `YYYY-MM-DDTHH:MM:SS` wall-clock string Core wants. */
 function dayToLocal(day: string): string {
 	return `${day}T00:00:00`;
-}
-
-/**
- * Read a loaded rule's `end` condition into the three flat draft fields
- * (ADR-0037/0039 amendment, #227). `until`/`after_count` are mutually exclusive
- * (Core enforces it), so `recurEnd` picks the active branch and the unused day /
- * count field stays blank.
- */
-function endFieldsFromRule(rule: Todo["recurrence"]): {
-	recurEnd: TodoDraft["recurEnd"];
-	recurUntilDay: string;
-	recurUntilStored: string;
-	recurAfterCount: string;
-} {
-	if (rule?.end?.until !== undefined) {
-		return {
-			recurEnd: "until",
-			recurUntilDay: rule.end.until.slice(0, 10),
-			// Keep the full stored string so an unrelated edit re-emits it verbatim
-			// (preserves a non-midnight bound — #227 review-fix).
-			recurUntilStored: rule.end.until,
-			recurAfterCount: "",
-		};
-	}
-	if (rule?.end?.afterCount !== undefined) {
-		return {
-			recurEnd: "after",
-			recurUntilDay: "",
-			recurUntilStored: "",
-			recurAfterCount: String(rule.end.afterCount),
-		};
-	}
-	return {
-		recurEnd: "never",
-		recurUntilDay: "",
-		recurUntilStored: "",
-		recurAfterCount: "",
-	};
-}
-
-/** The editable draft for a Todo (or a fresh blank draft when `todo` is absent). */
-function todoDraftFromVm(todo: Todo | undefined): TodoDraft {
-	const rule = todo?.recurrence;
-	return {
-		title: todo?.title ?? "",
-		note: todo?.note ?? "",
-		status: todo?.status ?? "active",
-		projectId: todo?.projectId ?? "",
-		dueDay: todo?.dueAt ? todo.dueAt.slice(0, 10) : "",
-		deferDay: todo?.deferAt ? todo.deferAt.slice(0, 10) : "",
-		// Copy the WHOLE ref set so an edit round-trips every role; the old
-		// waiting_on-only read silently dropped any `related` ref on save.
-		personRefs: (todo?.personRefs ?? []).map((r) => ({
-			personId: r.personId,
-			role: r.role,
-		})),
-		recurs: rule != null,
-		recurInterval: rule ? String(rule.interval) : "1",
-		recurUnit: rule?.unit ?? "week",
-		recurAnchor: rule?.anchor ?? "defer_at",
-		...endFieldsFromRule(rule),
-	};
-}
-
-/**
- * True when the date the chosen anchor names is present in the draft. Core
- * rejects a recurrence whose `anchor` names a date the Todo lacks (ADR-0037), so
- * the editor only emits a rule once that date exists — the one client-knowable
- * trap, gated for good UX (Core still owns the rest of validation).
- */
-function recurAnchorDatePresent(
-	d: Pick<TodoDraft, "recurAnchor" | "dueDay" | "deferDay">,
-): boolean {
-	return d.recurAnchor === "due_at" ? d.dueDay !== "" : d.deferDay !== "";
-}
-
-/**
- * The recurrence-only slice of a draft (every field the rule/preview functions
- * read, never `personRefs`). The editor's `draft` state OMITS `personRefs`
- * (ADR-0032 person-rows own them), so these functions accept the narrower shape
- * — a full `TodoDraft` still satisfies it.
- */
-export type RecurrenceDraft = Omit<TodoDraft, "personRefs">;
-
-/** A recurrence is emittable only when toggled on AND its anchor date exists. */
-function recurActive(d: RecurrenceDraft): boolean {
-	return d.recurs && recurAnchorDatePresent(d);
-}
-
-/**
- * Whether the chosen END condition carries a usable value: `never` is always
- * complete (no value needed), `until` needs a date, `after` needs a positive
- * integer count. The single predicate behind both the editor's Save-block and the
- * preview gate, so the two can't disagree (a half-entered end must neither save
- * nor preview an unbounded rule — #227 review-fix).
- */
-function recurEndComplete(d: RecurrenceDraft): boolean {
-	if (d.recurEnd === "until") return d.recurUntilDay !== "";
-	if (d.recurEnd === "after") {
-		const count = Number(d.recurAfterCount);
-		return Number.isInteger(count) && count >= 1;
-	}
-	return true;
-}
-
-/** A positive-integer interval, matching the editor's Save-block guard. Used to
- * keep the preview from firing on a blank/zero interval mid-entry (Core would
- * answer `ended` for `interval < 1`, misleading the user — #227 review-fix). */
-function recurIntervalValid(d: RecurrenceDraft): boolean {
-	const interval = Number(d.recurInterval);
-	return Number.isInteger(interval) && interval >= 1;
-}
-
-/**
- * The snake_case recurrence rule for the payload: the common path the editor
- * drives (interval/unit/anchor) plus the END condition the user chose
- * (ADR-0037/0039 amendment, #227). `recurEnd` is mutually exclusive — `"until"`
- * folds `{until}` (a freshly chosen / day-changed date at day granularity
- * `T00:00:00` like due/defer; a stored non-midnight bound re-emits verbatim when
- * the day is untouched — see `recurUntilStored`), `"after"` folds
- * `{after_count}`, `"never"` omits `end` entirely. Assumes `recurActive(d)` —
- * callers gate on it. An incomplete end (e.g. `"after"` with a non-positive
- * count) is dropped here too; the editor's Save-block guards it for UX.
- */
-function buildRecurrence(d: RecurrenceDraft): Record<string, unknown> {
-	const rule: Record<string, unknown> = {
-		interval: Number(d.recurInterval),
-		unit: d.recurUnit,
-		anchor: d.recurAnchor,
-	};
-	if (d.recurEnd === "until" && d.recurUntilDay) {
-		// Re-emit the stored bound verbatim when the user hasn't changed the day
-		// (preserves a non-midnight `until` an agent authored — #227 review-fix);
-		// only fold to midnight when the day actually changed.
-		const until =
-			d.recurUntilStored.slice(0, 10) === d.recurUntilDay
-				? d.recurUntilStored
-				: dayToLocal(d.recurUntilDay);
-		rule.end = { until };
-	} else if (d.recurEnd === "after") {
-		const count = Number(d.recurAfterCount);
-		if (Number.isInteger(count) && count >= 1)
-			rule.end = { after_count: count };
-	}
-	return rule;
-}
-
-/** Map the draft's full ref set to the snake_case wire shape Core wants. */
-function wirePersonRefs(
-	refs: TodoDraft["personRefs"],
-): Array<{ person_id: string; role: TodoPersonRole }> {
-	return refs.map((r) => ({ person_id: r.personId, role: r.role }));
-}
-
-/**
- * The `recurrence/preview` params for a draft (ADR-0039 amendment, #227), or
- * `null` when there's nothing to preview — Repeats off, the anchor date absent,
- * End = "never" (an unbounded series has no meaningful "when does it stop"
- * preview), or an INCOMPLETE end (a blank until date / non-positive count). The
- * incomplete-end guard matters: without it the gate would enable a preview while
- * `buildRecurrence` silently drops the unusable end, so Core would compute a
- * *continuing* successor and the block would show "next occurrence" dates that
- * contradict the bounded end the user is mid-entering (#227 review-fix). The
- * editor's hook gates its read on a non-null result. Reuses `buildRecurrence` so
- * the previewed rule is byte-identical to what a save emits; the current anchor
- * dates ride alongside (day granularity, like the build path).
- */
-function buildRecurrencePreviewParams(
-	d: RecurrenceDraft,
-): RecurrencePreviewParams | null {
-	if (
-		!recurActive(d) ||
-		!recurIntervalValid(d) ||
-		d.recurEnd === "never" ||
-		!recurEndComplete(d)
-	)
-		return null;
-	// Returning the concrete RPC type (not a loose Record) makes the compiler
-	// enforce parity with WsClient.recurrencePreview, so a field-name drift in the
-	// params wrapper fails to compile rather than at runtime (#227 review-fix). The
-	// fields are built inline (the schema type is readonly — no post-assignment);
-	// the rule object stays the shared snake_case Record from buildRecurrence, which
-	// RecurrencePreviewParams.recurrence (`unknown`) accepts.
-	return {
-		recurrence: buildRecurrence(d),
-		...(d.deferDay ? { defer_at: dayToLocal(d.deferDay) } : {}),
-		...(d.dueDay ? { due_at: dayToLocal(d.dueDay) } : {}),
-	};
-}
-
-/**
- * Build the `create_todo` payload from a draft, OMITTING empty optionals (Core
- * rejects explicit-null on create — ADR-0031/slice-3). `person_refs` is included
- * only when at least one Person is linked.
- */
-function buildCreateParams(d: TodoDraft): EntityMutateParams {
-	const todo: Record<string, unknown> = { title: d.title.trim() };
-	if (d.note.trim()) todo.note = d.note.trim();
-	if (d.status !== "active") {
-		todo.status = d.status;
-		todo[d.status === "completed" ? "completed_at" : "dropped_at"] =
-			localNowString();
-	}
-	if (d.projectId) todo.project_id = d.projectId;
-	if (d.dueDay) todo.due_at = dayToLocal(d.dueDay);
-	if (d.deferDay) todo.defer_at = dayToLocal(d.deferDay);
-	if (recurActive(d)) todo.recurrence = buildRecurrence(d);
-
-	const payload: Record<string, unknown> = { todo };
-	if (d.personRefs.length > 0)
-		payload.person_refs = wirePersonRefs(d.personRefs);
-	return { mutation_kind: "create_todo", payload };
-}
-
-/**
- * Canonical form of a ref set for an order-insensitive "changed?" compare: map to
- * the wire shape, sort by `person_id` then `role`, and stringify. Two sets are
- * equal iff their canon strings match, regardless of row order.
- */
-function canonPersonRefs(refs: TodoDraft["personRefs"]): string {
-	return JSON.stringify(
-		wirePersonRefs(refs).sort(
-			(a, b) =>
-				a.person_id.localeCompare(b.person_id) || a.role.localeCompare(b.role),
-		),
-	);
-}
-
-/**
- * Build the `update_todo` payload as the DIFF of `next` against `prev`: only
- * changed scalar fields in the `todo` partial (a cleared optional sends `null`),
- * and `set_person_refs` only when the desired ref set changed. The person diff is
- * a wholesale, order-insensitive full-set REPLACE — `set_person_refs` carries the
- * complete next set (Core delete-all+inserts it, and `[]` clears all). Returns
- * `null` when nothing changed so the caller can skip the write.
- *
- * HAND-BUILT, not schema-encoded: the sentinel-null clears are a validator-only
- * extension the advertised update_todo schema rejects (constraint #1).
- */
-function buildUpdateParams(
-	todo: Todo,
-	prev: TodoDraft,
-	next: TodoDraft,
-): EntityMutateParams | null {
-	const partial: Record<string, unknown> = {};
-	// Trim BOTH sides: the draft seeds title/note untrimmed from the stored Todo
-	// (todoDraftFromVm), so a trimmed-vs-untrimmed compare would emit a spurious
-	// title/note on an edit that never touched them — e.g. a quick-defer of a Todo
-	// whose stored title carries surrounding whitespace (silent re-title + note clear).
-	// (The Person/Project/Media builders below carry the same untrimmed-prev
-	// compare, but they full-REPLACE rather than partial-merge, so a false diff only
-	// re-sends the already-correct value — harmless. Trimmed here only where it bites.)
-	if (next.title.trim() !== prev.title.trim())
-		partial.title = next.title.trim();
-	if (next.note.trim() !== prev.note.trim())
-		partial.note = next.note.trim() || null;
-	if (next.projectId !== prev.projectId)
-		partial.project_id = next.projectId || null;
-	if (next.dueDay !== prev.dueDay)
-		partial.due_at = next.dueDay ? dayToLocal(next.dueDay) : null;
-	if (next.deferDay !== prev.deferDay)
-		partial.defer_at = next.deferDay ? dayToLocal(next.deferDay) : null;
-	if (next.status !== prev.status) {
-		// Clear the now-invalid timestamp(s) via sentinel-null so Core's
-		// re-validation of the MERGED whole doesn't trip on a stale one (ADR-0033).
-		partial.status = next.status;
-		stampStatusTimestamps(
-			partial,
-			next.status,
-			localNowString(),
-			"sentinel-null",
-		);
-	}
-
-	// Recurrence diffs as a whole rule: the new object when on, sentinel-null when
-	// toggled off, and NO key when unchanged (matches the scalar-diff stance).
-	const prevRule = recurActive(prev) ? buildRecurrence(prev) : null;
-	const nextRule = recurActive(next) ? buildRecurrence(next) : null;
-	if (JSON.stringify(prevRule) !== JSON.stringify(nextRule)) {
-		partial.recurrence = nextRule;
-	}
-
-	const payload: Record<string, unknown> = { todo_id: todo.id };
-	if (Object.keys(partial).length > 0) payload.todo = partial;
-
-	// Person refs diff as a SET, order-insensitively. When the desired set differs
-	// from the stored one, emit `set_person_refs` with the COMPLETE next set —
-	// Core's set_person_refs is a wholesale delete-all+insert replace, and `[]`
-	// clears all (ADR-0033). No add/remove ops: the full set is the directive.
-	if (canonPersonRefs(prev.personRefs) !== canonPersonRefs(next.personRefs)) {
-		payload.set_person_refs = wirePersonRefs(next.personRefs);
-	}
-
-	const touched = "todo" in payload || "set_person_refs" in payload;
-	return touched ? { mutation_kind: "update_todo", payload } : null;
-}
-
-/**
- * The single TODO build entry the editor calls: dispatches on `mode`. Create
- * returns the params; update returns the diff params or `null` (no-op).
- */
-function buildTodo(
-	input:
-		| { mode: "create"; draft: TodoDraft }
-		| { mode: "update"; existing: Todo; baseline: TodoDraft; draft: TodoDraft },
-): EntityMutateParams | null {
-	return input.mode === "create"
-		? buildCreateParams(input.draft)
-		: buildUpdateParams(input.existing, input.baseline, input.draft);
 }
 
 // ---------------------------------------------------------------------------
@@ -1038,12 +607,8 @@ function buildProject(
 // ---------------------------------------------------------------------------
 
 /** The Entity kinds an inline chip may target (ADR-0030; never a Journal Entry). */
-export type ReferenceableKind = "person" | "project" | "todo";
-export const REFERENCEABLE_KINDS: ReferenceableKind[] = [
-	"person",
-	"project",
-	"todo",
-];
+export type ReferenceableKind = "person" | "project";
+export const REFERENCEABLE_KINDS: ReferenceableKind[] = ["person", "project"];
 
 /**
  * The editable body: text segments are mutable strings; chips are references.
@@ -1260,8 +825,6 @@ export {
 	buildMedia,
 	buildPerson,
 	buildProject,
-	buildRecurrencePreviewParams,
-	buildTodo,
 	journalDraftFromVm,
 	journalScalarsDiffer,
 	mediaDraftFromVm,
@@ -1269,10 +832,7 @@ export {
 	parseMedia,
 	parsePerson,
 	parseProject,
-	parseTodo,
 	personDraftFromVm,
 	projectDraftFromVm,
-	recurAnchorDatePresent,
 	stagedNewChip,
-	todoDraftFromVm,
 };

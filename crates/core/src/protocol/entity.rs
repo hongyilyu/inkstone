@@ -1,44 +1,15 @@
-//! `entity/*`, `journal_entry/rescan`, `message/search`, and
-//! `recurrence/preview` wire types (ADR-0009 hand-mirror).
+//! `entity/*`, `journal_entry/rescan`, and `message/search` wire types
+//! (ADR-0009 hand-mirror).
 
 use serde::{Deserialize, Serialize};
 
-/// `recurrence/preview` params (ADR-0039 amendment, #227): a draft Recurrence
-/// Rule + the editing Todo's current `defer_at`/`due_at`. Read-only — the editor
-/// sends an in-progress rule to preview when the next occurrence would land.
-/// `recurrence` is the opaque rule object (validated only by the date math's
-/// fail-safe `None`, never rejected here); the dates are optional because a Todo
-/// may carry only one anchor. Hand-authored wire struct (Deserialize-only).
-#[derive(Debug, Deserialize)]
-pub struct RecurrencePreviewParams {
-    pub recurrence: serde_json::Value,
-    #[serde(default)]
-    pub defer_at: Option<String>,
-    #[serde(default)]
-    pub due_at: Option<String>,
-}
+use crate::mutation::{DirectMutationKind, EntityTypeName};
 
-/// `recurrence/preview` result (ADR-0039 amendment, #227): the next occurrence's
-/// dates, or `ended: true` when completing the Todo would spawn no successor
-/// (end condition reached, or a malformed/partial draft rule — `next_occurrence`
-/// is fail-safe). `ended: true` is a normal result, NOT a JSON-RPC error: a
-/// bounded series ending is expected, and an in-flight draft must never surface
-/// as an error in the editor. When `ended` is false, `defer_at`/`due_at` mirror
-/// the input's anchor presence (a date absent on input stays absent).
-#[derive(Debug, Serialize)]
-pub struct RecurrencePreviewResult {
-    pub ended: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub defer_at: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub due_at: Option<String>,
-}
-
-/// `entity/list` params: the Entity `type` to list, one per call (e.g. `"todo"`,
+/// `entity/list` params: the Entity `type` to list, one per call (e.g.
 /// `"person"`). `r#type` serializes as the wire field `"type"`.
 #[derive(Debug, Deserialize)]
 pub struct EntityListParams {
-    pub r#type: String,
+    pub r#type: EntityTypeName,
 }
 
 /// One Entity row in `entity/list` (ADR-0004 tier-2 `entities` columns).
@@ -53,10 +24,6 @@ pub struct EntityRow {
     pub updated_at: i64,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub refs: Vec<ResolvedEntityRef>,
-    /// A Todo row's Person References (ADR-0031, ADR-0032). Empty (and omitted)
-    /// for non-Todo rows and Todos with no references.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub person_refs: Vec<TodoPersonRefView>,
     /// The Entity's origin provenance ("Captured from", ADR-0030). Omitted for a
     /// user-authored Entity (a direct Library write records no source row).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -95,14 +62,6 @@ pub struct ResolvedEntityRef {
     pub label_snapshot: Option<String>,
 }
 
-/// One Todo Person Reference on a Todo `entity/list` row (ADR-0032). `role` is
-/// `waiting_on` or `related` (`waiting_on` ⊇ `related`).
-#[derive(Debug, Serialize)]
-pub struct TodoPersonRefView {
-    pub person_id: String,
-    pub role: String,
-}
-
 /// `entity/list` result: the accepted Entities of the requested type,
 /// newest-first. Object-wrapper shape (`{entities: [...]}`) keeps it
 /// forward-extensible.
@@ -112,24 +71,22 @@ pub struct EntityListResult {
 }
 
 /// `entity/backlinks` params (ADR-0050): the Entity whose reverse relations the
-/// detail Inspector wants. Only Person/Project/Todo are `entity_ref` targets, so
+/// detail Inspector wants. Only Person/Project are `entity_ref` targets, so
 /// only those fire the read.
 #[derive(Debug, Deserialize)]
 pub struct EntityBacklinksParams {
     pub entity_id: String,
 }
 
-/// `entity/backlinks` result (ADR-0050): the two reverse sets Core resolves
+/// `entity/backlinks` result (ADR-0050): the reverse set Core resolves
 /// authoritatively for the detail Inspector — `mentioned_in` (distinct Journal
-/// Entries referencing this Entity, newest-occurred first) and `linked_todos`
-/// (Todos linked via `project_id` / `person_refs`, newest first). Reuses
-/// `EntityRow` (ADR-0032), so each section parses through the existing entity
-/// codec. Both arrays are ALWAYS present (possibly empty `[]`); object-wrapper
-/// shape modeled like `EntityListResult` for forward-extensibility.
+/// Entries referencing this Entity, newest-occurred first). Reuses `EntityRow`
+/// (ADR-0032), so the section parses through the existing entity codec. The
+/// array is ALWAYS present (possibly empty `[]`); object-wrapper shape modeled
+/// like `EntityListResult` for forward-extensibility.
 #[derive(Debug, Serialize)]
 pub struct EntityBacklinksResult {
     pub mentioned_in: Vec<EntityRow>,
-    pub linked_todos: Vec<EntityRow>,
 }
 
 /// `entity/mutate` params (ADR-0033): a user-initiated CRUD request. `payload` is
@@ -138,7 +95,7 @@ pub struct EntityBacklinksResult {
 /// at the wire boundary — Core validates it per `mutation_kind`.
 #[derive(Debug, Deserialize)]
 pub struct EntityMutateParams {
-    pub mutation_kind: String,
+    pub mutation_kind: DirectMutationKind,
     pub payload: serde_json::Value,
 }
 
@@ -212,6 +169,25 @@ mod mirror_tests {
     const UUID_A: &str = "0190d3c1-0000-7000-8000-000000000001";
     const UUID_B: &str = "0190d3c1-0000-7000-8000-000000000002";
     const UUID_RUN: &str = "0190d3c1-0000-7000-8000-000000000003";
+
+    #[test]
+    fn entity_params_reject_values_outside_their_closed_domains() {
+        assert!(serde_json::from_value::<EntityListParams>(json!({ "type": "todo" })).is_err());
+        assert!(
+            serde_json::from_value::<EntityMutateParams>(json!({
+                "mutation_kind": "create_todo",
+                "payload": {}
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<EntityMutateParams>(json!({
+                "mutation_kind": "apply_intent_graph",
+                "payload": {}
+            }))
+            .is_err()
+        );
+    }
 
     #[test]
     fn message_search_params_rejects_missing_and_non_string_query() {

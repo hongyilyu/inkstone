@@ -35,7 +35,7 @@ const LOCAL_DATETIME_DESCRIPTION: &str = "Local wall-clock time in YYYY-MM-DDTHH
 const LOCAL_DATETIME_PATTERN: &str = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$";
 
 /// The canonical UUID pattern the reference/source id fields advertise. UUID-shaped
-/// ids the schema leaves bare (`entity_id`, `todo_id`) still validate via
+/// ids the schema leaves bare (`entity_id`) still validate via
 /// [`FieldSpec::Uuid`] with `schema_regex: false`.
 const UUID_PATTERN: &str =
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$";
@@ -89,7 +89,7 @@ pub(crate) enum FieldSpec {
     /// A UUID string. `schema_regex` ⇒ the advertised schema carries the UUID
     /// pattern + `minLength`/`maxLength` 36 (the reference/source ids); otherwise
     /// the schema is bare `{type:string}` but the validator still parses a UUID
-    /// (the `entity_id`/`todo_id` target keys).
+    /// (the `entity_id` target key).
     Uuid { schema_regex: bool },
     /// A string drawn from a closed set. `err` is the exact validator message on a
     /// bad value (byte-faithful to the hand-written validators).
@@ -120,13 +120,6 @@ pub(crate) enum FieldSpec {
     /// observation evidence naming either a Journal Entry source or a Message
     /// source, but not both.
     OneOfObject { variants: Vec<PayloadSpec> },
-    /// A nested object whose SCHEMA comes from the spec but whose VALIDATION is
-    /// deferred to a hand-written cross-field hook. The recurrence rule (ADR-0037,
-    /// slimmed by ADR-0039) is cross-field — `end` cardinality (at most one of
-    /// `until`/`after_count`) and the anchor-presence check against the whole Todo
-    /// — so a flat walk cannot express it. The schema single-sources from the
-    /// spec; `check` is a no-op and the owning entity's hook validates.
-    HookValidated(PayloadSpec),
     /// A Journal-Entry `body`: a tagged `oneOf` union of node objects per
     /// [`BodyPolicy`]. The array-level `minItems:1` and per-node shape are emitted
     /// here; cross-node invariants are entities hooks (so `check` is a no-op).
@@ -139,7 +132,7 @@ pub(crate) enum FieldSpec {
     /// LAST variant's message (the deepest structural error). Cross-element graph
     /// invariants (handle references, duplicate handles, a `journal_ref` without a
     /// `journal_entry` node) are NOT a flat walk — they are the resolver's job in a
-    /// later slice, like the other [`FieldSpec::HookValidated`]/[`FieldSpec::Body`]
+    /// later slice, like the other [`FieldSpec::Body`]
     /// cross-field rules.
     OneOfArray {
         variants: Vec<PayloadSpec>,
@@ -209,12 +202,6 @@ impl Field {
     pub(crate) fn clearable(mut self) -> Self {
         self.clearable = true;
         self
-    }
-
-    /// Conditionally clearable — clearable only on the `update_todo` partial path,
-    /// concrete-or-absent on the create path.
-    pub(crate) fn clearable_when(self, yes: bool) -> Self {
-        if yes { self.clearable() } else { self }
     }
 
     /// Promote this field to required (used where a helper builds an optional
@@ -380,7 +367,7 @@ fn spec_schema(spec: &FieldSpec) -> Value {
             }
             Value::Object(array)
         }
-        FieldSpec::Object(spec) | FieldSpec::HookValidated(spec) => spec.json_schema(),
+        FieldSpec::Object(spec) => spec.json_schema(),
         FieldSpec::JsonObject => serde_json::json!({ "type": "object" }),
         FieldSpec::OneOfObject { variants } => {
             let one_of: Vec<Value> = variants.iter().map(PayloadSpec::json_schema).collect();
@@ -552,8 +539,7 @@ fn check_field(field: &Field, value: &Value) -> Result<(), String> {
             }
             Ok(())
         }
-        // Recurrence: schema only; the owning entity's hook validates the rule.
-        FieldSpec::HookValidated(_) | FieldSpec::Body(_) => Ok(()),
+        FieldSpec::Body(_) => Ok(()),
     }
 }
 

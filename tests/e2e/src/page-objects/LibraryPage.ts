@@ -7,7 +7,7 @@ export class LibraryPage {
 		private readonly baseUrl: string,
 	) {}
 
-	/** Navigate to an Entity-Type collection route by its collection slug (e.g. `todos`, `people`, `media`), optionally selecting an entity via `?id=`. */
+	/** Navigate to an Entity-Type collection route by its collection slug (e.g. `projects`, `people`, `media`), optionally selecting an entity via `?id=`. */
 	async gotoCollection(collection: string, id?: string): Promise<void> {
 		const path = id
 			? `/library/${collection}?id=${id}`
@@ -15,14 +15,14 @@ export class LibraryPage {
 		await this.page.goto(new URL(path, this.baseUrl).href);
 	}
 
-	/** Click the "New <kind>" affordance to open the create rail (e.g. `newEntity("todo")`). */
+	/** Click the "New <kind>" affordance to open the create rail (e.g. `newEntity("project")`). */
 	async newEntity(kind: string): Promise<void> {
 		await this.page
 			.getByRole("button", { name: new RegExp(`new ${kind}`, "i") })
 			.click();
 	}
 
-	/** The detail/editor rail landmark by its accessible name (e.g. `/new todo/i`, `/Dune details/i`). */
+	/** The detail/editor rail landmark by its accessible name (e.g. `/new project/i`, `/Dune details/i`). */
 	rail(name: string | RegExp) {
 		return this.page.getByRole("complementary", { name });
 	}
@@ -81,7 +81,7 @@ export class LibraryPage {
 		await rail.getByRole("button", { name: /cancel/i }).click();
 	}
 
-	/** The live collection region for a topic by its accessible name (e.g. `/todos/i`). */
+	/** The live collection region for a topic by its accessible name (e.g. `/projects/i`). */
 	collection(name: string | RegExp) {
 		return this.page.getByRole("region", { name });
 	}

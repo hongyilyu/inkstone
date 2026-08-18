@@ -17,8 +17,7 @@ import {
 /** A Person/Project a Journal Entry touches, derived from a body `entity_ref` node. */
 export interface TimelineChip {
 	entityId: string;
-	/** Only people/projects reach the chip rail — the type tabs and the focus rail
-	 * support those two lenses; todo refs are dropped (see chipsForEntry). */
+	/** Only people/projects reach the chip rail. */
 	kind: Extract<LibraryItemKind, "person" | "project">;
 	title: string;
 }
@@ -41,9 +40,8 @@ export interface TimelineDay {
 /**
  * The Person/Project chips a Journal Entry touches, in body order, de-duplicated
  * by entity id. A ref missing its resolved `targetEntityId` / `targetKind` (an
- * unresolved mention) is dropped — a chip must link somewhere. Todo refs are also
- * dropped: the Timeline tabs and the focus rail only render the person/project
- * lenses, so a todo chip would be an orphan button that focuses nothing.
+ * unresolved mention) is dropped, as is any target outside the two timeline
+ * lenses.
  */
 function chipsForEntry(entry: JournalEntry): TimelineChip[] {
 	const chips: TimelineChip[] = [];

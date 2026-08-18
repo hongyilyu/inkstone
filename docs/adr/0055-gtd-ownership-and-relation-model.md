@@ -1,5 +1,8 @@
 # GTD ownership boundaries and the canonical relation read
 
+Status: Superseded in part by ADR-0064
+/ superseded in part by [ADR-0064 (task ownership moves to TickTick)](./0064-task-ownership-moves-to-ticktick.md) — todo-ownership boundaries retired; Project relation reads survive
+
 The GTD backend grew incrementally — Todo/Person/Project entities and Todo Person
 References ([ADR-0031](./0031-gtd-todo-person-project-model.md)), the canonical
 relation read ([ADR-0032](./0032-gtd-relations-on-entity-list.md)), recurrence

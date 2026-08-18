@@ -47,32 +47,32 @@ const BAD_REMINDER_PROPOSAL = {
 
 // Keep these exact phrases in sync with the shipped prompt. The fixture should
 // fail if the model-visible boundary is softened by wording drift. The boundary
-// now keeps reminders/tasks OUT of Journal Entries AND routes them to a direct
-// create_todo sourced from the user Message — so the guard requires both the
-// exclusion AND the redirect, not the old "drop it silently" wording.
+// now keeps reminders/tasks OUT of Journal Entries AND redirects them to TickTick
+// with NO Workspace mutation (ADR-0064: tasks no longer live in Inkstone) — so
+// the guard requires both the exclusion AND the TickTick redirect, not the old
+// "drop it silently" or "propose a create_todo" wording.
 export function hasReminderBoundary(systemPrompt: string): boolean {
 	const lower = systemPrompt.toLowerCase();
 	return (
 		lower.includes("do not propose a journal entry") &&
 		lower.includes("reminders") &&
 		lower.includes("tasks") &&
-		lower.includes("todos") &&
-		lower.includes("future obligations") &&
-		lower.includes("create_todo") &&
-		lower.includes("do not create a journal entry first")
+		lower.includes("ticktick is the user's task system") &&
+		lower.includes("add it in ticktick") &&
+		lower.includes("do not propose any workspace mutation for it")
 	);
 }
 
-// ADR-0042: a journal-worthy message that mentions People/Projects/actions is
-// recognized as ONE intent graph and proposed as a single `apply_intent_graph`
-// — not the old per-entity create-then-reference sequence, and no longer gated
-// on a committed Journal Entry. This guard asserts the shipped prompt teaches
-// that contract: one proposal carrying entity nodes + the three link kinds, the
-// Todo→Project relationship expressed as a LINK (not a field), AND that it still
-// holds the #179 boundary (a Project is an outcome, not a category; the action
-// phrase never becomes a Project name). It must also be free of the retired
-// one-at-a-time / two-step-reference / JE-accepted-first wording so the rewrite
-// can't silently leave both flows in the prompt.
+// ADR-0042 (as narrowed by ADR-0064): a journal-worthy message that mentions
+// People/Projects is recognized as ONE intent graph and proposed as a single
+// `apply_intent_graph` — not the old per-entity create-then-reference sequence,
+// and no longer gated on a committed Journal Entry. With the Todo retired the
+// graph carries Person/Project nodes joined by `journal_ref` links only (the
+// todo_project/todo_person link kinds are gone). This guard asserts the shipped
+// prompt teaches that contract AND still holds the #179 boundary (a Project is
+// an outcome, not a category; the action phrase never becomes a Project name).
+// It must also be free of the retired one-at-a-time / JE-accepted-first wording
+// so the rewrite can't silently leave both flows in the prompt.
 export function teachesIntentGraph(systemPrompt: string): boolean {
 	const lower = systemPrompt.toLowerCase();
 	const teachesGraph =
@@ -81,27 +81,19 @@ export function teachesIntentGraph(systemPrompt: string): boolean {
 		lower.includes("one proposal") &&
 		lower.includes("entities") &&
 		lower.includes("links") &&
-		lower.includes("todo_project") &&
-		lower.includes("todo_person") &&
 		lower.includes("journal_ref") &&
 		lower.includes("existing_id") &&
 		lower.includes("search_entities");
-	// The Todo's owning Project is a link, never a field on the todo node.
-	const projectViaLink =
-		lower.includes("todo_project link") && lower.includes("not a field");
 	// The #179 boundary that MUST survive the rewrite.
 	const projectBoundary =
 		lower.includes("outcome, not a category") &&
 		lower.includes("do not turn the action phrase into a");
 	// The retired procedural wording the rewrite drops from the JOURNAL
-	// extraction flow. (The direct-Todo enrichment flow is unchanged by ADR-0042
-	// and may keep "one mutation at a time" / "once that create is accepted", so
-	// those phrases are NOT asserted-absent here. Only the wording UNIQUE to the
-	// removed journal-extraction sequencing is.)
+	// extraction flow — the graph is the only multi-entity capture path now.
 	const droppedOldFlow =
 		!lower.includes("never batch") &&
 		!lower.includes("from that accepted journal entry");
-	return teachesGraph && projectViaLink && projectBoundary && droppedOldFlow;
+	return teachesGraph && projectBoundary && droppedOldFlow;
 }
 
 const main = async (): Promise<void> => {

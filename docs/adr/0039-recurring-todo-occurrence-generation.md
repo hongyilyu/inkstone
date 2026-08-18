@@ -1,5 +1,8 @@
 # Recurring Todo occurrence generation: completing a recurring Todo spawns its successor
 
+Status: Superseded by ADR-0064
+/ superseded by [ADR-0064 (task ownership moves to TickTick)](./0064-task-ownership-moves-to-ticktick.md) — the native Todo retired, occurrence generation with it
+
 / builds on [ADR-0037](./0037-todo-recurrence-rule.md), [ADR-0031](./0031-gtd-todo-person-project-model.md), [ADR-0033](./0033-user-initiated-entity-crud-writes-directly.md), [ADR-0034](./0034-mark-project-reviewed-write-path.md), [ADR-0016](./0016-proposal-application-policy.md)
 
 ADR-0037 defined the durable Recurrence Rule and explicitly deferred *execution*

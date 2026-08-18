@@ -23,13 +23,8 @@ const perfectIntentGraph: PredictedProposal = {
 		entities: [
 			{ handle: "@morris", type: "person", name: "Morris" },
 			{ handle: "@leadads", type: "project", name: "Lead Ads" },
-			{ handle: "@rodeo", type: "todo", title: "Figure out the Rodeo side" },
 		],
-		links: [
-			{ kind: "todo_project", from: "@rodeo", to: "@leadads" },
-			{ kind: "todo_person", from: "@rodeo", to: "@morris", role: "related" },
-			{ kind: "journal_ref", from: "@je", to: "@morris" },
-		],
+		links: [{ kind: "journal_ref", from: "@je", to: "@morris" }],
 	},
 };
 
@@ -39,7 +34,6 @@ const perfectExpected: ExpectedProposal = {
 	entities: [
 		{ type: "person", name: "Morris" },
 		{ type: "project", name: "Lead Ads" },
-		{ type: "todo", title: "Figure out the Rodeo side" },
 	],
 };
 
@@ -50,7 +44,7 @@ describe("scoreProposal — apply_intent_graph alignment", () => {
 		expect(r.kindMatch).toBe(true);
 		expect(r.entityF1).toBe(1);
 		expect(r.fieldF1).toBe(1);
-		expect(r.detail.entities.matched).toBe(3);
+		expect(r.detail.entities.matched).toBe(2);
 	});
 
 	it("docks recall when an expected entity is missed (2 persons expected, 1 predicted)", () => {
@@ -83,7 +77,7 @@ describe("scoreProposal — apply_intent_graph alignment", () => {
 			payload: {
 				entities: [
 					{ handle: "@a", type: "person", name: "Alice" },
-					{ handle: "@x", type: "todo", title: "Extra unasked task" },
+					{ handle: "@x", type: "person", name: "Extra unasked person" },
 				],
 				links: [],
 			},
@@ -274,19 +268,19 @@ describe("scoreProposal — schema gate", () => {
 	});
 
 	it("preserves kindMatch:true on the CORRECT kind with an INVALID payload", () => {
-		// FIX 11 pin: right mutation_kind (create_todo == expected.kind) but a body
-		// that fails decode (`todo` is required). The invalid return must report
+		// FIX 11 pin: right mutation_kind (create_person == expected.kind) but a body
+		// that fails decode (`name` is required). The invalid return must report
 		// schemaValid:false AND kindMatch:true — "right kind, bad shape" is NOT a kind
 		// mismatch, so it must not be conflated with one (which would undercount
 		// kind_match_rate). reason "invalid" still disambiguates it from
 		// "kind_mismatch".
 		const predicted: PredictedProposal = {
-			mutation_kind: "create_todo",
-			payload: {}, // missing required `todo` → decode fails
+			mutation_kind: "create_person",
+			payload: {}, // missing required `name` → decode fails
 		};
 		const expected: ExpectedProposal = {
-			kind: "create_todo",
-			fields: { title: "Buy milk" },
+			kind: "create_person",
+			fields: { name: "Alice" },
 		};
 		const r = scoreProposal(predicted, expected);
 		expect(r.schemaValid).toBe(false);
@@ -305,10 +299,10 @@ describe("scoreProposal — none handling", () => {
 		expect(r.fieldF1).toBe(1);
 	});
 
-	it("scores expected none + a proposed create_todo as a hallucination", () => {
+	it("scores expected none + a proposed create_person as a hallucination", () => {
 		const predicted: PredictedProposal = {
-			mutation_kind: "create_todo",
-			payload: { todo: { title: "unasked task" } },
+			mutation_kind: "create_person",
+			payload: { name: "unasked person" },
 		};
 		const r = scoreProposal(predicted, { kind: "none" });
 		expect(r.entityF1).toBe(0);
@@ -325,8 +319,8 @@ describe("scoreProposal — none handling", () => {
 		// falsely reported schemaValid:true just because the answer was "propose
 		// nothing". kindMatch stays false (expected none).
 		const invalidPayload: PredictedProposal = {
-			mutation_kind: "create_todo",
-			payload: {}, // missing required `todo` → decode fails
+			mutation_kind: "create_person",
+			payload: {}, // missing required `name` → decode fails
 		};
 		const rInvalid = scoreProposal(invalidPayload, { kind: "none" });
 		expect(rInvalid.schemaValid).toBe(false);

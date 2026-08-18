@@ -5,7 +5,7 @@ import type {
 } from "@inkstone/protocol";
 import { InvalidParamsError, type WsError } from "@inkstone/ui-sdk";
 import { renderWithCore } from "@test/test-utils/renderWithCore";
-import { projectRow, todoRow } from "@test/test-utils/rows";
+import { projectRow } from "@test/test-utils/rows";
 import { cleanup, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Effect } from "effect";
@@ -20,18 +20,12 @@ type EntityMutate = (
 
 function renderReview(
 	projects: Rows,
-	todos: Rows = [],
-	people: Rows = [],
 	entityMutate: EntityMutate = () => Effect.die("entityMutate not exercised"),
-	onSelect: (id: string) => void = () => {},
 ) {
-	return renderWithCore(
-		<ProjectReviewView selectedId={null} onSelect={onSelect} />,
-		{
-			entities: { project: projects, todo: todos, person: people },
-			overrides: { entityMutate },
-		},
-	);
+	return renderWithCore(<ProjectReviewView />, {
+		entities: { project: projects },
+		overrides: { entityMutate },
+	});
 }
 
 // Past = unambiguously due regardless of real "now"; far future = never due.
@@ -99,31 +93,20 @@ describe("ProjectReviewView (focused queue)", () => {
 		expect(await screen.findByText("First project")).toBeInTheDocument();
 	});
 
-	it("renders the cadence label, last-reviewed, and the project's active todos", async () => {
-		renderReview(
-			[
-				projectRow("p1", "API migration", {
-					next_review_at: PAST,
-					last_reviewed_at: "2026-06-01T20:00:00",
-					review_every: { interval: 1, unit: "week" },
-				}),
-			],
-			[
-				todoRow("t1", "Cut over traffic", { project_id: "p1" }),
-				todoRow("t2", "Old done task", {
-					status: "completed",
-					completed_at: PAST,
-					project_id: "p1",
-				}),
-			],
-		);
+	it("renders the cadence label, last-reviewed, and the project's outcome", async () => {
+		renderReview([
+			projectRow("p1", "API migration", {
+				next_review_at: PAST,
+				last_reviewed_at: "2026-06-01T20:00:00",
+				review_every: { interval: 1, unit: "week" },
+				outcome: "Cut over traffic to /v2.",
+			}),
+		]);
 
 		expect(await screen.findByText("API migration")).toBeInTheDocument();
 		expect(screen.getByText("Every week")).toBeInTheDocument();
 		expect(screen.getByText(/Last reviewed 2026-06-01/)).toBeInTheDocument();
-		// Active todo shows; a long-completed one does not (only session-completed stay).
-		expect(screen.getByText("Cut over traffic")).toBeInTheDocument();
-		expect(screen.queryByText("Old done task")).not.toBeInTheDocument();
+		expect(screen.getByText("Cut over traffic to /v2.")).toBeInTheDocument();
 	});
 
 	it("teaches the empty state when nothing is due", async () => {
@@ -137,8 +120,6 @@ describe("ProjectReviewView (focused queue)", () => {
 		);
 		renderReview(
 			[projectRow("p1", "API migration", { next_review_at: PAST })],
-			[],
-			[],
 			entityMutate,
 		);
 
@@ -154,45 +135,6 @@ describe("ProjectReviewView (focused queue)", () => {
 		} satisfies EntityMutateParams);
 	});
 
-	it("completes a todo inline with its status circle (update_todo)", async () => {
-		const entityMutate = vi.fn<EntityMutate>(() =>
-			Effect.succeed({ entity_id: "t1" }),
-		);
-		renderReview(
-			[projectRow("p1", "API migration", { next_review_at: PAST })],
-			[todoRow("t1", "Cut over traffic", { project_id: "p1" })],
-			[],
-			entityMutate,
-		);
-
-		await screen.findByText("Cut over traffic");
-		await userEvent.click(
-			screen.getByRole("button", { name: /mark todo complete/i }),
-		);
-
-		await waitFor(() => expect(entityMutate).toHaveBeenCalledTimes(1));
-		const call = entityMutate.mock.calls[0]?.[0] as EntityMutateParams;
-		expect(call.mutation_kind).toBe("update_todo");
-		expect((call.payload as { todo_id: string }).todo_id).toBe("t1");
-		expect((call.payload as { todo: { status: string } }).todo.status).toBe(
-			"completed",
-		);
-	});
-
-	it("selects a todo (opens the rail via ?id) when its body is clicked", async () => {
-		const onSelect = vi.fn();
-		renderReview(
-			[projectRow("p1", "API migration", { next_review_at: PAST })],
-			[todoRow("t1", "Cut over traffic", { project_id: "p1" })],
-			[],
-			() => Effect.die("entityMutate not exercised"),
-			onSelect,
-		);
-
-		await userEvent.click(await screen.findByText("Cut over traffic"));
-		expect(onSelect).toHaveBeenCalledWith("t1");
-	});
-
 	it("surfaces a failed mark-reviewed as an inline alert", async () => {
 		const entityMutate = vi.fn<EntityMutate>(() =>
 			Effect.fail(
@@ -203,8 +145,6 @@ describe("ProjectReviewView (focused queue)", () => {
 		);
 		renderReview(
 			[projectRow("p1", "API migration", { next_review_at: PAST })],
-			[],
-			[],
 			entityMutate,
 		);
 
@@ -223,12 +163,9 @@ describe("ProjectReviewView (focused queue)", () => {
 	// freeze "All caught up" before any project has loaded).
 	it("shows the skeleton while the first read is pending, not a snapshot of projects", async () => {
 		// A runtime whose reads never resolve, so the query stays pending.
-		await renderWithCore(
-			<ProjectReviewView selectedId={null} onSelect={() => {}} />,
-			{
-				overrides: { listEntities: () => Effect.never },
-			},
-		);
+		await renderWithCore(<ProjectReviewView />, {
+			overrides: { listEntities: () => Effect.never },
+		});
 
 		// The skeleton renders; no project is focused, so the queue was never
 		// seeded while the read was still pending.
@@ -253,8 +190,6 @@ describe("ProjectReviewView (focused queue)", () => {
 					next_review_at: "2000-01-02T20:00:00",
 				}),
 			],
-			[],
-			[],
 			entityMutate,
 		);
 
@@ -279,35 +214,5 @@ describe("ProjectReviewView (focused queue)", () => {
 		// ReviewQueue, not held in the keyed FocusedProject): the button still reads
 		// "Reviewed" and is disabled, not re-enabled to "Mark reviewed".
 		expect(screen.getByRole("button", { name: "Reviewed" })).toBeDisabled();
-	});
-
-	// The session-completed todo stays visible CHECKED in place (grill Q13),
-	// driven by sessionDone — not by the live status, which the mock leaves
-	// 'active'. Removing the sessionDone branch would hide the row's completed
-	// presentation, failing this.
-	it("keeps an inline-completed todo visible with its completed mark", async () => {
-		const entityMutate = vi.fn<EntityMutate>(() =>
-			Effect.succeed({ entity_id: "t1" }),
-		);
-		renderReview(
-			[projectRow("p1", "API migration", { next_review_at: PAST })],
-			[todoRow("t1", "Cut over traffic", { project_id: "p1" })],
-			[],
-			entityMutate,
-		);
-
-		await screen.findByText("Cut over traffic");
-		// Before: an active todo's circle is the "Mark todo complete" control.
-		await userEvent.click(
-			screen.getByRole("button", { name: /mark todo complete/i }),
-		);
-
-		// After: the row stays visible and flips to the completed presentation (the
-		// circle's aria-label becomes "Completed"). The mock's live row is still
-		// 'active', so only sessionDone can produce this.
-		expect(
-			await screen.findByRole("button", { name: /^completed$/i }),
-		).toBeInTheDocument();
-		expect(screen.getByText("Cut over traffic")).toBeInTheDocument();
 	});
 });

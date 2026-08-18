@@ -14,7 +14,7 @@ import { routeTree } from "@/routeTree.gen";
 import { openCommand, resetCommandStore } from "@/store/command";
 
 // Stub: empty threadList so the open-triggered query resolves; Alice (person)
-// and a matching daycare todo seeded as stable live entity/list results.
+// and a matching daycare project seeded as stable live entity/list results.
 const overrides: Partial<WsClientService> = {
 	threadList: () => Effect.succeed({ threads: [] }),
 	listEntities: (type) => {
@@ -31,14 +31,14 @@ const overrides: Partial<WsClientService> = {
 				],
 			});
 		}
-		if (type === "todo") {
+		if (type === "project") {
 			return Effect.succeed({
 				entities: [
 					{
-						id: "todo_schedule_alice",
-						type: "todo",
+						id: "project_daycare_alice",
+						type: "project",
 						data: {
-							title: "Send Alice the updated daycare schedule",
+							name: "Send Alice the updated daycare schedule",
 							status: "active",
 						},
 						created_at: 1_700_000_000_000,
@@ -161,7 +161,7 @@ describe("CommandPalette (⌘K)", () => {
 		expect(within(results).getByText("Daycare planning")).toBeInTheDocument();
 
 		// Messages is purely additive: the client-side Library search still matches
-		// the seeded "daycare" todo, so its group renders alongside Messages.
+		// the seeded "daycare" project, so its group renders alongside Messages.
 		expect(
 			within(results).getByText("Send Alice the updated daycare schedule"),
 		).toBeInTheDocument();
@@ -197,7 +197,7 @@ describe("CommandPalette (⌘K)", () => {
 	});
 
 	it("re-clamps the active row when results shrink so Enter never no-ops", async () => {
-		// "alice" matches BOTH the person (Alice Whitman) and the todo (…Alice…).
+		// "alice" matches BOTH the person (Alice Whitman) and the project (…Alice…).
 		// Arrow-key down to the last row, then narrow the query so the result set
 		// shrinks out from under the cursor; the active index must re-clamp so Enter
 		// still activates a real row (the bug: a stale index past the end → Enter
@@ -208,7 +208,7 @@ describe("CommandPalette (⌘K)", () => {
 
 		await userEvent.type(input, "alice");
 		const results = screen.getByRole("listbox", { name: /results/i });
-		// Both the person (Alice Whitman) and the todo (…Alice…) match "alice".
+		// Both the person (Alice Whitman) and the project (…Alice…) match "alice".
 		await waitFor(() =>
 			expect(within(results).getByText("Alice Whitman")).toBeInTheDocument(),
 		);
@@ -230,15 +230,15 @@ describe("CommandPalette (⌘K)", () => {
 				within(results).queryByText("Alice Whitman"),
 			).not.toBeInTheDocument(),
 		);
-		// Only the todo remains.
+		// Only the project remains.
 		expect(
 			within(results).getByText("Send Alice the updated daycare schedule"),
 		).toBeInTheDocument();
 
-		// Enter activates the clamped row (the surviving todo) and navigates — not a no-op.
+		// Enter activates the clamped row (the surviving project) and navigates — not a no-op.
 		await userEvent.keyboard("{Enter}");
 		await waitFor(() =>
-			expect(router.state.location.pathname).toBe("/library/todos"),
+			expect(router.state.location.pathname).toBe("/library/projects"),
 		);
 	});
 

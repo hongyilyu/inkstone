@@ -82,7 +82,7 @@ describe("normalize: unconstrained schema annotations (rule 3b)", () => {
 describe("normalize: keyword rewrites skip schema-map values (rule 3 scope)", () => {
 	// Regression guard: the `title`-strip (rule 3) and the other per-node keyword
 	// rewrites must apply to schema NODES, not to the arbitrary field-name keys
-	// inside a `properties` map. `create_todo`/`update_todo` both have a field
+	// inside a `properties` map. `create_media`/`update_media` both have a field
 	// literally named `title`; an earlier normalizer deleted it everywhere, so
 	// drift on a `title` field passed silently. These pin that the field survives
 	// AND that the combinator `title` annotation is still stripped.

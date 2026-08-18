@@ -5,7 +5,6 @@ import type {
 	LibraryItem,
 	Person,
 	Project,
-	Todo,
 } from "@/lib/libraryItems";
 import { buildTimeline, focusEntityTimeline } from "@/lib/timeline";
 
@@ -29,7 +28,7 @@ const text = (t: string): JournalEntryBodyNode => ({ type: "text", text: t });
 const ref = (
 	refId: string,
 	targetEntityId: string,
-	targetKind: "person" | "project" | "todo",
+	targetKind: "person" | "project",
 	targetTitle: string,
 ): JournalEntryBodyNode => ({
 	type: "entity_ref",
@@ -56,22 +55,11 @@ const mkProject = (id: string, name: string): Project => ({
 	createdAt: "fixture",
 });
 
-const mkTodo = (id: string): Todo => ({
-	id,
-	kind: "todo",
-	title: id,
-	status: "active",
-	personRefs: [],
-	recency: 1,
-	createdAt: "fixture",
-});
-
 describe("buildTimeline (ADR-0054 §4 — derived chronological projection)", () => {
 	// Two days; the morning entry references a person, the afternoon a project.
 	const world: LibraryItem[] = [
 		mkPerson("person_priya", "Priya"),
 		mkProject("proj_apiv2", "API v2"),
-		mkTodo("todo_unrelated"),
 		je("je_morning", "2026-06-10T09:00:00", [
 			text("Synced with "),
 			ref("r1", "person_priya", "person", "Priya"),
@@ -118,7 +106,7 @@ describe("buildTimeline (ADR-0054 §4 — derived chronological projection)", ()
 		expect(yesterday?.chips).toEqual([]);
 	});
 
-	it("ignores non-Journal-Entry items (people/projects/todos are not spine rows)", () => {
+	it("ignores non-Journal-Entry items (people/projects are not spine rows)", () => {
 		const ids = timeline.flatMap((d) => d.events.map((e) => e.entry.id));
 		expect(ids).toEqual(["je_morning", "je_afternoon", "je_yesterday"]);
 	});

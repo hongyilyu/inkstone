@@ -173,7 +173,7 @@ export interface SpawnCoreOptions {
 	readonly fauxLoadSkill?: string;
 	/** Assert (via the faux provider, in `fauxLoadSkill` mode) whether the ADR-0063 trigger directive naming this skill reached the manifest `system_prompt` (`INKSTONE_FAUX_EXPECT_DIRECTIVE`); turn 1's reply is `trigger directive present: <bool>`. */
 	readonly fauxExpectDirective?: string;
-	/** Higher-level faux interpreter mode: `propose` (Journal Entry mutations, ADR-0025), `extract` (Person/Project/Todo extraction from an accepted Journal Entry), or `capture` (direct GTD capture sourced from the user Message — no Journal Entry). Drives the park -> decide -> resume loop. */
+	/** Higher-level faux interpreter mode: `propose` (Journal Entry mutations, ADR-0025), `extract` (Person/Project extraction from an accepted Journal Entry), or `capture` (direct Person/Project capture sourced from the user Message — no Journal Entry). Drives the park -> decide -> resume loop. */
 	readonly faux?: "propose" | "extract" | "capture";
 	/** Direct propose-worker fixture knob. Emits params loaded from this JSON file. */
 	readonly proposalParamsFile?: string;
@@ -185,7 +185,7 @@ export interface SpawnCoreOptions {
 	readonly proposeParamsFile?: string;
 	/** Faux extraction scenario (`INKSTONE_FAUX_EXTRACT_PARAMS`): `{ journal_text, person_name }` JSON file the extract mode reads. */
 	readonly extractParamsFile?: string;
-	/** Faux direct-capture scenario (`INKSTONE_FAUX_CAPTURE_PARAMS`): `{ intent, todo?, project?, person?, enrich? }` JSON file the capture mode reads. */
+	/** Faux direct-capture scenario (`INKSTONE_FAUX_CAPTURE_PARAMS`): `{ intent, project?, person? }` JSON file the capture mode reads. */
 	readonly captureParamsFile?: string;
 	/** External-tool lane (external-task-views A3): points Core's TickTick MCP
 	 * endpoint override (`INKSTONE_TICKTICK_MCP_URL`) at a fake server, seeds a

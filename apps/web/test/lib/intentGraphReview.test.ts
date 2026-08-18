@@ -5,10 +5,8 @@ import {
 	buildDecisions,
 	buildEditedFields,
 	candidateSubtitle,
-	downgradeNotices,
 	draftLabel,
 	draftRequiredEmpty,
-	type GraphLink,
 	type GraphNodeDraft,
 	initialReviewState,
 	isAcceptable,
@@ -27,11 +25,11 @@ import {
 	summarizeDecisions,
 } from "@/lib/intentGraphReview.js";
 
-const createTodo: ResolvedNode = {
+const createProject: ResolvedNode = {
 	handle: "@rodeo",
-	type: "todo",
+	type: "project",
 	disposition: "create",
-	label: "Figure out the Rodeo side",
+	label: "Rodeo integration",
 };
 const reuseProject: ResolvedNode = {
 	handle: "@leadads",
@@ -51,11 +49,11 @@ const ambiguousPerson: ResolvedNode = {
 	],
 };
 
-const PLAN: ResolvedNode[] = [createTodo, reuseProject, ambiguousPerson];
+const PLAN: ResolvedNode[] = [createProject, reuseProject, ambiguousPerson];
 
 describe("isAcceptable", () => {
 	it("create and reuse are acceptable; an unpicked ambiguous is not", () => {
-		expect(isAcceptable(createTodo)).toBe(true);
+		expect(isAcceptable(createProject)).toBe(true);
 		expect(isAcceptable(reuseProject)).toBe(true);
 		expect(isAcceptable(ambiguousPerson)).toBe(false);
 	});
@@ -74,15 +72,15 @@ describe("isAcceptable", () => {
 	});
 
 	it("a create node's acceptability is unaffected by the repoint buffer", () => {
-		expect(isAcceptable(createTodo, new Map())).toBe(true);
-		expect(isAcceptable(createTodo, new Map([["@rodeo", "x"]]))).toBe(true);
+		expect(isAcceptable(createProject, new Map())).toBe(true);
+		expect(isAcceptable(createProject, new Map([["@rodeo", "x"]]))).toBe(true);
 	});
 });
 
 describe("stageFor defaults", () => {
 	it("acceptable nodes default to accept; an unpicked ambiguous defaults to reject", () => {
 		const empty: StagingBuffer = new Map();
-		expect(stageFor(empty, createTodo)).toBe("accept");
+		expect(stageFor(empty, createProject)).toBe("accept");
 		expect(stageFor(empty, reuseProject)).toBe("accept");
 		expect(stageFor(empty, ambiguousPerson)).toBe("reject");
 	});
@@ -99,7 +97,7 @@ describe("stageFor defaults", () => {
 
 	it("an explicit entry overrides the default", () => {
 		const buffer: StagingBuffer = new Map([["@rodeo", "reject"]]);
-		expect(stageFor(buffer, createTodo)).toBe("reject");
+		expect(stageFor(buffer, createProject)).toBe("reject");
 	});
 });
 
@@ -122,7 +120,7 @@ describe("setStage respects the ambiguous accept-block (#181)", () => {
 	it("accepts a create/reuse node", () => {
 		const buffer = setStage(
 			new Map([["@rodeo", "reject"]]),
-			createTodo,
+			createProject,
 			"accept",
 		);
 		expect(buffer.get("@rodeo")).toBe("accept");
@@ -152,7 +150,7 @@ describe("rejectAll", () => {
 
 describe("buildDecisions", () => {
 	it("builds a vector of all-accepts for an unchanged ambiguous-free plan", () => {
-		const plan = [createTodo, reuseProject];
+		const plan = [createProject, reuseProject];
 		expect(buildDecisions(plan, new Map())).toEqual([
 			{ handle: "@rodeo", decision: "accept" },
 			{ handle: "@leadads", decision: "accept" },
@@ -161,7 +159,7 @@ describe("buildDecisions", () => {
 
 	it("reflects a rejected node in the vector", () => {
 		const buffer = setStage(new Map(), reuseProject, "reject");
-		expect(buildDecisions([createTodo, reuseProject], buffer)).toEqual([
+		expect(buildDecisions([createProject, reuseProject], buffer)).toEqual([
 			{ handle: "@rodeo", decision: "accept" },
 			{ handle: "@leadads", decision: "reject" },
 		]);
@@ -364,7 +362,7 @@ describe("repointFor — default-to-existing on a single near-match", () => {
 	});
 
 	it("a create node with NO near-matches has no default re-point", () => {
-		expect(repointFor(new Map(), createTodo)).toBeNull();
+		expect(repointFor(new Map(), createProject)).toBeNull();
 	});
 
 	it("a create node with 2+ near-matches does NOT auto-pick (defers to the picker)", () => {
@@ -453,127 +451,19 @@ describe("buildDecisions with near-match re-point", () => {
 	});
 });
 
-describe("downgradeNotices", () => {
-	const links: GraphLink[] = [
-		{ kind: "todo_project", from: "@rodeo", to: "@leadads" },
-		{ kind: "journal_ref", from: "@je", to: "@leadads" },
-	];
-
-	it("warns when an accepted Todo's rejected project link drops", () => {
-		const buffer = setStage(new Map(), reuseProject, "reject"); // todo accept (default)
-		const notices = downgradeNotices(PLAN, links, buffer);
-		expect(notices).toHaveLength(1);
-		expect(notices[0].todoHandle).toBe("@rodeo");
-		expect(notices[0].message).toMatch(/without its project link/i);
-	});
-
-	it("no notice when both endpoints are accepted", () => {
-		const plan = [createTodo, reuseProject];
-		expect(downgradeNotices(plan, links, new Map())).toEqual([]);
-	});
-
-	// A Todo linked to an AMBIGUOUS person/project target: once the user picks a
-	// candidate, the target is acceptable and the link is KEPT at apply, so no
-	// downgrade notice may fire. Without threading `repoints`, `stageFor` returns the
-	// ambiguous node's pre-pick `reject` default and a SPURIOUS notice appears.
-	it("no notice when a Todo's ambiguous link target has been PICKED", () => {
-		// @rodeo (todo, accept default) links to @morris (ambiguous person).
-		const personLinks: GraphLink[] = [
-			{ kind: "todo_person", from: "@rodeo", to: "@morris" },
-		];
-		// Unpicked: @morris sits at its reject default → the link genuinely drops.
-		expect(downgradeNotices(PLAN, personLinks, new Map())).toHaveLength(1);
-		// Picked: @morris is acceptable (default accept) → the link is kept, no notice.
-		expect(
-			downgradeNotices(
-				PLAN,
-				personLinks,
-				new Map(),
-				new Map([["@morris", "m1"]]),
-			),
-		).toEqual([]);
-	});
-
-	it("no notice when the Todo itself is rejected", () => {
-		let buffer = setStage(new Map(), reuseProject, "reject");
-		buffer = setStage(buffer, createTodo, "reject");
-		expect(downgradeNotices(PLAN, links, buffer)).toEqual([]);
-	});
-
-	it("ignores journal_ref links (those collapse to text, not a Todo downgrade)", () => {
-		const onlyJournalRef: GraphLink[] = [
-			{ kind: "journal_ref", from: "@je", to: "@leadads" },
-		];
-		const buffer = setStage(new Map(), reuseProject, "reject");
-		expect(downgradeNotices(PLAN, onlyJournalRef, buffer)).toEqual([]);
-	});
-
-	it("warns with the PERSON copy when an accepted Todo's rejected person link drops", () => {
-		const reusePerson: ResolvedNode = {
-			handle: "@alice",
-			type: "person",
-			disposition: "reuse",
-			label: "Alice",
-			entity_id: "a1",
-		};
-		const plan = [createTodo, reusePerson];
-		const personLinks: GraphLink[] = [
-			{ kind: "todo_person", from: "@rodeo", to: "@alice" },
-		];
-		const buffer = setStage(new Map(), reusePerson, "reject"); // todo accept (default)
-		const notices = downgradeNotices(plan, personLinks, buffer);
-		expect(notices).toHaveLength(1);
-		expect(notices[0].todoHandle).toBe("@rodeo");
-		// The person variant says "without its link to", NOT "without its project link to".
-		expect(notices[0].message).toMatch(/without its link to/i);
-		expect(notices[0].message).not.toMatch(/project link/i);
-	});
-
-	it("emits TWO distinct, uniquely-keyed notices when one Todo loses both its links", () => {
-		// The #179 graph wires @rodeo with BOTH a todo_project (@leadads) and a
-		// todo_person (@morris). Reject both while keeping the Todo: two notices,
-		// each keyed by (todoHandle, targetHandle) — never a colliding key.
-		const reusePerson: ResolvedNode = {
-			handle: "@morris",
-			type: "person",
-			disposition: "reuse",
-			label: "Morris",
-			entity_id: "m1",
-		};
-		const plan = [createTodo, reuseProject, reusePerson];
-		const bothLinks: GraphLink[] = [
-			{ kind: "todo_project", from: "@rodeo", to: "@leadads" },
-			{ kind: "todo_person", from: "@rodeo", to: "@morris" },
-		];
-		let buffer = setStage(new Map(), reuseProject, "reject");
-		buffer = setStage(buffer, reusePerson, "reject"); // @rodeo stays accepted (default)
-		const notices = downgradeNotices(plan, bothLinks, buffer);
-		expect(notices).toHaveLength(2);
-		// Both notices are about @rodeo, but their (todoHandle:targetHandle) keys differ.
-		const keys = notices.map((n) => `${n.todoHandle}:${n.targetHandle}`);
-		expect(new Set(keys).size).toBe(2);
-		expect(keys).toContain("@rodeo:@leadads");
-		expect(keys).toContain("@rodeo:@morris");
-	});
-});
-
 describe("parseGraphLinks", () => {
-	it("parses the three known link kinds and drops malformed entries", () => {
+	it("parses the one known link kind and drops every other/malformed entry", () => {
 		const payload = {
 			links: [
-				{ kind: "todo_project", from: "@rodeo", to: "@leadads" },
-				{ kind: "todo_person", from: "@rodeo", to: "@morris", role: "related" },
 				{ kind: "journal_ref", from: "@je", to: "@morris" },
+				// Unknown link kinds must drop.
+				{ kind: "other_ref", from: "@rodeo", to: "@leadads" },
 				{ kind: "bogus", from: "@a", to: "@b" },
 				{ from: "@a" },
 				null,
 			],
 		};
-		expect(parseGraphLinks(payload)).toEqual([
-			{ kind: "todo_project", from: "@rodeo", to: "@leadads" },
-			{ kind: "todo_person", from: "@rodeo", to: "@morris" },
-			{ kind: "journal_ref", from: "@je", to: "@morris" },
-		]);
+		expect(parseGraphLinks(payload)).toEqual([{ from: "@je", to: "@morris" }]);
 	});
 
 	it("degrades a missing/non-array links field to []", () => {
@@ -582,7 +472,7 @@ describe("parseGraphLinks", () => {
 		expect(parseGraphLinks({ links: "nope" })).toEqual([]);
 	});
 
-	it("carries a journal_ref's append_text, but only for journal_ref kinds", () => {
+	it("carries a journal_ref's append_text when it is a string", () => {
 		const payload = {
 			links: [
 				{
@@ -591,21 +481,13 @@ describe("parseGraphLinks", () => {
 					to: "@priya",
 					append_text: "Hi P.",
 				},
-				// append_text on a non-journal_ref kind is ignored (not a placement field).
-				{
-					kind: "todo_person",
-					from: "@rodeo",
-					to: "@priya",
-					append_text: "ignored",
-				},
 				// a non-string append_text is dropped (the field is simply absent).
 				{ kind: "journal_ref", from: "@je", to: "@morris", append_text: 7 },
 			],
 		};
 		expect(parseGraphLinks(payload)).toEqual([
-			{ kind: "journal_ref", from: "@je", to: "@priya", appendText: "Hi P." },
-			{ kind: "todo_person", from: "@rodeo", to: "@priya" },
-			{ kind: "journal_ref", from: "@je", to: "@morris" },
+			{ from: "@je", to: "@priya", appendText: "Hi P." },
+			{ from: "@je", to: "@morris" },
 		]);
 	});
 });
@@ -620,9 +502,8 @@ describe("appendedClauses", () => {
 	const plan = [reusePerson];
 
 	it("surfaces the appended clause for an accepted journal_ref carrying append_text", () => {
-		const links: GraphLink[] = [
+		const links = [
 			{
-				kind: "journal_ref",
 				from: "@je",
 				to: "@priya",
 				appendText: "Followed up with Priya.",
@@ -639,27 +520,22 @@ describe("appendedClauses", () => {
 	});
 
 	it("omits the clause when its target node is staged reject", () => {
-		const links: GraphLink[] = [
-			{ kind: "journal_ref", from: "@je", to: "@priya", appendText: "x." },
-		];
+		const links = [{ from: "@je", to: "@priya", appendText: "x." }];
 		const buffer = setStage(new Map(), reusePerson, "reject");
 		expect(appendedClauses(plan, links, buffer)).toEqual([]);
 	});
 
 	it("ignores a journal_ref with no append_text (the match_text/splice path)", () => {
-		const links: GraphLink[] = [
-			{ kind: "journal_ref", from: "@je", to: "@priya" },
-		];
+		const links = [{ from: "@je", to: "@priya" }];
 		expect(appendedClauses(plan, links, new Map())).toEqual([]);
 	});
 
 	it("emits one clause per link, even for two journal_refs to the SAME entity", () => {
 		// Core appends BOTH clauses (the apply loop iterates every journal_ref), so the
 		// preview must show both — one entry per link, keyed distinctly by the card.
-		const links: GraphLink[] = [
-			{ kind: "journal_ref", from: "@je", to: "@priya", appendText: "Saw P." },
+		const links = [
+			{ from: "@je", to: "@priya", appendText: "Saw P." },
 			{
-				kind: "journal_ref",
 				from: "@je",
 				to: "@priya",
 				appendText: "And P. left.",
@@ -675,8 +551,8 @@ describe("appendedClauses", () => {
 });
 
 // The graph payload carries each node's ORIGINAL proposed fields; editing reads from
-// and diffs against it. A representative #179-shaped payload with all three types,
-// each carrying an optional, plus a reuse hint that is irrelevant to seeding.
+// and diffs against it. A representative payload with both node types, each carrying
+// an optional, plus a reuse hint that is irrelevant to seeding.
 const GRAPH_PAYLOAD = {
 	entities: [
 		{ handle: "@leadads", type: "project", name: "Lead Ads", note: "guessed" },
@@ -687,9 +563,9 @@ const GRAPH_PAYLOAD = {
 			note: "from note",
 			aliases: ["Mo"],
 		},
-		{ handle: "@rodeo", type: "todo", title: "Figure out the Rodeo side" },
+		{ handle: "@rodeo", type: "project", name: "Rodeo integration" },
 	],
-	links: [{ kind: "todo_project", from: "@rodeo", to: "@leadads" }],
+	links: [{ kind: "journal_ref", from: "@je", to: "@leadads" }],
 };
 
 describe("parseGraphEntities", () => {
@@ -706,7 +582,9 @@ describe("parseGraphEntities", () => {
 	});
 
 	it("skips entries without a string handle", () => {
-		const map = parseGraphEntities({ entities: [{ type: "todo" }, null, 7] });
+		const map = parseGraphEntities({
+			entities: [{ type: "project" }, null, 7],
+		});
 		expect(map.size).toBe(0);
 	});
 });
@@ -714,10 +592,11 @@ describe("parseGraphEntities", () => {
 describe("seedNodeDraft", () => {
 	const entities = parseGraphEntities(GRAPH_PAYLOAD);
 
-	it("seeds a todo draft (title/note) from the payload", () => {
-		expect(seedNodeDraft(createTodo, entities.get("@rodeo"))).toEqual({
-			type: "todo",
-			title: "Figure out the Rodeo side",
+	it("seeds a project draft (name/outcome/note) from the payload", () => {
+		expect(seedNodeDraft(createProject, entities.get("@rodeo"))).toEqual({
+			type: "project",
+			name: "Rodeo integration",
+			outcome: "",
 			note: "",
 		});
 	});
@@ -745,7 +624,7 @@ describe("seedNodeDraft", () => {
 	it("returns null when the node's entity is missing from the payload", () => {
 		const orphan: ResolvedNode = {
 			handle: "@ghost",
-			type: "todo",
+			type: "project",
 			disposition: "create",
 			label: "Ghost",
 		};
@@ -754,10 +633,15 @@ describe("seedNodeDraft", () => {
 });
 
 describe("draftRequiredEmpty / draftLabel", () => {
-	it("flags a blank required field (title/name)", () => {
-		expect(draftRequiredEmpty({ type: "todo", title: "  ", note: "x" })).toBe(
-			true,
-		);
+	it("flags a blank required field (name)", () => {
+		expect(
+			draftRequiredEmpty({
+				type: "project",
+				name: "  ",
+				outcome: "",
+				note: "x",
+			}),
+		).toBe(true);
 		expect(
 			draftRequiredEmpty({
 				type: "person",
@@ -768,14 +652,24 @@ describe("draftRequiredEmpty / draftLabel", () => {
 		).toBe(false);
 	});
 
-	it("draftLabel shows the edited title/name, falling back to the node label", () => {
+	it("draftLabel shows the edited name, falling back to the node label", () => {
 		expect(
-			draftLabel(createTodo, { type: "todo", title: "Renamed", note: "" }),
+			draftLabel(createProject, {
+				type: "project",
+				name: "Renamed",
+				outcome: "",
+				note: "",
+			}),
 		).toBe("Renamed");
 		// A blanked required field falls back to the node's original label.
 		expect(
-			draftLabel(createTodo, { type: "todo", title: "   ", note: "" }),
-		).toBe("Figure out the Rodeo side");
+			draftLabel(createProject, {
+				type: "project",
+				name: "   ",
+				outcome: "",
+				note: "",
+			}),
+		).toBe("Rodeo integration");
 	});
 });
 
@@ -787,8 +681,9 @@ describe("buildEditedFields", () => {
 
 	it("returns undefined for an unchanged draft (no correction sent)", () => {
 		const draft: GraphNodeDraft = {
-			type: "todo",
-			title: "Figure out the Rodeo side",
+			type: "project",
+			name: "Rodeo integration",
+			outcome: "",
 			note: "",
 		};
 		expect(buildEditedFields(rodeo, draft)).toBeUndefined();
@@ -796,12 +691,13 @@ describe("buildEditedFields", () => {
 
 	it("emits only the changed required field", () => {
 		const draft: GraphNodeDraft = {
-			type: "todo",
-			title: "Sort out the Rodeo logistics",
+			type: "project",
+			name: "Rodeo rollout",
+			outcome: "",
 			note: "",
 		};
 		expect(buildEditedFields(rodeo, draft)).toEqual({
-			title: "Sort out the Rodeo logistics",
+			name: "Rodeo rollout",
 		});
 	});
 
@@ -817,10 +713,11 @@ describe("buildEditedFields", () => {
 	});
 
 	it("does not emit a blanked optional that was already absent", () => {
-		// The todo had no note; leaving it blank is not a change.
+		// The @rodeo project had no note; leaving it blank is not a change.
 		const draft: GraphNodeDraft = {
-			type: "todo",
-			title: "Figure out the Rodeo side",
+			type: "project",
+			name: "Rodeo integration",
+			outcome: "",
 			note: "",
 		};
 		expect(buildEditedFields(rodeo, draft)).toBeUndefined();
@@ -859,28 +756,29 @@ describe("buildEditedFields", () => {
 
 	it("never emits a blanked required field (it cannot be cleared)", () => {
 		const draft: GraphNodeDraft = {
-			type: "todo",
-			title: "",
+			type: "project",
+			name: "",
+			outcome: "",
 			note: "new note",
 		};
-		// Title omitted (blank required); only the note change rides.
+		// Name omitted (blank required); only the note change rides.
 		expect(buildEditedFields(rodeo, draft)).toEqual({ note: "new note" });
 	});
 });
 
 describe("buildDecisions with edits", () => {
 	const entities = parseGraphEntities(GRAPH_PAYLOAD);
-	const plan = [createTodo, reuseProject];
+	const plan = [createProject, reuseProject];
 
 	it("folds edited_fields into an accepted create node's decision", () => {
 		const drafts = new Map<string, GraphNodeDraft>([
-			["@rodeo", { type: "todo", title: "Renamed", note: "" }],
+			["@rodeo", { type: "project", name: "Renamed", outcome: "", note: "" }],
 		]);
 		expect(buildDecisions(plan, new Map(), drafts, entities)).toEqual([
 			{
 				handle: "@rodeo",
 				decision: "accept",
-				edited_fields: { title: "Renamed" },
+				edited_fields: { name: "Renamed" },
 			},
 			{ handle: "@leadads", decision: "accept" },
 		]);
@@ -890,7 +788,12 @@ describe("buildDecisions with edits", () => {
 		const drafts = new Map<string, GraphNodeDraft>([
 			[
 				"@rodeo",
-				{ type: "todo", title: "Figure out the Rodeo side", note: "" },
+				{
+					type: "project",
+					name: "Rodeo integration",
+					outcome: "",
+					note: "",
+				},
 			],
 		]);
 		expect(buildDecisions(plan, new Map(), drafts, entities)).toEqual([
@@ -901,9 +804,9 @@ describe("buildDecisions with edits", () => {
 
 	it("drops the edit when the node is rejected (a rejected node is not minted)", () => {
 		const drafts = new Map<string, GraphNodeDraft>([
-			["@rodeo", { type: "todo", title: "Renamed", note: "" }],
+			["@rodeo", { type: "project", name: "Renamed", outcome: "", note: "" }],
 		]);
-		const buffer = setStage(new Map(), createTodo, "reject");
+		const buffer = setStage(new Map(), createProject, "reject");
 		expect(buildDecisions(plan, buffer, drafts, entities)).toEqual([
 			{ handle: "@rodeo", decision: "reject" },
 			{ handle: "@leadads", decision: "accept" },
@@ -946,14 +849,14 @@ describe("reviewReducer — cross-buffer invariants live in one transition", () 
 	it("stage records an explicit accept or reject for a create/reuse node", () => {
 		const rejected = reviewReducer(initialReviewState, {
 			type: "stage",
-			node: createTodo,
+			node: createProject,
 			stage: "reject",
 		});
 		expect(rejected.stages.get("@rodeo")).toBe("reject");
 		// And a subsequent accept flips it back (a create node is always acceptable).
 		const accepted = reviewReducer(rejected, {
 			type: "stage",
-			node: createTodo,
+			node: createProject,
 			stage: "accept",
 		});
 		expect(accepted.stages.get("@rodeo")).toBe("accept");
@@ -1013,10 +916,15 @@ describe("reviewReducer — cross-buffer invariants live in one transition", () 
 	});
 
 	it("saveDraft records the draft AND forces accept", () => {
-		const draft: GraphNodeDraft = { type: "todo", title: "Renamed", note: "" };
+		const draft: GraphNodeDraft = {
+			type: "project",
+			name: "Renamed",
+			outcome: "",
+			note: "",
+		};
 		const next = reviewReducer(initialReviewState, {
 			type: "saveDraft",
-			node: createTodo,
+			node: createProject,
 			draft,
 		});
 		expect(next.drafts.get("@rodeo")).toEqual(draft);
@@ -1041,8 +949,8 @@ describe("reviewReducer — cross-buffer invariants live in one transition", () 
 		});
 		dirtied = reviewReducer(dirtied, {
 			type: "saveDraft",
-			node: createTodo,
-			draft: { type: "todo", title: "Renamed", note: "" },
+			node: createProject,
+			draft: { type: "project", name: "Renamed", outcome: "", note: "" },
 		});
 		expect(dirtied.stages.size).toBeGreaterThan(0);
 		expect(dirtied.repoints.size).toBeGreaterThan(0);
@@ -1058,7 +966,7 @@ describe("reviewReducer — cross-buffer invariants live in one transition", () 
 		const before = initialReviewState;
 		const next = reviewReducer(before, {
 			type: "stage",
-			node: createTodo,
+			node: createProject,
 			stage: "reject",
 		});
 		expect(next).not.toBe(before);
@@ -1074,13 +982,18 @@ describe("nodeView — the row's four per-node facts from the opaque state", () 
 			stages: new Map([["@rodeo", "reject"]]),
 			repoints: new Map([["@leadads", "existing-x"]]),
 			drafts: new Map([
-				["@rodeo", { type: "todo", title: "Renamed", note: "" }],
+				["@rodeo", { type: "project", name: "Renamed", outcome: "", note: "" }],
 			]),
 		};
-		const rodeo = nodeView(state, createTodo);
+		const rodeo = nodeView(state, createProject);
 		expect(rodeo.stage).toBe("reject");
 		expect(rodeo.explicitStage).toBe("reject");
-		expect(rodeo.draft).toEqual({ type: "todo", title: "Renamed", note: "" });
+		expect(rodeo.draft).toEqual({
+			type: "project",
+			name: "Renamed",
+			outcome: "",
+			note: "",
+		});
 		expect(rodeo.repointId).toBeNull();
 	});
 

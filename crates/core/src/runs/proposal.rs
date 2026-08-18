@@ -236,13 +236,10 @@ async fn review_context_for_proposal(
                 current_project: Some(current),
             }
         }
-        // `update_todo` is a partial MERGE (ADR-0033): omitted fields are NOT
-        // dropped, so there is no "what a REPLACE removes" diff to surface — it
-        // carries no review context (see `carries_review_context`). No proposable
-        // Media/Habit kind carries review context either (those mutations are
-        // user-path-only). These degrade gracefully rather than panic if a future
-        // kind reaches here.
-        EntityType::Todo | EntityType::Media | EntityType::Habit => return Ok(None),
+        // No proposable Media/Habit kind carries review context (those
+        // mutations are user-path-only). These degrade gracefully rather than
+        // panic if a future kind reaches here.
+        EntityType::Media | EntityType::Habit => return Ok(None),
     };
 
     Ok(Some(context))

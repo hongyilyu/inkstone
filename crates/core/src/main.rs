@@ -18,7 +18,6 @@ mod observations;
 mod protocol;
 mod provider_auth;
 mod providers;
-mod recurrence;
 mod resume;
 mod runs;
 mod settings;
@@ -91,11 +90,9 @@ async fn main() -> Result<()> {
     let pool = db::open().await?;
 
     // Seed the bundled example Skills into the Core-managed skills dir on first
-    // run (ADR-0036), so the feature is live on a fresh install. Best-effort and
-    // only when the dir is absent — an existing dir is the user's (drop-in
-    // ownership), so edits and deletes survive and we never re-seed. A failure is
-    // logged inside, never fatal: worst case the install ships no skills until one
-    // is dropped in.
+    // run (ADR-0036), then migrate only byte-identical legacy bundles. User edits
+    // and deletes survive. A failure is logged inside, never fatal: worst case
+    // the install ships no skills until one is dropped in.
     skills::seed_if_absent();
 
     // Boot recovery sweep (ADR-0012): error any Run left `running` by a prior

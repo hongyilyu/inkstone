@@ -5,7 +5,7 @@ import type { QueryClient } from "@tanstack/react-query";
  * Library list (`["library-items"]`) and every open Inspector's per-entity backlink
  * read (`["entity-backlinks"]`, ADR-0050 — a prefix that matches each
  * `["entity-backlinks", id]` query). A write changes both what the Library shows and
- * what links to an open Entity (a new mention/todo link), so the two refresh
+ * what links to an open Entity (for example, a new mention), so the two refresh
  * together. The single owner of that policy, so a new entity-writing path can't
  * refresh one and forget the other. Returns the combined promise for callers that
  * await the refetch before advancing.

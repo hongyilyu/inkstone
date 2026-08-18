@@ -1,6 +1,8 @@
 # User-initiated Entity CRUD writes directly; Proposals gate only the agent
 
+Status: Superseded in part by ADR-0064
 / amends [ADR-0016](./0016-proposal-application-policy.md)
+/ superseded in part by [ADR-0064 (task ownership moves to TickTick)](./0064-task-ownership-moves-to-ticktick.md) — the `update_todo` three-way-merge path retired; direct-write CRUD for Person/Project/Journal/Media survives
 
 ADR-0016 says "every Workspace mutation is a Proposal; one write path." That holds
 for **Worker-initiated** mutations. This ADR scopes it there and adds a second

@@ -12,7 +12,7 @@ use sqlx::SqlitePool;
 
 use crate::db;
 use crate::entities;
-use crate::mutation::{MutationKind, TargetRefs, WriteOp};
+use crate::mutation::{DirectMutationKind, TargetRefs, WriteOp};
 use crate::mutation_target::{self, TargetError};
 
 /// A successful user mutation: the affected Entity id, present on create/update
@@ -26,8 +26,8 @@ pub struct Outcome {
 /// `Invalid → -32602`, `Internal → -32603`.
 #[derive(Debug)]
 pub enum MutateError {
-    /// Invalid inputs: an unsupported `mutation_kind`, a payload that fails
-    /// schema validation, or a target reference that does not resolve.
+    /// Invalid inputs: a payload that fails schema validation or a target
+    /// reference that does not resolve.
     Invalid(String),
     /// A DB error or inconsistency. Logged server-side; never surfaced verbatim.
     Internal(anyhow::Error),
@@ -41,14 +41,10 @@ pub enum MutateError {
 /// same-thread Journal guard does not apply to user writes.
 pub async fn apply(
     pool: &SqlitePool,
-    mutation_kind: &str,
+    mutation_kind: DirectMutationKind,
     payload: &serde_json::Value,
 ) -> Result<Outcome, MutateError> {
-    // Resolve the wire string once (the single string→type point on this path):
-    // an unknown kind is a client error (-32602), the old validate `_` arm's role.
-    let kind = MutationKind::from_wire(mutation_kind).ok_or_else(|| {
-        MutateError::Invalid(format!("mutation_kind {mutation_kind:?} not supported"))
-    })?;
+    let kind = mutation_kind.mutation_kind();
     let desc = kind.describe();
 
     (desc.validate)(payload).map_err(MutateError::Invalid)?;
@@ -58,10 +54,8 @@ pub async fn apply(
     // anchor). The anchor-bearing creates are exactly the kinds that resolve a
     // source anchor; reject the directive rather than validate provenance and
     // persist no entity_sources row.
-    if matches!(
-        desc.target_refs,
-        TargetRefs::SourceAnchor | TargetRefs::SourceAnchorAndTodoCreateRefs
-    ) && entities::source_journal_entry_id(payload).is_some()
+    if matches!(desc.target_refs, TargetRefs::SourceAnchor)
+        && entities::source_journal_entry_id(payload).is_some()
     {
         return Err(MutateError::Invalid(
             "source_journal_entry_id is not supported on direct user creates".to_string(),
@@ -114,11 +108,23 @@ pub async fn apply(
 
 #[cfg(test)]
 mod tests {
-    use super::{MutateError, apply};
+    use super::{MutateError, apply as apply_direct};
     use crate::db::test_support::memory_pool;
+    use crate::mutation::DirectMutationKind;
     use crate::observations::{
         ObservationRecordInput, RecordObservationsInput, record_observations,
     };
+    use sqlx::SqlitePool;
+
+    async fn apply(
+        pool: &SqlitePool,
+        mutation_kind: &str,
+        payload: &serde_json::Value,
+    ) -> Result<super::Outcome, MutateError> {
+        let kind =
+            DirectMutationKind::from_wire(mutation_kind).expect("test uses a direct mutation kind");
+        apply_direct(pool, kind, payload).await
+    }
 
     // A user `create_person` lands a canonical Entity directly: exactly one
     // `entities` row (type='person', created_by='user', created_via_proposal_id
@@ -186,77 +192,6 @@ mod tests {
         assert_eq!(
             source_count, 0,
             "a plain user create writes no entity_source row"
-        );
-    }
-
-    // A user `update_todo` whose partial sets `due_at` to JSON `null` CLEARS that
-    // field (ADR-0033 three-way merge): the stored Todo data carries no `due_at`
-    // key afterward, and the update writes a seq-2 revision with a NULL proposal_id
-    // (a direct user edit). Seeds the Todo via the create path so it starts WITH a
-    // `due_at` to clear.
-    #[tokio::test]
-    async fn update_todo_null_clears_due_at() {
-        let pool = memory_pool().await;
-
-        let outcome = apply(
-            &pool,
-            "create_todo",
-            &serde_json::json!({
-                "todo": { "title": "Ship it", "due_at": "2026-07-01T09:00:00" }
-            }),
-        )
-        .await
-        .expect("user create_todo succeeds");
-        let todo_id = outcome.entity_id.expect("create yields an entity id");
-
-        // Sanity: the seeded Todo has a due_at to clear.
-        let seeded: String = sqlx::query_scalar("SELECT data FROM entities WHERE id = ?1")
-            .bind(&todo_id)
-            .fetch_one(&pool)
-            .await
-            .expect("seeded todo data");
-        let seeded: serde_json::Value = serde_json::from_str(&seeded).expect("seeded data is JSON");
-        assert!(
-            seeded.get("due_at").is_some(),
-            "seeded Todo has a due_at: {seeded}"
-        );
-
-        apply(
-            &pool,
-            "update_todo",
-            &serde_json::json!({ "todo_id": todo_id, "todo": { "due_at": null } }),
-        )
-        .await
-        .expect("user update_todo clears due_at");
-
-        let stored: String = sqlx::query_scalar("SELECT data FROM entities WHERE id = ?1")
-            .bind(&todo_id)
-            .fetch_one(&pool)
-            .await
-            .expect("stored todo data");
-        let stored: serde_json::Value = serde_json::from_str(&stored).expect("stored data is JSON");
-        assert!(
-            stored.get("due_at").is_none(),
-            "clearing via null removes the due_at key entirely: {stored}"
-        );
-        assert_eq!(
-            stored.get("title").and_then(serde_json::Value::as_str),
-            Some("Ship it"),
-            "the unsupplied title is preserved: {stored}"
-        );
-
-        let (seq, rev_proposal): (i64, Option<String>) = sqlx::query_as(
-            "SELECT seq, proposal_id FROM entity_revisions \
-             WHERE entity_id = ?1 ORDER BY seq DESC LIMIT 1",
-        )
-        .bind(&todo_id)
-        .fetch_one(&pool)
-        .await
-        .expect("latest revision row");
-        assert_eq!(seq, 2, "the clear writes the second revision");
-        assert_eq!(
-            rev_proposal, None,
-            "a direct user edit writes a NULL-proposal revision"
         );
     }
 
@@ -402,23 +337,13 @@ mod tests {
 
     // A `null` on a NON-clearable (required) field is rejected as
     // `MutateError::Invalid` (ADR-0033): the sentinel-clear carve-out covers only
-    // optional fields, so clearing `title`/`status`/`name` is meaningless and the
+    // optional fields, so clearing `status`/`name` is meaningless and the
     // validator must reject it. Guards against a regression broadening the carve-out
     // to required fields. Each target is seeded via the create path first so the
     // failure is the null update, not a missing target.
     #[tokio::test]
     async fn null_on_non_clearable_field_is_rejected() {
         let pool = memory_pool().await;
-
-        let todo_id = apply(
-            &pool,
-            "create_todo",
-            &serde_json::json!({ "todo": { "title": "Ship it" } }),
-        )
-        .await
-        .expect("user create_todo succeeds")
-        .entity_id
-        .expect("create yields an entity id");
 
         let person_id = apply(
             &pool,
@@ -441,14 +366,6 @@ mod tests {
         .expect("create yields an entity id");
 
         let rejections = [
-            (
-                "update_todo",
-                serde_json::json!({ "todo_id": todo_id, "todo": { "title": null } }),
-            ),
-            (
-                "update_todo",
-                serde_json::json!({ "todo_id": todo_id, "todo": { "status": null } }),
-            ),
             (
                 "update_person",
                 serde_json::json!({ "entity_id": person_id, "name": null }),
@@ -478,7 +395,7 @@ mod tests {
     }
 
     // A direct user create carrying `source_journal_entry_id` is REJECTED as
-    // `Invalid` (ADR-0033): the Library is anchor-less. Covers all three create kinds.
+    // `Invalid` (ADR-0033): the Library is anchor-less. Covers both create kinds.
     #[tokio::test]
     async fn create_with_source_journal_entry_id_is_rejected() {
         let pool = memory_pool().await;
@@ -492,13 +409,6 @@ mod tests {
             (
                 "create_project",
                 serde_json::json!({ "name": "Roadmap", "source_journal_entry_id": je_id }),
-            ),
-            (
-                "create_todo",
-                serde_json::json!({
-                    "todo": { "title": "Ship it" },
-                    "source_journal_entry_id": je_id
-                }),
             ),
         ];
 

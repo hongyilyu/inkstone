@@ -96,11 +96,11 @@ fn missing_workflow_file_fails_fast() {
 /// Static content guard on the shipped `crates/core/workflows/default.toml`
 /// (not a fixture; never boots Core): its `system_prompt` must route each
 /// Message correctly — journal-worthy material that also mentions
-/// People/Projects/actions → ONE `apply_intent_graph` intent graph (ADR-0042);
-/// direct actionable/contact/outcome capture → create_todo/create_project/
-/// create_person sourced from the user Message; pure conversation → no
-/// proposal. Real-model behavior is non-deterministic, so this guards the
-/// prompt text only.
+/// People/Projects → ONE `apply_intent_graph` intent graph (ADR-0042); direct
+/// contact/outcome capture → create_project/create_person sourced from the
+/// user Message; reminders/tasks → the TickTick redirect (ADR-0064, no
+/// mutation); pure conversation → no proposal. Real-model behavior is
+/// non-deterministic, so this guards the prompt text only.
 #[test]
 fn default_workflow_prompts_for_capture_intent_boundary() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("workflows/default.toml");
@@ -123,31 +123,35 @@ fn default_workflow_prompts_for_capture_intent_boundary() {
             && lower.contains("event"),
         "default.toml system_prompt must define what counts as a Journal Entry, got: {system_prompt:?}"
     );
-    // Bucket 2 — the reminder boundary INVERTS: a reminder/task/obligation is
-    // still kept OUT of a Journal Entry, but is now captured directly as a Todo
-    // sourced from the user Message (not dropped silently as before).
+    // Bucket 2 — the reminder boundary (ADR-0064): a reminder/task/obligation is
+    // kept OUT of a Journal Entry AND out of Inkstone entirely — the model's
+    // honest move is the TickTick redirect, never a Workspace mutation.
     assert!(
         lower.contains("do not propose a journal entry")
             && lower.contains("reminders")
             && lower.contains("tasks")
-            && lower.contains("todos")
-            && lower.contains("future obligations"),
+            && lower.contains("future"),
         "default.toml system_prompt must still keep reminders/tasks out of Journal Entries, got: {system_prompt:?}"
     );
     assert!(
-        !lower.contains("without implying the reminder was saved")
-            && !lower.contains("no extraction"),
-        "default.toml system_prompt must no longer drop reminders silently — they are captured as Todos now, got: {system_prompt:?}"
+        lower.contains("ticktick is the user's task system")
+            && lower.contains("add it in ticktick")
+            && lower.contains("do not propose any workspace mutation for it"),
+        "default.toml system_prompt must route reminders/tasks to TickTick with no mutation, got: {system_prompt:?}"
+    );
+    // Task capture is fully retired: no todo mutation kind may be prompted.
+    assert!(
+        !lower.contains("create_todo") && !lower.contains("update_todo"),
+        "default.toml system_prompt must not mention the retired todo mutation kinds, got: {system_prompt:?}"
     );
     // Direct capture (no Journal Entry, sourced from the user Message): each of
-    // the three shapes routes to its create_* mutation.
+    // the two surviving shapes routes to its create_* mutation.
     assert!(
-        lower.contains("create_todo")
-            && lower.contains("create_project")
+        lower.contains("create_project")
             && lower.contains("create_person")
             && lower.contains("sourced from the user message")
             && lower.contains("do not create a journal entry first"),
-        "default.toml system_prompt must describe DIRECT create_todo/create_project/create_person capture sourced from the user Message, got: {system_prompt:?}"
+        "default.toml system_prompt must describe DIRECT create_project/create_person capture sourced from the user Message, got: {system_prompt:?}"
     );
     assert!(
         lower.contains("outcome, not a category"),
@@ -156,27 +160,14 @@ fn default_workflow_prompts_for_capture_intent_boundary() {
     assert!(
         lower.contains("names a project")
             && lower.contains("concrete next")
-            && lower.contains("capture the action")
-            && lower.contains("as a todo first")
+            && lower.contains("point them to ticktick")
             && lower.contains("do not turn the action phrase into a new project name"),
-        "default.toml system_prompt must route a named Project plus explicit action to Todo-first capture, got: {system_prompt:?}"
+        "default.toml system_prompt must route a named Project plus explicit action to TickTick, got: {system_prompt:?}"
     );
     // Bucket 3 — ordinary conversation captures nothing.
     assert!(
         lower.contains("propose nothing"),
         "default.toml system_prompt must tell the model to propose nothing for ordinary conversation, got: {system_prompt:?}"
-    );
-    // Direct-Todo enrichment: after an accepted direct create_todo, the model must
-    // know to link existing OR newly-created People/Projects via update_todo, one
-    // at a time. Without this the production model never drives the enrichment the
-    // faux worker exercises (PR #134 review gap).
-    assert!(
-        lower.contains("after a direct create_todo is accepted")
-            && lower.contains("update_todo")
-            && lower.contains("add_person_refs")
-            && lower.contains("project_id")
-            && lower.contains("one mutation at a time"),
-        "default.toml system_prompt must describe enriching an accepted direct Todo with update_todo links, got: {system_prompt:?}"
     );
     assert!(
         lower.contains("create")
@@ -217,17 +208,8 @@ fn default_workflow_prompts_for_capture_intent_boundary() {
         "default.toml system_prompt must describe recognizing one intent graph and proposing one apply_intent_graph with entities + links + existing_id hints from search_entities, got: {system_prompt:?}"
     );
     assert!(
-        lower.contains("todo_project")
-            && lower.contains("todo_person")
-            && lower.contains("journal_ref")
-            && lower.contains("waiting_on")
-            && lower.contains("related"),
-        "default.toml system_prompt must name the three link kinds (todo_project/todo_person/journal_ref) and the todo_person roles, got: {system_prompt:?}"
-    );
-    // The Todo's owning Project is a LINK, not a field on the todo node (#179).
-    assert!(
-        lower.contains("todo_project link") && lower.contains("not a field"),
-        "default.toml system_prompt must express the Todo→Project relationship as a todo_project link, not a field on the todo node, got: {system_prompt:?}"
+        lower.contains("journal_ref") && !lower.contains("todo_project") && !lower.contains("todo_person"),
+        "default.toml system_prompt must name journal_ref as the one link kind (the todo links are retired), got: {system_prompt:?}"
     );
     // Near-match gap (ADR-0042 near-match amendment): the model must NOT fold an
     // activity/aspect qualifier (e.g. "testing") into a Project NAME — "Lead Ads
@@ -292,5 +274,12 @@ fn default_workflow_prompts_for_capture_intent_boundary() {
             "search_entities",
         ],
         "default.toml must allowlist only the exact Journal Entry intake tools"
+    );
+    // The S4 cutover exposes the Worker-executed ticktick_* read tools to the
+    // default Workflow (external-task-views A3).
+    assert_eq!(
+        doc.get("external_tools").and_then(|v| v.as_bool()),
+        Some(true),
+        "default.toml must set external_tools = true (the ticktick_* exposure switch)"
     );
 }

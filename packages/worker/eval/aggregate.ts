@@ -40,7 +40,7 @@ export function loadFixtures(dir: string = CASES_DIR): EvalFixture[] {
  * expected kind), + the fixture count. Means over an empty set are 0 (n=0), never
  * NaN. `kind_match_rate` is tracked separately from `entity_f1` because a proposal
  * can wrap the CORRECT records under the WRONG kind (e.g. an apply_intent_graph
- * that should have been a create_todo): entity_f1 still credits the record-level
+ * that should have been a create_person): entity_f1 still credits the record-level
  * match, so without a kind metric a kind-confusion regression would be invisible. */
 export interface Aggregate {
 	entity_f1: number;

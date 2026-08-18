@@ -1,4 +1,4 @@
-// The promoted payload-schema registry (ADR-0009): the 15 agent-proposable wire
+// The promoted payload-schema registry (ADR-0009): the 12 agent-proposable wire
 // kinds moved here from `tests/contract`, plus the 3 ungated media schemas
 // (ADR-0059) the Web codec consumes. This test pins the promotion (the registry
 // is intact and decodes) and guards the ungated boundary (media is NOT in
@@ -17,7 +17,7 @@ import {
 	type WireKind,
 } from "../src/index.js";
 
-/** The 15 agent-proposable wire kinds (mirrors `completeness.test`'s lock). */
+/** The 12 agent-proposable wire kinds (mirrors `completeness.test`'s lock). */
 const WIRE_KINDS = [
 	"create_journal_entry",
 	"update_journal_entry",
@@ -29,9 +29,6 @@ const WIRE_KINDS = [
 	"create_project",
 	"update_project",
 	"delete_project",
-	"create_todo",
-	"update_todo",
-	"delete_todo",
 	"apply_intent_graph",
 	"record_observations",
 ] as const;
@@ -39,16 +36,17 @@ const WIRE_KINDS = [
 const sorted = (kinds: readonly string[]): string[] => [...kinds].sort();
 
 describe("promoted payload registry", () => {
-	it("holds exactly the 15 wire kinds", () => {
+	it("holds exactly the 12 wire kinds", () => {
 		expect(sorted(Object.keys(schemas))).toStrictEqual(sorted(WIRE_KINDS));
 	});
 
-	it("decodes a valid create_todo payload", () => {
+	it("decodes a valid create_person payload", () => {
 		const payload = {
-			todo: { title: "buy milk", status: "active" },
+			name: "Alice",
+			note: "daycare coordinator",
 		};
 		expect(
-			S.decodeUnknownSync(schemas.create_todo as S.Schema<unknown, unknown>)(
+			S.decodeUnknownSync(schemas.create_person as S.Schema<unknown, unknown>)(
 				payload,
 			),
 		).toEqual(payload);
@@ -196,13 +194,8 @@ describe("apply_intent_graph payload (ADR-0042)", () => {
 					name: "Lead Ads",
 					existing_id: "00000000-0000-4000-8000-000000000000",
 				},
-				{ handle: "@rodeo", type: "todo", title: "Figure out the Rodeo side" },
 			],
-			links: [
-				{ kind: "todo_project", from: "@rodeo", to: "@leadads" },
-				{ kind: "todo_person", from: "@rodeo", to: "@morris", role: "related" },
-				{ kind: "journal_ref", from: "@je", to: "@morris" },
-			],
+			links: [{ kind: "journal_ref", from: "@je", to: "@morris" }],
 		};
 		expect(S.decodeUnknownSync(applyIntentGraph)(payload)).toEqual(payload);
 		expect(
@@ -220,7 +213,7 @@ describe("apply_intent_graph payload (ADR-0042)", () => {
 		expect(S.decodeUnknownSync(applyIntentGraph)(payload)).toEqual(payload);
 	});
 
-	it("rejects an entities array with a non-person/project/todo node type", () => {
+	it("rejects an entities array with an unknown node type", () => {
 		expect(() =>
 			S.decodeUnknownSync(applyIntentGraph)({
 				entities: [{ handle: "@x", type: "bookmark", title: "x" }],

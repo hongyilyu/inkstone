@@ -15,7 +15,6 @@ import {
 	buildDecisions,
 	buildEditedFields,
 	candidateSubtitle,
-	downgradeNotices,
 	draftLabel,
 	draftRequiredEmpty,
 	type GraphNodeDraft,
@@ -81,8 +80,7 @@ const DISPOSITION_BADGE: Record<
  * A local staging buffer (component state — NOT the chat store) accumulates each
  * node's accept/reject; nothing is sent until Apply, which commits ONE
  * `proposal/decide` carrying the `decisions[]` vector. An `ambiguous` node blocks
- * accept (reject-only until the picker ships, #181); rejecting a node a Todo links
- * to surfaces a downgrade notice before Apply.
+ * accept until the user picks one of its candidates (#181).
  */
 export function IntentGraphReviewCard({
 	proposal,
@@ -106,7 +104,7 @@ export function IntentGraphReviewCard({
 	// An ambiguous node's candidates share an identical exact-name label (that is WHY
 	// they are ambiguous), so the label alone cannot tell them apart. Resolve each
 	// candidate id against the warm library cache to render a disambiguating subtitle
-	// (person note / project outcome / todo due, via `libraryItemSubtitle`). Indexed
+	// (person note / project outcome, via `libraryItemSubtitle`). Indexed
 	// by id; a candidate missing from the cache simply has no subtitle (it stays
 	// pickable by its label). Same cache the decided-card link already reads.
 	const { data: libraryItems } = useLibraryItems();
@@ -170,7 +168,6 @@ export function IntentGraphReviewCard({
 	const submitting = deciding || inFlight !== null;
 	const isError = status === "error";
 
-	const notices = downgradeNotices(plan, links, review.stages, review.repoints);
 	// The clauses Core will APPEND to a saved entry's prose for accepted `journal_ref`s
 	// carrying `append_text` (ADR-0042 #221). This new prose exists only in the proposal,
 	// so the card MUST show it — the approval contract is the user reading the sentence
@@ -357,23 +354,6 @@ export function IntentGraphReviewCard({
 						))}
 					</ul>
 				</div>
-			) : null}
-
-			{notices.length > 0 ? (
-				<ul className="flex flex-col gap-1.5">
-					{notices.map((notice) => (
-						<li
-							key={notice.key}
-							className="flex items-start gap-1.5 text-xs text-muted-foreground"
-						>
-							<TriangleAlert
-								className="mt-0.5 size-3.5 shrink-0 text-muted-foreground/70"
-								aria-hidden
-							/>
-							<span>{notice.message}</span>
-						</li>
-					))}
-				</ul>
 			) : null}
 
 			{proposal.rationale ? (
@@ -715,7 +695,7 @@ function GraphNodeRow({
  * #181): a radio list of the node's competing exact-name matches. Their labels are
  * identical (that is why the node is ambiguous), so each row carries a disambiguating
  * subtitle resolved from the warm library cache (`libraryItemSubtitle` — person note /
- * project outcome / todo due). NO candidate is pre-selected: the matches are equal and
+ * project outcome). NO candidate is pre-selected: the matches are equal and
  * the system has no ranking signal, so an explicit pick is forced. Picking writes the
  * candidate's `entity_id` as the node's re-point, collapsing ambiguous → reuse. The
  * fieldset is the radio group; "none of these" is the row's Reject toggle, not a row. */
@@ -793,9 +773,8 @@ function GraphCandidatePicker({
 
 /** The inline per-type edit form for a create node's `edited_fields` (ADR-0042),
  * reusing the single-entity card's Editor primitives. Surfaces only the recognition
- * fields — Todo: title/note; Person: name/aliases/note; Project: name/outcome/note.
- * No status (a recognized entity is active; status is not a recognition output) and
- * no defer/due.
+ * fields — Person: name/aliases/note; Project: name/outcome/note.
+ * No status: a recognized entity is active, and status is not a recognition output.
  *
  * The form owns its WORKING draft (seeded from `initial`); Save commits it to the
  * card buffer (nothing is sent until the whole graph's Apply), Cancel discards it.
@@ -819,12 +798,7 @@ function GraphNodeEditForm({
 	const secondaryId = useId();
 	const noteId = useId();
 	const requiredEmpty = draftRequiredEmpty(draft);
-	const kindLabel =
-		node.type === "todo"
-			? "Todo"
-			: node.type === "person"
-				? "Person"
-				: "Project";
+	const kindLabel = node.type === "person" ? "Person" : "Project";
 
 	return (
 		<form
@@ -837,29 +811,7 @@ function GraphNodeEditForm({
 			<p className="text-xs font-medium text-muted-foreground">
 				Edit {kindLabel}
 			</p>
-			{draft.type === "todo" ? (
-				<>
-					<EditorField label="Title" htmlFor={nameId}>
-						<EditorInput
-							id={nameId}
-							autoFocus
-							value={draft.title}
-							onChange={(event) =>
-								setDraft({ ...draft, title: event.target.value })
-							}
-						/>
-					</EditorField>
-					<EditorField label="Note" htmlFor={noteId}>
-						<EditorTextarea
-							id={noteId}
-							value={draft.note}
-							onChange={(event) =>
-								setDraft({ ...draft, note: event.target.value })
-							}
-						/>
-					</EditorField>
-				</>
-			) : draft.type === "person" ? (
+			{draft.type === "person" ? (
 				<>
 					<EditorField label="Name" htmlFor={nameId}>
 						<EditorInput

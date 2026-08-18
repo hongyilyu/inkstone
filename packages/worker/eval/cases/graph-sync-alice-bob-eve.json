@@ -20,13 +20,15 @@
 				"name": "Alice",
 				"existing_id": "0190d3c1-0000-7000-8000-0000000000a1"
 			},
-			{ "type": "person", "name": "Eve" },
+			{
+				"type": "person",
+				"name": "Eve"
+			},
 			{
 				"type": "project",
 				"name": "Project Bob",
 				"existing_id": "0190d3c1-0000-7000-8000-0000000000b2"
-			},
-			{ "type": "todo", "title": "Send Eve the onboarding doc" }
+			}
 		]
 	}
 }

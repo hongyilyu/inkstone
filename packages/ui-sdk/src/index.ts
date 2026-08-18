@@ -4,6 +4,7 @@ import {
 	EntityListResult,
 	type EntityMutateParams,
 	EntityMutateResult,
+	type EntityTypeName,
 	JournalEntryRescanResult,
 	MediaUploadResult,
 	MessageSearchResult,
@@ -21,8 +22,6 @@ import {
 	ProviderLoginStartResult,
 	ProviderStatusResult,
 	ProviderTestResult,
-	type RecurrencePreviewParams,
-	RecurrencePreviewResult,
 	RunCancelResult,
 	type RunEvent,
 	RunEvent as RunEventSchema,
@@ -279,15 +278,6 @@ export const requestDescriptors = {
 		toParams: (limit?: number) => (limit === undefined ? {} : { limit }),
 		result: RunHistoryResult,
 	},
-	// recurrence/preview (ADR-0039 amendment, #227): preview the next
-	// occurrence of a draft Recurrence Rule. Read-only — the editor sends an
-	// in-progress rule + the Todo's current anchor dates and renders the
-	// returned dates (or `ended`). `recurrence` rides as the opaque rule object.
-	recurrencePreview: {
-		method: "recurrence/preview",
-		toParams: (params: RecurrencePreviewParams) => ({ ...params }),
-		result: RecurrencePreviewResult,
-	},
 	threadGet: {
 		method: "thread/get",
 		toParams: (threadId: string) => ({ thread_id: threadId }),
@@ -320,14 +310,14 @@ export const requestDescriptors = {
 		toParams: () => ({}),
 		result: ThreadListResult,
 	},
-	// entity/list (ADR-0004): accepted Entities of one type (e.g. journal_entry, todo).
+	// entity/list (ADR-0004): accepted Entities of one type (e.g. journal_entry, person).
 	listEntities: {
 		method: "entity/list",
-		toParams: (type: string) => ({ type }),
+		toParams: (type: EntityTypeName) => ({ type }),
 		result: EntityListResult,
 	},
-	// entity/backlinks (ADR-0050): the two reverse sets the detail Inspector
-	// shows for one Entity — mentioned_in (Journal Entries) + linked_todos.
+	// entity/backlinks (ADR-0050): the reverse set the detail Inspector shows
+	// for one Entity — mentioned_in (Journal Entries).
 	getBacklinks: {
 		method: "entity/backlinks",
 		toParams: (entityId: string) => ({ entity_id: entityId }),

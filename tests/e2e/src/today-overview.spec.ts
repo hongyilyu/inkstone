@@ -18,7 +18,6 @@ import { dbPathFor, seedEntities } from "./seed.js";
  */
 
 const PROJECT = "01900000-0000-7000-8000-000000020001";
-const TODO = "01900000-0000-7000-8000-000000020002";
 const PERSON = "01900000-0000-7000-8000-000000020003";
 
 test("Today renders its header and the In focus section from live active Projects", async ({
@@ -36,11 +35,6 @@ test("Today renders its header and the In focus section from live active Project
 				status: "active",
 				outcome: "Book venue + agenda",
 			},
-		},
-		{
-			id: TODO,
-			type: "todo",
-			data: { title: "Email the caterer", status: "active" },
 		},
 		{
 			id: PERSON,
@@ -69,9 +63,6 @@ test("Today renders its header and the In focus section from live active Project
 	// "Recently captured" surfaces the seeded live entities.
 	await expect(
 		page.getByRole("heading", { name: /recently captured/i }),
-	).toBeVisible();
-	await expect(
-		page.getByRole("button", { name: /Email the caterer/ }).first(),
 	).toBeVisible();
 	await expect(
 		page.getByRole("button", { name: /Jordan Lee/ }).first(),

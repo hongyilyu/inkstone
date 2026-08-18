@@ -832,10 +832,10 @@ mod tests {
         // (b) A non-`journal_entry` Entity that ALSO has a created_from message
         // source — the query must reject it on the type guard, not resolve its
         // Thread.
-        seed_entity(&pool, "t-1", "todo", r#"{"title":"Buy milk"}"#).await;
+        seed_entity(&pool, "t-1", "person", r#"{"name":"Alice"}"#).await;
         seed_source(
             &pool,
-            "src-todo",
+            "src-person",
             "t-1",
             Some("msg-origin"),
             None,

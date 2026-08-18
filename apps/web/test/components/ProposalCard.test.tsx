@@ -3,7 +3,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ProposalCard } from "@/components/ProposalCard.js";
 import { PROPOSAL_VIEWS } from "@/components/proposalViews.js";
 import type { LibraryItem } from "@/lib/libraryItems";
-import { isGtdEditKind } from "@/lib/proposalEdit";
 import type { PendingProposal } from "@/store/chat";
 
 // The decided card (ADR-0044 entity_id amendment) resolves its named entity live
@@ -148,41 +147,6 @@ const createProject: PendingProposal = {
 	status: "pending",
 };
 
-const createTodo: PendingProposal = {
-	proposal_id: "prop-todo",
-	run_id: "run-todo",
-	mutation_kind: "create_todo",
-	payload: {
-		todo: {
-			title: "Email Alice about Project Y",
-			note: "Send the migration plan.",
-			project_id: "proj-1",
-		},
-		person_refs: [
-			{ person_id: "alice-1", role: "related" },
-			{ person_id: "bob-1", role: "waiting_on" },
-		],
-		source_journal_entry_id: "je-7",
-	},
-	rationale: "the user named an explicit obligation",
-	status: "pending",
-};
-
-const updateTodo: PendingProposal = {
-	proposal_id: "prop-update-todo",
-	run_id: "run-update-todo",
-	mutation_kind: "update_todo",
-	payload: {
-		todo_id: "todo-7",
-		todo: { status: "completed", title: "Email Alice (done)" },
-		set_person_refs: [{ person_id: "dave-1", role: "related" }],
-		add_person_refs: [{ person_id: "carol-1", role: "waiting_on" }],
-		remove_person_ids: ["bob-1"],
-	},
-	rationale: "the user marked the todo done",
-	status: "pending",
-};
-
 const updatePerson: PendingProposal = {
 	proposal_id: "prop-update-person",
 	run_id: "run-update-person",
@@ -242,8 +206,6 @@ describe("ProposalCard", () => {
 		],
 		["create_person", createPerson, /add person/i, /dismiss/i],
 		["create_project", createProject, /add project/i, /dismiss/i],
-		["create_todo", createTodo, /add todo/i, /dismiss/i],
-		["update_todo", updateTodo, /update todo/i, /keep current todo/i],
 	] as const)("%s: accept/reject buttons call onDecide", (_kind, proposal, acceptName, rejectName) => {
 		const onDecide = vi.fn();
 		render(<ProposalCard proposal={proposal} onDecide={onDecide} />);
@@ -490,8 +452,6 @@ describe("ProposalCard", () => {
 	it.each([
 		["create_person", createPerson, /name/i],
 		["create_project", createProject, /name/i],
-		["create_todo", createTodo, /title/i],
-		["update_todo", updateTodo, /title/i],
 		["update_person", updatePerson, /name/i],
 		["update_project", updateProject, /name/i],
 	] as const)("%s: disables Save when the required field is blanked", (_kind, proposal, fieldName) => {
@@ -951,196 +911,6 @@ describe("ProposalCard", () => {
 		});
 	});
 
-	describe("create_todo", () => {
-		it("renders a Todo proposal with its title, project link, and person refs", () => {
-			render(<ProposalCard proposal={createTodo} onDecide={() => {}} />);
-			expect(
-				screen.getByText("Inkstone wants to add a Todo."),
-			).toBeInTheDocument();
-			expect(
-				screen.getAllByText("Email Alice about Project Y").length,
-			).toBeGreaterThan(0);
-			expect(screen.getByText("Send the migration plan.")).toBeInTheDocument();
-			expect(screen.getByText(/proj-1/)).toBeInTheDocument();
-			expect(screen.getByText(/Related: alice-1/)).toBeInTheDocument();
-			expect(screen.getByText(/Waiting on: bob-1/)).toBeInTheDocument();
-			// create_todo now offers inline Edit at the gate (slice 1).
-			expect(
-				screen.getByRole("button", { name: /^edit$/i }),
-			).toBeInTheDocument();
-		});
-
-		it("opening Edit pre-fills Title/Note/Status from the proposed todo", () => {
-			render(<ProposalCard proposal={createTodo} onDecide={() => {}} />);
-			fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
-			expect(screen.getByRole("textbox", { name: /title/i })).toHaveValue(
-				"Email Alice about Project Y",
-			);
-			expect(screen.getByRole("textbox", { name: /note/i })).toHaveValue(
-				"Send the migration plan.",
-			);
-			expect(screen.getByRole("combobox", { name: /status/i })).toHaveValue(
-				"active",
-			);
-		});
-
-		it("editing Title then Save emits onDecide('edit', payload) preserving provenance", () => {
-			const onDecide = vi.fn();
-			render(<ProposalCard proposal={createTodo} onDecide={onDecide} />);
-			fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
-			fireEvent.change(screen.getByRole("textbox", { name: /title/i }), {
-				target: { value: "Email Alice about the Q3 migration" },
-			});
-			fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
-			expect(onDecide).toHaveBeenCalledWith("edit", {
-				todo: {
-					title: "Email Alice about the Q3 migration",
-					note: "Send the migration plan.",
-					status: "active",
-					project_id: "proj-1",
-				},
-				person_refs: [
-					{ person_id: "alice-1", role: "related" },
-					{ person_id: "bob-1", role: "waiting_on" },
-				],
-				// Provenance rides untouched through the overlay clone — the field
-				// this test's name promises.
-				source_journal_entry_id: "je-7",
-			});
-			expect(onDecide).toHaveBeenCalledTimes(1);
-		});
-
-		it("changing Status active→completed emits completed_at and no dropped_at", () => {
-			const onDecide = vi.fn();
-			render(<ProposalCard proposal={createTodo} onDecide={onDecide} />);
-			fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
-			fireEvent.change(screen.getByRole("combobox", { name: /status/i }), {
-				target: { value: "completed" },
-			});
-			fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
-			const [, payload] = onDecide.mock.calls[0];
-			expect(payload.todo.status).toBe("completed");
-			expect(payload.todo.completed_at).toMatch(
-				/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/,
-			);
-			expect("dropped_at" in payload.todo).toBe(false);
-		});
-	});
-
-	describe("update_todo", () => {
-		it("renders an update Todo proposal summarizing the supplied changes", () => {
-			render(<ProposalCard proposal={updateTodo} onDecide={() => {}} />);
-			expect(
-				screen.getByText("Inkstone wants to update a Todo."),
-			).toBeInTheDocument();
-			// The raw todo_id UUID is NOT surfaced (unreadable, redundant with the
-			// heading); only the fields that actually change are shown.
-			expect(screen.queryByText(/todo-7/)).toBeNull();
-			expect(screen.getByText("Email Alice (done)")).toBeInTheDocument();
-			// Status renders as its humanized label, not the raw enum.
-			expect(screen.getByText("Completed")).toBeInTheDocument();
-			// set_person_refs renders under the "Set" label — distinct from add/remove,
-			// so a dropped or mis-keyed set branch is caught, not just a missing line.
-			expect(screen.getByText("Set")).toBeInTheDocument();
-			expect(screen.getByText(/Related: dave-1/)).toBeInTheDocument();
-			expect(screen.getByText(/Waiting on: carol-1/)).toBeInTheDocument();
-			expect(screen.getByText(/bob-1/)).toBeInTheDocument();
-			// update_todo now offers inline Edit at the gate (slice 3).
-			expect(
-				screen.getByRole("button", { name: /^edit$/i }),
-			).toBeInTheDocument();
-		});
-
-		it("editing Title then Save emits the partial preserving todo_id and all ref lists", () => {
-			const onDecide = vi.fn();
-			render(<ProposalCard proposal={updateTodo} onDecide={onDecide} />);
-			fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
-			fireEvent.change(screen.getByRole("textbox", { name: /title/i }), {
-				target: { value: "Email Alice about the Q3 migration" },
-			});
-			fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
-			expect(onDecide).toHaveBeenCalledWith("edit", {
-				todo_id: "todo-7",
-				todo: {
-					title: "Email Alice about the Q3 migration",
-					status: "completed",
-				},
-				set_person_refs: [{ person_id: "dave-1", role: "related" }],
-				add_person_refs: [{ person_id: "carol-1", role: "waiting_on" }],
-				remove_person_ids: ["bob-1"],
-			});
-			expect(onDecide).toHaveBeenCalledTimes(1);
-		});
-
-		// The update_todo Status select is wired through its OWN setter
-		// (setUpdateTodoDraft) and overlay (overlayUpdateTodo), distinct from
-		// create_todo's — so drive the card's select→overlay path and assert the
-		// coupled timestamp, not just the unit-tested overlay.
-		it("changing Status completed→active clears completed_at in the edited partial", () => {
-			const onDecide = vi.fn();
-			render(<ProposalCard proposal={updateTodo} onDecide={onDecide} />);
-			fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
-			fireEvent.change(screen.getByRole("combobox", { name: /status/i }), {
-				target: { value: "active" },
-			});
-			fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
-			const [, payload] = onDecide.mock.calls[0];
-			expect(payload.todo.status).toBe("active");
-			expect("completed_at" in payload.todo).toBe(false);
-			expect("dropped_at" in payload.todo).toBe(false);
-			// The partial's identity + ref lists still ride untouched.
-			expect(payload.todo_id).toBe("todo-7");
-			expect(payload.set_person_refs).toEqual([
-				{ person_id: "dave-1", role: "related" },
-			]);
-		});
-
-		it("blanking a proposed Note omits the note key from the edited partial", () => {
-			const onDecide = vi.fn();
-			render(
-				<ProposalCard
-					proposal={{
-						...updateTodo,
-						payload: {
-							todo_id: "todo-7",
-							todo: { title: "Keep title", note: "Drop me" },
-						},
-					}}
-					onDecide={onDecide}
-				/>,
-			);
-			fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
-			fireEvent.change(screen.getByRole("textbox", { name: /note/i }), {
-				target: { value: "" },
-			});
-			fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
-			const [, payload] = onDecide.mock.calls[0];
-			expect("note" in payload.todo).toBe(false);
-		});
-
-		it("hides the Status control when the proposed partial carries no status", () => {
-			render(
-				<ProposalCard
-					proposal={{
-						...updateTodo,
-						payload: {
-							todo_id: "todo-7",
-							todo: { title: "Rename me" },
-						},
-					}}
-					onDecide={() => {}}
-				/>,
-			);
-			fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
-			expect(
-				screen.getByRole("textbox", { name: /title/i }),
-			).toBeInTheDocument();
-			expect(
-				screen.queryByRole("combobox", { name: /status/i }),
-			).not.toBeInTheDocument();
-		});
-	});
-
 	describe("update_person", () => {
 		it("renders an update Person proposal with its review copy, Update label, and detail — not the journal fallback", () => {
 			render(<ProposalCard proposal={updatePerson} onDecide={() => {}} />);
@@ -1571,69 +1341,6 @@ describe("ProposalCard", () => {
 			expect(onDecide).toHaveBeenCalledWith("accept");
 		});
 
-		it("renders a create_todo with a null payload and keeps Add Todo working", () => {
-			const onDecide = vi.fn();
-			render(
-				<ProposalCard
-					proposal={{
-						proposal_id: "prop-bad-todo",
-						run_id: "run-bad-todo",
-						mutation_kind: "create_todo",
-						payload: null,
-						rationale: null,
-						status: "pending",
-					}}
-					onDecide={onDecide}
-				/>,
-			);
-			const accept = screen.getByRole("button", { name: /add todo/i });
-			expect(accept).toBeInTheDocument();
-			fireEvent.click(accept);
-			expect(onDecide).toHaveBeenCalledWith("accept");
-		});
-
-		it("renders a create_todo with an empty payload object without crashing", () => {
-			render(
-				<ProposalCard
-					proposal={{
-						proposal_id: "prop-empty-todo",
-						run_id: "run-empty-todo",
-						mutation_kind: "create_todo",
-						payload: {},
-						rationale: null,
-						status: "pending",
-					}}
-					onDecide={() => {}}
-				/>,
-			);
-			expect(
-				screen.getByRole("button", { name: /add todo/i }),
-			).toBeInTheDocument();
-		});
-
-		it("renders a create_todo with person_refs as a non-array string without crashing", () => {
-			render(
-				<ProposalCard
-					proposal={{
-						proposal_id: "prop-bad-refs",
-						run_id: "run-bad-refs",
-						mutation_kind: "create_todo",
-						payload: {
-							todo: { title: "Ping Alice" },
-							person_refs: "alice",
-						},
-						rationale: null,
-						status: "pending",
-					}}
-					onDecide={() => {}}
-				/>,
-			);
-			expect(screen.getAllByText("Ping Alice").length).toBeGreaterThan(0);
-			expect(
-				screen.getByRole("button", { name: /add todo/i }),
-			).toBeInTheDocument();
-		});
-
 		it("renders a create_person with aliases as a non-array without crashing", () => {
 			render(
 				<ProposalCard
@@ -1654,61 +1361,6 @@ describe("ProposalCard", () => {
 			).toBeInTheDocument();
 		});
 
-		it("renders an update_todo with a null payload and keeps Update Todo working", () => {
-			const onDecide = vi.fn();
-			render(
-				<ProposalCard
-					proposal={{
-						proposal_id: "prop-bad-update",
-						run_id: "run-bad-update",
-						mutation_kind: "update_todo",
-						payload: null,
-						rationale: null,
-						status: "pending",
-					}}
-					onDecide={onDecide}
-				/>,
-			);
-			const accept = screen.getByRole("button", { name: /update todo/i });
-			expect(accept).toBeInTheDocument();
-			fireEvent.click(accept);
-			expect(onDecide).toHaveBeenCalledWith("accept");
-		});
-
-		it("renders an update_todo with non-array ref fields without crashing", () => {
-			render(
-				<ProposalCard
-					proposal={{
-						proposal_id: "prop-bad-update-refs",
-						run_id: "run-bad-update-refs",
-						mutation_kind: "update_todo",
-						payload: {
-							todo_id: "todo-9",
-							set_person_refs: "carol",
-							add_person_refs: { person_id: "dave" },
-							remove_person_ids: "bob",
-						},
-						rationale: null,
-						status: "pending",
-					}}
-					onDecide={() => {}}
-				/>,
-			);
-			// Degrades without crashing: the heading + accept button still render even
-			// when the ref fields are malformed (the raw todo_id is intentionally not shown).
-			expect(
-				screen.getByText("Inkstone wants to update a Todo."),
-			).toBeInTheDocument();
-			expect(
-				screen.getByRole("button", { name: /update todo/i }),
-			).toBeInTheDocument();
-		});
-
-		// `mutation_kind` is an unvalidated wire string (Core stores it raw at park
-		// time), so the presentation lookup must degrade ANY unrecognized kind to the
-		// fallback — including a prototype key like "constructor"/"toString", which a
-		// bare `record[kind] ?? fallback` would wrongly resolve to an inherited
-		// Object.prototype member and crash the card.
 		it("renders a prototype-key mutation_kind through the fallback without crashing", () => {
 			const onDecide = vi.fn();
 			render(
@@ -1771,13 +1423,13 @@ describe("ProposalCard", () => {
 			run_id: "graph-run",
 			mutation_kind: "apply_intent_graph",
 			payload: {
-				links: [{ kind: "todo_project", from: "@rodeo", to: "@leadads" }],
+				links: [],
 			},
 			rationale: "recognized from your note",
 			resolved_plan: [
 				{
 					handle: "@rodeo",
-					type: "todo",
+					type: "project",
 					disposition: "create",
 					label: "Figure out the Rodeo side",
 				},
@@ -1806,21 +1458,6 @@ describe("ProposalCard", () => {
 			expect(onDecide).toHaveBeenCalledWith("accept", undefined, [
 				{ handle: "@rodeo", decision: "accept" },
 				{ handle: "@leadads", decision: "accept" },
-			]);
-		});
-
-		it("rejecting the project surfaces the Todo downgrade and drops the link in the vector", () => {
-			const onDecide = vi.fn();
-			render(<ProposalCard proposal={graphProposal} onDecide={onDecide} />);
-			// Reject the project node (its row's Reject toggle).
-			fireEvent.click(screen.getByRole("button", { name: /reject lead ads/i }));
-			// The downgrade notice appears before Apply.
-			expect(screen.getByText(/without its project link/i)).toBeInTheDocument();
-			// Apply now carries the project as a reject; the Todo stays an accept.
-			fireEvent.click(screen.getByRole("button", { name: /apply 1 item/i }));
-			expect(onDecide).toHaveBeenCalledWith("accept", undefined, [
-				{ handle: "@rodeo", decision: "accept" },
-				{ handle: "@leadads", decision: "reject" },
 			]);
 		});
 
@@ -2236,51 +1873,6 @@ describe("ProposalCard", () => {
 			});
 		});
 
-		it("renders TWO downgrade notices (no key collision) when one Todo loses both links", () => {
-			const onDecide = vi.fn();
-			const bothLinks: PendingProposal = {
-				...graphProposal,
-				payload: {
-					links: [
-						{ kind: "todo_project", from: "@rodeo", to: "@leadads" },
-						{ kind: "todo_person", from: "@rodeo", to: "@morris" },
-					],
-				},
-				resolved_plan: [
-					{
-						handle: "@rodeo",
-						type: "todo",
-						disposition: "create",
-						label: "Rodeo task",
-					},
-					{
-						handle: "@leadads",
-						type: "project",
-						disposition: "create",
-						label: "Lead Ads",
-					},
-					{
-						handle: "@morris",
-						type: "person",
-						disposition: "create",
-						label: "Morris",
-					},
-				],
-			};
-			render(<ProposalCard proposal={bothLinks} onDecide={onDecide} />);
-			// Reject BOTH the project and the person, keeping the Todo accepted.
-			fireEvent.click(screen.getByRole("button", { name: /reject lead ads/i }));
-			fireEvent.click(screen.getByRole("button", { name: /reject morris/i }));
-			// Both distinct downgrade notices render (the project-link and person-link
-			// copy differ) — the key fix means the second is not dropped.
-			expect(
-				screen.getByText(/without its project link to .Lead Ads./i),
-			).toBeInTheDocument();
-			expect(
-				screen.getByText(/without its link to .Morris./i),
-			).toBeInTheDocument();
-		});
-
 		// Per-node inline edit of a create node (ADR-0042 edited_fields). The card
 		// reads each node's proposed fields off payload.entities to seed the form.
 		const editableGraph: PendingProposal = {
@@ -2291,8 +1883,8 @@ describe("ProposalCard", () => {
 				entities: [
 					{
 						handle: "@rodeo",
-						type: "todo",
-						title: "Figure out the Rodeo side",
+						type: "project",
+						name: "Figure out the Rodeo side",
 					},
 					{
 						handle: "@leadads",
@@ -2301,13 +1893,13 @@ describe("ProposalCard", () => {
 						note: "guessed",
 					},
 				],
-				links: [{ kind: "todo_project", from: "@rodeo", to: "@leadads" }],
+				links: [],
 			},
 			rationale: null,
 			resolved_plan: [
 				{
 					handle: "@rodeo",
-					type: "todo",
+					type: "project",
 					disposition: "create",
 					label: "Figure out the Rodeo side",
 				},
@@ -2328,8 +1920,8 @@ describe("ProposalCard", () => {
 			fireEvent.click(
 				screen.getByRole("button", { name: /edit figure out the rodeo side/i }),
 			);
-			const title = screen.getByLabelText("Title");
-			fireEvent.change(title, {
+			const name = screen.getByLabelText("Name");
+			fireEvent.change(name, {
 				target: { value: "Sort out the Rodeo logistics" },
 			});
 			fireEvent.click(screen.getByRole("button", { name: /save/i }));
@@ -2343,7 +1935,7 @@ describe("ProposalCard", () => {
 				{
 					handle: "@rodeo",
 					decision: "accept",
-					edited_fields: { title: "Sort out the Rodeo logistics" },
+					edited_fields: { name: "Sort out the Rodeo logistics" },
 				},
 				{ handle: "@leadads", decision: "accept" },
 			]);
@@ -2394,7 +1986,7 @@ describe("ProposalCard", () => {
 			fireEvent.click(
 				screen.getByRole("button", { name: /edit figure out the rodeo side/i }),
 			);
-			fireEvent.change(screen.getByLabelText("Title"), {
+			fireEvent.change(screen.getByLabelText("Name"), {
 				target: { value: "" },
 			});
 			expect(screen.getByRole("button", { name: /save/i })).toBeDisabled();
@@ -2406,7 +1998,7 @@ describe("ProposalCard", () => {
 			fireEvent.click(
 				screen.getByRole("button", { name: /edit figure out the rodeo side/i }),
 			);
-			fireEvent.change(screen.getByLabelText("Title"), {
+			fireEvent.change(screen.getByLabelText("Name"), {
 				target: { value: "Discarded rename" },
 			});
 			fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
@@ -2427,7 +2019,7 @@ describe("ProposalCard", () => {
 			fireEvent.click(
 				screen.getByRole("button", { name: /edit figure out the rodeo side/i }),
 			);
-			fireEvent.change(screen.getByLabelText("Title"), {
+			fireEvent.change(screen.getByLabelText("Name"), {
 				target: { value: "Renamed" },
 			});
 			fireEvent.click(screen.getByRole("button", { name: /save/i }));
@@ -2595,14 +2187,6 @@ describe("ProposalCard", () => {
 	describe("update-reject copy reassures the current entity was kept", () => {
 		// Minimal update payloads (distinct from the module-scope full fixtures):
 		// the copy under test depends only on the mutation_kind.
-		const minimalUpdateTodo: PendingProposal = {
-			proposal_id: "prop-reject-update-todo",
-			run_id: "run-reject-update-todo",
-			mutation_kind: "update_todo",
-			payload: { todo_id: "todo-7", todo: { title: "Email Alice" } },
-			rationale: null,
-			status: "pending",
-		};
 		const minimalUpdatePerson: PendingProposal = {
 			proposal_id: "prop-reject-update-person",
 			run_id: "run-reject-update-person",
@@ -2619,16 +2203,6 @@ describe("ProposalCard", () => {
 			rationale: null,
 			status: "pending",
 		};
-
-		it("update_todo rejected reads 'Kept current Todo.'", () => {
-			render(
-				<ProposalCard
-					proposal={{ ...minimalUpdateTodo, status: "rejected" }}
-					onDecide={() => {}}
-				/>,
-			);
-			expect(screen.getByText("Kept current Todo.")).toBeInTheDocument();
-		});
 
 		it("update_person rejected reads 'Kept current Person.'", () => {
 			render(
@@ -2669,10 +2243,12 @@ describe("ProposalCard", () => {
 
 		// The pending reject button must offer the reassuring "Keep current …" verb,
 		// not a bare "Dismiss".
-		it("update_todo pending offers a 'Keep current Todo' reject button", () => {
-			render(<ProposalCard proposal={minimalUpdateTodo} onDecide={() => {}} />);
+		it("update_person pending offers a 'Keep current Person' reject button", () => {
+			render(
+				<ProposalCard proposal={minimalUpdatePerson} onDecide={() => {}} />,
+			);
 			expect(
-				screen.getByRole("button", { name: /keep current todo/i }),
+				screen.getByRole("button", { name: /keep current person/i }),
 			).toBeInTheDocument();
 			expect(
 				screen.queryByRole("button", { name: /^dismiss$/i }),
@@ -2681,35 +2257,12 @@ describe("ProposalCard", () => {
 	});
 });
 
-// The edit-affordance fork routes GTD kinds to GtdEditForm, journal create/update
-// to the journal form, and observation batches to their payload editor. Everything
-// else is read-only. This structural lock catches an editable kind with no editor.
-describe("proposal edit fork partition", () => {
-	const JOURNAL_EDIT_KINDS = new Set([
-		"create_journal_entry",
-		"update_journal_entry",
-	]);
-	const STRUCTURED_EDIT_KINDS = new Set(["record_observations"]);
-
-	it("every GTD-editable kind is also Edit-offered (canEdit and isGtdEditKind agree)", () => {
-		for (const [kind, view] of Object.entries(PROPOSAL_VIEWS)) {
-			if (isGtdEditKind(kind)) {
-				// A GTD kind ignores bodyHasEntityRef and is always editable.
-				expect(view.canEdit(false)).toBe(true);
-				expect(view.canEdit(true)).toBe(true);
+describe("proposal edit policies", () => {
+	it("every editable view declares a non-readonly editor policy", () => {
+		for (const view of Object.values(PROPOSAL_VIEWS)) {
+			if (view.canEdit(false) || view.canEdit(true)) {
+				expect(view.editPolicy).not.toBe("readonly");
 			}
-		}
-	});
-
-	it("every editable kind routes to GtdEditForm or the journal form — none falls through", () => {
-		for (const [kind, view] of Object.entries(PROPOSAL_VIEWS)) {
-			const editable = view.canEdit(false) || view.canEdit(true);
-			if (!editable) continue;
-			expect(
-				isGtdEditKind(kind) ||
-					JOURNAL_EDIT_KINDS.has(kind) ||
-					STRUCTURED_EDIT_KINDS.has(kind),
-			).toBe(true);
 		}
 	});
 });

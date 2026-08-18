@@ -79,7 +79,6 @@ function seedItems() {
 		journalEntries: SEED.filter((r) => r.type === "journal_entry"),
 		people: SEED.filter((r) => r.type === "person"),
 		projects: [],
-		todos: [],
 		media: [],
 	});
 }

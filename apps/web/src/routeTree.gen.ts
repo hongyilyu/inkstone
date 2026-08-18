@@ -19,7 +19,6 @@ import { Route as LibraryTimelineRouteImport } from './routes/library/timeline'
 import { Route as LibraryTasksRouteImport } from './routes/library/tasks'
 import { Route as LibraryMediaRouteImport } from './routes/library/media'
 import { Route as LibraryHealthRouteImport } from './routes/library/health'
-import { Route as LibraryGtdRouteImport } from './routes/library/gtd'
 import { Route as LibraryKindRouteImport } from './routes/library/$kind'
 import { Route as ChatArchivedRouteImport } from './routes/_chat/archived'
 import { Route as ChatThreadThreadIdRouteImport } from './routes/_chat/thread.$threadId'
@@ -73,11 +72,6 @@ const LibraryHealthRoute = LibraryHealthRouteImport.update({
   path: '/health',
   getParentRoute: () => LibraryRouteRoute,
 } as any)
-const LibraryGtdRoute = LibraryGtdRouteImport.update({
-  id: '/gtd',
-  path: '/gtd',
-  getParentRoute: () => LibraryRouteRoute,
-} as any)
 const LibraryKindRoute = LibraryKindRouteImport.update({
   id: '/$kind',
   path: '/$kind',
@@ -100,7 +94,6 @@ export interface FileRoutesByFullPath {
   '/': typeof ChatIndexRoute
   '/archived': typeof ChatArchivedRoute
   '/library/$kind': typeof LibraryKindRoute
-  '/library/gtd': typeof LibraryGtdRoute
   '/library/health': typeof LibraryHealthRoute
   '/library/media': typeof LibraryMediaRoute
   '/library/tasks': typeof LibraryTasksRoute
@@ -113,7 +106,6 @@ export interface FileRoutesByTo {
   '/settings': typeof SettingsRouteRouteWithChildren
   '/archived': typeof ChatArchivedRoute
   '/library/$kind': typeof LibraryKindRoute
-  '/library/gtd': typeof LibraryGtdRoute
   '/library/health': typeof LibraryHealthRoute
   '/library/media': typeof LibraryMediaRoute
   '/library/tasks': typeof LibraryTasksRoute
@@ -130,7 +122,6 @@ export interface FileRoutesById {
   '/_chat': typeof ChatRouteWithChildren
   '/_chat/archived': typeof ChatArchivedRoute
   '/library/$kind': typeof LibraryKindRoute
-  '/library/gtd': typeof LibraryGtdRoute
   '/library/health': typeof LibraryHealthRoute
   '/library/media': typeof LibraryMediaRoute
   '/library/tasks': typeof LibraryTasksRoute
@@ -148,7 +139,6 @@ export interface FileRouteTypes {
     | '/'
     | '/archived'
     | '/library/$kind'
-    | '/library/gtd'
     | '/library/health'
     | '/library/media'
     | '/library/tasks'
@@ -161,7 +151,6 @@ export interface FileRouteTypes {
     | '/settings'
     | '/archived'
     | '/library/$kind'
-    | '/library/gtd'
     | '/library/health'
     | '/library/media'
     | '/library/tasks'
@@ -177,7 +166,6 @@ export interface FileRouteTypes {
     | '/_chat'
     | '/_chat/archived'
     | '/library/$kind'
-    | '/library/gtd'
     | '/library/health'
     | '/library/media'
     | '/library/tasks'
@@ -266,13 +254,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof LibraryHealthRouteImport
       parentRoute: typeof LibraryRouteRoute
     }
-    '/library/gtd': {
-      id: '/library/gtd'
-      path: '/gtd'
-      fullPath: '/library/gtd'
-      preLoaderRoute: typeof LibraryGtdRouteImport
-      parentRoute: typeof LibraryRouteRoute
-    }
     '/library/$kind': {
       id: '/library/$kind'
       path: '/$kind'
@@ -299,7 +280,6 @@ declare module '@tanstack/react-router' {
 
 interface LibraryRouteRouteChildren {
   LibraryKindRoute: typeof LibraryKindRoute
-  LibraryGtdRoute: typeof LibraryGtdRoute
   LibraryHealthRoute: typeof LibraryHealthRoute
   LibraryMediaRoute: typeof LibraryMediaRoute
   LibraryTasksRoute: typeof LibraryTasksRoute
@@ -309,7 +289,6 @@ interface LibraryRouteRouteChildren {
 
 const LibraryRouteRouteChildren: LibraryRouteRouteChildren = {
   LibraryKindRoute: LibraryKindRoute,
-  LibraryGtdRoute: LibraryGtdRoute,
   LibraryHealthRoute: LibraryHealthRoute,
   LibraryMediaRoute: LibraryMediaRoute,
   LibraryTasksRoute: LibraryTasksRoute,

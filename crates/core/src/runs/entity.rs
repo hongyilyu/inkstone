@@ -8,17 +8,16 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use super::handler::{self, HandlerError};
 use crate::db;
-use crate::mutate::{self, MutateError};
 use crate::db::EntityProvenance;
+use crate::mutate::{self, MutateError};
 use crate::protocol::{
     EntityBacklinksParams, EntityBacklinksResult, EntityListParams, EntityListResult,
     EntityMutateParams, EntityMutateResult, EntityRow, EntitySourceView, ResolvedEntityRef,
-    TodoPersonRefView,
 };
 
-/// Map a tier-2 [`db::EntityRow`] to its wire [`EntityRow`], carrying `refs`,
-/// `person_refs`, and the "Captured from" `source` (ADR-0030/0032). Shared by
-/// `entity/list` and `entity/backlinks`, which return the same row shape.
+/// Map a tier-2 [`db::EntityRow`] to its wire [`EntityRow`], carrying `refs`
+/// and the "Captured from" `source` (ADR-0030/0032). Shared by `entity/list`
+/// and `entity/backlinks`, which return the same row shape.
 fn entity_row_to_wire(row: db::EntityRow) -> EntityRow {
     EntityRow {
         id: row.id,
@@ -37,11 +36,6 @@ fn entity_row_to_wire(row: db::EntityRow) -> EntityRow {
                 target_title: r.target_title,
                 label_snapshot: r.label_snapshot,
             })
-            .collect(),
-        person_refs: row
-            .person_refs
-            .into_iter()
-            .map(|(person_id, role)| TodoPersonRefView { person_id, role })
             .collect(),
         source: row.source.map(|source| match source {
             EntityProvenance::Message {
@@ -71,7 +65,8 @@ pub(super) async fn handle_list(
     out_tx: &UnboundedSender<String>,
 ) {
     handler::handle(id, params, out_tx, |params: EntityListParams| async move {
-        let rows = db::list_by_type(pool, &params.r#type)
+        let entity_type = params.r#type.entity_type();
+        let rows = db::list_by_type(pool, entity_type.as_str())
             .await
             .map_err(|e| HandlerError::Internal(e.into()))?;
 
@@ -84,8 +79,8 @@ pub(super) async fn handle_list(
 
 /// `entity/backlinks` handler (ADR-0050): the detail Inspector's reverse-relation
 /// read. Mirrors [`handle_list`] — decode, run the body, frame the outcome —
-/// returning the entity's distinct "Mentioned in" Journal Entries and its linked
-/// Todos, each as the same wire [`EntityRow`].
+/// returning the entity's distinct "Mentioned in" Journal Entries as the same
+/// wire [`EntityRow`].
 pub(super) async fn handle_backlinks(
     pool: &SqlitePool,
     id: serde_json::Value,
@@ -97,21 +92,12 @@ pub(super) async fn handle_backlinks(
         params,
         out_tx,
         |params: EntityBacklinksParams| async move {
-            let backlinks = db::backlinks_for_entity(pool, &params.entity_id)
+            let mentioned_in = db::backlinks_for_entity(pool, &params.entity_id)
                 .await
                 .map_err(|e| HandlerError::Internal(e.into()))?;
 
             Ok(EntityBacklinksResult {
-                mentioned_in: backlinks
-                    .mentioned_in
-                    .into_iter()
-                    .map(entity_row_to_wire)
-                    .collect(),
-                linked_todos: backlinks
-                    .linked_todos
-                    .into_iter()
-                    .map(entity_row_to_wire)
-                    .collect(),
+                mentioned_in: mentioned_in.into_iter().map(entity_row_to_wire).collect(),
             })
         },
     )
@@ -129,7 +115,7 @@ pub(super) async fn handle_mutate(
     out_tx: &UnboundedSender<String>,
 ) {
     handler::handle(id, params, out_tx, |params: EntityMutateParams| async move {
-        let outcome = mutate::apply(pool, &params.mutation_kind, &params.payload)
+        let outcome = mutate::apply(pool, params.mutation_kind, &params.payload)
             .await
             .map_err(|e| match e {
                 MutateError::Invalid(reason) => HandlerError::InvalidParams(reason),

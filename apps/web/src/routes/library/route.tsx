@@ -12,14 +12,12 @@ import { JournalEntryEditor } from "@/components/library/JournalEntryEditor";
 import { MediaEditor } from "@/components/library/MediaEditor";
 import { PersonEditor } from "@/components/library/PersonEditor";
 import { ProjectEditor } from "@/components/library/ProjectEditor";
-import { TodoEditor } from "@/components/library/TodoEditor";
 import { TopicNav } from "@/components/library/TopicNav";
 import { WorkspaceShell } from "@/components/ui/workspace-shell";
 import { useLibraryItems } from "@/lib/hooks/useLibraryItems";
 import {
 	CREATABLE_KINDS,
 	KIND_META,
-	type LibraryItem,
 	type LibraryItemKind,
 	libraryItemKindForSlug,
 	libraryItemTitle,
@@ -103,12 +101,7 @@ function LibraryLayout() {
 				aria-label={`New ${KIND_META[kind].label}`}
 				className="h-full bg-sidebar"
 			>
-				<CreateEditor
-					kind={kind}
-					allEntities={data ?? []}
-					onDone={openCreated}
-					onCancel={closeCreate}
-				/>
+				<CreateEditor kind={kind} onDone={openCreated} onCancel={closeCreate} />
 			</aside>
 		) : selected ? (
 			<aside
@@ -142,18 +135,13 @@ function LibraryLayout() {
 /** The blank create editor for a creatable kind, mounted in the rail on `?new=1`. */
 function CreateEditor({
 	kind,
-	allEntities,
 	onDone,
 	onCancel,
 }: {
 	kind: LibraryItemKind;
-	allEntities: LibraryItem[];
 	onDone: (id: string) => void;
 	onCancel: () => void;
 }) {
-	if (kind === "person") {
-		return <PersonEditor mode="create" onDone={onDone} onCancel={onCancel} />;
-	}
 	if (kind === "project") {
 		return <ProjectEditor mode="create" onDone={onDone} onCancel={onCancel} />;
 	}
@@ -165,14 +153,7 @@ function CreateEditor({
 	if (kind === "media") {
 		return <MediaEditor mode="create" onDone={onDone} onCancel={onCancel} />;
 	}
-	return (
-		<TodoEditor
-			mode="create"
-			allEntities={allEntities}
-			onDone={onDone}
-			onCancel={onCancel}
-		/>
-	);
+	return <PersonEditor mode="create" onDone={onDone} onCancel={onCancel} />;
 }
 
 export const Route = createFileRoute("/library")({

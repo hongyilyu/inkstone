@@ -76,24 +76,11 @@ function predictedEntityPool(
 			fields: n,
 		}));
 	}
-	if (
-		kind === "create_person" ||
-		kind === "create_project" ||
-		kind === "create_todo"
-	) {
-		// A single synthetic record from the payload's entity fields. create_todo
-		// nests the fields under `todo`; the others carry them flat.
-		const fields =
-			kind === "create_todo" && isRecord(payload.todo) ? payload.todo : payload;
-		const tag =
-			kind === "create_person"
-				? "person"
-				: kind === "create_project"
-					? "project"
-					: "todo";
-		return [
-			{ tag, name: asString(fields.name) ?? asString(fields.title), fields },
-		];
+	if (kind === "create_person" || kind === "create_project") {
+		// A single synthetic record from the payload's entity fields.
+		const fields = payload;
+		const tag = kind === "create_person" ? "person" : "project";
+		return [{ tag, name: asString(fields.name), fields }];
 	}
 	// create_journal_entry → prose, no scored entity pool. record_observations →
 	// scored as observations, not entities.
@@ -123,21 +110,10 @@ function expectedEntityPool(expected: ExpectedProposal): Record_[] {
 			fields: e,
 		}));
 	}
-	if (
-		expected.kind === "create_person" ||
-		expected.kind === "create_project" ||
-		expected.kind === "create_todo"
-	) {
+	if (expected.kind === "create_person" || expected.kind === "create_project") {
 		const fields = expected.fields ?? {};
-		const tag =
-			expected.kind === "create_person"
-				? "person"
-				: expected.kind === "create_project"
-					? "project"
-					: "todo";
-		return [
-			{ tag, name: asString(fields.name) ?? asString(fields.title), fields },
-		];
+		const tag = expected.kind === "create_person" ? "person" : "project";
+		return [{ tag, name: asString(fields.name), fields }];
 	}
 	return [];
 }

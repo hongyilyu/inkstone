@@ -21,7 +21,6 @@ import type { PredictedProposal, ScoreResult } from "../../eval/types.js";
 const ALLOWED_KINDS = new Set([
 	"apply_intent_graph",
 	"record_observations",
-	"create_todo",
 	"create_person",
 	"create_project",
 	"create_journal_entry",
@@ -32,8 +31,8 @@ const ALLOWED_KINDS = new Set([
 describe("eval fixtures", () => {
 	const fixtures = loadFixtures();
 
-	it("loads at least 20 fixtures", () => {
-		expect(fixtures.length).toBeGreaterThanOrEqual(20);
+	it("loads at least 15 fixtures", () => {
+		expect(fixtures.length).toBeGreaterThanOrEqual(15);
 	});
 
 	it("each fixture parses against the Fixture shape", () => {
@@ -56,7 +55,6 @@ describe("eval fixtures", () => {
 		for (const k of [
 			"apply_intent_graph",
 			"record_observations",
-			"create_todo",
 			"create_person",
 			"create_project",
 			"create_journal_entry",
@@ -197,7 +195,7 @@ describe("aggregate + append", () => {
 	});
 });
 
-// (b2) The single-entity create_* fixtures (create_todo/_project/_person) must
+// (b2) The single-entity create_* fixtures (create_project/_person) must
 // carry a name/title in `expected.fields`, or the scorer aligns the expected
 // entity (name `undefined`) against NO correctly-named prediction — entityF1
 // collapses to 0 on a PERFECT model output, dragging the aggregate headline down
@@ -213,8 +211,8 @@ describe("create_* fixtures align with a correct prediction (no false zero)", ()
 		file: string;
 		// The fixture's unique `message`, used to find it among loadFixtures().
 		message: string;
-		mutation_kind: "create_todo" | "create_project" | "create_person";
-		// The predicted payload a good model emits; `todo` nests, project/person flat.
+		mutation_kind: "create_project" | "create_person";
+		// The predicted payload a good model emits; project/person fields are flat.
 		payload: Record<string, unknown>;
 	}> = [
 		{
@@ -238,40 +236,6 @@ describe("create_* fixtures align with a correct prediction (no false zero)", ()
 			message: "Add Priya as the API migration owner.",
 			mutation_kind: "create_person",
 			payload: { name: "Priya", note: "API migration owner" },
-		},
-		{
-			file: "todo-call-dentist.json",
-			message: "I need to call the dentist to reschedule my cleaning.",
-			mutation_kind: "create_todo",
-			payload: { todo: { title: "Call the dentist to reschedule cleaning" } },
-		},
-		{
-			file: "todo-email-alice.json",
-			message: "I need to email Alice about the quarterly numbers.",
-			mutation_kind: "create_todo",
-			payload: { todo: { title: "Email Alice about the quarterly numbers" } },
-		},
-		{
-			file: "todo-followup-carol.json",
-			message: "Follow up with Carol on the vendor contract.",
-			mutation_kind: "create_todo",
-			payload: {
-				todo: { title: "Follow up with Carol on the vendor contract" },
-			},
-		},
-		{
-			file: "todo-renew-passport.json",
-			message: "Todo: renew my passport before it expires.",
-			mutation_kind: "create_todo",
-			payload: { todo: { title: "Renew my passport" } },
-		},
-		{
-			file: "todo-wait-alice-schedule.json",
-			message: "Wait for Alice to send the daycare schedule.",
-			mutation_kind: "create_todo",
-			payload: {
-				todo: { title: "Wait for Alice to send the daycare schedule" },
-			},
 		},
 	];
 
@@ -350,16 +314,8 @@ describe("backfilled fixtures: a correct model scores fieldF1 === 1", () => {
 						name: "Lead Ads",
 						existing_id: "0190d3c1-0000-7000-8000-0000000000e1",
 					},
-					{
-						handle: "@rodeo",
-						type: "todo",
-						title: "Figure out the Rodeo side",
-					},
 				],
-				links: [
-					{ kind: "journal_ref", from: "@je", to: "@leadads" },
-					{ kind: "todo_project", from: "@rodeo", to: "@leadads" },
-				],
+				links: [{ kind: "journal_ref", from: "@je", to: "@leadads" }],
 			},
 		};
 		const r = scoreProposal(predicted, fixture.expected);

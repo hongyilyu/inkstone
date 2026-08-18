@@ -1275,12 +1275,6 @@ const cannedCases: Record<keyof typeof requestDescriptors, CannedCase> = {
 			],
 		},
 	},
-	recurrencePreview: {
-		args: [{ recurrence: { freq: "daily" }, due_at: "2026-01-01" }],
-		method: "recurrence/preview",
-		params: { recurrence: { freq: "daily" }, due_at: "2026-01-01" },
-		response: { ended: false, due_at: "2026-01-02" },
-	},
 	threadGet: {
 		args: ["t-1"],
 		method: "thread/get",
@@ -1312,16 +1306,16 @@ const cannedCases: Record<keyof typeof requestDescriptors, CannedCase> = {
 		response: { threads: [] },
 	},
 	listEntities: {
-		args: ["todo"],
+		args: ["person"],
 		method: "entity/list",
-		params: { type: "todo" },
+		params: { type: "person" },
 		response: { entities: [] },
 	},
 	getBacklinks: {
 		args: ["e-1"],
 		method: "entity/backlinks",
 		params: { entity_id: "e-1" },
-		response: { mentioned_in: [], linked_todos: [] },
+		response: { mentioned_in: [] },
 	},
 	observationQuery: {
 		args: [{ schema_key: "mood" }],
@@ -1341,9 +1335,9 @@ const cannedCases: Record<keyof typeof requestDescriptors, CannedCase> = {
 		response: { observation_id: "o-1" },
 	},
 	entityMutate: {
-		args: [{ mutation_kind: "create_todo", payload: { title: "x" } }],
+		args: [{ mutation_kind: "create_person", payload: { name: "x" } }],
 		method: "entity/mutate",
-		params: { mutation_kind: "create_todo", payload: { title: "x" } },
+		params: { mutation_kind: "create_person", payload: { name: "x" } },
 		response: { entity_id: "e-1" },
 	},
 	rescanJournalEntry: {
@@ -1444,8 +1438,8 @@ const cannedCases: Record<keyof typeof requestDescriptors, CannedCase> = {
 		response: {
 			proposal_id: "p-1",
 			run_id: "r-1",
-			mutation_kind: "create_todo",
-			payload: { title: "x" },
+			mutation_kind: "create_person",
+			payload: { name: "x" },
 			rationale: null,
 			status: "pending",
 		},

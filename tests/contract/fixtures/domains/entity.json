@@ -1,0 +1,28 @@
+{
+  "entity_type_names": [
+    "journal_entry",
+    "person",
+    "project",
+    "media",
+    "habit"
+  ],
+  "entity_mutation_kinds": [
+    "create_journal_entry",
+    "update_journal_entry",
+    "delete_journal_entry",
+    "reference_existing_entity_from_journal_entry",
+    "create_person",
+    "update_person",
+    "delete_person",
+    "create_project",
+    "update_project",
+    "delete_project",
+    "mark_project_reviewed",
+    "create_media",
+    "update_media",
+    "delete_media",
+    "create_habit",
+    "update_habit",
+    "delete_habit"
+  ]
+}

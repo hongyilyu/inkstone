@@ -1,5 +1,5 @@
-//! `entity/list` returns accepted Entities of the requested type newest-first
-//! and filters out other types.
+//! `entity/list` returns accepted Entities of the requested type newest-first,
+//! filters out other types, and rejects a type outside the closed EntityType set.
 
 
 
@@ -125,6 +125,30 @@ fn list_journal_entries_returns_accepted() {
         assert!(
             entities.is_empty(),
             "no People listed from a Journal Entry-only workspace - body: {resp}"
+        );
+    });
+}
+
+#[test]
+fn list_rejects_a_retired_entity_type() {
+    let workspace = Workspace::new();
+    let core = workspace.core().worker_fixture("propose-worker.ts").spawn();
+
+    let rt = rt();
+
+    rt.block_on(async {
+        // The native Todo retired (ADR-0064): "todo" is outside the closed
+        // EntityType set, so entity/list rejects it with an InvalidParams error
+        // rather than SQL-matching it to an empty success.
+        let resp = rpc(&core, 5, "entity/list", serde_json::json!({ "type": "todo" })).await;
+        assert_eq!(
+            resp["error"]["code"].as_i64(),
+            Some(-32602),
+            "a retired/unknown entity type is InvalidParams - body: {resp}"
+        );
+        assert!(
+            resp["result"].is_null(),
+            "an error response carries no result - body: {resp}"
         );
     });
 }

@@ -2,7 +2,6 @@ import {
 	BookOpenText,
 	Film,
 	FolderKanban,
-	ListTodo,
 	type LucideIcon,
 	User,
 } from "lucide-react";
@@ -13,18 +12,9 @@ import {
 	type MediaState,
 	PROJECT_STATUSES,
 	type ProjectStatus,
-	type RecurAnchor,
-	type RecurrenceUnit,
-	TODO_STATUSES,
-	type TodoStatus,
 } from "@/lib/entityFields";
 
-export type LibraryItemKind =
-	| "journal_entry"
-	| "person"
-	| "project"
-	| "todo"
-	| "media";
+export type LibraryItemKind = "journal_entry" | "person" | "project" | "media";
 
 /**
  * Where an Entity came from ("Captured from", ADR-0030), resolved from its
@@ -84,7 +74,7 @@ export interface JournalEntryBodyEntityRefNode {
 	type: "entity_ref";
 	refId: string;
 	targetEntityId?: string;
-	targetKind?: Extract<LibraryItemKind, "person" | "project" | "todo">;
+	targetKind?: Extract<LibraryItemKind, "person" | "project">;
 	targetTitle?: string;
 	labelSnapshot?: string;
 }
@@ -110,46 +100,6 @@ export interface Project extends LibraryItemBase {
 	data?: Record<string, unknown>;
 }
 
-export type TodoPersonRole = "waiting_on" | "related";
-
-/**
- * A Todo's repeat rule (ADR-0037, slimmed by ADR-0039). The view model
- * camelCases the snake_case fields Core stores in `data.recurrence`; the entity
- * codec maps between the two (`parseTodo` on the way in, `buildTodo` re-snakes it
- * on the way out). Core validates and persists the rule, and on completion
- * advances `anchor` by `interval × unit` to spawn the successor (ADR-0039).
- */
-export interface RecurrenceRule {
-	interval: number;
-	unit: RecurrenceUnit;
-	anchor: RecurAnchor;
-	end?: { until?: string; afterCount?: number };
-}
-
-/** A Todo's reference to a Person, with its GTD role (ADR-0031/0032). */
-export interface TodoPersonRef {
-	personId: string;
-	role: TodoPersonRole;
-}
-
-export interface Todo extends LibraryItemBase {
-	kind: "todo";
-	title: string;
-	note?: string;
-	status: TodoStatus;
-	projectId?: string;
-	/** "Not before" date — local wall-clock `YYYY-MM-DDTHH:MM:SS` (ADR-0031). */
-	deferAt?: string;
-	/** Hard deadline — local wall-clock `YYYY-MM-DDTHH:MM:SS` (ADR-0031). */
-	dueAt?: string;
-	completedAt?: string;
-	droppedAt?: string;
-	/** Repeat rule (ADR-0037). Absent when the Todo does not recur. */
-	recurrence?: RecurrenceRule;
-	/** Person References (ADR-0032). Empty when the Todo links no People. */
-	personRefs: TodoPersonRef[];
-}
-
 /**
  * A Media item — the queue+log Entity Type (ADR-0059, replacing Bookmark): a
  * thing to read/watch, carrying a `medium`, a lifecycle `state`, and (only in a
@@ -170,7 +120,7 @@ export interface Media extends LibraryItemBase {
 	tags?: string[];
 }
 
-export type LibraryItem = JournalEntry | Person | Project | Todo | Media;
+export type LibraryItem = JournalEntry | Person | Project | Media;
 
 export interface JournalEntryDay {
 	day: string;
@@ -192,7 +142,6 @@ export const KIND_ORDER: LibraryItemKind[] = [
 	"journal_entry",
 	"person",
 	"project",
-	"todo",
 	"media",
 ];
 
@@ -203,7 +152,6 @@ export const KIND_ORDER: LibraryItemKind[] = [
  * so the two never drift.
  */
 export const CREATABLE_KINDS: ReadonlySet<LibraryItemKind> = new Set([
-	"todo",
 	"person",
 	"project",
 	"journal_entry",
@@ -224,7 +172,6 @@ export const KIND_META: Record<LibraryItemKind, KindMeta> = {
 		slug: "projects",
 		icon: FolderKanban,
 	},
-	todo: { label: "Todo", plural: "Todos", slug: "todos", icon: ListTodo },
 	media: {
 		label: "Media",
 		plural: "Media",
@@ -237,7 +184,6 @@ const SLUG_TO_KIND: Record<string, LibraryItemKind> = {
 	journal: "journal_entry",
 	people: "person",
 	projects: "project",
-	todos: "todo",
 	media: "media",
 };
 
@@ -274,10 +220,6 @@ export function libraryItemSubtitle(e: LibraryItem): string {
 			return e.note ?? "Person";
 		case "project":
 			return e.outcome ?? PROJECT_STATUS_LABEL[e.status];
-		case "todo":
-			return e.dueAt
-				? `Due ${e.dueAt.slice(0, 10)}`
-				: (e.note ?? TODO_STATUS_LABEL[e.status]);
 		case "media":
 			// A link shows its host (its most identifying detail); everything else
 			// reads as "<Medium> · <State>" (the queue+log signature).
@@ -324,10 +266,6 @@ export const PROJECT_STATUS_LABEL = Object.fromEntries(
 	PROJECT_STATUSES.map((o) => [o.value, o.label]),
 ) as Record<ProjectStatus, string>;
 
-export const TODO_STATUS_LABEL = Object.fromEntries(
-	TODO_STATUSES.map((o) => [o.value, o.label]),
-) as Record<TodoStatus, string>;
-
 export const MEDIA_MEDIUM_LABEL = Object.fromEntries(
 	MEDIA_MEDIUMS.map((o) => [o.value, o.label]),
 ) as Record<MediaMedium, string>;
@@ -335,64 +273,6 @@ export const MEDIA_MEDIUM_LABEL = Object.fromEntries(
 export const MEDIA_STATE_LABEL = Object.fromEntries(
 	MEDIA_STATES.map((o) => [o.value, o.label]),
 ) as Record<MediaState, string>;
-
-/** All Todos in `all` (used by the derivations below). */
-function allTodos(all: LibraryItem[]): Todo[] {
-	return all.filter((e): e is Todo => e.kind === "todo");
-}
-
-/** Todos owned by `project` via `Todo.project_id` (ADR-0031). */
-export function todosForProject(all: LibraryItem[], project: Project): Todo[] {
-	return allTodos(all).filter((t) => t.projectId === project.id);
-}
-
-/** Todos that reference `person`, optionally filtered to one role (ADR-0032). */
-export function todosForPerson(
-	all: LibraryItem[],
-	person: Person,
-	role?: TodoPersonRole,
-): Todo[] {
-	return allTodos(all).filter((t) =>
-		t.personRefs.some(
-			(ref) =>
-				ref.personId === person.id && (role == null || ref.role === role),
-		),
-	);
-}
-
-/**
- * Projects a `person` is involved in, derived through that Person's Todos:
- * Person → TodoPersonRef → Todo → Project (ADR-0031). Distinct, first-seen order.
- */
-export function projectsForPerson(
-	all: LibraryItem[],
-	person: Person,
-): Project[] {
-	const projectById = new Map(
-		all.filter((e): e is Project => e.kind === "project").map((p) => [p.id, p]),
-	);
-	const seen = new Set<string>();
-	const projects: Project[] = [];
-	for (const todo of todosForPerson(all, person)) {
-		if (!todo.projectId || seen.has(todo.projectId)) continue;
-		const project = projectById.get(todo.projectId);
-		if (project) {
-			seen.add(todo.projectId);
-			projects.push(project);
-		}
-	}
-	return projects;
-}
-
-export function projectForTodo(
-	all: LibraryItem[],
-	todo: Todo,
-): Project | undefined {
-	if (!todo.projectId) return undefined;
-	return all.find(
-		(e): e is Project => e.kind === "project" && e.id === todo.projectId,
-	);
-}
 
 /** Most recently captured items, newest first. */
 export function recentlyCapturedItems(
@@ -454,48 +334,11 @@ export function localNowString(now: Date = new Date()): string {
 	);
 }
 
-/** A local day `YYYY-MM-DD`, `n` days from `now`. Mirrors `dueSoonTodos`' horizon math. */
+/** A local day `YYYY-MM-DD`, `n` days from `now`. */
 export function addDays(n: number, now: Date = new Date()): string {
 	const d = new Date(now);
 	d.setDate(d.getDate() + n);
 	return localNowString(d).slice(0, 10);
-}
-
-/** A Todo is overdue when active and its due *day* is before today (ADR-0031).
- * Due dates are stored at midnight (`<day>T00:00:00`, see `dayToLocal`), so a
- * full-timestamp `dueAt < now` comparison would flag a todo due *today* as
- * overdue from 00:01 onward. Compare the date portion only — consistent with how
- * `dueSoonTodos` treats "due soon" as a to-the-day notion. */
-export function todoIsOverdue(todo: Todo, now = localNowString()): boolean {
-	return (
-		todo.status === "active" &&
-		todo.dueAt != null &&
-		todo.dueAt.slice(0, 10) < now.slice(0, 10)
-	);
-}
-
-/**
- * Active todos whose due *day* is at or before `now + withinDays`, overdue
- * (and earlier) first. "Due soon" is a to-the-day notion, so this compares the
- * date portion — a todo due later today still counts as due today.
- */
-export function dueSoonTodos(
-	all: LibraryItem[],
-	withinDays = 3,
-	now: Date = new Date(),
-): Todo[] {
-	const horizon = new Date(now);
-	horizon.setDate(horizon.getDate() + withinDays);
-	const horizonDay = localNowString(horizon).slice(0, 10);
-	return all
-		.filter(
-			(e): e is Todo =>
-				e.kind === "todo" &&
-				e.status === "active" &&
-				e.dueAt != null &&
-				e.dueAt.slice(0, 10) <= horizonDay,
-		)
-		.sort((a, b) => (a.dueAt ?? "").localeCompare(b.dueAt ?? ""));
 }
 
 export function activeProjectItems(all: LibraryItem[]): Project[] {
@@ -506,74 +349,6 @@ export function activeProjectItems(all: LibraryItem[]): Project[] {
 				(e.status === "active" || e.status === "on_hold"),
 		)
 		.sort((a, b) => b.recency - a.recency);
-}
-
-/**
- * Inbox: active Todos with no organizing metadata — no Project, no due date,
- * and no Person References (ADR-0031). Derived, never stored. Newest first.
- */
-export function inboxTodos(all: LibraryItem[]): Todo[] {
-	return all
-		.filter(
-			(e): e is Todo =>
-				e.kind === "todo" &&
-				e.status === "active" &&
-				e.projectId == null &&
-				e.dueAt == null &&
-				e.personRefs.length === 0,
-		)
-		.sort((a, b) => b.recency - a.recency);
-}
-
-/**
- * Waiting / Follow-up: active Todos with at least one `waiting_on` Person
- * Reference (ADR-0031). A `related`-only ref does not count. `defer_at` does
- * not remove a Todo from this view. Newest first.
- */
-export function waitingTodos(all: LibraryItem[]): Todo[] {
-	return all
-		.filter(
-			(e): e is Todo =>
-				e.kind === "todo" &&
-				e.status === "active" &&
-				e.personRefs.some((ref) => ref.role === "waiting_on"),
-		)
-		.sort((a, b) => b.recency - a.recency);
-}
-
-/**
- * Scheduled: active Todos deferred to a FUTURE date — the complement of
- * ADR-0031's availability gate (`is_available = status === "active" && (defer_at
- * == null || defer_at <= now)`). A Todo is "scheduled" when it is active and its
- * `defer_at` has not yet arrived; it becomes available (and leaves this view) once
- * `defer_at <= now`. Orthogonal to Inbox/Waiting/Due — a Todo here may also carry a
- * project, due date, or Person References. Soonest-available first.
- *
- * `defer_at` is stored at midnight (`<day>T00:00:00`, see `dayToLocal`), and `now`
- * is a `YYYY-MM-DDTHH:MM:SS` local wall-clock string, so a full-string `deferAt >
- * now` comparison is correct: a Todo deferred to today is available from 00:00 and
- * is NOT scheduled. Mirrors `projectsForReview`'s string-`now` convention.
- *
- * Stopgap (#232): a flat list, intentionally minimal. Superseded by the shared
- * Forecast/calendar view (#236), which will replace and remove this.
- */
-export function scheduledTodos(
-	all: LibraryItem[],
-	now: string = localNowString(),
-): Todo[] {
-	return all
-		.filter(
-			(e): e is Todo =>
-				e.kind === "todo" &&
-				e.status === "active" &&
-				e.deferAt != null &&
-				e.deferAt > now,
-		)
-		.sort(
-			(a, b) =>
-				(a.deferAt ?? "").localeCompare(b.deferAt ?? "") ||
-				b.recency - a.recency,
-		);
 }
 
 /**
@@ -597,20 +372,16 @@ export function projectsForReview(
 }
 
 /**
- * The Today hub's three glance counts (ADR-0054): the unorganized `inbox` pile,
- * todos due today (or overdue), and projects whose review is due. Pure composition
- * of the existing GTD selectors — no new derivation. `dueToday` uses a zero-day
- * `dueSoonTodos` horizon (`withinDays = 0`), so it counts todos due *today or
- * earlier* and excludes anything due in the future. `now` is injectable for
- * clock-independent tests; the live hub passes the real wall clock.
+ * The Today hub's glance count (ADR-0054): projects whose review is due. Tasks
+ * live in TickTick (the S4 cutover), so the old inbox/due-today todo counts are
+ * gone. `now` is injectable for clock-independent tests; the live hub passes
+ * the real wall clock.
  */
 export function todayHubStats(
 	all: LibraryItem[],
 	now: Date = new Date(),
-): { todo: number; dueToday: number; toReview: number } {
+): { toReview: number } {
 	return {
-		todo: inboxTodos(all).length,
-		dueToday: dueSoonTodos(all, 0, now).length,
 		toReview: projectsForReview(all, localNowString(now)).length,
 	};
 }
@@ -627,37 +398,6 @@ export function reviewCadenceLabel(project: Project): string | null {
 	const { interval, unit } = every as { interval?: unknown; unit?: unknown };
 	if (typeof interval !== "number" || typeof unit !== "string") return null;
 	return interval === 1 ? `Every ${unit}` : `Every ${interval} ${unit}s`;
-}
-
-/** "every minute" reads better than "minutely"; the rest take an -ly adverb. */
-const RECURRENCE_ADVERB: Record<RecurrenceUnit, string> = {
-	minute: "every minute",
-	hour: "hourly",
-	day: "daily",
-	week: "weekly",
-	month: "monthly",
-	year: "yearly",
-};
-
-/**
- * Human-readable summary of a recurrence rule (ADR-0037). Covers interval, unit,
- * and the `end` condition (until / after_count) so a user can SEE an end that the
- * editor doesn't surface — e.g. an agent-created "repeats weekly until 2026-12-31"
- * would otherwise be invisible. Sentence case, no em dashes (DESIGN.md copy tone).
- */
-export function recurrenceSummary(rule: RecurrenceRule): string {
-	const cadence =
-		rule.interval === 1
-			? RECURRENCE_ADVERB[rule.unit]
-			: `every ${rule.interval} ${rule.unit}s`;
-	let summary = `Repeats ${cadence}`;
-	if (rule.end?.until) {
-		summary += ` until ${rule.end.until.slice(0, 10)}`;
-	} else if (typeof rule.end?.afterCount === "number") {
-		const n = rule.end.afterCount;
-		summary += `, ${n} ${n === 1 ? "time" : "times"}`;
-	}
-	return summary;
 }
 
 export function groupJournalEntriesByDay(
@@ -680,17 +420,6 @@ export function groupJournalEntriesByDay(
 					a.occurredAt.localeCompare(b.occurredAt) || a.id.localeCompare(b.id),
 			),
 		}));
-}
-
-export function projectProgress(
-	all: LibraryItem[],
-	project: Project,
-): { done: number; total: number } {
-	const ts = todosForProject(all, project);
-	return {
-		done: ts.filter((t) => t.status === "completed").length,
-		total: ts.length,
-	};
 }
 
 export interface LibraryItemMatch {

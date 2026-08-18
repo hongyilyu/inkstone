@@ -32,21 +32,20 @@ test.use({
  * `proposal/get` and the card renders a node queue with create badges.
  *
  * Two headline behaviors:
- *  1. Accept everything + Apply → all four entities exist and the Todo is linked.
- *  2. Reject the Project node + commit → the Todo lands standalone (no project
- *     link), and the Project is not created.
+ *  1. Accept everything + Apply → all three entities exist and the JE weaves them.
+ *  2. Reject the Project node + commit → the Project is not created; the Person
+ *     and JE still land.
  *
- * The #179 shape: a Journal Entry + Project "Lead Ads" + Person "Morris" + Todo
- * "Figure out the Rodeo side", with the Todo linked to the Project and the Person,
- * and the JE referencing both.
+ * The shape (ADR-0042, narrowed by ADR-0064): a Journal Entry + Project "Lead Ads"
+ * + Person "Morris", the JE referencing both via journal_ref links. Tasks are no
+ * longer graph nodes — they live in TickTick.
  */
 
-const TODO_TITLE = "Figure out the Rodeo side";
 const PROJECT_NAME = "Lead Ads";
 const PERSON_NAME = "Morris";
 const NOTE_TITLE = "Met Morris about Lead Ads and the Rodeo side";
 
-// The #179 intent graph: JE anchor + Project + Person + Todo, all linked.
+// The intent graph: JE anchor + Project + Person, the JE weaving both.
 const GRAPH = {
 	journal_entry: {
 		handle: "@je",
@@ -62,21 +61,38 @@ const GRAPH = {
 	entities: [
 		{ handle: "@leadads", type: "project", name: PROJECT_NAME },
 		{ handle: "@morris", type: "person", name: PERSON_NAME },
-		{ handle: "@rodeo", type: "todo", title: TODO_TITLE },
 	],
 	links: [
-		{ kind: "todo_project", from: "@rodeo", to: "@leadads" },
-		{ kind: "todo_person", from: "@rodeo", to: "@morris", role: "related" },
 		{ kind: "journal_ref", from: "@je", to: "@morris" },
 		{ kind: "journal_ref", from: "@je", to: "@leadads" },
 	],
+};
+
+// A reject-path graph: the Project is a create node NOT woven into the JE body (no
+// journal_ref), so rejecting it is unambiguous — the JE keeps referencing only the
+// Person, which stays created.
+const REJECT_GRAPH = {
+	journal_entry: {
+		handle: "@je",
+		occurred_at: "2026-06-10T10:30:00",
+		body: [
+			{ type: "text", text: "Met " },
+			{ type: "entity_ref", target: "@morris" },
+			{ type: "text", text: " and mulled starting Lead Ads." },
+		],
+	},
+	entities: [
+		{ handle: "@leadads", type: "project", name: PROJECT_NAME },
+		{ handle: "@morris", type: "person", name: PERSON_NAME },
+	],
+	links: [{ kind: "journal_ref", from: "@je", to: "@morris" }],
 };
 
 function count(dbPath: string, sql: string): string {
 	return sqlite(dbPath, sql).trim();
 }
 
-test("accept-all commit lands all four entities, linked", async ({
+test("accept-all commit lands all three entities, woven", async ({
 	chat,
 	workspace,
 }) => {
@@ -86,18 +102,15 @@ test("accept-all commit lands all four entities, linked", async ({
 	await chat.goto();
 	await chat.openThread(NOTE_TITLE);
 
-	// The graph review card rehydrates with the 4-node plan + create badges.
+	// The graph review card rehydrates with the 2-node plan + create badges.
 	const card = chat.page.locator('[data-proposal-kind="apply_intent_graph"]');
 	await expect(card).toBeVisible({ timeout: 15_000 });
-	await expect(card).toContainText(/3 items to review/i); // JE is not a plan node
+	await expect(card).toContainText(/2 items to review/i); // JE is not a plan node
 	await expect(card.locator('[data-graph-node="@leadads"]')).toContainText(
 		PROJECT_NAME,
 	);
 	await expect(card.locator('[data-graph-node="@morris"]')).toContainText(
 		PERSON_NAME,
-	);
-	await expect(card.locator('[data-graph-node="@rodeo"]')).toContainText(
-		TODO_TITLE,
 	);
 	await expect(card.getByText("New").first()).toBeVisible();
 
@@ -109,10 +122,10 @@ test("accept-all commit lands all four entities, linked", async ({
 	const decidedCard = chat.page.locator(`[data-proposal="${runId}"]`);
 
 	// Apply everything (the default staging accepts every resolvable node).
-	await card.getByRole("button", { name: /apply 3 items/i }).click();
+	await card.getByRole("button", { name: /apply 2 items/i }).click();
 	await expect(decidedCard).toContainText(/applied/i, { timeout: 15_000 });
 
-	// All four entities exist: JE + Project + Person + Todo.
+	// All three entities exist: JE + Project + Person.
 	expect(
 		count(
 			dbPath,
@@ -131,26 +144,7 @@ test("accept-all commit lands all four entities, linked", async ({
 			`SELECT COUNT(*) FROM entities WHERE type = 'person' AND json_extract(data, '$.name') = ${sqlValue(PERSON_NAME)};`,
 		),
 	).toBe("1");
-	// The Todo is linked to the Project (its data.project_id is the Project's id).
-	expect(
-		count(
-			dbPath,
-			`SELECT COUNT(*) FROM entities todo
-			 JOIN entities project ON project.id = json_extract(todo.data, '$.project_id')
-			 WHERE todo.type = 'todo' AND project.type = 'project'
-			   AND json_extract(project.data, '$.name') = ${sqlValue(PROJECT_NAME)};`,
-		),
-	).toBe("1");
-	// The Todo is linked to the Person via todo_person_refs.
-	expect(
-		count(
-			dbPath,
-			`SELECT COUNT(*) FROM todo_person_refs r
-			 JOIN entities p ON p.id = r.person_id AND p.type = 'person'
-			 WHERE json_extract(p.data, '$.name') = ${sqlValue(PERSON_NAME)};`,
-		),
-	).toBe("1");
-	// The JE references both entities (woven once).
+	// The JE references both entities (woven once each).
 	expect(count(dbPath, "SELECT COUNT(*) FROM entity_refs;")).toBe("2");
 });
 
@@ -170,63 +164,56 @@ test("editing a create node sends edited_fields; the minted entity carries the c
 	expect(runId).not.toBeNull();
 	const decidedCard = chat.page.locator(`[data-proposal="${runId}"]`);
 
-	const EDITED_TITLE = "Sort out the Rodeo logistics";
+	const EDITED_NAME = "Lead Ads Q3";
 
-	// Open the Todo's inline edit form, correct the title, Save. Match the button's
-	// accessible name ("Edit <title>") as a literal substring — no RegExp, so a title
+	// Open the Project's inline edit form, correct the name, Save. Match the button's
+	// accessible name ("Edit <name>") as a literal substring — no RegExp, so a name
 	// with regex metacharacters can't break the locator.
 	await card
-		.getByRole("button", { name: `Edit ${TODO_TITLE}`, exact: false })
+		.getByRole("button", { name: `Edit ${PROJECT_NAME}`, exact: false })
 		.click();
-	const title = card.getByLabel("Title");
-	await expect(title).toHaveValue(TODO_TITLE);
-	await title.fill(EDITED_TITLE);
+	const name = card.getByLabel("Name");
+	await expect(name).toHaveValue(PROJECT_NAME);
+	await name.fill(EDITED_NAME);
 	await card.getByRole("button", { name: /save/i }).click();
 
 	// The collapsed row reflects the correction and is badged "Edited".
-	await expect(card.locator('[data-graph-node="@rodeo"]')).toContainText(
-		EDITED_TITLE,
+	await expect(card.locator('[data-graph-node="@leadads"]')).toContainText(
+		EDITED_NAME,
 	);
-	await expect(card.locator('[data-graph-node="@rodeo"]')).toHaveAttribute(
+	await expect(card.locator('[data-graph-node="@leadads"]')).toHaveAttribute(
 		"data-node-edited",
 		"true",
 	);
 
 	// Apply: the edited_fields correction rides the decision vector to Core.
-	await card.getByRole("button", { name: /apply 3 items/i }).click();
+	await card.getByRole("button", { name: /apply 2 items/i }).click();
 	await expect(decidedCard).toContainText(/applied/i, { timeout: 15_000 });
 
-	// The minted Todo carries the EDITED title, not the model's proposed one.
+	// The minted Project carries the EDITED name, not the model's proposed one.
 	expect(
 		count(
 			dbPath,
-			`SELECT COUNT(*) FROM entities WHERE type = 'todo' AND json_extract(data, '$.title') = ${sqlValue(EDITED_TITLE)};`,
+			`SELECT COUNT(*) FROM entities WHERE type = 'project' AND json_extract(data, '$.name') = ${sqlValue(EDITED_NAME)};`,
 		),
 	).toBe("1");
 	expect(
 		count(
 			dbPath,
-			`SELECT COUNT(*) FROM entities WHERE type = 'todo' AND json_extract(data, '$.title') = ${sqlValue(TODO_TITLE)};`,
+			`SELECT COUNT(*) FROM entities WHERE type = 'project' AND json_extract(data, '$.name') = ${sqlValue(PROJECT_NAME)};`,
 		),
 	).toBe("0");
-	// The edited Todo keeps its project link (the edit does not disturb resolution).
-	expect(
-		count(
-			dbPath,
-			`SELECT COUNT(*) FROM entities todo
-			 JOIN entities project ON project.id = json_extract(todo.data, '$.project_id')
-			 WHERE todo.type = 'todo' AND project.type = 'project'
-			   AND json_extract(project.data, '$.name') = ${sqlValue(PROJECT_NAME)};`,
-		),
-	).toBe("1");
 });
 
-test("rejecting the Project lands the Todo standalone (no project, no link)", async ({
+test("rejecting the Project node mints no Project; the Person and JE still land", async ({
 	chat,
 	workspace,
 }) => {
 	const dbPath = dbPathFor(workspace.path);
-	seedParkedIntentGraphProposal(dbPath, { graph: GRAPH, title: NOTE_TITLE });
+	seedParkedIntentGraphProposal(dbPath, {
+		graph: REJECT_GRAPH,
+		title: NOTE_TITLE,
+	});
 
 	await chat.goto();
 	await chat.openThread(NOTE_TITLE);
@@ -243,32 +230,30 @@ test("rejecting the Project lands the Todo standalone (no project, no link)", as
 		"data-node-stage",
 		"reject",
 	);
-	// The downgrade is surfaced before Apply (ADR-0042 "shows this downgrade").
-	await expect(card).toContainText(/without its project link/i);
 
-	// Commit: the Todo + Person are accepted, the Project rejected.
-	await card.getByRole("button", { name: /apply 2 items/i }).click();
+	// Commit: only the Person is accepted, the Project rejected.
+	await card.getByRole("button", { name: /apply 1 item/i }).click();
 	await expect(decidedCard).toContainText(/applied/i, { timeout: 15_000 });
 
 	// The Project was NOT created.
 	expect(
 		count(dbPath, "SELECT COUNT(*) FROM entities WHERE type = 'project';"),
 	).toBe("0");
-	// The Todo lands standalone — it exists with NO project_id.
-	expect(
-		count(
-			dbPath,
-			`SELECT COUNT(*) FROM entities WHERE type = 'todo' AND json_extract(data, '$.title') = ${sqlValue(TODO_TITLE)} AND json_extract(data, '$.project_id') IS NULL;`,
-		),
-	).toBe("1");
-	// The Person was created and still linked to the Todo (only the project link dropped).
+	// The Person was created…
 	expect(
 		count(
 			dbPath,
 			`SELECT COUNT(*) FROM entities WHERE type = 'person' AND json_extract(data, '$.name') = ${sqlValue(PERSON_NAME)};`,
 		),
 	).toBe("1");
-	expect(count(dbPath, "SELECT COUNT(*) FROM todo_person_refs;")).toBe("1");
+	// …and the JE landed, weaving only the Person (its sole journal_ref).
+	expect(
+		count(
+			dbPath,
+			"SELECT COUNT(*) FROM entities WHERE type = 'journal_entry';",
+		),
+	).toBe("1");
+	expect(count(dbPath, "SELECT COUNT(*) FROM entity_refs;")).toBe("1");
 });
 
 // --- Near-match default-to-existing (ADR-0042 amendment) --------------------
@@ -281,7 +266,7 @@ test("rejecting the Project lands the Todo standalone (no project, no link)", as
 const EXISTING_PROJECT_ID = "01900000-0000-7000-8000-00000000c001";
 const NEAR_MATCH_NOTE = "1600-1800 synced on Lead Ads testing";
 
-// A graph proposing a Project named "Lead Ads testing" (the near-twin) + a Todo.
+// A graph proposing a Project named "Lead Ads testing" (the near-twin).
 const NEAR_MATCH_GRAPH = {
 	journal_entry: {
 		handle: "@je",
@@ -292,18 +277,8 @@ const NEAR_MATCH_GRAPH = {
 			{ type: "text", text: "." },
 		],
 	},
-	entities: [
-		{ handle: "@leadads", type: "project", name: "Lead Ads testing" },
-		{
-			handle: "@figure",
-			type: "todo",
-			title: "Figure out why Lead Ads testing ads still do not show up",
-		},
-	],
-	links: [
-		{ kind: "todo_project", from: "@figure", to: "@leadads" },
-		{ kind: "journal_ref", from: "@je", to: "@leadads" },
-	],
+	entities: [{ handle: "@leadads", type: "project", name: "Lead Ads testing" }],
+	links: [{ kind: "journal_ref", from: "@je", to: "@leadads" }],
 };
 
 test("a near-twin Project defaults to the existing entity; Apply mints no duplicate", async ({
@@ -339,7 +314,7 @@ test("a near-twin Project defaults to the existing entity; Apply mints no duplic
 	const decidedCard = chat.page.locator(`[data-proposal="${runId}"]`);
 
 	// Apply everything — the default re-points the Project onto the existing one.
-	await card.getByRole("button", { name: /apply 2 items/i }).click();
+	await card.getByRole("button", { name: /apply 1 item/i }).click();
 	await expect(decidedCard).toContainText(/applied/i, { timeout: 15_000 });
 
 	// NO duplicate: exactly ONE project named "Lead Ads", and ZERO "Lead Ads testing".
@@ -358,13 +333,6 @@ test("a near-twin Project defaults to the existing entity; Apply mints no duplic
 			`SELECT COUNT(*) FROM entities WHERE type = 'project' AND json_extract(data, '$.name') = ${sqlValue("Lead Ads testing")};`,
 		),
 	).toBe("0");
-	// The Todo is linked to the EXISTING "Lead Ads" project (re-point joined the link).
-	expect(
-		count(
-			dbPath,
-			`SELECT COUNT(*) FROM entities WHERE type = 'todo' AND json_extract(data, '$.project_id') = ${sqlValue(EXISTING_PROJECT_ID)};`,
-		),
-	).toBe("1");
 });
 
 test("'Create new instead' overrides the near-match and mints the new Project", async ({
@@ -398,7 +366,7 @@ test("'Create new instead' overrides the near-match and mints the new Project", 
 	await expect(projectRow).not.toHaveAttribute("data-node-repoint");
 	await expect(projectRow).toContainText("New");
 
-	await card.getByRole("button", { name: /apply 2 items/i }).click();
+	await card.getByRole("button", { name: /apply 1 item/i }).click();
 	await expect(decidedCard).toContainText(/applied/i, { timeout: 15_000 });
 
 	// NOW there are TWO projects — the existing "Lead Ads" and the new "Lead Ads testing".
@@ -432,8 +400,8 @@ const MORRIS_ONE_NOTE = "from the Rodeo sync";
 const MORRIS_TWO_NOTE = "the Lead Ads contact";
 const AMBIGUOUS_NOTE = "Synced with Morris on the Rodeo side";
 
-// A graph: a Todo linked to the ambiguous @morris person node (no project), so the
-// only plan nodes are the Todo (create) and Morris (ambiguous).
+// A graph: a Project create node alongside the ambiguous @morris person node, so
+// the only plan nodes are the Project (create) and Morris (ambiguous).
 const AMBIGUOUS_GRAPH = {
 	journal_entry: {
 		handle: "@je",
@@ -446,12 +414,9 @@ const AMBIGUOUS_GRAPH = {
 	},
 	entities: [
 		{ handle: "@morris", type: "person", name: "Morris" },
-		{ handle: "@rodeo", type: "todo", title: "Figure out the Rodeo side" },
+		{ handle: "@rodeo", type: "project", name: "Rodeo rollout" },
 	],
-	links: [
-		{ kind: "todo_person", from: "@rodeo", to: "@morris", role: "related" },
-		{ kind: "journal_ref", from: "@je", to: "@morris" },
-	],
+	links: [{ kind: "journal_ref", from: "@je", to: "@morris" }],
 };
 
 test("picking a candidate for an ambiguous node reuses the chosen existing entity", async ({
@@ -475,7 +440,7 @@ test("picking a candidate for an ambiguous node reuses the chosen existing entit
 	await expect(card).toBeVisible({ timeout: 15_000 });
 
 	// The Morris node renders ambiguous with a 2-candidate picker; it is NOT yet
-	// acceptable (accept disabled), so the Apply count covers only the Todo.
+	// acceptable (accept disabled), so the Apply count covers only the Project.
 	const morrisRow = card.locator('[data-graph-node="@morris"]');
 	await expect(morrisRow).toContainText("Needs disambiguation");
 	// Each candidate carries its disambiguating SUBTITLE, resolved through the REAL
@@ -493,7 +458,7 @@ test("picking a candidate for an ambiguous node reuses the chosen existing entit
 	await expect(
 		card.getByText(/match more than one existing entry/i),
 	).toBeVisible();
-	// Unpicked: Apply sweeps only the Todo (Morris stays reject-only).
+	// Unpicked: Apply sweeps only the Project (Morris stays reject-only).
 	await expect(
 		card.getByRole("button", { name: /apply 1 item/i }),
 	).toBeVisible();
@@ -514,21 +479,21 @@ test("picking a candidate for an ambiguous node reuses the chosen existing entit
 	expect(
 		count(dbPath, "SELECT COUNT(*) FROM entities WHERE type = 'person';"),
 	).toBe("2");
-	// The Todo's person ref points at the CHOSEN Morris (MORRIS_TWO_ID), not the other.
+	// The JE's woven ref points at the CHOSEN Morris (MORRIS_TWO_ID), not the other.
 	expect(
 		count(
 			dbPath,
-			`SELECT COUNT(*) FROM todo_person_refs WHERE person_id = ${sqlValue(MORRIS_TWO_ID)};`,
+			`SELECT COUNT(*) FROM entity_refs WHERE target_entity_id = ${sqlValue(MORRIS_TWO_ID)};`,
 		),
 	).toBe("1");
 	expect(
 		count(
 			dbPath,
-			`SELECT COUNT(*) FROM todo_person_refs WHERE person_id = ${sqlValue(MORRIS_ONE_ID)};`,
+			`SELECT COUNT(*) FROM entity_refs WHERE target_entity_id = ${sqlValue(MORRIS_ONE_ID)};`,
 		),
 	).toBe("0");
-	// The Todo itself was created (one Todo total).
+	// The Project node was created (one project total).
 	expect(
-		count(dbPath, "SELECT COUNT(*) FROM entities WHERE type = 'todo';"),
+		count(dbPath, "SELECT COUNT(*) FROM entities WHERE type = 'project';"),
 	).toBe("1");
 });

@@ -1,5 +1,8 @@
 # Todo recurrence rule: an OmniFocus-style repeat persisted in Todo data
 
+Status: Superseded by ADR-0064
+/ superseded by [ADR-0064 (task ownership moves to TickTick)](./0064-task-ownership-moves-to-ticktick.md) — the native Todo retired, recurrence with it
+
 / builds on [ADR-0031](./0031-gtd-todo-person-project-model.md), [ADR-0016](./0016-proposal-application-policy.md), [ADR-0033](./0033-user-initiated-entity-crud-writes-directly.md), [ADR-0009](./0009-protocol-strategy.md)
 
 ADR-0031 defined the V1 Todo model and explicitly deferred recurrence: "Do not

@@ -1506,7 +1506,7 @@ fn reference_existing_entity_rejects_invalid_source_target_type_and_thread() {
             source_thread_id,
             "wrong target type",
             -32602,
-            "person, project, or todo",
+            "person or project",
         ),
         (
             source_entity_id,

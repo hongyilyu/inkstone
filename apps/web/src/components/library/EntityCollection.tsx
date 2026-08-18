@@ -1,4 +1,4 @@
-import { Plus, Search } from "lucide-react";
+import { CalendarClock, Plus, Search } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button.js";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -23,9 +23,8 @@ import {
 	libraryItemTitle,
 	type Project,
 	searchLibraryItems,
-	type Todo,
 } from "@/lib/libraryItems";
-import { EntityRow, TodoRow } from "./EntityRow.js";
+import { EntityRow } from "./EntityRow.js";
 import { EntitySkeleton } from "./EntitySkeleton.js";
 import { FacetRow } from "./FacetRow.js";
 
@@ -51,34 +50,24 @@ function compareForKind(
 			return (a, b) =>
 				PROJECT_STATUS_RANK[(a as Project).status] -
 					PROJECT_STATUS_RANK[(b as Project).status] || b.recency - a.recency;
-		case "todo":
-			return (a, b) => {
-				const ta = a as Todo;
-				const tb = b as Todo;
-				// Active todos first, then by soonest due date, then most recent.
-				const aActive = ta.status === "active";
-				const bActive = tb.status === "active";
-				if (aActive !== bActive) return aActive ? -1 : 1;
-				const da = ta.dueAt ?? "￿";
-				const db = tb.dueAt ?? "￿";
-				return da.localeCompare(db) || b.recency - a.recency;
-			};
 		case "media":
 			return (a, b) => b.recency - a.recency;
 	}
 }
 
-/** Searchable list for one Library item kind; selecting a row reports its id (the route sets `?id`, Inspector renders in the shared rail). `onNew`, when given, surfaces a header action that opens a blank editor in the rail (ADR-0033). */
+/** Searchable list for one Library item kind; selecting a row reports its id (the route sets `?id`, Inspector renders in the shared rail). `onNew`, when given, surfaces a header action that opens a blank editor in the rail (ADR-0033); `onReview` surfaces the Project Review entry (ADR-0034). */
 export function EntityCollection({
 	kind,
 	selectedId,
 	onSelect,
 	onNew,
+	onReview,
 }: {
 	kind: LibraryItemKind;
 	selectedId: string | null;
 	onSelect: (id: string) => void;
 	onNew?: () => void;
+	onReview?: () => void;
 }) {
 	const { data, isPending, isError } = useLibraryItems();
 	const [query, setQuery] = useState("");
@@ -104,10 +93,7 @@ export function EntityCollection({
 
 	// Facet groups derived from the UNFILTERED kind set (so groups don't flicker as
 	// the user toggles); only individual chips dim/hide via leave-one-out counts.
-	const facetGroups = useMemo(
-		() => deriveFacets(kind, ofKind, allItems),
-		[kind, ofKind, allItems],
-	);
+	const facetGroups = useMemo(() => deriveFacets(kind, ofKind), [kind, ofKind]);
 
 	// Leave-one-out counts per group, computed over the query-narrowed base. Only
 	// keys for the present groups are populated, so the type is Partial (FacetRow
@@ -115,15 +101,12 @@ export function EntityCollection({
 	const counts = useMemo(() => {
 		const out: Partial<Record<FacetKey, Map<string, number>>> = {};
 		for (const group of facetGroups) {
-			out[group.key] = facetCounts(group.key, base, facets, allItems);
+			out[group.key] = facetCounts(group.key, base, facets);
 		}
 		return out;
-	}, [facetGroups, base, facets, allItems]);
+	}, [facetGroups, base, facets]);
 
-	const items = useMemo(
-		() => composeFacets(base, facets, allItems),
-		[base, facets, allItems],
-	);
+	const items = useMemo(() => composeFacets(base, facets), [base, facets]);
 
 	const filtersActive = query.trim().length > 0 || hasActiveFacets(facets);
 	const resetAll = () => {
@@ -155,11 +138,22 @@ export function EntityCollection({
 						{/* Suppress New while the read failed: the create editor's relation
 						    pickers source from this same (failed) list, so opening it offline
 						    would show empty People/Project options as if none exist. */}
-						{onNew && !showError ? (
+						{onReview && !showError ? (
 							<Button
 								variant="chip"
 								size="pill"
 								className="ml-auto"
+								onClick={onReview}
+							>
+								<CalendarClock className="size-4" aria-hidden />
+								Review
+							</Button>
+						) : null}
+						{onNew && !showError ? (
+							<Button
+								variant="chip"
+								size="pill"
+								className={onReview ? undefined : "ml-auto"}
 								onClick={onNew}
 							>
 								<Plus className="size-4" aria-hidden />
@@ -244,25 +238,15 @@ export function EntityCollection({
 						/>
 					) : (
 						<ul className="flex flex-col gap-0.5">
-							{items.map((item) =>
-								item.kind === "todo" ? (
-									<TodoRow
-										key={item.id}
-										todo={item}
-										allItems={data ?? []}
+							{items.map((item) => (
+								<li key={item.id}>
+									<EntityRow
+										entity={item}
 										selected={item.id === selectedId}
 										onSelect={onSelect}
 									/>
-								) : (
-									<li key={item.id}>
-										<EntityRow
-											entity={item}
-											selected={item.id === selectedId}
-											onSelect={onSelect}
-										/>
-									</li>
-								),
-							)}
+								</li>
+							))}
 						</ul>
 					)}
 				</div>

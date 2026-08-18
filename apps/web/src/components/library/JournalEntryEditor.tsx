@@ -194,7 +194,7 @@ export function JournalEntryEditor({ onDone, onCancel, ...m }: Props) {
 
 /**
  * The "add a reference" affordance (edit only): a button opens a searchable pick
- * of Person/Project/Todo (never a Journal Entry). Picking stages ONE new chip,
+ * of Person/Project (never a Journal Entry). Picking stages ONE new chip,
  * which is its own reference mutation (a bare placeholder Core mints a ref_id
  * for). Core supports at most one chip per JE through this mutation, so the
  * affordance is gated to chip-FREE entries: an entry that already carries a chip
@@ -270,7 +270,7 @@ function AddReferenceField({
 			<EditorInput
 				id={inputId}
 				aria-label="Link an entity"
-				placeholder="Search People, Projects, Todos…"
+				placeholder="Search People, Projects…"
 				value={query}
 				onChange={(e) => setQuery(e.target.value)}
 			/>

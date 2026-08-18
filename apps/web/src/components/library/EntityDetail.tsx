@@ -1,3 +1,4 @@
+import type { EntityMutationKind } from "@inkstone/protocol";
 import { useNavigate } from "@tanstack/react-router";
 import {
 	ArrowUpRight,
@@ -20,7 +21,6 @@ import type {
 	Media,
 	Person,
 	Project,
-	Todo,
 } from "@/lib/libraryItems";
 import {
 	formatDateTime,
@@ -32,14 +32,6 @@ import {
 	MEDIA_STATE_LABEL,
 	mediaHref,
 	PROJECT_STATUS_LABEL,
-	projectForTodo,
-	projectsForPerson,
-	recurrenceSummary,
-	TODO_STATUS_LABEL,
-	type TodoPersonRole,
-	todoIsOverdue,
-	todosForPerson,
-	todosForProject,
 } from "@/lib/libraryItems";
 import { cn } from "@/lib/utils.js";
 import { EntityGlyph } from "./EntityGlyph.js";
@@ -47,7 +39,6 @@ import { JournalEntryEditor } from "./JournalEntryEditor.js";
 import { MediaEditor } from "./MediaEditor.js";
 import { PersonEditor } from "./PersonEditor.js";
 import { ProjectEditor } from "./ProjectEditor.js";
-import { TodoEditor } from "./TodoEditor.js";
 
 /** Detail "Inspector" panel for one Library item: its relations as deep links and a path back to the capturing Run. */
 export function EntityDetail({
@@ -59,14 +50,11 @@ export function EntityDetail({
 }) {
 	// Dispatch each kind to a thin config that renders through `InspectorShell`
 	// (the shell owns the shared view↔edit↔delete state machine and mutation hook).
-	if (entity.kind === "todo") {
-		return <TodoDetail todo={entity} allEntities={allEntities} />;
-	}
 	if (entity.kind === "person") {
-		return <PersonDetail person={entity} allEntities={allEntities} />;
+		return <PersonDetail person={entity} />;
 	}
 	if (entity.kind === "project") {
-		return <ProjectDetail project={entity} allEntities={allEntities} />;
+		return <ProjectDetail project={entity} />;
 	}
 	if (entity.kind === "journal_entry") {
 		return (
@@ -80,11 +68,9 @@ export function EntityDetail({
  * The `entity/mutate` delete kind per Library kind (ADR-0033). Derived from
  * `entity.kind` inside the shell — like `KIND_META[kind].slug` — so the entity
  * on screen is the single source of truth and a kind/delete-kind mismatch is
- * unrepresentable. The wire type is an opaque `string`; this total map is the
- * local typo guard.
+ * unrepresentable.
  */
-const DELETE_KIND: Record<LibraryItemKind, string> = {
-	todo: "delete_todo",
+const DELETE_KIND: Record<LibraryItemKind, EntityMutationKind> = {
 	person: "delete_person",
 	project: "delete_project",
 	journal_entry: "delete_journal_entry",
@@ -291,49 +277,13 @@ function RescanChip({ jeId }: { jeId: string }) {
 	);
 }
 
-/** The Todo inspector (ADR-0033): the scheduled-task body and the full Todo editor. */
-function TodoDetail({
-	todo,
-	allEntities,
-}: {
-	todo: Todo;
-	allEntities: LibraryItem[];
-}) {
-	return (
-		<InspectorShell
-			entity={todo}
-			confirmCopy="Delete this Todo?"
-			renderBody={(onOpen) => (
-				<TodoBody todo={todo} allEntities={allEntities} onOpen={onOpen} />
-			)}
-			renderEditor={(onDone, onCancel) => (
-				<TodoEditor
-					mode="edit"
-					todo={todo}
-					allEntities={allEntities}
-					onDone={onDone}
-					onCancel={onCancel}
-				/>
-			)}
-		/>
-	);
-}
-
-/** The Person inspector (ADR-0033): relations derived through Todos, edited via `PersonEditor`. */
-function PersonDetail({
-	person,
-	allEntities,
-}: {
-	person: Person;
-	allEntities: LibraryItem[];
-}) {
+/** The Person inspector (ADR-0033): mentions from Core's backlinks read, edited via `PersonEditor`. */
+function PersonDetail({ person }: { person: Person }) {
 	return (
 		<InspectorShell
 			entity={person}
 			confirmCopy="Delete this Person?"
-			renderBody={(onOpen) => (
-				<PersonBody person={person} allEntities={allEntities} onOpen={onOpen} />
-			)}
+			renderBody={(onOpen) => <PersonBody person={person} onOpen={onOpen} />}
 			renderEditor={(onDone, onCancel) => (
 				<PersonEditor
 					mode="edit"
@@ -346,29 +296,13 @@ function PersonDetail({
 	);
 }
 
-/**
- * The Project inspector (ADR-0033). Delete cascades server-side (Core unsets
- * `project_id` on the owning Todos), which the confirm copy spells out; the UI
- * just sends `delete_project`.
- */
-function ProjectDetail({
-	project,
-	allEntities,
-}: {
-	project: Project;
-	allEntities: LibraryItem[];
-}) {
+/** The Project inspector (ADR-0033): sends `delete_project`. */
+function ProjectDetail({ project }: { project: Project }) {
 	return (
 		<InspectorShell
 			entity={project}
-			confirmCopy="Delete this Project? Its Todos lose their project."
-			renderBody={(onOpen) => (
-				<ProjectBody
-					project={project}
-					allEntities={allEntities}
-					onOpen={onOpen}
-				/>
-			)}
+			confirmCopy="Delete this Project?"
+			renderBody={(onOpen) => <ProjectBody project={project} onOpen={onOpen} />}
 			renderEditor={(onDone, onCancel) => (
 				<ProjectEditor
 					mode="edit"
@@ -634,47 +568,14 @@ function EntityRefChip({
 	);
 }
 
-/** Active `waiting_on` todos for `person`, then everything else, off a todo set.
- * "Waiting on" means *actively* waiting (ADR-0031: is_waiting requires
- * status === "active"); a resolved waiting_on todo is historical and falls through
- * to "Tasks". Applied to the Core `linkedTodos` set (ADR-0050) — the same predicate
- * `todosForPerson(..., "waiting_on")` used over `allEntities`, with `personRefs`
- * riding along on each Core row. */
-function splitPersonTodos(
-	todos: Todo[],
-	person: Person,
-): { waiting: Todo[]; otherTasks: Todo[] } {
-	const waiting = todos.filter(
-		(t) =>
-			t.status === "active" &&
-			t.personRefs.some(
-				(ref) => ref.personId === person.id && ref.role === "waiting_on",
-			),
-	);
-	const waitingIds = new Set(waiting.map((t) => t.id));
-	return { waiting, otherTasks: todos.filter((t) => !waitingIds.has(t.id)) };
-}
-
 function PersonBody({
 	person,
-	allEntities,
 	onOpen,
 }: {
 	person: Person;
-	allEntities: LibraryItem[];
 	onOpen: (e: LibraryItem) => void;
 }) {
 	const backlinks = useEntityBacklinks(person.id, person.kind);
-	// Waiting / Tasks re-source from Core's reverse lookup (ADR-0050). Only a cold
-	// failure with no cached read degrades to the client-derived set over
-	// `allEntities` (the exact pre-Core derivation); a transient refetch failure
-	// keeps the last good Core set. Projects (Person→Projects) stays a client join
-	// (ADR-0050 narrow scope).
-	const tasks = backlinks.degraded
-		? todosForPerson(allEntities, person)
-		: backlinks.linkedTodos;
-	const { waiting, otherTasks } = splitPersonTodos(tasks, person);
-	const projects = projectsForPerson(allEntities, person);
 	return (
 		<>
 			{person.aliases && person.aliases.length > 0 ? (
@@ -687,85 +588,19 @@ function PersonBody({
 					<p className="text-pretty">{person.note}</p>
 				</Field>
 			) : null}
-			{waiting.length > 0 ? (
-				<Field label={withCount("Waiting on", waiting.length)}>
-					<div className="-mx-2 flex flex-col">
-						{waiting.map((t) => (
-							<RelatedRow key={t.id} entity={t} onOpen={onOpen} />
-						))}
-					</div>
-				</Field>
-			) : null}
-			{otherTasks.length > 0 ? (
-				<Field label={withCount("Tasks", otherTasks.length)}>
-					<div className="-mx-2 flex flex-col">
-						{otherTasks.map((t) => (
-							<RelatedRow key={t.id} entity={t} onOpen={onOpen} />
-						))}
-					</div>
-				</Field>
-			) : null}
-			{projects.length > 0 ? (
-				<Field label="Projects">
-					<div className="-mx-2 flex flex-col">
-						{projects.map((p) => (
-							<RelatedRow key={p.id} entity={p} onOpen={onOpen} />
-						))}
-					</div>
-				</Field>
-			) : null}
 			<MentionedIn mentions={mentionsOf(backlinks)} onOpen={onOpen} />
 		</>
 	);
 }
 
-/** The Project's People, derived from its Todos' Person References resolved against
- * `allEntities` (Project → Todo → TodoPersonRef → Person, ADR-0031), applied to the
- * Core `linkedTodos` set (ADR-0050) — Core resolves the reverse Todo lookup; the
- * client keeps the cheap Person join. Supersedes the old `peopleForProject`, which
- * also did the Todo lookup the Core read now owns. */
-function peopleFromTodos(todos: Todo[], allEntities: LibraryItem[]): Person[] {
-	const personById = new Map(
-		allEntities
-			.filter((e): e is Person => e.kind === "person")
-			.map((p) => [p.id, p]),
-	);
-	const seen = new Set<string>();
-	const people: Person[] = [];
-	for (const todo of todos) {
-		for (const ref of todo.personRefs) {
-			if (seen.has(ref.personId)) continue;
-			const person = personById.get(ref.personId);
-			if (person) {
-				seen.add(ref.personId);
-				people.push(person);
-			}
-		}
-	}
-	return people;
-}
-
 function ProjectBody({
 	project,
-	allEntities,
 	onOpen,
 }: {
 	project: Project;
-	allEntities: LibraryItem[];
 	onOpen: (e: LibraryItem) => void;
 }) {
 	const backlinks = useEntityBacklinks(project.id, project.kind);
-	// Todos re-source from Core (ADR-0050); only a cold failure with no cached read
-	// degrades to the client derivation over `allEntities` so the relation never
-	// vanishes (a transient refetch failure keeps the last good Core set). People
-	// and Progress are cheap client joins over whichever todo set is in play.
-	const todos = backlinks.degraded
-		? todosForProject(allEntities, project)
-		: backlinks.linkedTodos;
-	const people = peopleFromTodos(todos, allEntities);
-	const done = todos.filter((t) => t.status === "completed").length;
-	const total = todos.length;
-	const pct = total === 0 ? 0 : Math.round((done / total) * 100);
 
 	return (
 		<>
@@ -794,74 +629,8 @@ function ProjectBody({
 					</p>
 				</Field>
 			) : null}
-			{total > 0 ? (
-				<Field label={`Progress · ${done} of ${total} done`}>
-					<div
-						className="h-1.5 overflow-hidden rounded-full bg-secondary"
-						role="progressbar"
-						aria-valuenow={pct}
-						aria-valuemin={0}
-						aria-valuemax={100}
-					>
-						<div
-							className="h-full rounded-full bg-primary transition-[width] duration-500 ease-out-quint"
-							style={{ width: `${pct}%` }}
-						/>
-					</div>
-				</Field>
-			) : null}
-			{people.length > 0 ? (
-				<Field label="People">
-					<div className="-mx-2 flex flex-col">
-						{people.map((p) => (
-							<RelatedRow key={p.id} entity={p} onOpen={onOpen} />
-						))}
-					</div>
-				</Field>
-			) : null}
-			{todos.length > 0 ? (
-				<Field label={withCount("Todos", todos.length)}>
-					<div className="-mx-2 flex flex-col">
-						{todos.map((t) => (
-							<RelatedRow key={t.id} entity={t} onOpen={onOpen} />
-						))}
-					</div>
-				</Field>
-			) : null}
 			<MentionedIn mentions={mentionsOf(backlinks)} onOpen={onOpen} />
 		</>
-	);
-}
-
-const ROLE_LABEL: Record<TodoPersonRole, string> = {
-	waiting_on: "Waiting on",
-	related: "Related",
-};
-
-/** A linked-Person row carrying its Todo Person Reference role (ADR-0032). */
-function PersonRefRow({
-	person,
-	role,
-	onOpen,
-}: {
-	person: Person;
-	role: TodoPersonRole;
-	onOpen: (e: LibraryItem) => void;
-}) {
-	return (
-		<button
-			type="button"
-			onClick={() => onOpen(person)}
-			className="flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-secondary/50 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
-		>
-			<EntityGlyph entity={person} size="sm" />
-			<span className="min-w-0 flex-1 truncate text-foreground text-sm">
-				{libraryItemTitle(person)}
-			</span>
-			<Badge size="sm" variant="secondary">
-				{ROLE_LABEL[role]}
-			</Badge>
-		</button>
 	);
 }
 
@@ -901,90 +670,6 @@ function MentionedIn({
 				))}
 			</div>
 		</Field>
-	);
-}
-
-function TodoBody({
-	todo,
-	allEntities,
-	onOpen,
-}: {
-	todo: Todo;
-	allEntities: LibraryItem[];
-	onOpen: (e: LibraryItem) => void;
-}) {
-	// A Todo only re-sources its "Mentioned in" from Core (ADR-0050); its Project
-	// and People come from the Todo's OWN row (unchanged).
-	const backlinks = useEntityBacklinks(todo.id, todo.kind);
-	const project = projectForTodo(allEntities, todo);
-	const overdue = todoIsOverdue(todo);
-	const personById = new Map(
-		allEntities
-			.filter((e): e is Person => e.kind === "person")
-			.map((p) => [p.id, p]),
-	);
-	const linkedPeople = todo.personRefs
-		.map((ref) => {
-			const person = personById.get(ref.personId);
-			return person ? { person, role: ref.role } : null;
-		})
-		.filter((x): x is { person: Person; role: TodoPersonRole } => x !== null);
-
-	return (
-		<>
-			<div className="flex flex-wrap gap-2">
-				<Badge>{TODO_STATUS_LABEL[todo.status]}</Badge>
-				{todo.dueAt ? (
-					<Badge variant={overdue ? "destructive" : "secondary"}>
-						{overdue ? "Overdue · " : "Due "}
-						{formatDay(todo.dueAt)}
-					</Badge>
-				) : null}
-				{todo.deferAt ? (
-					<Badge>Deferred to {formatDay(todo.deferAt)}</Badge>
-				) : null}
-				{todo.recurrence ? (
-					<Badge variant="secondary">
-						{recurrenceSummary(todo.recurrence)}
-					</Badge>
-				) : null}
-				{todo.status === "completed" && todo.completedAt ? (
-					<Badge variant="secondary">
-						Completed {formatDay(todo.completedAt)}
-					</Badge>
-				) : null}
-				{todo.status === "dropped" && todo.droppedAt ? (
-					<Badge variant="secondary">Dropped {formatDay(todo.droppedAt)}</Badge>
-				) : null}
-			</div>
-			{todo.note ? (
-				<Field label="Note">
-					<p className="text-pretty">{todo.note}</p>
-				</Field>
-			) : null}
-			{project ? (
-				<Field label="Project">
-					<div className="-mx-2 flex flex-col">
-						<RelatedRow entity={project} onOpen={onOpen} />
-					</div>
-				</Field>
-			) : null}
-			{linkedPeople.length > 0 ? (
-				<Field label="People">
-					<div className="-mx-2 flex flex-col">
-						{linkedPeople.map(({ person, role }) => (
-							<PersonRefRow
-								key={person.id}
-								person={person}
-								role={role}
-								onOpen={onOpen}
-							/>
-						))}
-					</div>
-				</Field>
-			) : null}
-			<MentionedIn mentions={mentionsOf(backlinks)} onOpen={onOpen} />
-		</>
 	);
 }
 

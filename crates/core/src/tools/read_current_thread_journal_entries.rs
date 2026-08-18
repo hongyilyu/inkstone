@@ -62,7 +62,7 @@ pub async fn execute(
                 "body".to_string(),
                 row.data.get("body").cloned().unwrap_or(Value::Null),
             );
-            // The People/Projects/Todos ALREADY captured from this entry, by label —
+            // The People/Projects ALREADY captured from this entry, by label —
             // the re-scan recognition prompt reads this to suppress re-proposing an
             // already-chipped entity (ADR-0042).
             entry.insert(

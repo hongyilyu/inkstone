@@ -24,12 +24,12 @@ const TOPICS: {
 	label: string;
 	icon: LucideIcon;
 	to:
-		| "/library/gtd"
+		| "/library/tasks"
 		| "/library/timeline"
 		| "/library/health"
 		| "/library/media";
 }[] = [
-	{ label: "GTD", icon: ListTodo, to: "/library/gtd" },
+	{ label: "Tasks", icon: ListTodo, to: "/library/tasks" },
 	{ label: "Timeline", icon: History, to: "/library/timeline" },
 	{ label: "Health", icon: HeartPulse, to: "/library/health" },
 	{ label: "Media", icon: Film, to: "/library/media" },
@@ -89,8 +89,6 @@ export function TopicNav() {
 			</Link>
 			{!countsUnknown && (
 				<ul className="mt-1 mb-1 ml-9 flex flex-col gap-0.5 text-sidebar-foreground/55 text-xs">
-					<GlanceStat n={stats.todo} label="to do" />
-					<GlanceStat n={stats.dueToday} label="due today" />
 					<GlanceStat n={stats.toReview} label="to review" />
 				</ul>
 			)}

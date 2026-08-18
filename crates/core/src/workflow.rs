@@ -41,9 +41,9 @@ pub struct Workflow {
     #[serde(default)]
     pub tools: Vec<String>,
     /// Whether this Workflow may reach the external (Worker-executed MCP)
-    /// `ticktick_*` tools (external-task-views A3). Off until the S4 cutover
-    /// flips the default Workflow; the spawn manifest carries endpoint+auth
-    /// only when this is set AND a TickTick credential loaded at boot.
+    /// `ticktick_*` tools (external-task-views A3, on for the default Workflow
+    /// since the S4 cutover). The spawn manifest carries endpoint+auth only
+    /// when this is set AND a TickTick credential loaded at boot.
     #[serde(default)]
     pub external_tools: bool,
 }
