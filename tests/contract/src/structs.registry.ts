@@ -57,8 +57,6 @@ import {
 	ProviderStatusResult,
 	ProviderTestParams,
 	ProviderTestResult,
-	RecurrencePreviewParams,
-	RecurrencePreviewResult,
 	RunCancelParams,
 	RunCancelResult,
 	RunEvent,
@@ -223,21 +221,6 @@ export const fixtures: readonly FixtureEntry[] = [
 		message: "RunGetHistoryParams",
 		file: "run_get_history_params.bare.json",
 		schema: RunGetHistoryParams,
-		dir: "authored",
-	},
-	// RecurrencePreviewParams (#227): maximal (both anchors + end) + bare (one
-	// anchor, no end). `recurrence` is opaque (S.Unknown) — the rule's own shape
-	// is gated by the payload schemas, not this read param.
-	{
-		message: "RecurrencePreviewParams",
-		file: "recurrence_preview_params.json",
-		schema: RecurrencePreviewParams,
-		dir: "authored",
-	},
-	{
-		message: "RecurrencePreviewParams",
-		file: "recurrence_preview_params.bare.json",
-		schema: RecurrencePreviewParams,
 		dir: "authored",
 	},
 	// ObservationRecordParams: maximal batched draft + evidence, and bare
@@ -483,7 +466,7 @@ export const fixtures: readonly FixtureEntry[] = [
 		dir: "emitted",
 	},
 	// thread/list_archived (ADR-0052) reuses ThreadListResult — a second fixture
-	// under the same message key (precedent: RecurrencePreviewResult's two).
+	// under the same message key.
 	{
 		message: "ThreadListResult",
 		file: "thread_list_result.archived.json",
@@ -494,20 +477,6 @@ export const fixtures: readonly FixtureEntry[] = [
 		message: "RunHistoryResult",
 		file: "run_history_result.json",
 		schema: RunHistoryResult,
-		dir: "emitted",
-	},
-	// RecurrencePreviewResult (#227): continuing (ended:false, both dates) + ended
-	// (ended:true, dates omitted — the skip_serializing_if None branch).
-	{
-		message: "RecurrencePreviewResult",
-		file: "recurrence_preview_result.json",
-		schema: RecurrencePreviewResult,
-		dir: "emitted",
-	},
-	{
-		message: "RecurrencePreviewResult",
-		file: "recurrence_preview_result.ended.json",
-		schema: RecurrencePreviewResult,
 		dir: "emitted",
 	},
 	{
@@ -573,8 +542,8 @@ export const fixtures: readonly FixtureEntry[] = [
 		dir: "emitted",
 	},
 	// EntityBacklinksResult (ADR-0050): maximal — mentioned_in carries a JE row
-	// (refs + message-source), linked_todos a Todo row (person_refs). Both arrays
-	// always present. EntityRow coverage carries from the entity_list maximal row.
+	// (refs + message-source), always present. EntityRow coverage carries from
+	// the entity_list maximal row.
 	{
 		message: "EntityBacklinksResult",
 		file: "entity_backlinks_result.json",
@@ -909,7 +878,6 @@ export const CANONICAL_MESSAGES: readonly string[] = [
 	"ProposalDecideParams",
 	"ThreadCreateParams",
 	"RunGetHistoryParams",
-	"RecurrencePreviewParams",
 	"ObservationRecordParams",
 	"ObservationUpdateParams",
 	"ObservationQueryParams",
@@ -941,7 +909,6 @@ export const CANONICAL_MESSAGES: readonly string[] = [
 	"ThreadCreateResult",
 	"ThreadListResult",
 	"RunHistoryResult",
-	"RecurrencePreviewResult",
 	"ObservationRecordResult",
 	"ObservationUpdateResult",
 	"ObservationQueryResult",

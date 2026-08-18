@@ -2,8 +2,8 @@
 //! (`decide`) and the user path (`mutate`) (ADR-0033).
 //!
 //! These checks resolve a mutation's referenced Entities against tier 2 — a
-//! create's `source_journal_entry_id` anchor, a Todo's `project_id`/person refs,
-//! an update/delete target's type — and need no Run, Thread, or Proposal
+//! create's `source_journal_entry_id` anchor, an update/delete target's type —
+//! and need no Run, Thread, or Proposal
 //! context. The SAME-THREAD JOURNAL GUARD (a Journal Entry update/delete, or a
 //! reference's source Journal Entry, must be in the current Thread) is keyed on
 //! `run_id` and stays in `decide` only; this module deliberately omits it.
@@ -52,14 +52,8 @@ pub(crate) async fn validate_mutation_target_refs(
 ) -> Result<(), TargetError> {
     match kind.describe().target_refs {
         // Person/Project creates only resolve the optional source Journal Entry
-        // anchor. A Todo create additionally resolves its project/person refs —
-        // sequentially, anchor first.
+        // anchor.
         TargetRefs::SourceAnchor => check_source_journal_entry(pool, payload).await,
-        TargetRefs::SourceAnchorAndTodoCreateRefs => {
-            check_source_journal_entry(pool, payload).await?;
-            check_create_todo_refs(pool, payload).await
-        }
-        TargetRefs::TodoUpdateRefs => check_update_todo_refs(pool, payload).await,
         // Every update/delete whose only reference is the primary target Entity id.
         TargetRefs::GenericTarget => check_generic_target(pool, kind, payload).await,
         TargetRefs::ReferenceWeave => check_reference_existing_entity(pool, payload).await,
@@ -91,129 +85,6 @@ async fn check_source_journal_entry(
     Ok(())
 }
 
-/// A create_todo's `todo.project_id`, when present, must reference a Canonical
-/// Project; an absent project_id is fine (a standalone Todo). Every
-/// `person_refs[].person_id` must reference a Canonical Person; a bad one fails the
-/// whole mutation (-32602) before any write.
-async fn check_create_todo_refs(
-    pool: &SqlitePool,
-    payload: &serde_json::Value,
-) -> Result<(), TargetError> {
-    let project_id = payload
-        .get("todo")
-        .and_then(|todo| todo.get("project_id"))
-        .and_then(serde_json::Value::as_str)
-        .filter(|id| !id.is_empty());
-    if let Some(project_id) = project_id {
-        let is_project = db::entity_is_type(pool, project_id, EntityType::Project.as_str())
-            .await
-            .map_err(|e| TargetError::Internal(e.into()))?;
-        if !is_project {
-            return Err(TargetError::Invalid(
-                "create_todo project_id must reference an Accepted Project".to_string(),
-            ));
-        }
-    }
-    if let Some(person_refs) = payload
-        .get("person_refs")
-        .and_then(serde_json::Value::as_array)
-    {
-        for person_ref in person_refs {
-            let Some(person_id) = person_ref
-                .get("person_id")
-                .and_then(serde_json::Value::as_str)
-                .filter(|id| !id.is_empty())
-            else {
-                continue;
-            };
-            let is_person = db::entity_is_type(pool, person_id, EntityType::Person.as_str())
-                .await
-                .map_err(|e| TargetError::Internal(e.into()))?;
-            if !is_person {
-                return Err(TargetError::Invalid(
-                    "create_todo person_refs person_id must reference an Accepted Person"
-                        .to_string(),
-                ));
-            }
-        }
-    }
-    Ok(())
-}
-
-/// update_todo: `todo_id` must reference a Canonical Todo; each person_id in
-/// set_person_refs/add_person_refs must reference a Canonical Person; a supplied
-/// `todo.project_id` (the partial may set it) must reference a Canonical Project.
-/// All checked BEFORE apply so a bad ref/target writes nothing.
-async fn check_update_todo_refs(
-    pool: &SqlitePool,
-    payload: &serde_json::Value,
-) -> Result<(), TargetError> {
-    let todo_id =
-        mutation::target_entity_id(MutationKind::UpdateTodo.describe(), payload).ok_or_else(
-            || TargetError::Invalid("todo_id is required for update_todo".to_string()),
-        )?;
-    match db::entity_type_by_id(pool, todo_id)
-        .await
-        .map_err(|e| TargetError::Internal(e.into()))?
-    {
-        // The Todo being edited is GONE — a primary-target miss, not a payload
-        // error (TargetMissing → NotDecidable on the accept path, ADR-0033).
-        None => {
-            return Err(TargetError::TargetMissing(
-                "update_todo todo_id no longer references an Accepted Todo".to_string(),
-            ));
-        }
-        // The id resolves to a non-Todo Entity — a genuine payload error.
-        Some(actual) if actual != EntityType::Todo => {
-            return Err(TargetError::Invalid(
-                "update_todo todo_id must reference an Accepted Todo".to_string(),
-            ));
-        }
-        Some(_) => {}
-    }
-
-    for field in ["set_person_refs", "add_person_refs"] {
-        let Some(refs) = payload.get(field).and_then(serde_json::Value::as_array) else {
-            continue;
-        };
-        for person_ref in refs {
-            let Some(person_id) = person_ref
-                .get("person_id")
-                .and_then(serde_json::Value::as_str)
-                .filter(|id| !id.is_empty())
-            else {
-                continue;
-            };
-            let is_person = db::entity_is_type(pool, person_id, EntityType::Person.as_str())
-                .await
-                .map_err(|e| TargetError::Internal(e.into()))?;
-            if !is_person {
-                return Err(TargetError::Invalid(
-                    "update_todo person_refs person_id must reference an Accepted Person"
-                        .to_string(),
-                ));
-            }
-        }
-    }
-
-    let project_id = payload
-        .get("todo")
-        .and_then(|todo| todo.get("project_id"))
-        .and_then(serde_json::Value::as_str)
-        .filter(|id| !id.is_empty());
-    if let Some(project_id) = project_id {
-        let is_project = db::entity_is_type(pool, project_id, EntityType::Project.as_str())
-            .await
-            .map_err(|e| TargetError::Internal(e.into()))?;
-        if !is_project {
-            return Err(TargetError::Invalid(
-                "update_todo project_id must reference an Accepted Project".to_string(),
-            ));
-        }
-    }
-    Ok(())
-}
-
 /// An update/delete's `entity_id` must reference a Canonical Entity of the matching
 /// type. A simple pool-level type/existence check; the target TYPE is the kind's
 /// own Entity Type (`desc.entity_type`). The journal update/delete kinds route here
@@ -238,7 +109,7 @@ async fn check_generic_target(
     {
         // The Entity being updated/deleted is GONE — a primary-target miss, not a
         // payload error (TargetMissing → NotDecidable on the accept path,
-        // ADR-0033). A wrong-TYPE id (e.g. delete_person against a Todo) still
+        // ADR-0033). A wrong-TYPE id (e.g. delete_person against a Project) still
         // resolves to a row, so it stays Invalid below.
         None => Err(TargetError::TargetMissing(format!(
             "{wire} target no longer references an Accepted {}",
@@ -253,7 +124,7 @@ async fn check_generic_target(
 }
 
 /// reference_existing_entity_from_journal_entry: its `target_entity_id` must name an
-/// existing Canonical Entity of a referenceable type (person/project/todo), and its
+/// existing Canonical Entity of a referenceable type (person/project), and its
 /// `source_entity_id` must name an existing Journal Entry (the PRIMARY anchor the
 /// reference is woven into). The source-Journal-Entry same-thread guard is
 /// run-coupled and stays in `decide`.
@@ -307,7 +178,7 @@ async fn check_reference_existing_entity(
     };
     if !target_type.is_referenceable() {
         return Err(TargetError::Invalid(
-            "target_entity_id must be a person, project, or todo".to_string(),
+            "target_entity_id must be a person or project".to_string(),
         ));
     }
     Ok(())

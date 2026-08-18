@@ -15,7 +15,6 @@ import {
 	buildDecisions,
 	buildEditedFields,
 	candidateSubtitle,
-	downgradeNotices,
 	draftLabel,
 	draftRequiredEmpty,
 	type GraphNodeDraft,
@@ -170,7 +169,6 @@ export function IntentGraphReviewCard({
 	const submitting = deciding || inFlight !== null;
 	const isError = status === "error";
 
-	const notices = downgradeNotices(plan, links, review.stages, review.repoints);
 	// The clauses Core will APPEND to a saved entry's prose for accepted `journal_ref`s
 	// carrying `append_text` (ADR-0042 #221). This new prose exists only in the proposal,
 	// so the card MUST show it — the approval contract is the user reading the sentence
@@ -357,23 +355,6 @@ export function IntentGraphReviewCard({
 						))}
 					</ul>
 				</div>
-			) : null}
-
-			{notices.length > 0 ? (
-				<ul className="flex flex-col gap-1.5">
-					{notices.map((notice) => (
-						<li
-							key={notice.key}
-							className="flex items-start gap-1.5 text-xs text-muted-foreground"
-						>
-							<TriangleAlert
-								className="mt-0.5 size-3.5 shrink-0 text-muted-foreground/70"
-								aria-hidden
-							/>
-							<span>{notice.message}</span>
-						</li>
-					))}
-				</ul>
 			) : null}
 
 			{proposal.rationale ? (
@@ -819,12 +800,7 @@ function GraphNodeEditForm({
 	const secondaryId = useId();
 	const noteId = useId();
 	const requiredEmpty = draftRequiredEmpty(draft);
-	const kindLabel =
-		node.type === "todo"
-			? "Todo"
-			: node.type === "person"
-				? "Person"
-				: "Project";
+	const kindLabel = node.type === "person" ? "Person" : "Project";
 
 	return (
 		<form
@@ -837,29 +813,7 @@ function GraphNodeEditForm({
 			<p className="text-xs font-medium text-muted-foreground">
 				Edit {kindLabel}
 			</p>
-			{draft.type === "todo" ? (
-				<>
-					<EditorField label="Title" htmlFor={nameId}>
-						<EditorInput
-							id={nameId}
-							autoFocus
-							value={draft.title}
-							onChange={(event) =>
-								setDraft({ ...draft, title: event.target.value })
-							}
-						/>
-					</EditorField>
-					<EditorField label="Note" htmlFor={noteId}>
-						<EditorTextarea
-							id={noteId}
-							value={draft.note}
-							onChange={(event) =>
-								setDraft({ ...draft, note: event.target.value })
-							}
-						/>
-					</EditorField>
-				</>
-			) : draft.type === "person" ? (
+			{draft.type === "person" ? (
 				<>
 					<EditorField label="Name" htmlFor={nameId}>
 						<EditorInput

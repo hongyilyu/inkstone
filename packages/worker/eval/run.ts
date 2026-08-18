@@ -114,13 +114,13 @@ const TOOL_DESCRIPTORS: Record<string, CoreToolDescriptor> = {
 	search_entities: {
 		name: "search_entities",
 		description:
-			"Search accepted People, Projects, Todos, and Habits by type and query; returns compact lookup rows.",
+			"Search accepted People, Projects, and Habits by type and query; returns compact lookup rows.",
 		label: "Search entities",
 		json_schema: {
 			type: "object",
 			required: ["type", "query"],
 			properties: {
-				type: { type: "string", enum: ["person", "project", "todo", "habit"] },
+				type: { type: "string", enum: ["person", "project", "habit"] },
 				query: { type: "string" },
 				limit: { type: "integer", minimum: 0 },
 			},
@@ -129,7 +129,7 @@ const TOOL_DESCRIPTORS: Record<string, CoreToolDescriptor> = {
 	propose_workspace_mutation: {
 		name: "propose_workspace_mutation",
 		description:
-			"Propose a Workspace mutation for user review: capture a journal-worthy lived event or reflection as a Journal Entry, or extract People/Projects/Todos from an already-accepted Journal Entry. Do not create a Journal Entry for a bare reminder, task, or future obligation the user only wants remembered.",
+			"Propose a Workspace mutation for user review: capture a journal-worthy lived event or reflection as a Journal Entry, or extract People/Projects from an already-accepted Journal Entry. Do not create a Journal Entry for a bare reminder, task, or future obligation the user only wants remembered.",
 		label: "Propose Workspace mutation",
 		// Permissive envelope: { mutation_kind, payload } — the model fills payload
 		// per SYSTEM_PROMPT; Core's rich oneOf schema is not mirrored here (see note

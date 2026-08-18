@@ -5,8 +5,6 @@ import {
 	mediaRow,
 	personRow,
 	projectRow,
-	type TodoData,
-	todoRow,
 } from "@test/test-utils/rows";
 import { cleanup, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -31,7 +29,6 @@ function renderCollection(
 	rows: {
 		journalEntries?: EntityListResult["entities"];
 		people?: EntityListResult["entities"];
-		todos?: EntityListResult["entities"];
 		projects?: EntityListResult["entities"];
 		media?: EntityListResult["entities"];
 	},
@@ -51,7 +48,6 @@ function renderCollection(
 		{
 			entities: {
 				person: rows.people ?? [],
-				todo: rows.todos ?? [],
 				journal_entry: rows.journalEntries ?? [],
 				project: rows.projects ?? [],
 				media: rows.media ?? [],
@@ -90,7 +86,7 @@ describe("EntityCollection", () => {
 	});
 
 	it("surfaces the error state when any one entity read fails (all-or-nothing)", async () => {
-		// `useLibraryItems` reads all five types in one `Effect.all`; a single
+		// `useLibraryItems` reads all four types in one `Effect.all`; a single
 		// failing read rejects the whole program. The hook now lets that rejection
 		// surface as the query's `isError` (rather than swallowing it to []), so the
 		// view shows the distinct "Couldn't load" state — NOT a misleading empty
@@ -105,8 +101,8 @@ describe("EntityCollection", () => {
 			{
 				overrides: {
 					listEntities: (type) =>
-						type === "todo"
-							? Effect.die("todo read failed")
+						type === "project"
+							? Effect.die("project read failed")
 							: type === "person"
 								? Effect.succeed({ entities: livePeople })
 								: Effect.succeed({ entities: [] }),
@@ -127,47 +123,6 @@ describe("EntityCollection", () => {
 		expect(
 			screen.queryByRole("button", { name: /new person/i }),
 		).not.toBeInTheDocument();
-	});
-
-	it("renders live Todos read from entity/list", async () => {
-		renderCollection("todo", {
-			todos: [todoRow("01900000-0000-7000-8000-000000000030", "buy milk")],
-		});
-		expect(await screen.findByText("buy milk")).toBeInTheDocument();
-		// Preview Todos are not shown — Todos are live for this read.
-		expect(
-			screen.queryByText("Backfill /v2/contacts before the cutover window"),
-		).not.toBeInTheDocument();
-	});
-
-	it("orders todos active-first, then earliest due, undated last", async () => {
-		renderCollection("todo", {
-			todos: [
-				todoRow("done", "Zed completed", { status: "completed" }),
-				todoRow("undated", "Active no due", { status: "active" }),
-				todoRow("late", "Active due later", {
-					status: "active",
-					due_at: "2026-06-20T00:00:00",
-				}),
-				todoRow("soon", "Active due soon", {
-					status: "active",
-					due_at: "2026-06-13T00:00:00",
-				}),
-			],
-		});
-
-		await screen.findByText("Active due soon");
-		// Scope to the row list — a "Status" facet chip also reads "Active", so an
-		// unscoped /^Active/ would pick it up alongside the row titles.
-		const { getAllByText } = within(screen.getByRole("list"));
-		const titles = getAllByText(/^(Active|Zed)/).map((el) => el.textContent);
-		// Active dated (soon before late) → active undated → completed last.
-		expect(titles).toEqual([
-			"Active due soon",
-			"Active due later",
-			"Active no due",
-			"Zed completed",
-		]);
 	});
 
 	it("filters as you search", async () => {
@@ -216,15 +171,17 @@ describe("EntityCollection", () => {
 		const onNew = vi.fn();
 		const user = userEvent.setup();
 		renderCollection(
-			"todo",
+			"project",
 			{
-				todos: [todoRow("01900000-0000-7000-8000-000000000031", "existing")],
+				projects: [
+					projectRow("01900000-0000-7000-8000-000000000031", "Apollo"),
+				],
 			},
 			{ onNew },
 		);
-		await screen.findByText("existing");
+		await screen.findByText("Apollo");
 
-		await user.click(screen.getByRole("button", { name: /new todo/i }));
+		await user.click(screen.getByRole("button", { name: /new project/i }));
 		expect(onNew).toHaveBeenCalledTimes(1);
 	});
 
@@ -303,34 +260,25 @@ describe("EntityCollection", () => {
 		).toBeInTheDocument();
 	});
 
-	// --- Facets (slice-2: Status) ---
+	// --- Facets (Status, on the Project surface) ---
 
-	// `person_refs` lives at the ROW level on the wire (not inside `data`), so a
-	// fixture linking a Todo to People must set it there — `parseTodo` reads
-	// `row.person_refs`, not `data.person_refs`.
-	const aliceId = "01900000-0000-7000-8000-0000000000a1"; // Ada
-	const graceId = "01900000-0000-7000-8000-0000000000a2"; // Grace
-	const mkTodoWithPeople = (
-		id: string,
-		title: string,
-		data: Partial<TodoData>,
-		personRefs: { person_id: string; role: "waiting_on" | "related" }[],
-	) => todoRow(id, title, data, { person_refs: personRefs });
-
-	// Three todos spanning active/completed/dropped so the Status facet can partition.
-	const mixedStatusTodos: EntityListResult["entities"] = [
-		todoRow("st-active", "Active todo", { status: "active" }),
-		todoRow("st-done", "Completed todo", { status: "completed" }),
-		todoRow("st-dropped", "Dropped todo", { status: "dropped" }),
+	// Three projects spanning distinct statuses so the Status facet can partition.
+	const mixedStatusProjects: EntityListResult["entities"] = [
+		projectRow("st-active", "Active project", { status: "active" }),
+		projectRow("st-done", "Completed project", {
+			status: "completed",
+			completed_at: "2026-06-01T00:00:00",
+		}),
+		projectRow("st-hold", "On hold project", { status: "on_hold" }),
 	];
 
-	// Facet chips share label text with row titles ("Active todo" vs the "Active"
+	// Facet chips share label text with row titles ("Active project" vs the "Active"
 	// chip), so scope chip queries to the labelled Filters group.
 	const filters = () => within(screen.getByRole("group", { name: /filters/i }));
 
 	it("shows a Status facet group only when the kind has >=2 distinct statuses", async () => {
-		renderCollection("todo", { todos: mixedStatusTodos });
-		await screen.findByText("Active todo");
+		renderCollection("project", { projects: mixedStatusProjects });
+		await screen.findByText("Active project");
 		// The group label and one chip per present status.
 		expect(screen.getByText("Status")).toBeInTheDocument();
 		expect(
@@ -342,10 +290,10 @@ describe("EntityCollection", () => {
 	});
 
 	it("does not show a Status facet group when all rows share one status", async () => {
-		renderCollection("todo", {
-			todos: [
-				todoRow("a1", "Only active one", { status: "active" }),
-				todoRow("a2", "Only active two", { status: "active" }),
+		renderCollection("project", {
+			projects: [
+				projectRow("a1", "Only active one", { status: "active" }),
+				projectRow("a2", "Only active two", { status: "active" }),
 			],
 		});
 		await screen.findByText("Only active one");
@@ -355,33 +303,36 @@ describe("EntityCollection", () => {
 
 	it("filters rows when a status chip is selected and restores when cleared", async () => {
 		const user = userEvent.setup();
-		renderCollection("todo", { todos: mixedStatusTodos });
-		await screen.findByText("Active todo");
+		renderCollection("project", { projects: mixedStatusProjects });
+		await screen.findByText("Active project");
 
 		await user.click(filters().getByRole("button", { name: /^Completed/ }));
-		expect(screen.getByText("Completed todo")).toBeInTheDocument();
-		expect(screen.queryByText("Active todo")).not.toBeInTheDocument();
-		expect(screen.queryByText("Dropped todo")).not.toBeInTheDocument();
+		expect(screen.getByText("Completed project")).toBeInTheDocument();
+		expect(screen.queryByText("Active project")).not.toBeInTheDocument();
+		expect(screen.queryByText("On hold project")).not.toBeInTheDocument();
 
-		// Clicking the active chip again clears it → all rows return.
+		// Clicking the chip again clears it → all rows return.
 		await user.click(filters().getByRole("button", { name: /^Completed/ }));
-		expect(screen.getByText("Active todo")).toBeInTheDocument();
-		expect(screen.getByText("Dropped todo")).toBeInTheDocument();
+		expect(screen.getByText("Active project")).toBeInTheDocument();
+		expect(screen.getByText("On hold project")).toBeInTheDocument();
 	});
 
 	it("composes a status facet with the text query", async () => {
 		const user = userEvent.setup();
-		renderCollection("todo", {
-			todos: [
-				todoRow("q1", "Alpha active", { status: "active" }),
-				todoRow("q2", "Beta active", { status: "active" }),
-				todoRow("q3", "Alpha completed", { status: "completed" }),
+		renderCollection("project", {
+			projects: [
+				projectRow("q1", "Alpha active", { status: "active" }),
+				projectRow("q2", "Beta active", { status: "active" }),
+				projectRow("q3", "Alpha completed", {
+					status: "completed",
+					completed_at: "2026-06-01T00:00:00",
+				}),
 			],
 		});
 		await screen.findByText("Alpha active");
 
 		await user.type(
-			screen.getByRole("textbox", { name: /search todos/i }),
+			screen.getByRole("textbox", { name: /search projects/i }),
 			"alpha",
 		);
 		// Query alone keeps both Alphas.
@@ -397,10 +348,13 @@ describe("EntityCollection", () => {
 
 	it("teaches an empty-after-filter state with a Reset that clears facets and query", async () => {
 		const user = userEvent.setup();
-		renderCollection("todo", {
-			todos: [
-				todoRow("e1", "Findable active", { status: "active" }),
-				todoRow("e2", "Other completed", { status: "completed" }),
+		renderCollection("project", {
+			projects: [
+				projectRow("e1", "Findable active", { status: "active" }),
+				projectRow("e2", "Other completed", {
+					status: "completed",
+					completed_at: "2026-06-01T00:00:00",
+				}),
 			],
 		});
 		await screen.findByText("Findable active");
@@ -410,11 +364,11 @@ describe("EntityCollection", () => {
 		// Completed chip's leave-one-out count and hide it, so order matters.)
 		await user.click(filters().getByRole("button", { name: /^Completed/ }));
 		await user.type(
-			screen.getByRole("textbox", { name: /search todos/i }),
+			screen.getByRole("textbox", { name: /search projects/i }),
 			"findable",
 		);
 		expect(
-			screen.getByText(/no todos match your filters/i),
+			screen.getByText(/no projects match your filters/i),
 		).toBeInTheDocument();
 
 		// Reset restores the full list (clears BOTH the query and the facet).
@@ -424,7 +378,7 @@ describe("EntityCollection", () => {
 		expect(
 			(
 				screen.getByRole("textbox", {
-					name: /search todos/i,
+					name: /search projects/i,
 				}) as HTMLInputElement
 			).value,
 		).toBe("");
@@ -439,135 +393,6 @@ describe("EntityCollection", () => {
 			screen.queryByRole("group", { name: /filters/i }),
 		).not.toBeInTheDocument();
 		expect(screen.queryByText("Status")).not.toBeInTheDocument();
-	});
-
-	// --- Facets (slice-3: Due + People) ---
-
-	// Dates relative to the real "now" the component reads, so overdue/due-soon
-	// classification holds regardless of the calendar day the suite runs on.
-	const dayOffset = (days: number) => {
-		const d = new Date();
-		d.setDate(d.getDate() + days);
-		const pad = (n: number) => String(n).padStart(2, "0");
-		return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T00:00:00`;
-	};
-
-	it("shows a Due facet group and filters todos by date preset (single-select)", async () => {
-		const user = userEvent.setup();
-		renderCollection("todo", {
-			todos: [
-				todoRow("d-over", "Overdue todo", {
-					status: "active",
-					due_at: dayOffset(-3),
-				}),
-				todoRow("d-soon", "Soon todo", {
-					status: "active",
-					due_at: dayOffset(2),
-				}),
-				todoRow("d-none", "Undated todo", { status: "active" }),
-			],
-		});
-		await screen.findByText("Overdue todo");
-
-		// The Due group renders with the present buckets, each chip carrying its
-		// leave-one-out match count (1 overdue, 1 due-soon, 1 undated).
-		expect(screen.getByText("Due")).toBeInTheDocument();
-		expect(
-			filters().getByRole("button", { name: /^Overdue 1$/ }),
-		).toBeInTheDocument();
-		await user.click(filters().getByRole("button", { name: /^Overdue/ }));
-		expect(screen.getByText("Overdue todo")).toBeInTheDocument();
-		expect(screen.queryByText("Soon todo")).not.toBeInTheDocument();
-		expect(screen.queryByText("Undated todo")).not.toBeInTheDocument();
-
-		// Single-select: choosing another preset replaces (not adds).
-		await user.click(filters().getByRole("button", { name: /^No date/ }));
-		expect(screen.getByText("Undated todo")).toBeInTheDocument();
-		expect(screen.queryByText("Overdue todo")).not.toBeInTheDocument();
-	});
-
-	it("shows a People facet for todos and filters by associated person", async () => {
-		const user = userEvent.setup();
-		renderCollection("todo", {
-			people: livePeople, // Ada (…a1), Grace (…a2)
-			todos: [
-				mkTodoWithPeople("p-ada", "Ada task", { status: "active" }, [
-					{ person_id: aliceId, role: "related" },
-				]),
-				mkTodoWithPeople("p-grace", "Grace task", { status: "active" }, [
-					{ person_id: graceId, role: "waiting_on" },
-				]),
-			],
-		});
-		await screen.findByText("Ada task");
-
-		expect(screen.getByText("People")).toBeInTheDocument();
-		await user.click(filters().getByRole("button", { name: /^Ada/ }));
-		expect(screen.getByText("Ada task")).toBeInTheDocument();
-		expect(screen.queryByText("Grace task")).not.toBeInTheDocument();
-	});
-
-	it("hides a person chip whose leave-one-out count drops to 0 under another facet", async () => {
-		const user = userEvent.setup();
-		renderCollection("todo", {
-			people: livePeople,
-			todos: [
-				// Ada appears only on a COMPLETED todo; Grace only on an ACTIVE one.
-				mkTodoWithPeople("c-ada", "Ada done", { status: "completed" }, [
-					{ person_id: aliceId, role: "related" },
-				]),
-				mkTodoWithPeople("c-grace", "Grace active", { status: "active" }, [
-					{ person_id: graceId, role: "related" },
-				]),
-			],
-		});
-		await screen.findByText("Ada done");
-
-		// Both person chips present initially.
-		expect(filters().getByRole("button", { name: /^Ada/ })).toBeInTheDocument();
-		expect(
-			filters().getByRole("button", { name: /^Grace/ }),
-		).toBeInTheDocument();
-
-		// Select Status=active → Ada (completed-only) has a 0 leave-one-out count → hidden.
-		await user.click(filters().getByRole("button", { name: /^Active/ }));
-		expect(
-			filters().queryByRole("button", { name: /^Ada/ }),
-		).not.toBeInTheDocument();
-		expect(
-			filters().getByRole("button", { name: /^Grace/ }),
-		).toBeInTheDocument();
-	});
-
-	it("shows a People facet for projects, derived through their todos", async () => {
-		const user = userEvent.setup();
-		renderCollection("project", {
-			people: livePeople,
-			projects: [projectRow("pr-a", "Apollo"), projectRow("pr-b", "Borealis")],
-			todos: [
-				mkTodoWithPeople(
-					"pt-ada",
-					"Apollo task",
-					{ status: "active", project_id: "pr-a" },
-					[{ person_id: aliceId, role: "related" }],
-				),
-				// Borealis links Grace, so the derived People facet has >=2 distinct
-				// people and can partition (one person alone wouldn't render a group).
-				mkTodoWithPeople(
-					"pt-grace",
-					"Borealis task",
-					{ status: "active", project_id: "pr-b" },
-					[{ person_id: graceId, role: "related" }],
-				),
-			],
-		});
-		await screen.findByText("Apollo");
-
-		// Project people are derived (Project → its Todos → personRefs).
-		expect(screen.getByText("People")).toBeInTheDocument();
-		await user.click(filters().getByRole("button", { name: /^Ada/ }));
-		expect(screen.getByText("Apollo")).toBeInTheDocument();
-		expect(screen.queryByText("Borealis")).not.toBeInTheDocument();
 	});
 
 	it("drops a malformed live Journal Entry row but still renders the valid ones (slice-3)", async () => {

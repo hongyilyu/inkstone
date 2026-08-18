@@ -1,7 +1,7 @@
-//! Entity read facade (`entity/list`, `entity/backlinks`, review-context and
-//! GTD relationship reads). SQL stays in [`queries`], matching the DB module's
-//! one-statement query convention; this module owns the entity read shapes and
-//! their batched enrichment (refs, person refs, provenance).
+//! Entity read facade (`entity/list`, `entity/backlinks`, review-context reads).
+//! SQL stays in [`queries`], matching the DB module's one-statement query
+//! convention; this module owns the entity read shapes and their batched
+//! enrichment (refs, provenance).
 
 use std::collections::HashMap;
 
@@ -34,9 +34,6 @@ pub struct EntityRow {
     pub created_at: i64,
     pub updated_at: i64,
     pub refs: Vec<ResolvedEntityRef>,
-    /// `(person_id, role)` pairs for a Todo row's Person References (ADR-0032).
-    /// Empty for non-Todo rows and Todos with no references.
-    pub person_refs: Vec<(String, String)>,
     /// The Entity's origin provenance (`created_from`, ADR-0030), or `None` for a
     /// user-authored Entity (a direct Library write records no source row). Backs
     /// the Inspector's "Captured from" footer.
@@ -81,7 +78,6 @@ pub async fn list_by_type(pool: &SqlitePool, entity_type: &str) -> sqlx::Result<
                 created_at,
                 updated_at,
                 refs: Vec::new(),
-                person_refs: Vec::new(),
                 source: None,
             })
         })
@@ -91,14 +87,10 @@ pub async fn list_by_type(pool: &SqlitePool, entity_type: &str) -> sqlx::Result<
     // avoid an N+1 over the listed Entities.
     attach_provenance(pool, &mut rows).await?;
 
-    // A Journal Entry row carries its outgoing refs; a Todo row carries its Person
-    // References (ADR-0032), each batched. The same helpers back the targeted
-    // `entity/backlinks` read so the row shapes can't drift.
+    // A Journal Entry row carries its outgoing refs, batched. The same helper
+    // backs the targeted `entity/backlinks` read so the row shapes can't drift.
     if entity_type == "journal_entry" {
         attach_journal_entry_refs(pool, &mut rows).await?;
-    }
-    if entity_type == "todo" {
-        attach_person_refs(pool, &mut rows).await?;
     }
 
     Ok(rows)
@@ -137,48 +129,24 @@ fn entity_title(entity_type: &str, data: &serde_json::Value) -> Option<String> {
     EntityType::from_str(entity_type)?.spec().reference_title_from_data(data)
 }
 
-/// The two reverse relation sets the detail Inspector reads for one Entity
-/// (`entity/backlinks`, ADR-0050): the distinct Journal Entries that reference it
-/// and the Todos linked to it. Both are full [`EntityRow`]s so the Web client
-/// renders them through the existing entity codec.
+/// The reverse relation set the detail Inspector reads for one Entity
+/// (`entity/backlinks`, ADR-0050): the distinct Journal Entries that reference
+/// it, as full [`EntityRow`]s so the Web client renders them through the
+/// existing entity codec.
 pub struct Backlinks {
     /// DISTINCT Journal Entries referencing this Entity, newest-occurred first,
     /// each carrying its `refs` + `source` (the `entity/list` JE assembly).
     pub mentioned_in: Vec<EntityRow>,
-    /// Todos linked to this Entity (Person → all `person_refs`; Project →
-    /// `project_id`; Todo → none), newest-first, each carrying its `person_refs`.
-    pub linked_todos: Vec<EntityRow>,
 }
 
-/// Resolve the backlinks for a Person, Project, or Todo (ADR-0050). A narrow
+/// Resolve the backlinks for a Person or Project (ADR-0050). A narrow
 /// per-entity read fired on detail-open — it does NOT fatten `entity/list` rows
 /// (ADR-0032's pattern) nor resolve the joined Person→Projects / Project→People /
 /// Progress derivations (those stay client-side). An entity of any other type (or
-/// an absent id) simply yields empty sets.
+/// an absent id) simply yields an empty set.
 pub async fn backlinks_for_entity(pool: &SqlitePool, entity_id: &str) -> sqlx::Result<Backlinks> {
     let mentioned_in = mentioned_in_journal_entries(pool, entity_id).await?;
-
-    // `linked_todos` dispatches on the target's Entity Type: a Person's Todos
-    // (all roles), a Project's Todos, and nothing for a Todo (it is Mentioned-in
-    // only). An unknown / absent target yields no linked Todos.
-    let linked_todos = match entity_type_by_id(pool, entity_id).await? {
-        Some(crate::mutation::EntityType::Person) => {
-            let mut rows = todos_by_person(pool, entity_id, None).await?;
-            attach_person_refs(pool, &mut rows).await?;
-            rows
-        }
-        Some(crate::mutation::EntityType::Project) => {
-            let mut rows = todos_by_project(pool, entity_id).await?;
-            attach_person_refs(pool, &mut rows).await?;
-            rows
-        }
-        _ => Vec::new(),
-    };
-
-    Ok(Backlinks {
-        mentioned_in,
-        linked_todos,
-    })
+    Ok(Backlinks { mentioned_in })
 }
 
 /// Build the "Mentioned in" set for `target_entity_id`, reusing the `entity/list`
@@ -209,7 +177,6 @@ async fn mentioned_in_journal_entries(
                 created_at,
                 updated_at,
                 refs: Vec::new(),
-                person_refs: Vec::new(),
                 source: None,
             })
         })
@@ -279,29 +246,9 @@ async fn attach_journal_entry_refs(pool: &SqlitePool, rows: &mut [EntityRow]) ->
     Ok(())
 }
 
-/// Attach each Todo row's Person References (ADR-0032) in one batched read,
-/// mirroring the `entity_type == "todo"` branch of [`list_by_type`]. The
-/// `todos_by_*` reads zero `person_refs`; the GTD Waiting/Tasks split (ADR-0031)
-/// depends on these riding along.
-async fn attach_person_refs(pool: &SqlitePool, rows: &mut [EntityRow]) -> sqlx::Result<()> {
-    let todo_ids = rows.iter().map(|row| row.id.clone()).collect::<Vec<_>>();
-    let refs = queries::person_refs_for_todos(pool, &todo_ids).await?;
-    let mut refs_by_todo = HashMap::<String, Vec<(String, String)>>::new();
-    for (todo_id, person_id, role) in refs {
-        refs_by_todo
-            .entry(todo_id)
-            .or_default()
-            .push((person_id, role));
-    }
-    for row in rows {
-        row.person_refs = refs_by_todo.remove(&row.id).unwrap_or_default();
-    }
-    Ok(())
-}
-
 /// One Journal Entry returned to the Worker for same-Thread correction context.
 /// `data` is the latest accepted revision snapshot. `anchored_entities` names the
-/// People/Projects/Todos ALREADY captured from this entry (its outgoing
+/// People/Projects ALREADY captured from this entry (its outgoing
 /// `entity_ref`s, resolved to labels) — the re-scan recognition prompt reads it to
 /// SUPPRESS re-proposing an already-chipped entity (ADR-0042).
 pub struct CurrentThreadJournalEntryRow {
@@ -398,8 +345,8 @@ pub async fn entity_type_by_id(
 }
 
 /// Whether an accepted Entity with `entity_id` exists and is of `entity_type`.
-/// Backs decide-time target-type checks (e.g. a Todo's `project_id` must point at
-/// a `project`).
+/// Backs decide-time target-type checks (e.g. an intent-graph `entity_id`
+/// override must name an accepted entity of its node's declared type).
 pub async fn entity_is_type(
     pool: &SqlitePool,
     entity_id: &str,
@@ -408,185 +355,11 @@ pub async fn entity_is_type(
     queries::entity_is_type(pool, entity_id, entity_type).await
 }
 
-// ─── GTD relationship read layer (Slice 11, ADR-0031) ──────────────────────
-//
-// Core-internal in V0 — exposed to client APIs in V1, so currently uncalled
-// (`#[allow(dead_code)]`). Entity-returning helpers map raw rows into
-// [`EntityRow`] like [`list_by_type`]: a malformed `data` JSON now fails the read
-// with a logged `sqlx::Error` (`db.entity_data_parse_failed`, ADR-0038) rather
-// than degrading to `null`.
-
-/// Map a raw `(id, type, data, created_at, updated_at)` row to an [`EntityRow`].
-fn entity_row(row: (String, String, String, i64, i64)) -> sqlx::Result<EntityRow> {
-    let (id, r#type, data, created_at, updated_at) = row;
-    let data = parse_entity_data(&id, &data)?;
-    Ok(EntityRow {
-        id,
-        r#type,
-        data,
-        created_at,
-        updated_at,
-        refs: Vec::new(),
-        person_refs: Vec::new(),
-        source: None,
-    })
-}
-
-/// Read every Todo owning `project_id` (its `data.project_id` matches), reusing
-/// the `json_extract` project match. Returns full [`EntityRow`]s with real
-/// `created_at`/`updated_at`, newest-first.
-pub async fn todos_by_project(pool: &SqlitePool, project_id: &str) -> sqlx::Result<Vec<EntityRow>> {
-    let rows = queries::todos_by_project(pool, project_id).await?;
-    rows.into_iter()
-        .map(|(id, data, created_at, updated_at)| {
-            entity_row((id, "todo".to_string(), data, created_at, updated_at))
-        })
-        .collect::<sqlx::Result<Vec<_>>>()
-}
-
-/// Read every Todo linked to `person_id` via `todo_person_refs`, optionally
-/// filtered to `role` (ADR-0031). Returns full [`EntityRow`]s, newest-first.
-pub async fn todos_by_person(
-    pool: &SqlitePool,
-    person_id: &str,
-    role: Option<&str>,
-) -> sqlx::Result<Vec<EntityRow>> {
-    let rows = queries::todos_by_person(pool, person_id, role).await?;
-    rows.into_iter()
-        .map(entity_row)
-        .collect::<sqlx::Result<Vec<_>>>()
-}
-
 #[cfg(test)]
 mod tests {
     use crate::db::test_support::{memory_pool, seed_entity, seed_source, seed_thread_message};
 
     use super::*;
-
-    /// Insert one `todo_person_refs` row directly.
-    async fn seed_ref(pool: &SqlitePool, todo_id: &str, person_id: &str, role: &str) {
-        sqlx::query(
-            "INSERT INTO todo_person_refs \
-             (todo_id, person_id, role, created_at, updated_at) VALUES (?, ?, ?, 1, 1)",
-        )
-        .bind(todo_id)
-        .bind(person_id)
-        .bind(role)
-        .execute(pool)
-        .await
-        .expect("insert ref");
-    }
-
-    #[tokio::test]
-    async fn todos_by_project_returns_only_that_projects_todos() {
-        let pool = memory_pool().await;
-        seed_entity(&pool, "proj-a", "project", r#"{"name":"A"}"#).await;
-        seed_entity(&pool, "proj-b", "project", r#"{"name":"B"}"#).await;
-        seed_entity(
-            &pool,
-            "t1",
-            "todo",
-            r#"{"title":"t1","project_id":"proj-a"}"#,
-        )
-        .await;
-        seed_entity(
-            &pool,
-            "t2",
-            "todo",
-            r#"{"title":"t2","project_id":"proj-a"}"#,
-        )
-        .await;
-        seed_entity(
-            &pool,
-            "t3",
-            "todo",
-            r#"{"title":"t3","project_id":"proj-b"}"#,
-        )
-        .await;
-        seed_entity(&pool, "t4", "todo", r#"{"title":"t4"}"#).await;
-
-        let mut ids: Vec<String> = todos_by_project(&pool, "proj-a")
-            .await
-            .expect("todos_by_project")
-            .into_iter()
-            .map(|row| row.id)
-            .collect();
-        ids.sort();
-        assert_eq!(ids, vec!["t1".to_string(), "t2".to_string()]);
-    }
-
-    #[tokio::test]
-    async fn todos_by_person_optionally_filters_by_role() {
-        let pool = memory_pool().await;
-        seed_entity(&pool, "alice", "person", r#"{"name":"Alice"}"#).await;
-        seed_entity(&pool, "t1", "todo", r#"{"title":"t1"}"#).await;
-        seed_entity(&pool, "t2", "todo", r#"{"title":"t2"}"#).await;
-        seed_ref(&pool, "t1", "alice", "waiting_on").await;
-        seed_ref(&pool, "t2", "alice", "related").await;
-
-        let mut all: Vec<String> = todos_by_person(&pool, "alice", None)
-            .await
-            .expect("all roles")
-            .into_iter()
-            .map(|row| row.id)
-            .collect();
-        all.sort();
-        assert_eq!(all, vec!["t1".to_string(), "t2".to_string()]);
-
-        let waiting: Vec<String> = todos_by_person(&pool, "alice", Some("waiting_on"))
-            .await
-            .expect("waiting only")
-            .into_iter()
-            .map(|row| row.id)
-            .collect();
-        assert_eq!(
-            waiting,
-            vec!["t1".to_string()],
-            "role filter keeps only waiting_on"
-        );
-    }
-
-    #[tokio::test]
-    async fn list_by_type_todo_attaches_person_refs() {
-        let pool = memory_pool().await;
-        seed_entity(&pool, "alice", "person", r#"{"name":"Alice"}"#).await;
-        seed_entity(&pool, "bob", "person", r#"{"name":"Bob"}"#).await;
-        seed_entity(&pool, "t1", "todo", r#"{"title":"t1","status":"active"}"#).await;
-        seed_entity(&pool, "t2", "todo", r#"{"title":"t2","status":"active"}"#).await;
-        seed_ref(&pool, "t1", "alice", "waiting_on").await;
-        seed_ref(&pool, "t1", "bob", "related").await;
-        // t2 has no refs.
-
-        let rows = list_by_type(&pool, "todo").await.expect("list todos");
-        let t1 = rows.iter().find(|r| r.id == "t1").expect("t1 present");
-        let mut t1_refs = t1.person_refs.clone();
-        t1_refs.sort();
-        assert_eq!(
-            t1_refs,
-            vec![
-                ("alice".to_string(), "waiting_on".to_string()),
-                ("bob".to_string(), "related".to_string()),
-            ],
-            "t1 carries both Person References with roles"
-        );
-
-        let t2 = rows.iter().find(|r| r.id == "t2").expect("t2 present");
-        assert!(
-            t2.person_refs.is_empty(),
-            "a Todo with no refs carries none"
-        );
-    }
-
-    #[tokio::test]
-    async fn list_by_type_non_todo_has_no_person_refs() {
-        let pool = memory_pool().await;
-        seed_entity(&pool, "alice", "person", r#"{"name":"Alice"}"#).await;
-        let rows = list_by_type(&pool, "person").await.expect("list people");
-        assert!(
-            rows.iter().all(|r| r.person_refs.is_empty()),
-            "non-Todo rows never carry person_refs"
-        );
-    }
 
     /// `list_by_type` attaches each Entity's origin provenance ("Captured from",
     /// ADR-0030): a Message source resolves to its Thread; a Journal-Entry source
@@ -597,9 +370,9 @@ mod tests {
         let pool = memory_pool().await;
         seed_thread_message(&pool, "thr-1", "Morning brain dump", "msg-1").await;
 
-        // (a) A Todo extracted from a Journal Entry → JournalEntry provenance.
+        // (a) A Person extracted from a Journal Entry → JournalEntry provenance.
         seed_entity(&pool, "je-1", "journal_entry", r#"{"occurred_at":"x"}"#).await;
-        seed_entity(&pool, "t-from-je", "todo", r#"{"title":"Email Alice"}"#).await;
+        seed_entity(&pool, "t-from-je", "person", r#"{"name":"Alice"}"#).await;
         seed_source(
             &pool,
             "src-je",
@@ -611,8 +384,8 @@ mod tests {
         )
         .await;
 
-        // (b) A Todo created directly from a user Message → Message provenance.
-        seed_entity(&pool, "t-from-msg", "todo", r#"{"title":"Buy milk"}"#).await;
+        // (b) A Person created directly from a user Message → Message provenance.
+        seed_entity(&pool, "t-from-msg", "person", r#"{"name":"Bob"}"#).await;
         seed_source(
             &pool,
             "src-msg",
@@ -624,8 +397,8 @@ mod tests {
         )
         .await;
 
-        // (c) A user-authored Todo (direct Library write) → no source row.
-        seed_entity(&pool, "t-user", "todo", r#"{"title":"Hand-made"}"#).await;
+        // (c) A user-authored Person (direct Library write) → no source row.
+        seed_entity(&pool, "t-user", "person", r#"{"name":"Hand-made"}"#).await;
 
         // A later `updated_from` row on (b) must NOT override its origin.
         seed_source(
@@ -639,14 +412,14 @@ mod tests {
         )
         .await;
 
-        let rows = list_by_type(&pool, "todo").await.expect("list todos");
+        let rows = list_by_type(&pool, "person").await.expect("list people");
         let from_je = rows.iter().find(|r| r.id == "t-from-je").expect("t-from-je");
         assert!(
             matches!(
                 from_je.source.as_ref(),
                 Some(EntityProvenance::JournalEntry { journal_entry_id }) if journal_entry_id == "je-1"
             ),
-            "JE-sourced Todo reports its source Journal Entry"
+            "JE-sourced Person reports its source Journal Entry"
         );
 
         let from_msg = rows
@@ -661,7 +434,7 @@ mod tests {
                         && thread_title == "Morning brain dump"
                         && message_id.as_deref() == Some("msg-1")
             ),
-            "Message-sourced Todo reports its Thread + capturing message; updated_from does not override created_from"
+            "Message-sourced Person reports its Thread + capturing message; updated_from does not override created_from"
         );
 
         let user = rows.iter().find(|r| r.id == "t-user").expect("t-user");
@@ -680,14 +453,14 @@ mod tests {
         let pool = memory_pool().await;
         seed_thread_message(&pool, "thr-1", "Morning brain dump", "msg-1").await;
         seed_entity(&pool, "je-1", "journal_entry", r#"{"occurred_at":"x"}"#).await;
-        seed_entity(&pool, "t-two", "todo", r#"{"title":"Cross-thread"}"#).await;
+        seed_entity(&pool, "t-two", "person", r#"{"name":"Cross-thread"}"#).await;
 
         // Insert the NEWER (Message) source first so neither insertion order nor
         // rowid can masquerade as the oldest-wins pick.
         seed_source(&pool, "src-new", "t-two", Some("msg-1"), None, "created_from", 20).await;
         seed_source(&pool, "src-old", "t-two", None, Some("je-1"), "created_from", 10).await;
 
-        let rows = list_by_type(&pool, "todo").await.expect("list todos");
+        let rows = list_by_type(&pool, "person").await.expect("list people");
         let row = rows.iter().find(|r| r.id == "t-two").expect("t-two");
         assert!(
             matches!(
@@ -705,10 +478,10 @@ mod tests {
     #[tokio::test]
     async fn list_by_type_errors_on_malformed_entity_data() {
         let pool = memory_pool().await;
-        seed_entity(&pool, "t-bad", "todo", "{not json").await;
+        seed_entity(&pool, "t-bad", "person", "{not json").await;
 
         assert!(
-            list_by_type(&pool, "todo").await.is_err(),
+            list_by_type(&pool, "person").await.is_err(),
             "a malformed entities.data row errors the read, no silent Null"
         );
 
@@ -718,13 +491,13 @@ mod tests {
             .execute(&pool)
             .await
             .expect("delete bad row");
-        seed_entity(&pool, "t-ok", "todo", r#"{"title":"ok"}"#).await;
-        let rows = list_by_type(&pool, "todo")
+        seed_entity(&pool, "t-ok", "person", r#"{"name":"ok"}"#).await;
+        let rows = list_by_type(&pool, "person")
             .await
             .expect("well-formed reads ok");
         assert_eq!(rows.len(), 1, "the well-formed row reads back");
         assert_eq!(
-            rows[0].data.get("title").and_then(|v| v.as_str()),
+            rows[0].data.get("name").and_then(|v| v.as_str()),
             Some("ok")
         );
     }
@@ -780,13 +553,11 @@ mod tests {
         .to_string()
     }
 
-    /// `backlinks_for_entity` resolves the two reverse sets for a Person, Project,
-    /// or Todo: `mentioned_in` (DISTINCT Journal Entries referencing it, with their
-    /// `refs` + `source` attached, newest-occurred first) and `linked_todos` (the
-    /// Todos linked via `person_refs` for a Person / `project_id` for a Project,
-    /// each carrying its `person_refs`, newest-first; empty for a Todo target).
+    /// `backlinks_for_entity` resolves the reverse set for a Person or Project:
+    /// `mentioned_in` (DISTINCT Journal Entries referencing it, with their
+    /// `refs` + `source` attached, newest-occurred first).
     #[tokio::test]
-    async fn backlinks_resolves_mentioned_in_and_linked_todos() {
+    async fn backlinks_resolves_mentioned_in() {
         let pool = memory_pool().await;
 
         // Provenance for the mentioning JEs (so each JE row carries its `source`).
@@ -795,7 +566,6 @@ mod tests {
         // Targets.
         seed_entity(&pool, "person-a", "person", r#"{"name":"Alice"}"#).await;
         seed_entity(&pool, "proj-a", "project", r#"{"name":"Lead Ads"}"#).await;
-        seed_entity(&pool, "todo-standalone", "todo", r#"{"title":"Standalone"}"#).await;
         seed_entity(&pool, "person-zero", "person", r#"{"name":"Nobody"}"#).await;
 
         // Journal Entries with refs. JE-older and JE-newer both reference Alice;
@@ -825,56 +595,22 @@ mod tests {
             15,
         )
         .await;
-        seed_entity_at(
-            &pool,
-            "je-todo",
-            "journal_entry",
-            &je_data("2026-06-02T09:00:00", "Mentioned the standalone todo"),
-            12,
-        )
-        .await;
-
         // Each mentioning JE is `created_from` the user Message (so `source`
         // attaches), exercising the same provenance assembly as `entity/list`.
         for (src_id, je) in [
             ("s-older", "je-older"),
             ("s-newer", "je-newer"),
             ("s-proj", "je-proj"),
-            ("s-todo", "je-todo"),
         ] {
             seed_source(&pool, src_id, je, Some("msg-1"), None, "created_from", 5).await;
         }
 
         // Refs: both JEs → Alice; JE-newer also → the Project (so JE-newer carries
-        // multiple refs). JE-proj → Project, JE-todo → the standalone Todo.
+        // multiple refs). JE-proj → Project.
         seed_entity_ref(&pool, "ref-1", "je-older", "person-a").await;
         seed_entity_ref(&pool, "ref-2", "je-newer", "person-a").await;
         seed_entity_ref(&pool, "ref-3", "je-newer", "proj-a").await;
         seed_entity_ref(&pool, "ref-4", "je-proj", "proj-a").await;
-        seed_entity_ref(&pool, "ref-5", "je-todo", "todo-standalone").await;
-
-        // Linked todos. Alice is on two todos (waiting_on + related → all roles);
-        // the Project owns one todo. `t-wait` is newer than `t-rel` so newest-first
-        // ordering is observable.
-        seed_entity_at(&pool, "t-rel", "todo", r#"{"title":"Older task"}"#, 30).await;
-        seed_entity_at(
-            &pool,
-            "t-wait",
-            "todo",
-            r#"{"title":"Newer task"}"#,
-            40,
-        )
-        .await;
-        seed_ref(&pool, "t-rel", "person-a", "related").await;
-        seed_ref(&pool, "t-wait", "person-a", "waiting_on").await;
-        seed_entity_at(
-            &pool,
-            "t-proj",
-            "todo",
-            r#"{"title":"Project task","project_id":"proj-a"}"#,
-            35,
-        )
-        .await;
 
         // ── Person target ──────────────────────────────────────────────────
         let person = backlinks_for_entity(&pool, "person-a")
@@ -911,28 +647,6 @@ mod tests {
             "mentioned-in JE carries its Captured-from provenance"
         );
 
-        let linked_ids: Vec<&str> = person
-            .linked_todos
-            .iter()
-            .map(|row| row.id.as_str())
-            .collect();
-        assert_eq!(
-            linked_ids,
-            vec!["t-wait", "t-rel"],
-            "Person's linked todos across all roles, newest-first"
-        );
-        // person_refs ride along on each linked Todo (the GTD Waiting/Tasks split).
-        let wait = person
-            .linked_todos
-            .iter()
-            .find(|r| r.id == "t-wait")
-            .expect("t-wait row");
-        assert_eq!(
-            wait.person_refs,
-            vec![("person-a".to_string(), "waiting_on".to_string())],
-            "linked Todo carries its person_refs"
-        );
-
         // ── Project target (same result shape) ───────────────────────────────
         let project = backlinks_for_entity(&pool, "proj-a")
             .await
@@ -947,39 +661,14 @@ mod tests {
             vec!["je-newer", "je-proj"],
             "distinct JEs mentioning the Project, newest-occurred first"
         );
-        let proj_linked: Vec<&str> = project
-            .linked_todos
-            .iter()
-            .map(|row| row.id.as_str())
-            .collect();
-        assert_eq!(
-            proj_linked,
-            vec!["t-proj"],
-            "Project's linked todos via project_id"
-        );
 
-        // ── Todo target (Mentioned-in only; no linked todos) ─────────────────
-        let todo = backlinks_for_entity(&pool, "todo-standalone")
-            .await
-            .expect("backlinks for todo");
-        let todo_mentioned: Vec<&str> = todo
-            .mentioned_in
-            .iter()
-            .map(|row| row.id.as_str())
-            .collect();
-        assert_eq!(todo_mentioned, vec!["je-todo"], "the JE mentioning the Todo");
-        assert!(
-            todo.linked_todos.is_empty(),
-            "a Todo has no linked todos (Mentioned-in only)"
-        );
-
-        // ── Zero-backlink entity → both sets empty ───────────────────────────
+        // ── Zero-backlink entity → empty set ─────────────────────────────────
         let empty = backlinks_for_entity(&pool, "person-zero")
             .await
             .expect("backlinks for zero-backlink person");
         assert!(
-            empty.mentioned_in.is_empty() && empty.linked_todos.is_empty(),
-            "a referenced-by-nothing entity yields empty sets"
+            empty.mentioned_in.is_empty(),
+            "a referenced-by-nothing entity yields an empty set"
         );
     }
 }

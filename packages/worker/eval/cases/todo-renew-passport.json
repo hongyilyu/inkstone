@@ -1,8 +1,0 @@
-{
-	"message": "Todo: renew my passport before it expires.",
-	"world": [],
-	"expected": {
-		"kind": "create_todo",
-		"fields": { "title": "Renew my passport" }
-	}
-}

@@ -1,4 +1,4 @@
-//! An accepted `create_{person,project,todo}` carrying an optional
+//! An accepted `create_{person,project}` carrying an optional
 //! `source_journal_entry_id` records its EntitySource via `source_entity_id`
 //! pointing at that Journal Entry (relation `created_from`) INSTEAD of the user
 //! Message (ADR-0031, ADR-0030). When the field is absent, behavior is unchanged:
@@ -9,8 +9,8 @@
 //! `INKSTONE_PROPOSE_PARAMS_FILE` supplies the raw mutation the fixture proposes.
 //! Each `thread/create` spawns a fresh worker that re-reads the file at start, so
 //! a test can create a Journal Entry on the first run, rewrite the file to a
-//! `create_todo` referencing that JE id, and create a Todo on a SECOND run against
-//! the SAME Core (and DB).
+//! `create_person` referencing that JE id, and create a Person on a SECOND run
+//! against the SAME Core (and DB).
 
 
 use sqlx::Row;
@@ -74,15 +74,15 @@ async fn ro_pool(workspace: &Workspace) -> sqlx::SqlitePool {
         .expect("connect to migrated DB")
 }
 
-/// Case 1 (JE-sourced todo): a `create_todo` carrying `source_journal_entry_id`
-/// pointing at a real Journal Entry writes the Todo's `entity_sources` row with
-/// `source_entity_id` = that JE id, `source_message_id` NULL, relation
-/// `created_from`.
+/// Case 1 (JE-sourced person): a `create_person` carrying
+/// `source_journal_entry_id` pointing at a real Journal Entry writes the
+/// Person's `entity_sources` row with `source_entity_id` = that JE id,
+/// `source_message_id` NULL, relation `created_from`.
 #[test]
-fn accept_create_todo_sourced_from_journal_entry() {
+fn accept_create_person_sourced_from_journal_entry() {
     let workspace = Workspace::new();
     let params_dir = tempfile::Builder::new()
-        .prefix("inkstone-je-source-todo-")
+        .prefix("inkstone-je-source-person-")
         .tempdir()
         .expect("create params tempdir");
     let params_path = params_dir.path().join("propose-params.json");
@@ -96,45 +96,45 @@ fn accept_create_todo_sourced_from_journal_entry() {
 
     let rt = rt();
 
-    let (je_id, todo_entity_id) = rt.block_on(async {
+    let (je_id, person_entity_id) = rt.block_on(async {
         let je_id = create_journal_entry(&core, &params_path).await;
 
         write_params(
             &params_path,
             serde_json::json!({
-                "mutation_kind": "create_todo",
+                "mutation_kind": "create_person",
                 "payload": {
-                    "todo": { "title": "follow up" },
+                    "name": "Alice",
                     "source_journal_entry_id": je_id
                 },
-                "rationale": "track the follow-up from the journal entry"
+                "rationale": "remember Alice from the journal entry"
             }),
         );
 
-        let todo_run = create_and_park(&core, "I should follow up.").await.0;
-        let todo_proposal = proposal_id_for(&core, &todo_run).await;
+        let person_run = create_and_park(&core, "Remember Alice.").await.0;
+        let person_proposal = proposal_id_for(&core, &person_run).await;
         let resp = rpc(
             &core,
             14,
             "proposal/decide",
             serde_json::json!({
-                "proposal_id": todo_proposal,
+                "proposal_id": person_proposal,
                 "decision": "accept",
-                "decision_idempotency_key": "todo-k1",
+                "decision_idempotency_key": "person-k1",
             }),
         )
         .await;
         assert_eq!(
             resp["result"]["status"].as_str(),
             Some("accepted"),
-            "todo decide accepted — body: {resp}"
+            "person decide accepted — body: {resp}"
         );
-        let todo_entity_id = resp["result"]["entity_id"]
+        let person_entity_id = resp["result"]["entity_id"]
             .as_str()
-            .unwrap_or_else(|| panic!("todo entity_id is a string — body: {resp}"))
+            .unwrap_or_else(|| panic!("person entity_id is a string — body: {resp}"))
             .to_string();
-        await_completed(&core, &todo_run).await;
-        (je_id, todo_entity_id)
+        await_completed(&core, &person_run).await;
+        (je_id, person_entity_id)
     });
 
     rt.block_on(async {
@@ -156,39 +156,39 @@ fn accept_create_todo_sourced_from_journal_entry() {
             "accepted Journal Entry tool result carries the real entity id for resume: {je_result_payload}"
         );
 
-        // Exactly one entity_sources row for the Todo, sourced from the JE.
+        // Exactly one entity_sources row for the Person, sourced from the JE.
         let rows = sqlx::query(
             "SELECT source_entity_id, source_message_id, relation \
              FROM entity_sources WHERE entity_id = ?1",
         )
-        .bind(&todo_entity_id)
+        .bind(&person_entity_id)
         .fetch_all(&pool)
         .await
-        .expect("fetch todo entity_sources");
-        assert_eq!(rows.len(), 1, "exactly one entity_sources row for the Todo");
+        .expect("fetch person entity_sources");
+        assert_eq!(rows.len(), 1, "exactly one entity_sources row for the Person");
         let source_entity_id: Option<String> = rows[0].get("source_entity_id");
         let source_message_id: Option<String> = rows[0].get("source_message_id");
         let relation: String = rows[0].get("relation");
         assert_eq!(
             source_entity_id.as_deref(),
             Some(je_id.as_str()),
-            "Todo is sourced from the Journal Entry (source_entity_id)"
+            "Person is sourced from the Journal Entry (source_entity_id)"
         );
         assert!(
             source_message_id.is_none(),
-            "a JE-sourced Todo leaves source_message_id NULL"
+            "a JE-sourced Person leaves source_message_id NULL"
         );
         assert_eq!(relation, "created_from", "relation is created_from");
 
-        // source_journal_entry_id is provenance only — NEVER stored in Todo data.
+        // source_journal_entry_id is provenance only — NEVER stored in Person data.
         let data: String = sqlx::query_scalar("SELECT data FROM entities WHERE id = ?1")
-            .bind(&todo_entity_id)
+            .bind(&person_entity_id)
             .fetch_one(&pool)
             .await
-            .expect("todo entity row exists");
+            .expect("person entity row exists");
         assert!(
             !data.contains("source_journal_entry_id"),
-            "source_journal_entry_id is not stored in Todo data — got {data}"
+            "source_journal_entry_id is not stored in Person data — got {data}"
         );
     });
 }

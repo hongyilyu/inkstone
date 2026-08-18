@@ -381,7 +381,7 @@ mod tests {
                         "INSERT INTO entities \
                          (id, type, schema_version, data, created_by, \
                           created_via_proposal_id, created_at, updated_at) \
-                         VALUES ('e-rollback', 'todo', 1, '{}', 'user', NULL, 44, 44)",
+                         VALUES ('e-rollback', 'person', 1, '{}', 'user', NULL, 44, 44)",
                     )
                     .execute(&mut *tx)
                     .await

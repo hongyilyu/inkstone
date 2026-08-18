@@ -114,17 +114,17 @@ _Avoid_: log (too generic), run log (the tier-2 milestone record), audit log, te
 ### Domain
 
 **Topic**:
-The top-level browse axis of the Web Client — the way a user navigates their Workspace, replacing the earlier flat per-Entity-Type sidebar (the "Library"). The v1 Topics are **Today**, **GTD**, **Timeline**, **Health**, and **Media** (ADR-0054). A Topic is a presentation grouping over existing reads, not a stored concept and not an Entity Type: it carries no contract and adds no storage. The derived GTD processing views (Inbox, Waiting, Scheduled, Review) are in-view filters under the GTD Topic, not Topics themselves.
+The top-level browse axis of the Web Client — the way a user navigates their Workspace, replacing the earlier flat per-Entity-Type sidebar (the "Library"). The v1 Topics are **Today**, **Tasks**, **Timeline**, **Health**, and **Media** (ADR-0054; the GTD Topic was retired for Tasks by ADR-0064). A Topic is a presentation grouping over existing reads, not a stored concept and not an Entity Type: it carries no contract and adds no storage.
 _Avoid_: Library (the retired flat sidebar), tab, section, area, category.
 
 **Today**:
-The Web Client's global home Topic — a read-only aggregate over existing reads showing live Workspace stats, a cross-Topic glance, and the day's Todos. Adds no storage; purely a derived dashboard (ADR-0054).
+The Web Client's global home Topic — a read-only aggregate over existing reads showing live Workspace stats, a cross-Topic glance, and the projects due for review. Adds no storage; purely a derived dashboard (ADR-0054).
 
-**GTD**:
-The Topic that gathers the Todo / Project / Person processing views — Inbox, Waiting, Scheduled, and Project Review — as in-view filters over the derived predicates this client already computes (ADR-0032). Not an Entity Type.
+**Tasks**:
+The Topic that reads the user's tasks from **TickTick**, the sole task authority (ADR-0064). It is a read-only surface backed by the `ticktick/tasks/list` verb — Inkstone shows the user's tasks but never creates or edits one. Not an Entity Type, and not stored (the retired GTD Topic's Inbox/Waiting/Scheduled todo views went with the native Todo).
 
 **Timeline**:
-Two related read-only chronologies at different altitudes, neither with new storage. (1) The **Timeline Topic** is a client-side presentation projection (ADR-0054 §4): Journal Entries, People, and Projects ordered by time via `entity/list` rows and their Entity Sources / Entity References. (2) The **Timeline Read Model** (ADR-0057) is the backend model behind a future `timeline/query` verb: a typed `(occurred_at, kind, ref)` union assembled at query time over the canonical fact tables — v1 members are **Journal Entries and Observations** (the records carrying an authoritative wall-clock `occurred_at`), ordered by that single wall-clock TEXT key, with Proposal/Message provenance as an event *attribute* (never a standalone event) and corrections as a per-record drilldown (not events). It is a typed union *read*, **not** a materialized table and **not** a client union; it never stores rows and is never a write target. Todos (a GTD/forecast-axis concern), Person/Project (no domain time), and Media (`captured_at` reserved, absent today) are out of v1. The two coexist as different consumers: the Topic is a presentation surface (Journal·Person·Project), the Read Model a backend fact chronology (Journal·Observation).
+Two related read-only chronologies at different altitudes, neither with new storage. (1) The **Timeline Topic** is a client-side presentation projection (ADR-0054 §4): Journal Entries, People, and Projects ordered by time via `entity/list` rows and their Entity Sources / Entity References. (2) The **Timeline Read Model** (ADR-0057) is the backend model behind a future `timeline/query` verb: a typed `(occurred_at, kind, ref)` union assembled at query time over the canonical fact tables — v1 members are **Journal Entries and Observations** (the records carrying an authoritative wall-clock `occurred_at`), ordered by that single wall-clock TEXT key, with Proposal/Message provenance as an event *attribute* (never a standalone event) and corrections as a per-record drilldown (not events). It is a typed union *read*, **not** a materialized table and **not** a client union; it never stores rows and is never a write target. Person/Project (no domain time) and Media (`captured_at` reserved, absent today) are out of v1. The two coexist as different consumers: the Topic is a presentation surface (Journal·Person·Project), the Read Model a backend fact chronology (Journal·Observation).
 _Avoid_: timeline table, event store, materialized timeline (ADR-0057 is a query-union read); run timeline (the rendered Message / Tool Call segment sequence, ADR-0045).
 
 **Health**:
@@ -134,48 +134,36 @@ A deferred Topic (issue #253) reserved for an Observation read surface (bodyweig
 The live Topic (issue #252, ADR-0059) surfacing the **Media** Entity Type — a faceted `EntityCollection` over the user's read/watch queue, with direct user CRUD (create/edit/delete) through the shared rail. It replaced the first-model Bookmark surface, which no longer exists.
 
 **Entity**:
-A structured concept Inkstone tracks for query and reasoning — a Journal Entry, Person, Project, Todo, Media, etc. An Entity enters tier 2 (becoming a **Canonical Entity**) one of two ways: the agent proposes it and the user accepts the Proposal, or the user creates or edits it directly from a Client. Before that, an agent-surfaced Entity exists only as an *extraction candidate* in tier 3. Threads, Runs, and Proposals are not Entities — they are application state.
+A structured concept Inkstone tracks for query and reasoning — a Journal Entry, Person, Project, Media, etc. An Entity enters tier 2 (becoming a **Canonical Entity**) one of two ways: the agent proposes it and the user accepts the Proposal, or the user creates or edits it directly from a Client. Before that, an agent-surfaced Entity exists only as an *extraction candidate* in tier 3. Threads, Runs, and Proposals are not Entities — they are application state.
 _Avoid_: object, record, item.
 
 **Journal Entry**:
-A canonical event/evidence Entity refined from one or more user source Messages. One Message may produce multiple Journal Entries, and one Journal Entry may later be refined by user Messages from multiple Threads. A Journal Entry records what happened, when it happened, and the accepted wording the user wants Inkstone to remember. Person, Project, and Todo Entities may be extracted from a Journal Entry, but they own their own current state after acceptance.
+A canonical event/evidence Entity refined from one or more user source Messages. One Message may produce multiple Journal Entries, and one Journal Entry may later be refined by user Messages from multiple Threads. A Journal Entry records what happened, when it happened, and the accepted wording the user wants Inkstone to remember. Person and Project Entities may be extracted from a Journal Entry, but they own their own current state after acceptance.
 _Avoid_: raw chat log, daily note row.
 
 **Daily Note**:
 A derived date-grouped view over Journal Entries, grouped by the entries' occurred time. It is not an Entity in the first model: editing, referencing, and provenance happen on the underlying Journal Entries and related Entities, and the Daily Note renders the current collection for a local day.
 _Avoid_: daily entity, daily document as source of truth.
 
-**Todo**:
-A GTD-style actionable Entity that tracks something the user is responsible for doing, waiting on, or deciding to drop. A Todo may originate directly from a user Message ("remind me to buy milk") or be extracted from an accepted Journal Entry. Todo data is plain operational text plus task metadata: title, optional note, status, optional Project ownership, defer date, due date, resolution timestamps, and an optional Recurrence Rule. Person involvement is not embedded in the Todo JSON; it is recorded through Todo Person References.
-_Avoid_: task object, reminder row.
-
-**Recurrence Rule**:
-An optional repeat carried in a Todo's data JSON (ADR-0037, slimmed by ADR-0039): `interval` + `unit` (minute…year), the `anchor` date it recomputes (`defer_at` or `due_at`), and an optional `end` condition (`until` or `after_count`). Core validates and persists the rule. **Occurrence generation** (ADR-0039) is the execution layer: completing a recurring Todo spawns its successor in the same transaction, with `next_anchor = old_anchor + interval × unit` (naive civil math, month-end clamped), the non-anchor date advanced by the same rule, all Todo Person References carried forward, and `after_count` decremented. The rule is the durable input; occurrence generation reads it. (The earlier `schedule`/`catch_up`/`only_on` fields were removed by ADR-0039 before any data existed.)
-_Avoid_: repeat flag, schedule entity, cron rule.
+**Task**:
+Something the user is responsible for doing. Tasks are NOT an Inkstone Entity — they live in **TickTick**, the sole task authority (ADR-0064, which retired the native Todo). Inkstone reads tasks through two read-only lanes (the `Tasks` Topic via `ticktick/tasks/list`; the model via the `ticktick_*` MCP read tools) but never writes one. When the user asks to track a task ("remind me to buy milk"), the agent's honest move is to tell them to add it in TickTick — it proposes no Workspace mutation.
+_Avoid_: Todo (the retired native Entity), task Entity, reminder row.
 
 **Project**:
-A GTD-style outcome Entity that may require more than one Todo to complete. A Project is the user's desired outcome, not a generic category, area, or stakeholder container. Project status is manual: active, on hold, completed, or dropped. Projects carry review metadata so the Review view can prompt periodic reassessment; completing all Todos does not complete the Project automatically.
+A GTD-style outcome Entity — a desired result the user is driving toward, not a generic category, area, or stakeholder container. Its constituent tasks live in TickTick (ADR-0064), not in Inkstone. Project status is manual: active, on hold, completed, or dropped. Projects carry review metadata so Project Review can prompt periodic reassessment.
 _Avoid_: area, folder, tag, topic bucket.
 
 **Person**:
-A descriptive Entity for a real person the user wants Inkstone to remember. Person data stays small: name, optional note, and optional aliases. Tasks and Projects involving a Person are derived from Todo Person References; journal history is derived from Entity References in Journal Entries.
+A descriptive Entity for a real person the user wants Inkstone to remember. Person data stays small: name, optional note, and optional aliases. A Person's journal history is derived from Entity References in Journal Entries.
 _Avoid_: contact record as CRM source of truth.
 
 **Media**:
 A user-curated Entity Type (ADR-0059) for a thing the user means to read or watch — a queue that becomes a log. Media data (`media_core`): a required `title`, a required `medium` (`link | article | book | tv | movie`), a required lifecycle `state` (`backlog | consuming | done | abandoned`), and the clearable optionals `rating` (1–5 positive int), `finished_at` (local datetime), `url`, `note`, and `tags`. Finish fields (`rating`/`finished_at`) belong to a terminal state. Like a Person, it is a user-curated standalone Entity created by direct user CRUD (no Proposal, no Journal Entry anchor) — the agent does not author Media in the first model. It replaced the pre-release first-model **Bookmark** (a flat `{title, url?, note?, tags?}` saved link with no lifecycle); Bookmark's shape is a strict subset of Media's, so the replacement was a clean widening of the same Entity slot, not a parallel surface. Distinct from an Entity Reference (a Journal Entry's inline pointer at another Entity) and an Entity Source (the provenance relation explaining why an Entity exists): a Media item is itself a Canonical Entity the user owns, not a relationship between Entities.
 _Avoid_: Bookmark (the retired first-model name), link, reference, source (all name other concepts), read-later, clipping, resource.
 
-**Todo Person Reference**:
-A Todo-specific association from a Todo to a Canonical Person, with role `waiting_on` or `related`. It is distinct from Entity Reference: Entity Reference renders inline Journal Entry prose, while Todo Person Reference powers task views such as "waiting on Alice" and Person backlinks. A Todo may reference multiple People, but at most once per Person; `waiting_on` includes "related" semantics.
-_Avoid_: mention, generic entity link, Project-Person link.
-
-**Inbox**:
-A derived processing view over raw captured active Todos that still have no organizing metadata. In V1, a Todo is in Inbox when it is active and has no Project, no due date, and no Todo Person References; it may still have title, note, and defer date. Adding a Project, due date, or Person reference moves it out of Inbox. This means simple one-off tasks like "buy milk" remain in Inbox until future Tags/Contexts exist.
-_Avoid_: inbox entity, inbox boolean, standalone flag.
-
 **Project Review**:
-A GTD review workflow for active and on-hold Projects. Review state is Project metadata: review interval, next review time, and last reviewed time. The Workspace default review anchor is Sunday 20:00 local time; new active Projects default to weekly review at the next such anchor. Completed and dropped Projects are not reviewable. **Marking a Project reviewed** is a user action (ADR-0034) that stamps `last_reviewed_at`, advances `next_review_at` to the next anchor, and normalizes the cadence to weekly (`review_every = {interval:1, unit:"week"}`) — Core owns the date math; the client sends only the Project id. The Project then drops off the Review view until it comes due again.
-_Avoid_: recurring Todo, daily note review.
+A GTD review workflow for active and on-hold Projects. Review state is Project metadata: review interval, next review time, and last reviewed time. The Workspace default review anchor is Sunday 20:00 local time; new active Projects default to weekly review at the next such anchor. Completed and dropped Projects are not reviewable. **Marking a Project reviewed** is a user action (ADR-0034) that stamps `last_reviewed_at`, advances `next_review_at` to the next anchor, and normalizes the cadence to weekly (`review_every = {interval:1, unit:"week"}`) — Core owns the date math; the client sends only the Project id. The Project then drops off the Review view until it comes due again. Review lives on the Project surface (ADR-0064 relocated it from the retired GTD Topic).
+_Avoid_: daily note review.
 
 **Extraction Candidate**:
 A possible Entity surfaced by parsing or agent extraction, living in tier 3. Not yet ratified. Becomes an Accepted Entity only after passing through a Proposal.
@@ -193,15 +181,15 @@ A tier-2 timestamped tracker fact, such as bodyweight, nutrition intake, exercis
 _Avoid_: tracker entity, log entity, journal child, arbitrary JSON blob.
 
 **Entity Type**:
-The kind of structured concept an Entity is — Journal Entry, Todo, Person, Project, Media, etc. Determines how the Entity's content is validated, versioned, and described back to the Worker when a Proposal that creates it is accepted. Distinct from the *change* a Proposal makes (create / update / delete): the Entity Type is *what the thing is*, the change is *what is being done to it*.
+The kind of structured concept an Entity is — Journal Entry, Person, Project, Media, etc. Determines how the Entity's content is validated, versioned, and described back to the Worker when a Proposal that creates it is accepted. Distinct from the *change* a Proposal makes (create / update / delete): the Entity Type is *what the thing is*, the change is *what is being done to it*.
 _Avoid_: kind (overloaded across unrelated discriminators), entity class, entity category.
 
 **Entity Source**:
-A provenance relationship that explains where an Entity came from or what evidence supports it. A Journal Entry can source from one or more user Messages. A Person, Project, or Todo extracted from a journal flow can source from the Journal Entry. A Person, Project, or Todo created directly from non-journal task/contact/project capture can source from the user Message. Entity Sources answer "why does this Entity exist?" Assistant Messages are Thread context, not Entity Sources.
+A provenance relationship that explains where an Entity came from or what evidence supports it. A Journal Entry can source from one or more user Messages. A Person or Project extracted from a journal flow can source from the Journal Entry. A Person or Project created directly from non-journal contact/outcome capture can source from the user Message. Entity Sources answer "why does this Entity exist?" Assistant Messages are Thread context, not Entity Sources.
 _Avoid_: audit log, link.
 
 **Entity Reference**:
-A Journal Entry inline reference to a Canonical Entity. Entity References are addressed from Journal Entry body nodes and let the rendered entry point at the referenced Person, Project, or Todo while keeping the referenced Entity's data independent. They power backlinks and reference queries for journal entries in the first model.
+A Journal Entry inline reference to a Canonical Entity. Entity References are addressed from Journal Entry body nodes and let the rendered entry point at the referenced Person or Project while keeping the referenced Entity's data independent. They power backlinks and reference queries for journal entries in the first model.
 _Avoid_: source, mention, generic link.
 
 ### Agents
@@ -235,7 +223,7 @@ A back-and-forth between two contributors walking through an extraction flow. Th
 >
 > **A:** Okay, then what?
 >
-> **B:** Your Message starts a **Run**. The **Dispatcher** picks a **Workflow**, the **Worker** drives the Run, and the journaling Workflow first proposes a **Journal Entry** if the Message is worth capturing as an event. Once that Journal Entry is accepted, the Worker notices "Alice" and "Friday" look like a Person and a Todo worth tracking. Those are **Extraction Candidates** — possible Entities, living in tier 3.
+> **B:** Your Message starts a **Run**. The **Dispatcher** picks a **Workflow**, the **Worker** drives the Run, and the journaling Workflow first proposes a **Journal Entry** if the Message is worth capturing as an event. Once that Journal Entry is accepted, the Worker notices "Alice" and "the Lisbon trip" look like a Person and a Project worth tracking. Those are **Extraction Candidates** — possible Entities, living in tier 3.
 >
 > **A:** Wait — Alice becomes an Entity?
 >
@@ -243,7 +231,7 @@ A back-and-forth between two contributors walking through an extraction flow. Th
 >
 > **A:** Who creates the Proposal?
 >
-> **B:** The Worker, during the Run. The Workflow submits Proposals one at a time: first "Create this Journal Entry," then, after it is accepted, "Create Person 'Alice'" or "Create Todo 'Send Alice the schedule, due Friday'." The accepted Journal Entry becomes the provenance source for the extracted Entities.
+> **B:** The Worker, during the Run. The Workflow submits Proposals one at a time: first "Create this Journal Entry," then, after it is accepted, "Create Person 'Alice'" or "Create Project 'Lisbon trip'." The accepted Journal Entry becomes the provenance source for the extracted Entities. (A concrete task Alice owes you goes in TickTick, not Inkstone — ADR-0064.)
 >
 > **A:** And the Proposal is one of those Run Events?
 >
@@ -251,7 +239,7 @@ A back-and-forth between two contributors walking through an extraction flow. Th
 >
 > **A:** I accept the Proposal. Now what?
 >
-> **B:** Core applies each accepted change atomically. The Journal Entry, Person record, and Todo land in tier 2 as **Accepted Entities**. Core records **Entity Sources** so the Person and Todo point back to the Journal Entry, and **Entity References** so reference queries can find inline journal references. Anything derived — search index, backlinks — gets rebuilt in tier 3.
+> **B:** Core applies each accepted change atomically. The Journal Entry, Person record, and Project land in tier 2 as **Accepted Entities**. Core records **Entity Sources** so the Person and Project point back to the Journal Entry, and **Entity References** so reference queries can find inline journal references. Anything derived — search index, backlinks — gets rebuilt in tier 3.
 >
 > **A:** And later when I query "what do I owe Alice?"
 >
@@ -259,4 +247,4 @@ A back-and-forth between two contributors walking through an extraction flow. Th
 
 Notable disambiguations the dialogue exercises: tier 2 vs tier 3 authority; Journal Entry as accepted event record vs Message as chat input; Extraction Candidate vs Accepted Entity; Proposal vs Run Event.
 
-Direct non-journal capture uses the same Proposal and Entity Source vocabulary without forcing a Journal Entry. If the user says "Remind me to buy milk," the Workflow may propose a Todo sourced directly from that user Message. If the user says "Remember Alice is the daycare coordinator," it may propose a Person sourced directly from that Message. Journal Entry is required for journal-worthy event capture, not for every Person, Project, or Todo.
+Direct non-journal capture uses the same Proposal and Entity Source vocabulary without forcing a Journal Entry. If the user says "Remember Alice is the daycare coordinator," the Workflow may propose a Person sourced directly from that Message; "Start a project for the API v2 migration" may propose a Project. A bare task ("remind me to buy milk") is not captured — tasks live in TickTick (ADR-0064), so the agent redirects there. Journal Entry is required for journal-worthy event capture, not for every Person or Project.

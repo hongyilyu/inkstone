@@ -3,15 +3,9 @@
     {
       "created_at": 1700000000000,
       "data": {
-        "title": "Buy milk"
+        "occurred_at": "2026-06-10T10:30:00"
       },
       "id": "0190d3c1-0000-7000-8000-000000000001",
-      "person_refs": [
-        {
-          "person_id": "0190d3c1-0000-7000-8000-000000000002",
-          "role": "waiting_on"
-        }
-      ],
       "refs": [
         {
           "id": "0190d3c1-0000-7000-8000-000000000002",
@@ -27,7 +21,7 @@
         "thread_id": "0190d3c1-0000-7000-8000-000000000001",
         "thread_title": "Morning brain dump"
       },
-      "type": "todo",
+      "type": "journal_entry",
       "updated_at": 1700000000001
     }
   ]

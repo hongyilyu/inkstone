@@ -351,20 +351,11 @@ describe("ThreadSummary", () => {
 describe("EntityRow", () => {
 	const wire = {
 		id: "01900000-0000-7000-8000-000000000030",
-		type: "todo",
-		data: { title: "buy milk", status: "active" },
+		type: "person",
+		data: { name: "Alice" },
 		created_at: 1_700_000_000_000,
 		updated_at: 1_700_000_000_000,
 	};
-
-	it("rejects a person_ref with an unknown role", () => {
-		expect(() =>
-			S.decodeUnknownSync(EntityRow)({
-				...wire,
-				person_refs: [{ person_id: "p1", role: "owner" }],
-			}),
-		).toThrow();
-	});
 
 	it("rejects a non-number created_at", () => {
 		expect(() =>

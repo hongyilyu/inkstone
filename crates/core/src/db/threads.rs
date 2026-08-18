@@ -716,7 +716,7 @@ mod tests {
             run_id,
             "tc-pending",
             "search_entities",
-            r#"{"type":"todo","query":"InFlight"}"#,
+            r#"{"type":"person","query":"InFlight"}"#,
             6,
         )
         .await
@@ -968,7 +968,7 @@ mod tests {
             "INSERT INTO entities \
              (id, type, schema_version, data, created_by, created_via_proposal_id, \
               created_at, updated_at) \
-             VALUES ('entity-graph', 'todo', 1, '{\"title\":\"x\"}', 'proposal', 'proposal-graph', 4, 4)",
+             VALUES ('entity-graph', 'person', 1, '{\"name\":\"x\"}', 'proposal', 'proposal-graph', 4, 4)",
         )
         .execute(&pool)
         .await
@@ -1526,7 +1526,7 @@ mod tests {
     }
 
     /// ADR-0044 (entity_id amendment, re-landed on the ADR-0045 segment timeline):
-    /// an UPDATE-kind decided Proposal (update_person/project/todo) names the Entity
+    /// an UPDATE-kind decided Proposal (update_person/update_project) names the Entity
     /// it revised. The revision wrote an `entity_revisions` row stamped with the
     /// Proposal's id — there is NO `created_via_proposal_id` entities row for this
     /// Proposal (the Entity pre-existed, minted by another decision). Pins the
@@ -1578,8 +1578,8 @@ mod tests {
             "proposal-update",
             "tc-update",
             "propose_workspace_mutation",
-            r#"{"mutation_kind":"update_todo","payload":{"entity_id":"entity-pre","status":"done"}}"#,
-            "update_todo",
+            r#"{"mutation_kind":"update_person","payload":{"entity_id":"entity-pre","name":"y"}}"#,
+            "update_person",
             2,
         )
         .await
@@ -1597,14 +1597,14 @@ mod tests {
             "INSERT INTO entities \
              (id, type, schema_version, data, created_by, created_via_proposal_id, \
               created_at, updated_at) \
-             VALUES ('entity-pre', 'todo', 1, '{\"title\":\"x\"}', 'user', NULL, 1, 4)",
+             VALUES ('entity-pre', 'person', 1, '{\"name\":\"x\"}', 'user', NULL, 1, 4)",
         )
         .execute(&pool)
         .await
         .expect("seed pre-existing entity");
         sqlx::query(
             "INSERT INTO entity_revisions (entity_id, seq, data, proposal_id, created_at) \
-             VALUES ('entity-pre', 2, '{\"title\":\"x\",\"status\":\"done\"}', 'proposal-update', 4)",
+             VALUES ('entity-pre', 2, '{\"name\":\"y\"}', 'proposal-update', 4)",
         )
         .execute(&pool)
         .await
@@ -1632,7 +1632,7 @@ mod tests {
             })
             .expect("decided update Proposal rehydrates as a proposal segment");
         assert_eq!(status, "accepted");
-        assert_eq!(mutation_kind, "update_todo");
+        assert_eq!(mutation_kind, "update_person");
         // The decided update card names the revised Entity, resolved via the
         // `entity_revisions.proposal_id` arm.
         assert_eq!(entity_id.as_deref(), Some("entity-pre"));
@@ -1710,7 +1710,7 @@ mod tests {
         for (id, ty) in [
             ("entity-person", "person"),
             ("entity-je", "journal_entry"),
-            ("entity-todo", "todo"),
+            ("entity-proj", "project"),
         ] {
             sqlx::query(
                 "INSERT INTO entities \
@@ -2222,7 +2222,7 @@ mod tests {
             "INSERT INTO entities \
              (id, type, schema_version, data, created_by, created_via_proposal_id, \
               created_at, updated_at) \
-             VALUES (?, 'todo', 1, '{}', 'user', NULL, 1, 1)",
+             VALUES (?, 'person', 1, '{}', 'user', NULL, 1, 1)",
         )
         .bind(&entity_id)
         .execute(&mut *tx)

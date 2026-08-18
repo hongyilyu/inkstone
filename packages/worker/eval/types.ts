@@ -22,7 +22,7 @@ export const CODEX_ACCESS_TOKEN_ENV = "INKSTONE_CODEX_ACCESS_TOKEN";
  * would return). Slice 2 consumes this; defined here so the type surface is
  * stable. */
 export interface ExistingEntity {
-	type: "person" | "project" | "todo" | "media" | "habit";
+	type: "person" | "project" | "media" | "habit";
 	id: string;
 	name: string;
 }
@@ -35,7 +35,6 @@ export interface ExistingEntity {
 export type ExpectedKind =
 	| "apply_intent_graph"
 	| "record_observations"
-	| "create_todo"
 	| "create_person"
 	| "create_project"
 	| "create_journal_entry"
@@ -57,8 +56,8 @@ export type ExpectedKind =
  * fixture, and the field-precision penalty fires only on a genuine hallucination. */
 export interface ExpectedProposal {
 	kind: ExpectedKind;
-	/** For `apply_intent_graph`: the entity nodes (person/project/todo/...), each
-	 * with its fields. */
+	/** For `apply_intent_graph`: the entity nodes (person/project), each with
+	 * its fields. */
 	entities?: Array<
 		Record<string, unknown> & { type: string; name?: string; title?: string }
 	>;

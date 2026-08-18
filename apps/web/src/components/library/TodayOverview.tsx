@@ -15,13 +15,11 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { useLibraryItems } from "@/lib/hooks/useLibraryItems";
 import {
 	activeProjectItems,
-	dueSoonTodos,
-	projectProgress,
 	projectsForReview,
 	recentlyCapturedItems,
 } from "@/lib/libraryItems";
 import { EntityGlyph } from "./EntityGlyph.js";
-import { EntityRow, TodoRow } from "./EntityRow.js";
+import { EntityRow } from "./EntityRow.js";
 import { EntitySkeleton } from "./EntitySkeleton.js";
 
 export function TodayOverview() {
@@ -73,7 +71,7 @@ export function TodayOverview() {
 					tone="brand"
 					size="lg"
 					title="Your library is empty"
-					description="Library items show up here as you chat. Inkstone drafts the people, projects and todos it notices, and they land here once you accept the Proposal; media you save in the Library appear here right away."
+					description="Library items show up here as you chat. Inkstone drafts the people and projects it notices, and they land here once you accept the Proposal; media you save in the Library appear here right away."
 					action={
 						<Button
 							variant="primary-icon"
@@ -88,7 +86,6 @@ export function TodayOverview() {
 		);
 	}
 
-	const due = dueSoonTodos(items);
 	const recent = recentlyCapturedItems(items, 6);
 	// "In focus" means genuinely active — on-hold projects are paused, not in
 	// focus, so exclude them here even though activeProjectItems keeps them (it
@@ -98,7 +95,12 @@ export function TodayOverview() {
 		.slice(0, 4);
 	const reviewable = projectsForReview(items);
 
-	const summary = due.length > 0 ? `${due.length} due soon` : "";
+	const summary =
+		reviewable.length > 0
+			? reviewable.length === 1
+				? "1 project to review"
+				: `${reviewable.length} projects to review`
+			: "";
 
 	return (
 		<Shell>
@@ -131,8 +133,9 @@ export function TodayOverview() {
 						</p>
 					</div>
 					<Link
-						to="/library/gtd"
-						search={{ filt: "review" }}
+						to="/library/$kind"
+						params={{ kind: "projects" }}
+						search={{ review: true }}
 						className="inline-flex shrink-0 items-center gap-0.5 rounded-md px-1 font-medium text-primary text-sm transition-colors hover:text-primary/80 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
 					>
 						Review now
@@ -141,65 +144,29 @@ export function TodayOverview() {
 				</div>
 			) : null}
 
-			{due.length > 0 ? (
-				<Section
-					title="Due soon"
-					count={due.length}
-					delay={120}
-					action={
-						<ViewAll
-							onClick={() =>
-								navigate({ to: "/library/$kind", params: { kind: "todos" } })
-							}
-						/>
-					}
-				>
-					<ul className="-mx-2 flex flex-col">
-						{due.map((todo) => (
-							<TodoRow
-								key={todo.id}
-								todo={todo}
-								allItems={items}
-								onSelect={open}
-							/>
-						))}
-					</ul>
-				</Section>
-			) : null}
-
 			{projects.length > 0 ? (
 				<Section title="In focus" count={projects.length} delay={180}>
 					<div className="-mx-2 flex flex-col">
-						{projects.map((project) => {
-							const { done, total } = projectProgress(items, project);
-							const pct = total === 0 ? 0 : Math.round((done / total) * 100);
-							return (
-								<button
-									key={project.id}
-									type="button"
-									onClick={() => open(project.id)}
-									className="flex items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-secondary/40 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
-								>
-									<EntityGlyph entity={project} size="sm" />
-									<div className="min-w-0 flex-1">
-										<p className="truncate font-medium text-foreground text-sm">
-											{project.name}
+						{projects.map((project) => (
+							<button
+								key={project.id}
+								type="button"
+								onClick={() => open(project.id)}
+								className="flex items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-secondary/40 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+							>
+								<EntityGlyph entity={project} size="sm" />
+								<div className="min-w-0 flex-1">
+									<p className="truncate font-medium text-foreground text-sm">
+										{project.name}
+									</p>
+									{project.outcome ? (
+										<p className="mt-0.5 truncate text-muted-foreground text-xs">
+											{project.outcome}
 										</p>
-										<div className="mt-1.5 flex items-center gap-2">
-											<span className="h-1 w-24 overflow-hidden rounded-full bg-secondary">
-												<span
-													className="block h-full rounded-full bg-primary"
-													style={{ width: `${pct}%` }}
-												/>
-											</span>
-											<span className="text-muted-foreground text-xs">
-												{total > 0 ? `${done}/${total}` : "No todos"}
-											</span>
-										</div>
-									</div>
-								</button>
-							);
-						})}
+									) : null}
+								</div>
+							</button>
+						))}
 					</div>
 				</Section>
 			) : null}
@@ -306,18 +273,5 @@ function Section({
 			</div>
 			{children}
 		</section>
-	);
-}
-
-function ViewAll({ onClick }: { onClick: () => void }) {
-	return (
-		<button
-			type="button"
-			onClick={onClick}
-			className="inline-flex items-center gap-0.5 rounded-md px-1 font-medium text-muted-foreground text-xs transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
-		>
-			View all
-			<ArrowUpRight className="size-3" aria-hidden />
-		</button>
 	);
 }

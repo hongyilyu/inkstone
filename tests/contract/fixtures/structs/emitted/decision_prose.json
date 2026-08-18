@@ -31,11 +31,6 @@
       "verb": "Created"
     },
     {
-      "kind": "Todo",
-      "sample": "Accepted. Created Todo (entity_id=0190d3c1-0000-7000-8000-000000000001, title=Buy milk, status=active).",
-      "verb": "Created"
-    },
-    {
       "kind": "Observations",
       "sample": "Accepted. Recorded 1 observations (bodyweight at 2026-06-01T07:30:00, values={\"kg\":72.4}).",
       "verb": "Recorded"

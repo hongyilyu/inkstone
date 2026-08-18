@@ -102,7 +102,7 @@ export type ResolvedNodeCandidate = S.Schema.Type<typeof ResolvedNodeCandidate>;
  * at decide. The JE node is create-only and is NOT a plan node. */
 export const ResolvedNode = S.Struct({
 	handle: S.String,
-	type: S.Literal("person", "project", "todo"),
+	type: S.Literal("person", "project"),
 	disposition: S.Literal("create", "reuse", "ambiguous"),
 	label: S.String,
 	entity_id: S.optional(S.String),

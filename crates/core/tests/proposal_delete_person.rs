@@ -1,17 +1,14 @@
-//! An accepted `delete_person`/`delete_todo` removes the Entity, and its
-//! `todo_person_refs` rows are cascaded away automatically by the table's FK
-//! `ON DELETE CASCADE` (ADR-0031) — Core writes NO explicit ref-delete SQL.
-//! Deleting a Person leaves any Todo that referenced it in place (only the ref
-//! row is gone), and deleting a Todo leaves the Person in place. A delete whose
-//! target is the wrong Entity Type is `invalid_params` (-32602) and writes
-//! nothing.
+//! An accepted `delete_person` removes the Person Entity, textualizing any
+//! Journal Entry refs to it first (ADR-0030); its `entity_refs` rows cascade
+//! away via FK `ON DELETE CASCADE` — Core writes NO explicit ref-delete SQL. A
+//! delete whose target is the wrong Entity Type is `invalid_params` (-32602)
+//! and writes nothing, as is a delete decided `edit`.
 //!
 //! Driven by `tests/fixtures/propose-worker.ts`: a tempfile pointed at by
 //! `INKSTONE_PROPOSE_PARAMS_FILE` supplies the raw mutation the fixture
 //! proposes. Each `thread/create` spawns a fresh worker that re-reads the file
-//! at start, so a test can create a Person, then a Todo referencing it, then a
-//! delete — all on the SAME Core (and DB) across successive Runs.
-
+//! at start, so a test can create a Person, then a delete — all on the SAME
+//! Core (and DB) across successive Runs.
 
 use sqlx::Row;
 use sqlx::sqlite::SqlitePoolOptions;
@@ -89,18 +86,6 @@ async fn entity_exists(pool: &sqlx::SqlitePool, entity_id: &str) -> bool {
     row.is_some()
 }
 
-async fn ref_row_exists(pool: &sqlx::SqlitePool, todo_id: &str, person_id: &str) -> bool {
-    let row: Option<i64> = sqlx::query_scalar(
-        "SELECT 1 FROM todo_person_refs WHERE todo_id = ?1 AND person_id = ?2 LIMIT 1",
-    )
-    .bind(todo_id)
-    .bind(person_id)
-    .fetch_optional(pool)
-    .await
-    .expect("query ref row exists");
-    row.is_some()
-}
-
 async fn seed_journal_entry_ref_to_person(
     pool: &sqlx::SqlitePool,
     person_id: &str,
@@ -149,18 +134,16 @@ async fn seed_journal_entry_ref_to_person(
     (journal_entry_id.to_string(), ref_id.to_string())
 }
 
-/// Seed a Person and a Todo (with a waiting_on ref to that Person) against a
-/// fresh Core. Returns `(core, workspace, params_dir_guard, person_id,
-/// todo_id)`. The tempdir guard must outlive the Core (the worker re-reads the
-/// params file there).
-fn seed_person_and_linked_todo(
+/// Seed a Person against a fresh Core. Returns `(core, workspace,
+/// params_dir_guard, rt, person_id)`. The tempdir guard must outlive the Core
+/// (the worker re-reads the params file there).
+fn seed_person(
     prefix: &str,
 ) -> (
     CoreHandle,
     Workspace,
     tempfile::TempDir,
     tokio::runtime::Runtime,
-    String,
     String,
 ) {
     let workspace = Workspace::new();
@@ -179,8 +162,8 @@ fn seed_person_and_linked_todo(
 
     let rt = rt();
 
-    let (person_id, todo_id) = rt.block_on(async {
-        let person_id = create_entity(
+    let person_id = rt.block_on(async {
+        create_entity(
             &core,
             &params_path,
             serde_json::json!({
@@ -192,38 +175,17 @@ fn seed_person_and_linked_todo(
             "person-k1",
             1,
         )
-        .await;
-
-        let todo_id = create_entity(
-            &core,
-            &params_path,
-            serde_json::json!({
-                "mutation_kind": "create_todo",
-                "payload": {
-                    "todo": { "title": "Follow up", "note": "ping about daycare" },
-                    "person_refs": [{ "person_id": person_id, "role": "waiting_on" }]
-                },
-                "rationale": "track the follow-up"
-            }),
-            "I need to follow up with Alice.",
-            "todo-k1",
-            10,
-        )
-        .await;
-
-        (person_id, todo_id)
+        .await
     });
 
-    (core, workspace, params_dir, rt, person_id, todo_id)
+    (core, workspace, params_dir, rt, person_id)
 }
 
-/// Case 1: an accepted `delete_person` removes the Person AND cascades the
-/// `(todo_id, person_id)` ref row, while leaving the Todo Entity (and its
-/// title/note text) untouched.
+/// Case 1: an accepted `delete_person` removes the Person, textualizes the
+/// Journal Entry refs that pointed at it, and cascades the `entity_refs` rows.
 #[test]
-fn delete_person_cascades_refs_and_keeps_todo() {
-    let (core, workspace, _params_dir, rt, person_id, todo_id) =
-        seed_person_and_linked_todo("inkstone-delete-person-");
+fn delete_person_textualizes_refs_and_removes_entity() {
+    let (core, workspace, _params_dir, rt, person_id) = seed_person("inkstone-delete-person-");
     let params_path = _params_dir.path().join("propose-params.json");
     let (journal_entry_id, ref_id) = rt.block_on(async {
         let pool = rw_pool(&workspace).await;
@@ -271,30 +233,6 @@ fn delete_person_cascades_refs_and_keeps_todo() {
             !entity_exists(&pool, &person_id).await,
             "accepted delete_person removes the Person entity"
         );
-        assert!(
-            !ref_row_exists(&pool, &todo_id, &person_id).await,
-            "the (todo, person) ref row cascades away with the Person"
-        );
-        assert!(
-            entity_exists(&pool, &todo_id).await,
-            "the referencing Todo entity is left in place"
-        );
-        let data: String = sqlx::query_scalar("SELECT data FROM entities WHERE id = ?1")
-            .bind(&todo_id)
-            .fetch_one(&pool)
-            .await
-            .expect("todo entity row exists");
-        let data_json: serde_json::Value = serde_json::from_str(&data).expect("todo data JSON");
-        assert_eq!(
-            data_json["title"].as_str(),
-            Some("Follow up"),
-            "Todo title is unchanged — got {data}"
-        );
-        assert_eq!(
-            data_json["note"].as_str(),
-            Some("ping about daycare"),
-            "Todo note is unchanged — got {data}"
-        );
         let data: String = sqlx::query_scalar("SELECT data FROM entities WHERE id = ?1")
             .bind(&journal_entry_id)
             .fetch_one(&pool)
@@ -324,80 +262,37 @@ fn delete_person_cascades_refs_and_keeps_todo() {
     });
 }
 
-/// Case 2: an accepted `delete_todo` removes the Todo AND cascades its
-/// `(todo_id, person_id)` ref row, while leaving the Person Entity in place.
-#[test]
-fn delete_todo_cascades_refs_and_keeps_person() {
-    let (core, workspace, _params_dir, rt, person_id, todo_id) =
-        seed_person_and_linked_todo("inkstone-delete-todo-");
-    let params_path = _params_dir.path().join("propose-params.json");
-
-    rt.block_on(async {
-        write_params(
-            &params_path,
-            serde_json::json!({
-                "mutation_kind": "delete_todo",
-                "payload": { "entity_id": todo_id },
-                "rationale": "the user finished and discarded this todo"
-            }),
-        );
-        let run = create_and_park(&core, "Drop the follow-up todo.").await.0;
-        let proposal = proposal_id_for(&core, &run).await;
-        let resp = rpc(
-            &core,
-            23,
-            "proposal/decide",
-            serde_json::json!({
-                "proposal_id": proposal,
-                "decision": "accept",
-                "decision_idempotency_key": "del-todo-k1",
-            }),
-        )
-        .await;
-        assert_eq!(
-            resp["result"]["status"].as_str(),
-            Some("accepted"),
-            "delete_todo accepted — body: {resp}"
-        );
-        assert_eq!(
-            resp["result"]["entity_id"].as_str(),
-            Some(todo_id.as_str()),
-            "delete_todo returns the deleted todo id — body: {resp}"
-        );
-        await_completed(&core, &run).await;
-    });
-
-    rt.block_on(async {
-        let pool = ro_pool(&workspace).await;
-        assert!(
-            !entity_exists(&pool, &todo_id).await,
-            "accepted delete_todo removes the Todo entity"
-        );
-        assert!(
-            !ref_row_exists(&pool, &todo_id, &person_id).await,
-            "the (todo, person) ref row cascades away with the Todo"
-        );
-        assert!(
-            entity_exists(&pool, &person_id).await,
-            "the linked Person entity is left in place"
-        );
-    });
-}
-
-/// Case 3: a `delete_person` whose target is a Todo (wrong Entity Type) →
+/// Case 2: a `delete_person` whose target is a Project (wrong Entity Type) →
 /// -32602; nothing is deleted, the Proposal stays pending, the Run stays parked.
 #[test]
-fn delete_person_with_todo_target_is_invalid_and_writes_nothing() {
-    let (core, workspace, _params_dir, rt, person_id, todo_id) =
-        seed_person_and_linked_todo("inkstone-delete-bad-target-");
+fn delete_person_with_project_target_is_invalid_and_writes_nothing() {
+    let (core, workspace, _params_dir, rt, person_id) =
+        seed_person("inkstone-delete-bad-target-");
     let params_path = _params_dir.path().join("propose-params.json");
+
+    // A Project to mistarget the delete_person at.
+    let project_id = rt.block_on(async {
+        create_entity(
+            &core,
+            &params_path,
+            serde_json::json!({
+                "mutation_kind": "create_project",
+                "payload": { "name": "Lead Ads" },
+                "rationale": "a project to mistarget"
+            }),
+            "Remember the Lead Ads project.",
+            "project-k1",
+            10,
+        )
+        .await
+    });
 
     let run = rt.block_on(async {
         write_params(
             &params_path,
             serde_json::json!({
                 "mutation_kind": "delete_person",
-                "payload": { "entity_id": todo_id },
+                "payload": { "entity_id": project_id },
                 "rationale": "wrong target type"
             }),
         );
@@ -417,7 +312,7 @@ fn delete_person_with_todo_target_is_invalid_and_writes_nothing() {
         assert_eq!(
             resp["error"]["code"].as_i64(),
             Some(-32602),
-            "delete_person against a Todo target → invalid_params — body: {resp}"
+            "delete_person against a Project target → invalid_params — body: {resp}"
         );
         let parked = rpc(
             &core,
@@ -437,16 +332,12 @@ fn delete_person_with_todo_target_is_invalid_and_writes_nothing() {
     rt.block_on(async {
         let pool = ro_pool(&workspace).await;
         assert!(
-            entity_exists(&pool, &todo_id).await,
-            "the mistargeted Todo entity is left in place"
+            entity_exists(&pool, &project_id).await,
+            "the mistargeted Project entity is left in place"
         );
         assert!(
             entity_exists(&pool, &person_id).await,
             "the Person entity is left in place"
-        );
-        assert!(
-            ref_row_exists(&pool, &todo_id, &person_id).await,
-            "the ref row is left in place"
         );
         let row = sqlx::query(
             "SELECT p.status, tc.status AS tool_status \
@@ -470,14 +361,14 @@ fn delete_person_with_todo_target_is_invalid_and_writes_nothing() {
     });
 }
 
-/// Case 4: a `delete_person` decided `edit` (retargeting `entity_id` to a
+/// Case 3: a `delete_person` decided `edit` (retargeting `entity_id` to a
 /// different Person) → -32602; a delete does not support `edit`, so nothing is
 /// deleted, the Proposal stays pending and the Run stays parked. Guards against
 /// an `edit` retargeting + deleting the WRONG entity.
 #[test]
 fn delete_person_edit_is_invalid_and_deletes_nothing() {
-    let (core, workspace, _params_dir, rt, person_id, todo_id) =
-        seed_person_and_linked_todo("inkstone-delete-person-edit-");
+    let (core, workspace, _params_dir, rt, person_id) =
+        seed_person("inkstone-delete-person-edit-");
     let params_path = _params_dir.path().join("propose-params.json");
 
     // A second Person to use as the (illegitimate) retarget id for the edit.
@@ -549,10 +440,6 @@ fn delete_person_edit_is_invalid_and_deletes_nothing() {
         assert!(
             entity_exists(&pool, &other_person_id).await,
             "the retarget Person is NOT deleted by the rejected edit"
-        );
-        assert!(
-            entity_exists(&pool, &todo_id).await,
-            "the linked Todo entity is left in place"
         );
         let row = sqlx::query(
             "SELECT p.status, tc.status AS tool_status \

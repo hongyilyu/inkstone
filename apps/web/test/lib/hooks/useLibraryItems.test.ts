@@ -8,13 +8,12 @@ import {
 // The footgun this guards (slice-3): parseJournalEntry is STRICT — it throws on a
 // malformed entry (bad occurred_at, empty body). The Library read maps all five
 // row kinds, so before this fix one bad JE row rejected the whole `entity/list`
-// read and blanked the ENTIRE Library (todos, people, projects, media
+// read and blanked the ENTIRE Library (people, projects, media
 // included). assembleLibraryItems drops the offending row (with a browser
 // console.warn so it isn't lost silently) so the rest renders.
 
 const empty: LibraryRows = {
 	journalEntries: [],
-	todos: [],
 	people: [],
 	projects: [],
 	media: [],
@@ -45,12 +44,11 @@ describe("assembleLibraryItems — one malformed JE row no longer blanks the Lib
 					"good",
 				),
 			],
-			todos: [{ id: "t1", data: { title: "Buy milk" }, created_at: 2000 }],
 			people: [{ id: "p1", data: { name: "Morris" }, created_at: 3000 }],
 		});
 
-		// The good JE, the todo, and the person all survive; only the bad JE drops.
-		expect(items.map((i) => i.id).sort()).toEqual(["good", "p1", "t1"]);
+		// The good JE and the person survive; only the bad JE drops.
+		expect(items.map((i) => i.id).sort()).toEqual(["good", "p1"]);
 		expect(warn).toHaveBeenCalledTimes(1);
 		expect(warn.mock.calls[0]?.[0]).toMatch(/journal_entry/i);
 	});
@@ -59,7 +57,7 @@ describe("assembleLibraryItems — one malformed JE row no longer blanks the Lib
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		const items = assembleLibraryItems({
 			...empty,
-			todos: [{ id: "t1", data: { title: "A" }, created_at: 1 }],
+			people: [{ id: "p1", data: { name: "A" }, created_at: 1 }],
 			media: [
 				{
 					id: "b1",
@@ -68,18 +66,18 @@ describe("assembleLibraryItems — one malformed JE row no longer blanks the Lib
 				},
 			],
 		});
-		expect(items.map((i) => i.id).sort()).toEqual(["b1", "t1"]);
+		expect(items.map((i) => i.id).sort()).toEqual(["b1", "p1"]);
 		expect(warn).not.toHaveBeenCalled();
 	});
 
-	it("preserves the fail-soft kinds (a sparse todo row never throws, never drops)", () => {
+	it("preserves the fail-soft kinds (a sparse person row never throws, never drops)", () => {
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		const items = assembleLibraryItems({
 			...empty,
-			todos: [{ id: "t_sparse", data: {}, created_at: 1 }],
+			people: [{ id: "p_sparse", data: {}, created_at: 1 }],
 		});
 		expect(items).toHaveLength(1);
-		expect(items[0]?.id).toBe("t_sparse");
+		expect(items[0]?.id).toBe("p_sparse");
 		expect(warn).not.toHaveBeenCalled();
 	});
 });

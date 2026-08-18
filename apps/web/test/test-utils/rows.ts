@@ -12,21 +12,7 @@ export interface RowOpts {
 	created_at?: number;
 	updated_at?: number;
 	refs?: EntityRow["refs"];
-	person_refs?: EntityRow["person_refs"];
 	source?: EntityRow["source"];
-}
-
-/** Stored Todo `data` fields (mirrors `readTodoData`, payloads.ts:598). */
-export interface TodoData {
-	title: string;
-	note: string;
-	status: string;
-	project_id: string;
-	defer_at: string;
-	due_at: string;
-	completed_at: string;
-	dropped_at: string;
-	recurrence: unknown;
 }
 
 /** Stored Person `data` fields (mirrors `readPersonData`, payloads.ts:612). */
@@ -92,21 +78,8 @@ function baseRow(
 		created_at: opts.created_at ?? EPOCH,
 		updated_at: opts.updated_at ?? EPOCH,
 		...(opts.refs !== undefined ? { refs: opts.refs } : {}),
-		...(opts.person_refs !== undefined
-			? { person_refs: opts.person_refs }
-			: {}),
 		...(opts.source !== undefined ? { source: opts.source } : {}),
 	};
-}
-
-/** A wire Todo row; defaults `status: "active"`. */
-export function todoRow(
-	id: string,
-	title: string,
-	data: Partial<TodoData> = {},
-	opts: RowOpts = {},
-): EntityRow {
-	return baseRow(id, "todo", { title, status: "active", ...data }, opts);
 }
 
 /** A wire Project row; defaults `status: "active"`. */

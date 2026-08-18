@@ -20,7 +20,7 @@
 
 use serde_json::Value;
 
-use crate::field_spec::{BodyPolicy, Field, FieldSpec, PayloadSpec, Presence};
+use crate::field_spec::{BodyPolicy, Field, FieldSpec, PayloadSpec};
 
 /// Search/reference projection for an Entity Type. Kept small on purpose: the
 /// stored data field that names the row, plus an optional aliases field for
@@ -74,9 +74,9 @@ pub(crate) struct NormalizePolicy {
     /// Runs AFTER strip + null-drop (ordering is load-bearing for the Project
     /// review seeding).
     pub(crate) post: Option<fn(&mut serde_json::Map<String, Value>, now_ms: i64, offset_minutes: i64)>,
-    /// Pre-step for envelope kinds (`create_todo` unwraps `payload.todo`).
-    /// `None` from the extractor means "no envelope to unwrap" — the payload is
-    /// stored as-is (the pre-policy arms returned `payload.clone()` likewise).
+    /// Pre-step for envelope kinds. `None` from the extractor means "no
+    /// envelope to unwrap" — the payload is stored as-is (the pre-policy arms
+    /// returned `payload.clone()` likewise).
     pub(crate) extract: Option<fn(&Value) -> Option<Value>>,
 }
 
@@ -162,27 +162,6 @@ fn project_create_defaults(
     }
 }
 
-/// `create_todo` post-normalization (registered on the Todo spec row): inject
-/// `status:"active"` when absent, mirroring the Project status default.
-fn todo_create_defaults(
-    data: &mut serde_json::Map<String, Value>,
-    _now_ms: i64,
-    _offset_minutes: i64,
-) {
-    data.entry("status")
-        .or_insert_with(|| serde_json::json!("active"));
-}
-
-/// `create_todo` envelope unwrap (registered on the Todo spec row): store
-/// `payload.todo` (the TodoData); `person_refs` persist separately in
-/// `todo_person_refs`, never in `entities.data`.
-fn todo_envelope_extract(payload: &Value) -> Option<Value> {
-    payload
-        .get("todo")
-        .filter(|todo| todo.is_object())
-        .cloned()
-}
-
 /// Closed policy row for an Entity Type. This is the trait-like dispatch point
 /// Phase 2 needs: static, compile-checked, and metadata-only — ONE row per type
 /// from which the regular payload specs, schema version, accept-text noun, and
@@ -199,12 +178,12 @@ pub(crate) struct EntityTypeSpec {
     pub(crate) noun: &'static str,
     pub(crate) projection: EntityProjectionPolicy,
     /// The data field core the regular payload specs derive from. `None` for
-    /// the irregular types — journal (body policies) and todo (the `Mode`-split
-    /// core) — whose `payload_spec` arms stay explicit.
+    /// the irregular Journal Entry (body policies split its create/update
+    /// shapes), whose `payload_spec` arms stay explicit.
     pub(crate) data_core: Option<fn() -> Vec<Field>>,
     /// Whether this type's create payload carries the optional
     /// `source_journal_entry_id` provenance directive (ADR-0030/0031):
-    /// person/project/todo creates do; media/habit are user-CRUD only and do
+    /// person/project creates do; media/habit are user-CRUD only and do
     /// not. Consumed by [`EntityTypeSpec::create_payload`] — an explicit flag,
     /// never a guess, because appending it unconditionally would change the
     /// media/habit contract fixtures.
@@ -229,7 +208,7 @@ impl EntityTypeSpec {
 
     /// The regular create payload: the data core plus, where the row declares
     /// it, the `source_journal_entry_id` provenance directive. The irregular
-    /// types (journal, todo) keep explicit `payload_spec` arms.
+    /// Journal Entry keeps explicit `payload_spec` arms.
     fn create_payload(self) -> PayloadSpec {
         let mut fields = self.data_core_fields();
         if self.create_source_directive {
@@ -321,17 +300,15 @@ pub(crate) enum EntityType {
     JournalEntry,
     Person,
     Project,
-    Todo,
     Media,
     Habit,
 }
 
 impl EntityType {
-    pub(crate) const ALL: [EntityType; 6] = [
+    pub(crate) const ALL: [EntityType; 5] = [
         EntityType::JournalEntry,
         EntityType::Person,
         EntityType::Project,
-        EntityType::Todo,
         EntityType::Media,
         EntityType::Habit,
     ];
@@ -395,28 +372,6 @@ impl EntityType {
                     extract: None,
                 },
             },
-            // Todo's data core is Mode-split (full create vs the `update_todo`
-            // partial envelope), so `data_core` is None and its payload arms
-            // stay explicit; its create unwraps the `{todo, person_refs?}`
-            // envelope and defaults `status`.
-            EntityType::Todo => EntityTypeSpec {
-                entity_type: self,
-                stored_type: "todo",
-                schema_version: 1,
-                noun: "Todo",
-                projection: EntityProjectionPolicy::ReferenceAndSearch(EntityProjectionSpec {
-                    label_field: "title",
-                    aliases_field: None,
-                }),
-                data_core: None,
-                create_source_directive: true,
-                create_normalize: NormalizePolicy {
-                    strip: &[],
-                    drop_nulls: false,
-                    post: Some(todo_create_defaults),
-                    extract: Some(todo_envelope_extract),
-                },
-            },
             EntityType::Media => EntityTypeSpec {
                 entity_type: self,
                 stored_type: "media",
@@ -475,7 +430,6 @@ impl EntityType {
             "journal_entry" => Some(EntityType::JournalEntry),
             "person" => Some(EntityType::Person),
             "project" => Some(EntityType::Project),
-            "todo" => Some(EntityType::Todo),
             "media" => Some(EntityType::Media),
             "habit" => Some(EntityType::Habit),
             _ => None,
@@ -483,9 +437,9 @@ impl EntityType {
     }
 
     /// Whether a Journal Entry body may reference this Entity Type (ADR-0030):
-    /// People, Projects, and Todos are referenceable; Journal Entries,
-    /// Media, and Habits are not. A new Entity Type must declare its
-    /// referenceability in its spec row.
+    /// People and Projects are referenceable; Journal Entries, Media, and
+    /// Habits are not. A new Entity Type must declare its referenceability in
+    /// its spec row.
     pub(crate) fn is_referenceable(self) -> bool {
         self.spec().is_referenceable()
     }
@@ -538,9 +492,9 @@ pub(crate) const OBSERVATION_RELATIONS: &[ObservationRelation] = &[ObservationRe
 // (the proposable subset) and the validators (all kinds). Cross-field invariants
 // stay in `crate::entities` hooks (ADR-0033).
 
-/// The four `YYYY-MM-DDTHH:MM:SS` Project/Todo terminal+scheduling timestamps a
-/// status↔timestamp invariant governs, plus (for Project) the review pair. Each
-/// is an optional, clearable local datetime (ADR-0033 `null` clears).
+/// The four `YYYY-MM-DDTHH:MM:SS` Project terminal+scheduling timestamps a
+/// status↔timestamp invariant governs, plus the review pair. Each is an
+/// optional, clearable local datetime (ADR-0033 `null` clears).
 fn clearable_datetime(name: &'static str) -> Field {
     Field::datetime(name).clearable()
 }
@@ -596,9 +550,9 @@ impl EntityType {
     /// timestamps. The single source `validate_project_data` and the agent schema
     /// both derive from. The status↔timestamp invariant is a hook, not here.
     ///
-    /// `status` is optional but NOT clearable (matching Todo `status`): an absent
-    /// status defaults to active, but an explicit `null` is rejected — clearing a
-    /// status has no meaning, and the pre-spec validator rejected it likewise.
+    /// `status` is optional but NOT clearable: an absent status defaults to
+    /// active, but an explicit `null` is rejected — clearing a status has no
+    /// meaning, and the pre-spec validator rejected it likewise.
     fn project_core() -> Vec<Field> {
         vec![
             Field::required("name", FieldSpec::non_empty_string()),
@@ -614,55 +568,6 @@ impl EntityType {
             clearable_datetime("last_reviewed_at"),
         ]
     }
-
-    /// The Todo `TodoData` core — the single source `validate_todo_data` /
-    /// `validate_partial_todo_data` and the agent schema all derive from. In
-    /// `Mode::Full` `title` is required and no field is clearable; in
-    /// `Mode::Partial` (the `update_todo` `todo` envelope) every field is optional
-    /// and all EXCEPT `title`/`status` become clearable (ADR-0033). The
-    /// status↔timestamp + recurrence-anchor invariants are hooks.
-    fn todo_core(mode: Mode) -> Vec<Field> {
-        let partial = mode == Mode::Partial;
-        // In partial mode title is optional but NOT clearable (a `null` title is
-        // meaningless); status is likewise optional-non-clearable in both modes.
-        let title = Field {
-            name: "title",
-            presence: if partial {
-                Presence::Optional
-            } else {
-                Presence::Required
-            },
-            clearable: false,
-            spec: FieldSpec::non_empty_string(),
-            description: None,
-        };
-        vec![
-            title,
-            Field::optional("note", FieldSpec::string()).clearable_when(partial),
-            Field::optional("status", todo_status_enum()),
-            Field::optional("project_id", FieldSpec::non_empty_string()).clearable_when(partial),
-            clearable_datetime_when("defer_at", partial),
-            clearable_datetime_when("due_at", partial),
-            clearable_datetime_when("completed_at", partial),
-            clearable_datetime_when("dropped_at", partial),
-            Field::optional("recurrence", FieldSpec::HookValidated(recurrence_spec()))
-                .clearable_when(partial),
-        ]
-    }
-}
-
-/// Full vs partial TodoData (create vs the `update_todo` `todo` envelope).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum Mode {
-    Full,
-    Partial,
-}
-
-/// A clearable-in-partial-mode local datetime: clearable on the `update_todo`
-/// partial path (`null` clears), concrete-or-absent on the create path.
-fn clearable_datetime_when(name: &'static str, partial: bool) -> Field {
-    let field = Field::datetime(name);
-    if partial { field.clearable() } else { field }
 }
 
 /// The Project `status` enum (`validate_project_data`).
@@ -670,14 +575,6 @@ fn project_status_enum() -> FieldSpec {
     FieldSpec::EnumStr {
         domain: &["active", "on_hold", "completed", "dropped"],
         err: "status must be one of active, on_hold, completed, dropped",
-    }
-}
-
-/// The Todo `status` enum (no `on_hold`, `validate_todo_data`).
-fn todo_status_enum() -> FieldSpec {
-    FieldSpec::EnumStr {
-        domain: &["active", "completed", "dropped"],
-        err: "status must be one of active, completed, dropped",
     }
 }
 
@@ -743,67 +640,8 @@ fn review_every_spec() -> PayloadSpec {
     )
 }
 
-/// One `person_refs` element (ADR-0031): a required non-empty `person_id` and an
-/// optional `role` enum. Validated inline by the spec walk; a missing role
-/// defaults to `related` at apply-time.
-fn person_ref_spec() -> PayloadSpec {
-    PayloadSpec::payload(
-        "person_refs",
-        vec![
-            Field::required("person_id", FieldSpec::non_empty_string()),
-            Field::optional(
-                "role",
-                FieldSpec::EnumStr {
-                    domain: &["waiting_on", "related"],
-                    err: "person_refs role must be one of waiting_on, related",
-                },
-            ),
-        ],
-    )
-}
-
-/// The recurrence rule sub-object SCHEMA (ADR-0037, slimmed by ADR-0039).
-/// Validation is the hand-written `validate_recurrence` hook (cross-field), but
-/// the schema single-sources from here. `end` is itself a hook-validated nested
-/// object.
-fn recurrence_spec() -> PayloadSpec {
-    PayloadSpec::payload(
-        "recurrence",
-        vec![
-            Field::required("interval", FieldSpec::PositiveInt),
-            Field::required(
-                "unit",
-                FieldSpec::EnumStr {
-                    domain: &["minute", "hour", "day", "week", "month", "year"],
-                    err: "recurrence unit must be one of minute, hour, day, week, month, year",
-                },
-            ),
-            Field::required(
-                "anchor",
-                FieldSpec::EnumStr {
-                    domain: &["defer_at", "due_at"],
-                    err: "recurrence anchor must be one of defer_at, due_at",
-                },
-            ),
-            Field::optional("end", FieldSpec::HookValidated(recurrence_end_spec())),
-        ],
-    )
-}
-
-/// `recurrence.end` schema (`validate_recurrence_end`): an `until` datetime or an
-/// `after_count`. The at-most-one cardinality is the hook's job.
-fn recurrence_end_spec() -> PayloadSpec {
-    PayloadSpec::payload(
-        "recurrence end",
-        vec![
-            Field::datetime("until"),
-            Field::optional("after_count", FieldSpec::PositiveInt),
-        ],
-    )
-}
-
 /// The `source_journal_entry_id` provenance directive (ADR-0030/0031) a
-/// `create_{person,project,todo}` payload may carry: an optional UUID, advertised
+/// `create_{person,project}` payload may carry: an optional UUID, advertised
 /// with the canonical pattern.
 fn source_journal_entry_id_field() -> Field {
     Field::optional(
@@ -846,43 +684,6 @@ impl MutationKind {
             M::UpdatePerson | M::UpdateProject | M::UpdateMedia | M::UpdateHabit => {
                 self.describe().entity_type.spec().update_payload()
             }
-            // ── Todo ──
-            M::CreateTodo => PayloadSpec::payload(
-                "create_todo",
-                vec![
-                    // `todo` schema recurses (HookValidated emits the TodoData
-                    // schema) but its VALIDATION is `validate_todo_data` (the
-                    // status↔ts + recurrence invariants exceed a flat walk).
-                    Field::required("todo", FieldSpec::HookValidated(todo_data_spec(Mode::Full))),
-                    Field::optional(
-                        "person_refs",
-                        FieldSpec::Array {
-                            items: Box::new(FieldSpec::Object(person_ref_spec())),
-                            plain_items: false,
-                            min_items: None,
-                        },
-                    ),
-                    source_journal_entry_id_field(),
-                ],
-            ),
-            M::UpdateTodo => PayloadSpec::payload(
-                "update_todo",
-                vec![
-                    Field::required(
-                        "todo_id",
-                        FieldSpec::Uuid {
-                            schema_regex: false,
-                        },
-                    ),
-                    Field::optional(
-                        "todo",
-                        FieldSpec::HookValidated(todo_data_spec(Mode::Partial)),
-                    ),
-                    person_ref_array("set_person_refs"),
-                    person_ref_array("add_person_refs"),
-                    Field::optional("remove_person_ids", FieldSpec::non_empty_string_array()),
-                ],
-            ),
             // ── Journal Entry ──
             M::CreateJournalEntry => journal_entry_payload(None, BodyPolicy::TextOnly),
             M::UpdateJournalEntry => {
@@ -902,7 +703,6 @@ impl MutationKind {
             M::DeleteJournalEntry
             | M::DeletePerson
             | M::DeleteProject
-            | M::DeleteTodo
             | M::DeleteMedia
             | M::DeleteHabit
             | M::MarkProjectReviewed => entity_id_only(self.as_wire()),
@@ -930,28 +730,11 @@ impl MutationKind {
     }
 }
 
-/// The full TodoData sub-object spec for a [`Mode`] (`todo` envelope value).
-pub(crate) fn todo_data_spec(mode: Mode) -> PayloadSpec {
-    PayloadSpec::payload("todo", EntityType::todo_core(mode))
-}
-
 /// An update payload: the `entity_id` target prepended to the entity data core.
 fn update_payload(noun: &'static str, core: Vec<Field>) -> PayloadSpec {
     let mut fields = vec![entity_id_target()];
     fields.extend(core);
     PayloadSpec::payload(noun, fields)
-}
-
-/// An optional `person_refs`-shaped array field (`set_person_refs`/`add_person_refs`).
-fn person_ref_array(name: &'static str) -> Field {
-    Field::optional(
-        name,
-        FieldSpec::Array {
-            items: Box::new(FieldSpec::Object(person_ref_spec())),
-            plain_items: false,
-            min_items: None,
-        },
-    )
 }
 
 /// A `{entity_id}`-only payload (the deletes + `mark_project_reviewed`); the noun
@@ -977,8 +760,8 @@ fn journal_entry_payload(target: Option<Field>, body: BodyPolicy) -> PayloadSpec
 //
 // The graph is the most structurally complex payload the model emits: an
 // optional `journal_entry` node, a `>= 1` array of typed entity nodes
-// (person/project/todo, each carrying a graph-local `handle` + optional
-// `existing_id` hint), and an array of three link kinds. Slice 1 advertises and
+// (person/project, each carrying a graph-local `handle` + optional
+// `existing_id` hint), and an array of `journal_ref` links. Slice 1 advertises and
 // structurally accepts the shape — deep per-entity-type field validation and the
 // cross-node graph invariants (handle references, duplicate handles, a
 // `journal_ref` without a `journal_entry`) are the resolver's job in slice 2+.
@@ -1060,48 +843,25 @@ fn intent_graph_journal_entry_node() -> PayloadSpec {
     )
 }
 
-/// The three link kinds (ADR-0042): each a `kind` discriminant + `from`/`to`
-/// handles, with `todo_person` additionally carrying a `role` enum.
+/// The ONE link kind (ADR-0042, slimmed by the TickTick cutover): a
+/// `journal_ref`'s `kind` discriminant + `from`/`to` handles + the optional
+/// splice texts.
 fn intent_graph_links() -> FieldSpec {
-    let from_to = || {
-        vec![
-            Field::required("from", FieldSpec::non_empty_string()),
-            Field::required("to", FieldSpec::non_empty_string()),
-        ]
-    };
-    let mut todo_project = vec![graph_discriminant("kind", &["todo_project"])];
-    todo_project.extend(from_to());
-    let mut todo_person = vec![graph_discriminant("kind", &["todo_person"])];
-    todo_person.extend(from_to());
-    todo_person.push(Field::required(
-        "role",
-        FieldSpec::EnumStr {
-            domain: &["waiting_on", "related"],
-            err: "todo_person role must be one of waiting_on, related",
-        },
-    ));
     let mut journal_ref = vec![graph_discriminant("kind", &["journal_ref"])];
-    journal_ref.extend(from_to());
+    journal_ref.extend([
+        Field::required("from", FieldSpec::non_empty_string()),
+        Field::required("to", FieldSpec::non_empty_string()),
+    ]);
     journal_ref.push(Field::optional("match_text", FieldSpec::non_empty_string()));
     journal_ref.push(Field::optional(
         "append_text",
         FieldSpec::non_empty_string(),
     ));
     FieldSpec::OneOfArray {
-        variants: vec![
-            PayloadSpec::payload(
-                "intent graph todo_project link",
-                todo_project,
-            ),
-            PayloadSpec::payload(
-                "intent graph todo_person link",
-                todo_person,
-            ),
-            PayloadSpec::payload(
-                "intent graph journal_ref link",
-                journal_ref,
-            ),
-        ],
+        variants: vec![PayloadSpec::payload(
+            "intent graph journal_ref link",
+            journal_ref,
+        )],
         min_items: None,
     }
 }
@@ -1124,15 +884,6 @@ fn intent_graph_payload() -> PayloadSpec {
                 Field::required("name", FieldSpec::non_empty_string()),
                 Field::optional("outcome", FieldSpec::string()),
                 Field::optional("note", FieldSpec::string()),
-            ],
-        ),
-        entity_node(
-            &["todo"],
-            vec![
-                Field::required("title", FieldSpec::non_empty_string()),
-                Field::optional("note", FieldSpec::string()),
-                Field::datetime("defer_at"),
-                Field::datetime("due_at"),
             ],
         ),
     ];
@@ -1162,9 +913,6 @@ fn intent_graph_payload() -> PayloadSpec {
 pub(crate) enum TargetKey {
     /// `entity_id` — the common update/delete target key.
     EntityId,
-    /// `todo_id` — `update_todo`'s target key (its envelope wraps a
-    /// `Partial<TodoData>` under `todo`, so the id lives at `todo_id`).
-    TodoId,
     /// `source_entity_id` — the Journal Entry a reference is woven into.
     SourceEntityId,
 }
@@ -1174,7 +922,6 @@ impl TargetKey {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             TargetKey::EntityId => "entity_id",
-            TargetKey::TodoId => "todo_id",
             TargetKey::SourceEntityId => "source_entity_id",
         }
     }
@@ -1187,7 +934,7 @@ impl TargetKey {
 /// Design decision (a): the check rides the `Copy` contract as this DECLARATIVE
 /// facet, interpreted by one kind-generic driver in `crate::mutation_target`
 /// (whose async checkers stay private there) — NOT as a boxed-future fn pointer
-/// on the descriptor. Only ~6 shapes exist across all 21 kinds, and the checks
+/// on the descriptor. Only ~4 shapes exist across all 18 kinds, and the checks
 /// need async + a DB pool: plain fn pointers cannot be async, and boxing a
 /// future would cost the descriptor its `Copy`. A kind with no run-independent
 /// reference declares [`TargetRefs::NoCheck`] explicitly, so a newly-added kind
@@ -1198,12 +945,6 @@ pub(crate) enum TargetRefs {
     /// Resolve the optional `source_journal_entry_id` anchor only (the
     /// Person/Project creates).
     SourceAnchor,
-    /// The Todo create: the source anchor FIRST, then its `todo.project_id` /
-    /// `person_refs` references — sequential, in that order.
-    SourceAnchorAndTodoCreateRefs,
-    /// `update_todo`'s envelope-aware walk: the `todo_id` primary target, the
-    /// set/add person refs, and a supplied `todo.project_id`.
-    TodoUpdateRefs,
     /// An update/delete whose only reference is the primary target Entity id,
     /// type-checked against the kind's own Entity Type.
     GenericTarget,
@@ -1234,9 +975,8 @@ pub(crate) enum WriteClass {
     /// derives the choice from the contract's `write_op`.
     Normalized,
     /// The kind computes its data INSIDE the apply tx against current DB state:
-    /// `update_todo`'s three-way merge (ADR-0033), `mark_project_reviewed`'s
-    /// review recompute (ADR-0034), and the reference weave's body rewrite
-    /// (which needs the freshly-minted entity_ref id).
+    /// `mark_project_reviewed`'s review recompute (ADR-0034) and the reference
+    /// weave's body rewrite (which needs the freshly-minted entity_ref id).
     InTx,
 }
 
@@ -1298,9 +1038,6 @@ pub(crate) enum MutationKind {
     UpdateProject,
     DeleteProject,
     MarkProjectReviewed,
-    CreateTodo,
-    UpdateTodo,
-    DeleteTodo,
     CreateMedia,
     UpdateMedia,
     DeleteMedia,
@@ -1332,9 +1069,6 @@ const WIRE: &[(&str, MutationKind)] = &[
     ("update_project", MutationKind::UpdateProject),
     ("delete_project", MutationKind::DeleteProject),
     ("mark_project_reviewed", MutationKind::MarkProjectReviewed),
-    ("create_todo", MutationKind::CreateTodo),
-    ("update_todo", MutationKind::UpdateTodo),
-    ("delete_todo", MutationKind::DeleteTodo),
     ("create_media", MutationKind::CreateMedia),
     ("update_media", MutationKind::UpdateMedia),
     ("delete_media", MutationKind::DeleteMedia),
@@ -1462,25 +1196,6 @@ impl MutationKind {
                 target_refs: T::GenericTarget,
                 write_class: C::NoData,
             },
-            // ── Todo ──
-            M::CreateTodo => Descriptor {
-                write_op: W::Create,
-                entity_type: E::Todo,
-                target_key: None,
-                validate: e::validate_todo,
-                render_accept: Some(e::render_accept_create_todo),
-                target_refs: T::SourceAnchorAndTodoCreateRefs,
-                write_class: C::Normalized,
-            },
-            M::DeleteTodo => Descriptor {
-                write_op: W::Delete,
-                entity_type: E::Todo,
-                target_key: Some(K::EntityId),
-                validate: e::validate_delete_todo,
-                render_accept: Some(e::render_accept_delete_todo),
-                target_refs: T::GenericTarget,
-                write_class: C::NoData,
-            },
             // ── Media (user-only: no proposal accept text) ──
             M::CreateMedia => Descriptor {
                 write_op: W::Create,
@@ -1564,19 +1279,6 @@ impl MutationKind {
                 target_refs: T::GenericTarget,
                 write_class: C::InTx,
             },
-            // update_todo's target key is `todo_id` (its envelope wraps a
-            // Partial<TodoData> under `todo`), NOT `entity_id`. InTx: the
-            // three-way merge reads the current Todo inside the apply tx
-            // (ADR-0033).
-            M::UpdateTodo => Descriptor {
-                write_op: W::Update,
-                entity_type: E::Todo,
-                target_key: Some(K::TodoId),
-                validate: e::validate_update_todo,
-                render_accept: Some(e::render_accept_update_todo),
-                target_refs: T::TodoUpdateRefs,
-                write_class: C::InTx,
-            },
             // A graph spans many entities, so it has NO single target id — like a
             // create, `target_key` is None. `entity_type` is the JE anchor; the
             // graph actually mints many types, so this field is unused until the
@@ -1618,9 +1320,6 @@ pub(crate) enum ProposableMutation {
     CreateProject,
     UpdateProject,
     DeleteProject,
-    CreateTodo,
-    UpdateTodo,
-    DeleteTodo,
     ApplyIntentGraph,
     RecordObservations,
 }
@@ -1629,7 +1328,7 @@ impl ProposableMutation {
     /// Every agent-proposable kind, in wire order. The single source the
     /// `propose_workspace_mutation` tool descriptor iterates to emit its `oneOf`
     /// schema, and the closed set the drift-guard test pins.
-    pub(crate) const ALL: [ProposableMutation; 15] = [
+    pub(crate) const ALL: [ProposableMutation; 12] = [
         ProposableMutation::CreateJournalEntry,
         ProposableMutation::UpdateJournalEntry,
         ProposableMutation::DeleteJournalEntry,
@@ -1640,9 +1339,6 @@ impl ProposableMutation {
         ProposableMutation::CreateProject,
         ProposableMutation::UpdateProject,
         ProposableMutation::DeleteProject,
-        ProposableMutation::CreateTodo,
-        ProposableMutation::UpdateTodo,
-        ProposableMutation::DeleteTodo,
         ProposableMutation::ApplyIntentGraph,
         ProposableMutation::RecordObservations,
     ];
@@ -1667,9 +1363,6 @@ impl ProposableMutation {
             | ProposableMutation::CreateProject
             | ProposableMutation::UpdateProject
             | ProposableMutation::DeleteProject
-            | ProposableMutation::CreateTodo
-            | ProposableMutation::UpdateTodo
-            | ProposableMutation::DeleteTodo
             | ProposableMutation::ApplyIntentGraph => self
                 .entity_kind()
                 .expect("entity-backed proposable kind")
@@ -1692,9 +1385,6 @@ impl ProposableMutation {
             | ProposableMutation::CreateProject
             | ProposableMutation::UpdateProject
             | ProposableMutation::DeleteProject
-            | ProposableMutation::CreateTodo
-            | ProposableMutation::UpdateTodo
-            | ProposableMutation::DeleteTodo
             | ProposableMutation::ApplyIntentGraph => self
                 .entity_kind()
                 .expect("entity-backed proposable kind")
@@ -1721,9 +1411,6 @@ impl ProposableMutation {
             | ProposableMutation::CreateProject
             | ProposableMutation::UpdateProject
             | ProposableMutation::DeleteProject
-            | ProposableMutation::CreateTodo
-            | ProposableMutation::UpdateTodo
-            | ProposableMutation::DeleteTodo
             | ProposableMutation::ApplyIntentGraph => Ok(()),
         }
     }
@@ -1745,9 +1432,6 @@ impl ProposableMutation {
             ProposableMutation::CreateProject => MutationKind::CreateProject,
             ProposableMutation::UpdateProject => MutationKind::UpdateProject,
             ProposableMutation::DeleteProject => MutationKind::DeleteProject,
-            ProposableMutation::CreateTodo => MutationKind::CreateTodo,
-            ProposableMutation::UpdateTodo => MutationKind::UpdateTodo,
-            ProposableMutation::DeleteTodo => MutationKind::DeleteTodo,
             ProposableMutation::ApplyIntentGraph => MutationKind::ApplyIntentGraph,
             ProposableMutation::RecordObservations => return None,
         })
@@ -1756,7 +1440,7 @@ impl ProposableMutation {
     /// Whether an accepted Proposal of this kind supports an `edit` Decision
     /// (ADR-0025). Deletes carry no editable data, and the reference weave's
     /// shape is fixed (its single entity_ref placeholder), so neither is
-    /// editable; every create/update otherwise is. Total over the 15 (both arms
+    /// editable; every create/update otherwise is. Total over the 12 (both arms
     /// listed) so a new proposable kind must declare its editability.
     pub(crate) fn supports_edit(self) -> bool {
         use ProposableMutation as P;
@@ -1764,7 +1448,6 @@ impl ProposableMutation {
             P::DeleteJournalEntry
             | P::DeletePerson
             | P::DeleteProject
-            | P::DeleteTodo
             | P::ReferenceExistingEntityFromJournalEntry
             // The graph is corrected via the per-node decision vector's
             // `edited_fields` (ADR-0042), NOT the whole-payload `edit` verb. So it
@@ -1776,8 +1459,6 @@ impl ProposableMutation {
             | P::UpdatePerson
             | P::CreateProject
             | P::UpdateProject
-            | P::CreateTodo
-            | P::UpdateTodo
             | P::RecordObservations => true,
         }
     }
@@ -1788,10 +1469,8 @@ impl ProposableMutation {
     /// reference weave, plus the two GTD full-document REPLACE updates
     /// (update_person, update_project — lamplit-desk-alignment), so the Client can
     /// render Current-vs-Proposed and surface what an accepted REPLACE removes
-    /// (ADR-0016, ADR-0033). `update_todo` is a partial MERGE (ADR-0033) — omitted
-    /// fields are NOT dropped — so a "what a REPLACE removes" diff does not apply,
-    /// and it carries no review context. A fresh create has nothing to show; a GTD
-    /// delete needs no current-vs-proposed diff. Total over the 15.
+    /// (ADR-0016, ADR-0033). A fresh create has nothing to show; a delete needs
+    /// no current-vs-proposed diff. Total over the 12.
     pub(crate) fn carries_review_context(self) -> bool {
         use ProposableMutation as P;
         match self {
@@ -1805,9 +1484,6 @@ impl ProposableMutation {
             | P::DeletePerson
             | P::CreateProject
             | P::DeleteProject
-            | P::CreateTodo
-            | P::UpdateTodo
-            | P::DeleteTodo
             | P::RecordObservations
             // The graph mints its own newborn Journal Entry (ADR-0042 create mode)
             // OR re-anchors an existing one (ADR-0042 anchor-reuse amendment), but
@@ -1843,9 +1519,6 @@ impl TryFrom<MutationKind> for ProposableMutation {
             MutationKind::CreateProject => ProposableMutation::CreateProject,
             MutationKind::UpdateProject => ProposableMutation::UpdateProject,
             MutationKind::DeleteProject => ProposableMutation::DeleteProject,
-            MutationKind::CreateTodo => ProposableMutation::CreateTodo,
-            MutationKind::UpdateTodo => ProposableMutation::UpdateTodo,
-            MutationKind::DeleteTodo => ProposableMutation::DeleteTodo,
             MutationKind::ApplyIntentGraph => ProposableMutation::ApplyIntentGraph,
             MutationKind::MarkProjectReviewed
             | MutationKind::CreateMedia
@@ -1876,8 +1549,8 @@ mod tests {
         // Derived from the WIRE table — no hand-list to drift.
         assert_eq!(
             WIRE.len(),
-            21,
-            "WIRE table covers all 21 MutationKinds"
+            18,
+            "WIRE table covers all 18 MutationKinds"
         );
         for &(wire_str, kind) in WIRE {
             assert_eq!(
@@ -1959,7 +1632,7 @@ mod tests {
     #[test]
     fn proposable_all_widens_and_excludes_user_only() {
         // ALL widens cleanly; the user-only kinds are not proposable.
-        assert_eq!(ProposableMutation::ALL.len(), 15);
+        assert_eq!(ProposableMutation::ALL.len(), 12);
         for p in ProposableMutation::ALL {
             if let Some(kind) = p.entity_kind() {
                 assert_eq!(ProposableMutation::try_from(kind).unwrap(), p);
@@ -1983,13 +1656,9 @@ mod tests {
 
     #[test]
     fn target_key_matches_legacy_key_choice() {
-        // None for creates; todo_id for update_todo; source_entity_id for the
-        // reference weave; entity_id for every other update/delete.
-        assert_eq!(MutationKind::CreateTodo.describe().target_key, None);
-        assert_eq!(
-            MutationKind::UpdateTodo.describe().target_key,
-            Some(TargetKey::TodoId)
-        );
+        // None for creates; source_entity_id for the reference weave; entity_id
+        // for every update/delete.
+        assert_eq!(MutationKind::CreatePerson.describe().target_key, None);
         assert_eq!(
             MutationKind::ReferenceExistingEntityFromJournalEntry
                 .describe()
@@ -2004,7 +1673,6 @@ mod tests {
             MutationKind::UpdateProject,
             MutationKind::DeleteProject,
             MutationKind::MarkProjectReviewed,
-            MutationKind::DeleteTodo,
             MutationKind::UpdateMedia,
             MutationKind::DeleteMedia,
             MutationKind::UpdateHabit,
@@ -2024,15 +1692,14 @@ mod tests {
         use MutationKind as M;
         use TargetRefs as T;
         // Closed-set mapping: the contract's target-ref facet pins the exact
-        // 6-shape partition of all 21 kinds (in wire order), the shapes
+        // 4-shape partition of all 18 kinds (in wire order), the shapes
         // `validate_mutation_target_refs` drives. Person/Project creates
-        // resolve only the optional source Journal Entry anchor; a Todo create
-        // additionally resolves its project/person refs; update_todo has its own
-        // envelope-aware ref walk; every update/delete whose only reference is
+        // resolve only the optional source Journal Entry anchor; every
+        // update/delete whose only reference is
         // the primary target rides the generic check; the reference weave
         // resolves both endpoints; and the kinds with NO run-independent target
         // reference declare that explicitly (never a silent fall-through).
-        let expected: [(MutationKind, TargetRefs); 21] = [
+        let expected: [(MutationKind, TargetRefs); 18] = [
             (M::CreateJournalEntry, T::NoCheck),
             (M::UpdateJournalEntry, T::GenericTarget),
             (M::DeleteJournalEntry, T::GenericTarget),
@@ -2047,9 +1714,6 @@ mod tests {
             (M::UpdateProject, T::GenericTarget),
             (M::DeleteProject, T::GenericTarget),
             (M::MarkProjectReviewed, T::GenericTarget),
-            (M::CreateTodo, T::SourceAnchorAndTodoCreateRefs),
-            (M::UpdateTodo, T::TodoUpdateRefs),
-            (M::DeleteTodo, T::GenericTarget),
             (M::CreateMedia, T::NoCheck),
             (M::UpdateMedia, T::GenericTarget),
             (M::DeleteMedia, T::GenericTarget),
@@ -2082,16 +1746,16 @@ mod tests {
         use MutationKind as M;
         use WriteClass as C;
         // Closed-set mapping: the contract's write-class facet pins the exact
-        // 3-way partition of all 21 kinds (in wire order) that routes the
+        // 3-way partition of all 18 kinds (in wire order) that routes the
         // `db::apply` data seam. Deletes carry no entity data; creates and the
         // full-replace updates route through the pre-write normalize policies
-        // (`create_normalize` / `UPDATE_NORMALIZE`); and exactly the three
-        // read-modify-write kinds (`update_todo`, `mark_project_reviewed`, the
+        // (`create_normalize` / `UPDATE_NORMALIZE`); and exactly the two
+        // read-modify-write kinds (`mark_project_reviewed`, the
         // reference weave) compute their data inside the apply tx.
         // `apply_intent_graph`'s value is never read — `apply_entity_mutation`
         // rejects the graph at its guard before any routing — but the contract
         // still declares it so the partition stays total.
-        let expected: [(MutationKind, WriteClass); 21] = [
+        let expected: [(MutationKind, WriteClass); 18] = [
             (M::CreateJournalEntry, C::Normalized),
             (M::UpdateJournalEntry, C::Normalized),
             (M::DeleteJournalEntry, C::NoData),
@@ -2103,9 +1767,6 @@ mod tests {
             (M::UpdateProject, C::Normalized),
             (M::DeleteProject, C::NoData),
             (M::MarkProjectReviewed, C::InTx),
-            (M::CreateTodo, C::Normalized),
-            (M::UpdateTodo, C::InTx),
-            (M::DeleteTodo, C::NoData),
             (M::CreateMedia, C::Normalized),
             (M::UpdateMedia, C::Normalized),
             (M::DeleteMedia, C::NoData),
@@ -2134,8 +1795,7 @@ mod tests {
             // The target-key invariant the apply entity-id minting relies on:
             // every create (including apply_intent_graph, which mints its own
             // anchor) targets nothing; every update/delete names its target key
-            // (update_todo via todo_id, the reference weave via source_entity_id,
-            // the rest via entity_id).
+            // (the reference weave via source_entity_id, the rest via entity_id).
             assert_eq!(
                 desc.target_key.is_none(),
                 desc.write_op == WriteOp::Create,
@@ -2153,7 +1813,6 @@ mod tests {
         assert_eq!(EntityType::from_str("nonsense"), None);
         assert!(EntityType::Person.is_referenceable());
         assert!(EntityType::Project.is_referenceable());
-        assert!(EntityType::Todo.is_referenceable());
         assert!(!EntityType::JournalEntry.is_referenceable());
         assert!(!EntityType::Media.is_referenceable());
         assert!(!EntityType::Habit.is_referenceable());
@@ -2185,7 +1844,6 @@ mod tests {
             vec![
                 EntityType::Person,
                 EntityType::Project,
-                EntityType::Todo,
                 EntityType::Habit
             ],
             "search_entities exposes searchable Entity Type specs"
@@ -2193,7 +1851,6 @@ mod tests {
 
         assert_eq!(EntityType::Person.spec().schema_version, 1);
         assert_eq!(EntityType::Project.spec().schema_version, 1);
-        assert_eq!(EntityType::Todo.spec().schema_version, 1);
         assert_eq!(EntityType::Media.spec().schema_version, 1);
         assert_eq!(EntityType::Habit.spec().schema_version, 1);
         assert_eq!(EntityType::JournalEntry.spec().schema_version, 1);
@@ -2208,7 +1865,7 @@ mod tests {
         // invalid payloads are chosen to exercise each kind's full validator
         // body (spec walk AND, where one exists, the cross-field invariant
         // hook) — no SQLite involved.
-        let cases: [(MutationKind, Value, Value, &str); 6] = [
+        let cases: [(MutationKind, Value, Value, &str); 5] = [
             (
                 MutationKind::CreateJournalEntry,
                 json!({
@@ -2235,14 +1892,6 @@ mod tests {
                 json!({ "name": "Ship v1" }),
                 json!({ "name": "Ship v1", "status": "completed" }),
                 "completed project requires completed_at",
-            ),
-            (
-                // The invalid case fails inside the `todo` envelope's TodoData
-                // hook, proving the envelope unwrap survives on the facet.
-                MutationKind::CreateTodo,
-                json!({ "todo": { "title": "Email Alice" } }),
-                json!({ "todo": { "title": "" } }),
-                "title must not be empty",
             ),
             (
                 // The invalid case fails the state↔finish-data invariant HOOK.
@@ -2291,7 +1940,6 @@ mod tests {
             MutationKind::DeleteJournalEntry,
             MutationKind::DeletePerson,
             MutationKind::DeleteProject,
-            MutationKind::DeleteTodo,
             MutationKind::DeleteMedia,
             MutationKind::DeleteHabit,
             MutationKind::MarkProjectReviewed,
@@ -2319,7 +1967,7 @@ mod tests {
         // resumed model reads (ADR-0025) — pinned exactly, byte-for-byte.
         // Covers all four delete nouns, so the per-kind delete wrappers cannot
         // drift from the shared body. No SQLite involved.
-        let cases: [(MutationKind, Value, Option<&str>, &str); 14] = [
+        let cases: [(MutationKind, Value, Option<&str>, &str); 11] = [
             (
                 MutationKind::CreateJournalEntry,
                 json!({
@@ -2396,25 +2044,6 @@ mod tests {
                 "Accepted. Deleted Project (entity_id=e-3).",
             ),
             (
-                // CreateTodo reads title/status through the `{todo}` envelope.
-                MutationKind::CreateTodo,
-                json!({ "todo": { "title": "Email Alice", "status": "active" } }),
-                Some("td-1"),
-                "Accepted. Created Todo (entity_id=td-1, title=Email Alice, status=active).",
-            ),
-            (
-                MutationKind::UpdateTodo,
-                json!({ "todo_id": "td-9", "todo": { "status": "done" } }),
-                None,
-                "Accepted. Updated Todo (todo_id=td-9).",
-            ),
-            (
-                MutationKind::DeleteTodo,
-                json!({ "entity_id": "e-4" }),
-                None,
-                "Accepted. Deleted Todo (entity_id=e-4).",
-            ),
-            (
                 // JE-less graph: no "with a Journal Entry" note; the count is the
                 // PROPOSED node count ("up to N" — some may have been declined).
                 MutationKind::ApplyIntentGraph,
@@ -2486,9 +2115,6 @@ mod tests {
             M::CreateProject,
             M::UpdateProject,
             M::DeleteProject,
-            M::CreateTodo,
-            M::UpdateTodo,
-            M::DeleteTodo,
             M::ApplyIntentGraph,
         ];
         for kind in renderable {
@@ -2526,18 +2152,14 @@ mod tests {
                 carries.as_wire()
             );
         }
-        // Creates have no current Entity; `update_todo` is a partial MERGE (ADR-0033)
-        // with no "what a REPLACE removes" diff to surface; deletes of GTD kinds and
-        // the graph do not surface current-vs-proposed context.
+        // Creates have no current Entity; deletes and the graph do not surface
+        // current-vs-proposed context.
         for omits in [
             P::CreateJournalEntry,
             P::CreatePerson,
             P::DeletePerson,
             P::CreateProject,
             P::DeleteProject,
-            P::CreateTodo,
-            P::UpdateTodo,
-            P::DeleteTodo,
             P::RecordObservations,
             P::ApplyIntentGraph,
         ] {

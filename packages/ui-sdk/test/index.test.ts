@@ -1275,12 +1275,6 @@ const cannedCases: Record<keyof typeof requestDescriptors, CannedCase> = {
 			],
 		},
 	},
-	recurrencePreview: {
-		args: [{ recurrence: { freq: "daily" }, due_at: "2026-01-01" }],
-		method: "recurrence/preview",
-		params: { recurrence: { freq: "daily" }, due_at: "2026-01-01" },
-		response: { ended: false, due_at: "2026-01-02" },
-	},
 	threadGet: {
 		args: ["t-1"],
 		method: "thread/get",
@@ -1321,7 +1315,7 @@ const cannedCases: Record<keyof typeof requestDescriptors, CannedCase> = {
 		args: ["e-1"],
 		method: "entity/backlinks",
 		params: { entity_id: "e-1" },
-		response: { mentioned_in: [], linked_todos: [] },
+		response: { mentioned_in: [] },
 	},
 	observationQuery: {
 		args: [{ schema_key: "mood" }],

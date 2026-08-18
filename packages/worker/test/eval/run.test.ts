@@ -56,8 +56,8 @@ describe("eval runner (faux provider, keyless)", () => {
 		faux.setResponses([
 			fauxAssistantMessage([
 				fauxToolCall("propose_workspace_mutation", {
-					mutation_kind: "create_todo",
-					payload: { todo: { title: "Buy milk" } },
+					mutation_kind: "create_person",
+					payload: { name: "Alice" },
 				}),
 			]),
 		]);
@@ -65,13 +65,13 @@ describe("eval runner (faux provider, keyless)", () => {
 		const fixture: Fixture = {
 			message: "Remind me to buy milk",
 			world: [],
-			expected: { kind: "create_todo" },
+			expected: { kind: "create_person" },
 		};
 
 		const predicted = await runFixture(fixture, deps);
 		expect(predicted).not.toBeNull();
-		expect(predicted?.mutation_kind).toBe("create_todo");
-		expect(predicted?.payload).toEqual({ todo: { title: "Buy milk" } });
+		expect(predicted?.mutation_kind).toBe("create_person");
+		expect(predicted?.payload).toEqual({ name: "Alice" });
 	});
 
 	it("returns null when the model replies with text and proposes nothing", async () => {
@@ -97,8 +97,8 @@ describe("eval runner (faux provider, keyless)", () => {
 		faux.setResponses([
 			fauxAssistantMessage([
 				fauxToolCall("propose_workspace_mutation", {
-					mutation_kind: "create_todo",
-					payload: { todo: { title: "FIRST" } },
+					mutation_kind: "create_person",
+					payload: { name: "FIRST" },
 				}),
 			]),
 			fauxAssistantMessage([
@@ -112,12 +112,12 @@ describe("eval runner (faux provider, keyless)", () => {
 		const fixture: Fixture = {
 			message: "Remind me to buy milk",
 			world: [],
-			expected: { kind: "create_todo" },
+			expected: { kind: "create_person" },
 		};
 
 		const predicted = await runFixture(fixture, deps);
-		expect(predicted?.mutation_kind).toBe("create_todo");
-		expect(predicted?.payload).toEqual({ todo: { title: "FIRST" } });
+		expect(predicted?.mutation_kind).toBe("create_person");
+		expect(predicted?.payload).toEqual({ name: "FIRST" });
 		// The second scripted response must NOT have been consumed (loop terminated).
 		expect(faux.getPendingResponseCount()).toBe(1);
 	});
@@ -131,8 +131,8 @@ describe("eval runner (faux provider, keyless)", () => {
 		faux.setResponses([
 			fauxAssistantMessage([
 				fauxToolCall("propose_workspace_mutation", {
-					mutation_kind: "create_todo",
-					payload: { todo: { title: "FIRST" } },
+					mutation_kind: "create_person",
+					payload: { name: "FIRST" },
 				}),
 				fauxToolCall("propose_workspace_mutation", {
 					mutation_kind: "create_person",
@@ -144,12 +144,12 @@ describe("eval runner (faux provider, keyless)", () => {
 		const fixture: Fixture = {
 			message: "Remind me to buy milk",
 			world: [],
-			expected: { kind: "create_todo" },
+			expected: { kind: "create_person" },
 		};
 
 		const predicted = await runFixture(fixture, deps);
-		expect(predicted?.mutation_kind).toBe("create_todo");
-		expect(predicted?.payload).toEqual({ todo: { title: "FIRST" } });
+		expect(predicted?.mutation_kind).toBe("create_person");
+		expect(predicted?.payload).toEqual({ name: "FIRST" });
 	});
 
 	it("searches the world first, then captures the proposal", async () => {
@@ -166,22 +166,20 @@ describe("eval runner (faux provider, keyless)", () => {
 			]),
 			fauxAssistantMessage([
 				fauxToolCall("propose_workspace_mutation", {
-					mutation_kind: "create_todo",
-					payload: { todo: { title: "Follow up on Lead Ads" } },
+					mutation_kind: "create_project",
+					payload: { name: "Lead Ads" },
 				}),
 			]),
 		]);
 
 		const fixture: Fixture = {
-			message: "Follow up on Lead Ads testing",
+			message: "Spent time on Lead Ads testing",
 			world: [{ type: "project", id: "p1", name: "Lead Ads" }],
-			expected: { kind: "create_todo" },
+			expected: { kind: "create_project" },
 		};
 
 		const predicted = await runFixture(fixture, deps);
-		expect(predicted?.mutation_kind).toBe("create_todo");
-		expect(predicted?.payload).toEqual({
-			todo: { title: "Follow up on Lead Ads" },
-		});
+		expect(predicted?.mutation_kind).toBe("create_project");
+		expect(predicted?.payload).toEqual({ name: "Lead Ads" });
 	});
 });

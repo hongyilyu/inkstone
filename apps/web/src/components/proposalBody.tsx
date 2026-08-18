@@ -1,12 +1,7 @@
 import type { ProposalReviewContext } from "@inkstone/protocol";
 import type { ReactNode } from "react";
-import { asRecurrence } from "@/lib/entityCodec";
-import {
-	PROJECT_STATUS_LABEL,
-	recurrenceSummary,
-	TODO_STATUS_LABEL,
-} from "@/lib/libraryItems";
-import { readArray, readObject, readString } from "@/lib/readPayload";
+import { PROJECT_STATUS_LABEL } from "@/lib/libraryItems";
+import { readArray, readString } from "@/lib/readPayload";
 
 /**
  * Inputs a row's `renderBody` strategy reads to draw the card's detail body — the
@@ -102,76 +97,10 @@ function Field({ label, value }: { label: string; value: string }) {
 	);
 }
 
-// Resolve an entity id to a human label for the review body: the cached name if
-// known, else a short id (first 8 chars) so a not-yet-cached ref still reads as an
-// abbreviated handle rather than a full raw UUID.
-function displayEntity(
-	id: string,
-	nameFor: (id: string) => string | null,
-): string {
-	return nameFor(id) ?? `${id.slice(0, 8)}…`;
-}
-
-// A datetime the model proposed, shown as its day slice (the review body is a
-// glance, not a to-the-second audit). Empty → null so the caller skips the row.
-function proposalDay(value: string): string | null {
-	return value ? value.slice(0, 10) : null;
-}
-
 // Humanize a raw (unvalidated) status enum against a label map, falling back to
 // the raw value for a status the map doesn't cover. Empty → empty.
 function statusLabel(value: string, labels: Record<string, string>): string {
 	return labels[value] ?? value;
-}
-
-// A one-line recurrence summary from a raw (snake_case, unvalidated) recurrence
-// payload, reusing the same formatter the Library inspector uses. Null when the
-// payload carries no well-formed rule so the caller skips the row.
-function recurrenceLine(todo: unknown): string | null {
-	const rule = asRecurrence(readObject(todo, "recurrence"));
-	return rule ? recurrenceSummary(rule) : null;
-}
-
-// A person ref is itself unvalidated; read its id/role defensively. Returns null
-// when there is no usable person_id so the caller can skip rendering a blank row.
-// `nameFor` resolves the id to a display name (falling back to a short id) so the
-// row never surfaces a raw UUID.
-function personRefLine(
-	ref: unknown,
-	nameFor: (id: string) => string | null,
-): string | null {
-	const personId = readString(ref, "person_id");
-	if (!personId) return null;
-	const role = readString(ref, "role");
-	const who = displayEntity(personId, nameFor);
-	return role === "waiting_on" ? `Waiting on: ${who}` : `Related: ${who}`;
-}
-
-// Map an array field of (unvalidated) person refs to rendered rows. Rows are
-// static and presentational, so the post-filter index is a unique, stable key —
-// it avoids a duplicate-key collision when two refs share the same id + role
-// (reachable since the payload is raw, unvalidated model output).
-function personRefFields(
-	payload: unknown,
-	key: string,
-	prefix: string,
-	label: string,
-	nameFor: (id: string) => string | null,
-) {
-	// Key by the row's own value plus a per-value occurrence counter rather than a
-	// bare array index (Biome noArrayIndexKey): stable across payload reordering,
-	// and still unique when two unvalidated refs render the identical line.
-	const seen = new Map<string, number>();
-	return readArray(payload, key)
-		.map((ref) => personRefLine(ref, nameFor))
-		.filter((line): line is string => line !== null)
-		.map((line) => {
-			const nth = seen.get(line) ?? 0;
-			seen.set(line, nth + 1);
-			return (
-				<Field key={`${prefix}:${line}:${nth}`} label={label} value={line} />
-			);
-		});
 }
 
 // --- renderBody strategies -------------------------------------------------
@@ -300,153 +229,6 @@ export function renderProjectBody({
 			) : (
 				projectSection("Project", payload)
 			)}
-		</div>
-	);
-}
-
-// The Todo scalar-field rows shared by the create and update proposal bodies —
-// title (create only, where "Untitled" is a sensible placeholder; an update omits
-// an unchanged title so a blank row would mislead), note, humanized status,
-// due/defer day, recurrence summary, and the project resolved to a name. Returns a
-// row array so each caller composes it with its own person-ref rows; a display
-// change here lands in both bodies at once (the two used to duplicate this).
-function todoScalarFieldRows(
-	todo: unknown,
-	nameFor: (id: string) => string | null,
-	opts: { includeTitle: boolean },
-): ReactNode[] {
-	const note = readString(todo, "note");
-	const status = readString(todo, "status");
-	const projectId = readString(todo, "project_id");
-	const due = proposalDay(readString(todo, "due_at"));
-	const defer = proposalDay(readString(todo, "defer_at"));
-	const repeats = recurrenceLine(todo);
-	const rows: ReactNode[] = [];
-	if (opts.includeTitle)
-		rows.push(
-			<Field
-				key="title"
-				label="Title"
-				value={readString(todo, "title") || "Untitled"}
-			/>,
-		);
-	if (note) rows.push(<Field key="note" label="Note" value={note} />);
-	// Humanize the raw enum ("active"/"on_hold") to the label the rest of the app
-	// shows; fall back to the raw value for an unknown status.
-	if (status)
-		rows.push(
-			<Field
-				key="status"
-				label="Status"
-				value={statusLabel(status, TODO_STATUS_LABEL)}
-			/>,
-		);
-	if (due) rows.push(<Field key="due" label="Due" value={due} />);
-	if (defer) rows.push(<Field key="defer" label="Defer" value={defer} />);
-	if (repeats)
-		rows.push(<Field key="repeats" label="Repeats" value={repeats} />);
-	// Resolve the project id to its name (not a raw UUID).
-	if (projectId)
-		rows.push(
-			<Field
-				key="project"
-				label="Project"
-				value={displayEntity(projectId, nameFor)}
-			/>,
-		);
-	return rows;
-}
-
-export function renderCreateTodoBody({
-	payload,
-	nameFor,
-}: ProposalBodyArgs): ReactNode {
-	const todo = readObject(payload, "todo");
-	return (
-		<div className="flex flex-col gap-3 border-border border-t pt-3">
-			<section className="flex flex-col gap-2">
-				<p className="text-xs font-medium tracking-normal text-muted-foreground">
-					Todo
-				</p>
-				<dl className="flex flex-col gap-1.5 text-sm">
-					{todoScalarFieldRows(todo, nameFor, { includeTitle: true })}
-					{personRefFields(payload, "person_refs", "ref", "People", nameFor)}
-				</dl>
-			</section>
-		</div>
-	);
-}
-
-export function renderUpdateTodoBody({
-	payload,
-	nameFor,
-}: ProposalBodyArgs): ReactNode {
-	const todo = readObject(payload, "todo");
-	// Reuse the create body's scalar rows, minus title: an update omits an
-	// unchanged title, and "Untitled" here would misread as a title change.
-	const scalarRows = todoScalarFieldRows(todo, nameFor, {
-		includeTitle: false,
-	});
-	const title = readString(todo, "title");
-	const removeIds = readArray(payload, "remove_person_ids").filter(
-		(id): id is string => typeof id === "string",
-	);
-	const setRows = personRefFields(
-		payload,
-		"set_person_refs",
-		"set",
-		"Set",
-		nameFor,
-	);
-	const addRows = personRefFields(
-		payload,
-		"add_person_refs",
-		"add",
-		"Add",
-		nameFor,
-	);
-	// An update whose only changed fields are ones we render (date/recurrence
-	// included) shows those rows; if NOTHING renders, show an explicit note rather
-	// than an empty "Changes" section (the diff carries fields we don't surface, or
-	// only clears — the user still needs to know the section isn't broken).
-	const hasVisibleChange =
-		Boolean(title) ||
-		scalarRows.length > 0 ||
-		setRows.length > 0 ||
-		addRows.length > 0 ||
-		removeIds.length > 0;
-	return (
-		<div className="flex flex-col gap-3 border-border border-t pt-3">
-			<section className="flex flex-col gap-2">
-				<p className="text-xs font-medium tracking-normal text-muted-foreground">
-					Changes
-				</p>
-				{hasVisibleChange ? (
-					<dl className="flex flex-col gap-1.5 text-sm">
-						{/* The raw `todo_id` UUID was surfaced here — unreadable to a user
-						    and redundant with the card's "Update Todo" heading. Show only
-						    the fields that actually change. A changed title renders here
-						    (verbatim, no "Untitled" placeholder); the rest come from the
-						    shared scalar-row builder. */}
-						{title ? <Field label="Title" value={title} /> : null}
-						{scalarRows}
-						{setRows}
-						{addRows}
-						{removeIds.length > 0 ? (
-							<Field
-								label="Remove"
-								value={removeIds
-									.map((id) => displayEntity(id, nameFor))
-									.join(", ")}
-							/>
-						) : null}
-					</dl>
-				) : (
-					<p className="text-muted-foreground text-sm">
-						Updates fields not shown here.
-					</p>
-				)}
-			</section>
 		</div>
 	);
 }

@@ -125,15 +125,6 @@ mod parity_fixtures {
                         Some(UUID_A),
                     ),
                 },
-                AcceptedExample {
-                    verb: "Created",
-                    kind: "Todo",
-                    sample: render(
-                        M::CreateTodo,
-                        &serde_json::json!({ "todo": { "title": "Buy milk", "status": "active" } }),
-                        Some(UUID_A),
-                    ),
-                },
                 // The non-Entity accept path (observations.rs render_accept) —
                 // no faux verb-matcher branches on it, but the shared
                 // `Accepted.` prefix classification must still hold.
@@ -246,7 +237,7 @@ mod parity_fixtures {
                     resolved_plan: Some(vec![
                         ResolvedNode {
                             handle: "@rodeo".to_string(),
-                            r#type: "todo".to_string(),
+                            r#type: "project".to_string(),
                             disposition: "create".to_string(),
                             label: "Figure out the Rodeo side".to_string(),
                             entity_id: None,
@@ -396,25 +387,6 @@ mod parity_fixtures {
                     }],
                 }
             ),
-            // ── recurrence/preview (continuing + ended companion) ──
-            // Maximal: the series continues, both dates present.
-            fx!(
-                "recurrence_preview_result.json",
-                RecurrencePreviewResult {
-                    ended: false,
-                    defer_at: Some("2026-07-08T00:00:00".to_string()),
-                    due_at: Some("2026-07-15T00:00:00".to_string()),
-                }
-            ),
-            // Ended: no successor — both dates omitted (skip_serializing_if None).
-            fx!(
-                "recurrence_preview_result.ended.json",
-                RecurrencePreviewResult {
-                    ended: true,
-                    defer_at: None,
-                    due_at: None,
-                }
-            ),
             // ── observation/* (ADR-0053) ──
             fx!(
                 "observation_record_result.json",
@@ -526,16 +498,15 @@ mod parity_fixtures {
                 }
             ),
             // ── entity/list (EntityRow maximal + bare, transitively) ──
-            // Maximal row: refs + person_refs + source all present (covers
-            // ResolvedEntityRef with its optionals, TodoPersonRefView, EntitySourceView
-            // message-source branch).
+            // Maximal row: refs + source both present (covers ResolvedEntityRef
+            // with its optionals, EntitySourceView message-source branch).
             fx!(
                 "entity_list_result.json",
                 EntityListResult {
                     entities: vec![EntityRow {
                         id: UUID_A.to_string(),
-                        r#type: "todo".to_string(),
-                        data: serde_json::json!({ "title": "Buy milk" }),
+                        r#type: "journal_entry".to_string(),
+                        data: serde_json::json!({ "occurred_at": "2026-06-10T10:30:00" }),
                         created_at: 1_700_000_000_000,
                         updated_at: 1_700_000_000_001,
                         refs: vec![ResolvedEntityRef {
@@ -546,10 +517,6 @@ mod parity_fixtures {
                             target_title: Some("Lead Ads".to_string()),
                             label_snapshot: Some("Lead Ads".to_string()),
                         }],
-                        person_refs: vec![TodoPersonRefView {
-                            person_id: UUID_B.to_string(),
-                            role: "waiting_on".to_string(),
-                        }],
                         source: Some(EntitySourceView {
                             thread_id: Some(UUID_A.to_string()),
                             thread_title: Some("Morning brain dump".to_string()),
@@ -559,7 +526,7 @@ mod parity_fixtures {
                     }],
                 }
             ),
-            // Bare row: no refs, no person_refs, no source — all omitted
+            // Bare row: no refs, no source — all omitted
             // (skip_serializing_if Vec::is_empty / Option::is_none). The
             // EntitySourceView journal-entry branch is covered here? No — covered by
             // a dedicated entry below to exercise that exactly-one-kind branch.
@@ -576,7 +543,6 @@ mod parity_fixtures {
                         created_at: 1_700_000_000_000,
                         updated_at: 1_700_000_000_000,
                         refs: vec![],
-                        person_refs: vec![],
                         source: None,
                     }],
                 }
@@ -588,12 +554,11 @@ mod parity_fixtures {
                 EntityListResult {
                     entities: vec![EntityRow {
                         id: UUID_A.to_string(),
-                        r#type: "todo".to_string(),
-                        data: serde_json::json!({ "title": "Email Alice" }),
+                        r#type: "person".to_string(),
+                        data: serde_json::json!({ "name": "Alice" }),
                         created_at: 1_700_000_000_000,
                         updated_at: 1_700_000_000_000,
                         refs: vec![],
-                        person_refs: vec![],
                         source: Some(EntitySourceView {
                             thread_id: None,
                             thread_title: None,
@@ -607,8 +572,7 @@ mod parity_fixtures {
             // Maximal result: mentioned_in carries a journal_entry EntityRow with
             // non-empty refs (a ResolvedEntityRef incl. its optionals) + a message
             // source (EntitySourceView), mirroring the entity_list_result.json
-            // maximal row so EntityRow coverage carries; linked_todos carries a todo
-            // EntityRow with non-empty person_refs. Both arrays always present.
+            // maximal row so EntityRow coverage carries. The array is always present.
             fx!(
                 "entity_backlinks_result.json",
                 EntityBacklinksResult {
@@ -626,26 +590,12 @@ mod parity_fixtures {
                             target_title: Some("Lead Ads".to_string()),
                             label_snapshot: Some("Lead Ads".to_string()),
                         }],
-                        person_refs: vec![],
                         source: Some(EntitySourceView {
                             thread_id: Some(UUID_A.to_string()),
                             thread_title: Some("Morning brain dump".to_string()),
                             message_id: Some(UUID_RUN.to_string()),
                             journal_entry_id: None,
                         }),
-                    }],
-                    linked_todos: vec![EntityRow {
-                        id: UUID_B.to_string(),
-                        r#type: "todo".to_string(),
-                        data: serde_json::json!({ "title": "Buy milk" }),
-                        created_at: 1_700_000_000_000,
-                        updated_at: 1_700_000_000_001,
-                        refs: vec![],
-                        person_refs: vec![TodoPersonRefView {
-                            person_id: UUID_A.to_string(),
-                            role: "waiting_on".to_string(),
-                        }],
-                        source: None,
                     }],
                 }
             ),
@@ -1230,8 +1180,6 @@ mod parity_fixtures {
             "thread_list_result.archived.json",
             "thread_mutate_result.json",
             "run_history_result.json",
-            "recurrence_preview_result.json",
-            "recurrence_preview_result.ended.json",
             "observation_record_result.json",
             "observation_update_result.json",
             "observation_query_result.json",
@@ -1340,14 +1288,6 @@ mod parity_fixtures {
         parses!(ThreadCreateParams, "thread_create_params.bare.json");
         parses!(RunGetHistoryParams, "run_get_history_params.json");
         parses!(RunGetHistoryParams, "run_get_history_params.bare.json");
-        parses!(
-            RecurrencePreviewParams,
-            "recurrence_preview_params.json"
-        );
-        parses!(
-            RecurrencePreviewParams,
-            "recurrence_preview_params.bare.json"
-        );
         parses!(ObservationRecordParams, "observation_record_params.json");
         parses!(
             ObservationRecordParams,
@@ -1461,8 +1401,6 @@ mod parity_fixtures {
         "ThreadGetResult",
         "RunGetHistoryParams",
         "RunHistoryResult",
-        "RecurrencePreviewParams",
-        "RecurrencePreviewResult",
         "ObservationRecordParams",
         "ObservationRecordResult",
         "ObservationUpdateParams",
@@ -1524,7 +1462,6 @@ mod parity_fixtures {
         ("EntityRow", "entity_list_result.json"),
         ("EntitySourceView", "entity_list_result.json"),
         ("ResolvedEntityRef", "entity_list_result.json"),
-        ("TodoPersonRefView", "entity_list_result.json"),
         ("MessageHit", "message_search_result.json"),
         ("MessageView", "thread_get_result.json"),
         ("Segment", "thread_get_result.json (all five variants)"),

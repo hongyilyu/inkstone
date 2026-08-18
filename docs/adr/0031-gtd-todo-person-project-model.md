@@ -1,5 +1,8 @@
 # GTD Todo, Person, and Project entity model
 
+Status: Superseded in part by ADR-0064
+/ superseded in part by [ADR-0064 (task ownership moves to TickTick)](./0064-task-ownership-moves-to-ticktick.md) — the Todo half retired; Person/Project survive
+
 Inkstone's chat surface captures both journal events and operational commitments. ADR-0030 defines how event capture becomes Journal Entries first. This ADR defines the V1 data model for the actionable side: Todo, Person, and Project, following GTD and the parts of OmniFocus that fit Inkstone's Entity model.
 
 OmniFocus is the reference product shape: actions belong to projects, actions can carry contextual tags, defer dates control when work becomes available, due dates are hard deadlines, and projects are reviewed periodically. Inkstone differs by making Person a first-class Entity instead of treating people as generic tags. Generic tags/contexts such as home, phone, office, energy, or errands are deferred.

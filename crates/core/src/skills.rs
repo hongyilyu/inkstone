@@ -682,7 +682,7 @@ mod tests {
         seed(
             tmp.path(),
             "inbox-triage",
-            "---\nname: inbox-triage\ndescription: Triage loose Todos.\n---\n\n# Inbox\n",
+            "---\nname: inbox-triage\ndescription: Triage loose notes.\n---\n\n# Inbox\n",
         );
         // Ineligible: missing description, unclosed frontmatter, no frontmatter,
         // a frontmatter name that disagrees with the directory, and well-fenced
@@ -705,7 +705,7 @@ mod tests {
             vec![
                 SkillMeta {
                     name: "inbox-triage".to_string(),
-                    description: "Triage loose Todos.".to_string(),
+                    description: "Triage loose notes.".to_string(),
                 },
                 SkillMeta {
                     name: "weekly-review".to_string(),
@@ -831,7 +831,7 @@ mod tests {
             },
             SkillMeta {
                 name: "inbox-triage".to_string(),
-                description: "Triage loose Todos.".to_string(),
+                description: "Triage loose notes.".to_string(),
             },
         ])
         .expect("non-empty → a block");
@@ -839,7 +839,7 @@ mod tests {
         assert!(block.ends_with("</available_skills>"));
         assert!(block.contains("load_skill"), "instructs how to load");
         assert!(block.contains("- weekly-review: Guide a GTD weekly review."));
-        assert!(block.contains("- inbox-triage: Triage loose Todos."));
+        assert!(block.contains("- inbox-triage: Triage loose notes."));
     }
 
     #[test]

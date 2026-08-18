@@ -13,12 +13,11 @@ use crate::db::EntityProvenance;
 use crate::protocol::{
     EntityBacklinksParams, EntityBacklinksResult, EntityListParams, EntityListResult,
     EntityMutateParams, EntityMutateResult, EntityRow, EntitySourceView, ResolvedEntityRef,
-    TodoPersonRefView,
 };
 
-/// Map a tier-2 [`db::EntityRow`] to its wire [`EntityRow`], carrying `refs`,
-/// `person_refs`, and the "Captured from" `source` (ADR-0030/0032). Shared by
-/// `entity/list` and `entity/backlinks`, which return the same row shape.
+/// Map a tier-2 [`db::EntityRow`] to its wire [`EntityRow`], carrying `refs`
+/// and the "Captured from" `source` (ADR-0030/0032). Shared by `entity/list`
+/// and `entity/backlinks`, which return the same row shape.
 fn entity_row_to_wire(row: db::EntityRow) -> EntityRow {
     EntityRow {
         id: row.id,
@@ -37,11 +36,6 @@ fn entity_row_to_wire(row: db::EntityRow) -> EntityRow {
                 target_title: r.target_title,
                 label_snapshot: r.label_snapshot,
             })
-            .collect(),
-        person_refs: row
-            .person_refs
-            .into_iter()
-            .map(|(person_id, role)| TodoPersonRefView { person_id, role })
             .collect(),
         source: row.source.map(|source| match source {
             EntityProvenance::Message {
@@ -84,8 +78,8 @@ pub(super) async fn handle_list(
 
 /// `entity/backlinks` handler (ADR-0050): the detail Inspector's reverse-relation
 /// read. Mirrors [`handle_list`] — decode, run the body, frame the outcome —
-/// returning the entity's distinct "Mentioned in" Journal Entries and its linked
-/// Todos, each as the same wire [`EntityRow`].
+/// returning the entity's distinct "Mentioned in" Journal Entries as the same
+/// wire [`EntityRow`].
 pub(super) async fn handle_backlinks(
     pool: &SqlitePool,
     id: serde_json::Value,
@@ -104,11 +98,6 @@ pub(super) async fn handle_backlinks(
             Ok(EntityBacklinksResult {
                 mentioned_in: backlinks
                     .mentioned_in
-                    .into_iter()
-                    .map(entity_row_to_wire)
-                    .collect(),
-                linked_todos: backlinks
-                    .linked_todos
                     .into_iter()
                     .map(entity_row_to_wire)
                     .collect(),

@@ -518,7 +518,7 @@ where
         separated.push_bind(source_entity_id);
     }
     separated.push_unseparated(
-        ") AND target.type IN ('person', 'project', 'todo') \
+        ") AND target.type IN ('person', 'project') \
          ORDER BY er.source_entity_id, er.created_at, er.id",
     );
 
@@ -615,7 +615,6 @@ where
                     CASE target.type \
                         WHEN 'person' THEN json_extract(target.data, '$.name') \
                         WHEN 'project' THEN json_extract(target.data, '$.name') \
-                        WHEN 'todo' THEN json_extract(target.data, '$.title') \
                     END, \
                     'Referenced entity' \
                 ) AS label \
@@ -1601,222 +1600,10 @@ where
     .map(|_| ())
 }
 
-/// Insert one Todo Person Reference (ADR-0031). The caller de-dups per
-/// `(todo_id, person_id)` in Rust before inserting (waiting_on wins), so this is
-/// a plain INSERT; the `(todo_id, person_id)` PRIMARY KEY is the backstop. Runs
-/// inside the apply tx.
-pub(super) async fn insert_todo_person_ref<'e, E>(
-    executor: E,
-    todo_id: &str,
-    person_id: &str,
-    role: &str,
-    now_ms: i64,
-) -> sqlx::Result<()>
-where
-    E: Executor<'e, Database = Sqlite>,
-{
-    sqlx::query(
-        "INSERT INTO todo_person_refs \
-         (todo_id, person_id, role, created_at, updated_at) \
-         VALUES (?, ?, ?, ?, ?)",
-    )
-    .bind(todo_id)
-    .bind(person_id)
-    .bind(role)
-    .bind(now_ms)
-    .bind(now_ms)
-    .execute(executor)
-    .await
-    .map(|_| ())
-}
-
-/// Upsert one Todo Person Reference (ADR-0031), for `update_todo`'s
-/// `add_person_refs`: insert the `(todo_id, person_id, role)`, or on a
-/// `(todo_id, person_id)` conflict update the role with `waiting_on` winning —
-/// a stored `waiting_on` is NEVER downgraded to `related`, but a stored `related`
-/// upgrades to an incoming `waiting_on` (ADR-0031: `waiting_on` includes related
-/// semantics). Runs inside the apply tx.
-pub(super) async fn upsert_todo_person_ref<'e, E>(
-    executor: E,
-    todo_id: &str,
-    person_id: &str,
-    role: &str,
-    now_ms: i64,
-) -> sqlx::Result<()>
-where
-    E: Executor<'e, Database = Sqlite>,
-{
-    sqlx::query(
-        "INSERT INTO todo_person_refs \
-         (todo_id, person_id, role, created_at, updated_at) \
-         VALUES (?, ?, ?, ?, ?) \
-         ON CONFLICT(todo_id, person_id) DO UPDATE SET \
-         role = CASE WHEN todo_person_refs.role = 'waiting_on' THEN 'waiting_on' ELSE excluded.role END, \
-         updated_at = excluded.updated_at",
-    )
-    .bind(todo_id)
-    .bind(person_id)
-    .bind(role)
-    .bind(now_ms)
-    .bind(now_ms)
-    .execute(executor)
-    .await
-    .map(|_| ())
-}
-
-/// Delete EVERY Todo Person Reference for a Todo (ADR-0031), backing
-/// `update_todo`'s `set_person_refs` full replace. Runs inside the apply tx.
-pub(super) async fn delete_all_todo_person_refs<'e, E>(
-    executor: E,
-    todo_id: &str,
-) -> sqlx::Result<()>
-where
-    E: Executor<'e, Database = Sqlite>,
-{
-    sqlx::query("DELETE FROM todo_person_refs WHERE todo_id = ?1")
-        .bind(todo_id)
-        .execute(executor)
-        .await
-        .map(|_| ())
-}
-
-/// Delete one Todo Person Reference by `(todo_id, person_id)` (ADR-0031),
-/// backing `update_todo`'s `remove_person_ids`. A missing pair is a no-op. Runs
-/// inside the apply tx.
-pub(super) async fn delete_todo_person_ref<'e, E>(
-    executor: E,
-    todo_id: &str,
-    person_id: &str,
-) -> sqlx::Result<()>
-where
-    E: Executor<'e, Database = Sqlite>,
-{
-    sqlx::query("DELETE FROM todo_person_refs WHERE todo_id = ?1 AND person_id = ?2")
-        .bind(todo_id)
-        .bind(person_id)
-        .execute(executor)
-        .await
-        .map(|_| ())
-}
-
-/// Read every Todo that owns `project_id` (its `data.project_id` matches), for
-/// the `delete_project` cascade (ADR-0031). Returns `(todo_id, data)` rows so the
-/// caller can rewrite each Todo's JSON with `project_id` unset. `project_id`
-/// lives in the Todo JSON (not an FK column), so this is matched via SQLite's
-/// `json_extract`. Runs inside the apply tx.
-pub(super) async fn todos_with_project<'e, E>(
-    executor: E,
-    project_id: &str,
-) -> sqlx::Result<Vec<(String, String)>>
-where
-    E: Executor<'e, Database = Sqlite>,
-{
-    sqlx::query_as(
-        "SELECT id, data FROM entities \
-         WHERE type = 'todo' AND json_extract(data, '$.project_id') = ?1",
-    )
-    .bind(project_id)
-    .fetch_all(executor)
-    .await
-}
-
-/// Read every Todo owned by `project_id` as full `(id, data, created_at,
-/// updated_at)` rows for the relationship read (`todos_by_project`), newest
-/// first. Distinct from [`todos_with_project`], which returns only `(id, data)`
-/// for the delete-cascade rewrite.
-pub(super) async fn todos_by_project<'e, E>(
-    executor: E,
-    project_id: &str,
-) -> sqlx::Result<Vec<(String, String, i64, i64)>>
-where
-    E: Executor<'e, Database = Sqlite>,
-{
-    sqlx::query_as(
-        "SELECT id, data, created_at, updated_at FROM entities \
-         WHERE type = 'todo' AND json_extract(data, '$.project_id') = ?1 \
-         ORDER BY created_at DESC",
-    )
-    .bind(project_id)
-    .fetch_all(executor)
-    .await
-}
-
-/// Read every Todo linked to `person_id` via `todo_person_refs` (ADR-0031),
-/// optionally filtered to `role`. Returns `(id, type, data, created_at,
-/// updated_at)` rows like [`list_by_type`], newest-first. Core-internal V0 read
-/// layer (Slice 11); V1 wires it to client APIs.
-#[allow(dead_code)]
-pub(super) async fn todos_by_person<'e, E>(
-    executor: E,
-    person_id: &str,
-    role: Option<&str>,
-) -> sqlx::Result<Vec<(String, String, String, i64, i64)>>
-where
-    E: Executor<'e, Database = Sqlite>,
-{
-    sqlx::query_as(
-        "SELECT e.id, e.type, e.data, e.created_at, e.updated_at \
-         FROM entities e \
-         JOIN todo_person_refs r ON r.todo_id = e.id \
-         WHERE e.type = 'todo' AND r.person_id = ?1 \
-           AND (?2 IS NULL OR r.role = ?2) \
-         ORDER BY e.created_at DESC",
-    )
-    .bind(person_id)
-    .bind(role)
-    .fetch_all(executor)
-    .await
-}
-
-/// Read every Todo Person Reference on `todo_id` (ADR-0031) as `(person_id,
-/// role)` pairs. Used by the recurrence successor-spawn (ADR-0039) to carry the
-/// completed Todo's People forward onto its next occurrence.
-pub(super) async fn person_refs_by_todo<'e, E>(
-    executor: E,
-    todo_id: &str,
-) -> sqlx::Result<Vec<(String, String)>>
-where
-    E: Executor<'e, Database = Sqlite>,
-{
-    sqlx::query_as("SELECT person_id, role FROM todo_person_refs WHERE todo_id = ?1")
-        .bind(todo_id)
-        .fetch_all(executor)
-        .await
-}
-
-/// Batch-read Todo Person References for many Todos at once (ADR-0032), returned
-/// as `(todo_id, person_id, role)` rows so the caller can group by Todo. Mirrors
-/// [`entity_refs_for_sources`]'s IN-clause shape to avoid an N+1 on the
-/// `entity/list` read path. Ordered by `(todo_id, created_at, person_id)` for a
-/// stable per-Todo ref order.
-pub(super) async fn person_refs_for_todos<'e, E>(
-    executor: E,
-    todo_ids: &[String],
-) -> sqlx::Result<Vec<(String, String, String)>>
-where
-    E: Executor<'e, Database = Sqlite>,
-{
-    if todo_ids.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let mut query = QueryBuilder::<Sqlite>::new(
-        "SELECT todo_id, person_id, role FROM todo_person_refs WHERE todo_id IN (",
-    );
-    let mut separated = query.separated(", ");
-    for todo_id in todo_ids {
-        separated.push_bind(todo_id);
-    }
-    separated.push_unseparated(") ORDER BY todo_id, created_at, person_id");
-
-    query.build_query_as().fetch_all(executor).await
-}
-
 /// Delete an Entity by id, guarded on its `entity_type` (the caller resolves the
-/// type from the `mutation_kind`). The Entity's dependent rows — revisions,
-/// sources, and a Todo's/Person's `todo_person_refs` — cascade away via their FK
-/// `ON DELETE CASCADE`. Returns the affected row count so the caller asserts a
-/// single deletion. Runs inside the apply tx.
+/// type from the `mutation_kind`). The Entity's dependent rows — revisions and
+/// sources — cascade away via their FK `ON DELETE CASCADE`. Returns the affected
+/// row count so the caller asserts a single deletion. Runs inside the apply tx.
 pub(super) async fn delete_entity<'e, E>(
     executor: E,
     entity_id: &str,

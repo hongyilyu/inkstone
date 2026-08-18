@@ -37,7 +37,7 @@ export function acceptedVerb(
 }
 
 /** Whether `content` is an acceptance of a `Created <Kind>` mutation (e.g.
- * `acceptedCreate(text, "Todo")` matches `Accepted. Created Todo (…).`). */
+ * `acceptedCreate(text, "Person")` matches `Accepted. Created Person (…).`). */
 export function acceptedCreate(content: string, kind: string): boolean {
 	return acceptedVerb(content, "Created", kind);
 }

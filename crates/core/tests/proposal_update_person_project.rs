@@ -408,7 +408,7 @@ fn proposal_get_returns_current_person_with_replaced_away_fields() {
 /// `review_context.current_project`. The proposed payload OMITS `outcome` and
 /// `note` (a full-document REPLACE would drop them, ADR-0016/ADR-0033); the
 /// current context still surfaces them. Also confirms Project review-context
-/// still works after the `update_todo` review-context wiring was removed.
+/// still works with the review-context wiring in place.
 #[test]
 fn proposal_get_returns_current_project_with_replaced_away_fields() {
     let workspace = Workspace::new();

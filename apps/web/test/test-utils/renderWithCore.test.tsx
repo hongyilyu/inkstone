@@ -10,18 +10,18 @@ import {
 	makeQueryClient,
 	renderWithCore,
 } from "./renderWithCore";
-import { todoRow } from "./rows";
+import { personRow } from "./rows";
 
 afterEach(cleanup);
 
 describe("renderWithCore harness", () => {
 	it("serves seeded entities by type and returns empty for unlisted types", async () => {
 		const runtime = makeCoreRuntime({
-			entities: { todo: [todoRow("t1", "Buy milk")] },
+			entities: { person: [personRow("t1", "Alice")] },
 		});
 
 		const todos = await runtime.runPromise(
-			Effect.flatMap(WsClient, (ws) => ws.listEntities("todo")),
+			Effect.flatMap(WsClient, (ws) => ws.listEntities("person")),
 		);
 		expect(todos.entities.map((e) => e.id)).toEqual(["t1"]);
 
@@ -43,15 +43,15 @@ describe("renderWithCore harness", () => {
 
 	it("overrides beat a seeded listEntities", async () => {
 		const runtime = makeCoreRuntime({
-			entities: { todo: [todoRow("seeded", "Loser")] },
+			entities: { person: [personRow("seeded", "Loser")] },
 			overrides: {
 				listEntities: () =>
-					Effect.succeed({ entities: [todoRow("winner", "Winner")] }),
+					Effect.succeed({ entities: [personRow("winner", "Winner")] }),
 			},
 		});
 
 		const result = await runtime.runPromise(
-			Effect.flatMap(WsClient, (ws) => ws.listEntities("todo")),
+			Effect.flatMap(WsClient, (ws) => ws.listEntities("person")),
 		);
 		expect(result.entities.map((e) => e.id)).toEqual(["winner"]);
 	});

@@ -2,7 +2,7 @@
 // the `JSONSchema.make` output before deep-equality, reconciling the two
 // Draft-07 dialects down to a common form. Each rule names the dialect quirk it
 // cancels. Kept tight on purpose — too loose hides real drift, too strict goes
-// red on cosmetics. The correctness test: `create_todo` is green, and flipping
+// red on cosmetics. The correctness test: `create_person` is green, and flipping
 // one field's type in the Effect schema turns it red.
 //
 // Dialects (verified, see FEATURE-PLAN.md "Verified facts"):

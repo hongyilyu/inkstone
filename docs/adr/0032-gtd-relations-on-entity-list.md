@@ -1,5 +1,8 @@
 # GTD relations ride on entity/list; clients derive Project↔Person↔Todo
 
+Status: Superseded in part by ADR-0064
+/ superseded in part by [ADR-0064 (task ownership moves to TickTick)](./0064-task-ownership-moves-to-ticktick.md) — Todo relations (person_refs, linked-todos) retired; Journal-Entry backlinks survive
+
 ADR-0031 defines the GTD data model: a Todo owns an optional `project_id`, and
 Todo Person References (`todo_person_refs`, role `waiting_on`/`related`) record
 Person involvement. Project↔Person is *derived* through a Project's Todos, never

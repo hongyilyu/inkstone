@@ -8,21 +8,19 @@ import {
 	parsePerson,
 	parseProject,
 	parseRowsDroppingMalformed,
-	parseTodo,
 } from "@/lib/entityCodec";
 import type { LibraryItem } from "@/lib/libraryItems";
 import { useRuntime } from "@/runtime";
 
-/** The five live `entity/list` row sets, one per Entity Type, as Core returns them. */
+/** The four live `entity/list` row sets, one per Entity Type, as Core returns them. */
 export interface LibraryRows {
 	journalEntries: readonly LiveEntityRow[];
-	todos: readonly LiveEntityRow[];
 	people: readonly LiveEntityRow[];
 	projects: readonly LiveEntityRow[];
 	media: readonly LiveEntityRow[];
 }
 
-/** Map the five live row sets into one flat Library list, dropping any row that
+/** Map the four live row sets into one flat Library list, dropping any row that
  * fails to parse (via the shared `parseRowsDroppingMalformed` decode policy) rather
  * than failing the whole read. Pure — unit-tested directly in
  * `useLibraryItems.test.ts`; the hook below only supplies the rows. */
@@ -33,14 +31,13 @@ export function assembleLibraryItems(rows: LibraryRows): LibraryItem[] {
 			rows.journalEntries,
 			parseJournalEntry,
 		),
-		...parseRowsDroppingMalformed("todo", rows.todos, parseTodo),
 		...parseRowsDroppingMalformed("person", rows.people, parsePerson),
 		...parseRowsDroppingMalformed("project", rows.projects, parseProject),
 		...parseRowsDroppingMalformed("media", rows.media, parseMedia),
 	];
 }
 
-/** The Library's displayed items — live Journal/Todo/Person/Project/Media rows
+/** The Library's displayed items — live Journal/Person/Project/Media rows
  * from Core. A Core-unreachable read REJECTS (surfacing as the query's `isError`)
  * rather than being swallowed to `[]`: an empty list and a failed read are
  * different states, and collapsing them showed every collection's first-run empty
@@ -55,20 +52,17 @@ export function useLibraryItems() {
 			const program = Effect.gen(function* () {
 				const client = yield* WsClient;
 				// Effect.all is sequential by default — set concurrency to fetch these reads concurrently.
-				const [journalEntries, todos, people, projects, media] =
-					yield* Effect.all(
-						[
-							client.listEntities("journal_entry"),
-							client.listEntities("todo"),
-							client.listEntities("person"),
-							client.listEntities("project"),
-							client.listEntities("media"),
-						],
-						{ concurrency: 2 },
-					);
+				const [journalEntries, people, projects, media] = yield* Effect.all(
+					[
+						client.listEntities("journal_entry"),
+						client.listEntities("person"),
+						client.listEntities("project"),
+						client.listEntities("media"),
+					],
+					{ concurrency: 2 },
+				);
 				return {
 					journalEntries: journalEntries.entities,
-					todos: todos.entities,
 					people: people.entities,
 					projects: projects.entities,
 					media: media.entities,

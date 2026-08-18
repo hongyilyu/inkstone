@@ -406,7 +406,7 @@ mod mirror_tests {
             resolved_plan: Some(vec![
                 ResolvedNode {
                     handle: "@rodeo".to_string(),
-                    r#type: "todo".to_string(),
+                    r#type: "project".to_string(),
                     disposition: "create".to_string(),
                     label: "Figure out the Rodeo side".to_string(),
                     entity_id: None,
@@ -453,7 +453,7 @@ mod mirror_tests {
         // create node: label only, no entity_id / candidates keys — but its advisory
         // near_matches DO serialize (ADR-0042 amendment).
         assert_eq!(plan[0]["disposition"], "create");
-        assert_eq!(plan[0]["type"], "todo");
+        assert_eq!(plan[0]["type"], "project");
         assert!(plan[0].get("entity_id").is_none());
         assert!(plan[0].get("candidates").is_none());
         assert_eq!(plan[0]["near_matches"].as_array().unwrap().len(), 1);

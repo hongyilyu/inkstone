@@ -15,7 +15,7 @@ import {
 	type LibraryItem,
 	libraryItemTitle,
 } from "@/lib/libraryItems";
-import { readObject, readString } from "@/lib/readPayload";
+import { readString } from "@/lib/readPayload";
 import {
 	observationBatchSummary,
 	renderObservationBody,
@@ -23,12 +23,10 @@ import {
 import {
 	journalBody,
 	type ProposalBodyArgs,
-	renderCreateTodoBody,
 	renderJournalBody,
 	renderNoBody,
 	renderPersonBody,
 	renderProjectBody,
-	renderUpdateTodoBody,
 } from "./proposalBody.js";
 
 // The mutation kinds the Worker proposes (ADR-0025). Media and direct
@@ -41,8 +39,6 @@ export type ProposalKind =
 	| "reference_existing_entity_from_journal_entry"
 	| "create_person"
 	| "create_project"
-	| "create_todo"
-	| "update_todo"
 	| "update_person"
 	| "update_project"
 	| "apply_intent_graph"
@@ -189,37 +185,6 @@ export const PROPOSAL_VIEWS: Record<ProposalKind, ProposalView> = {
 		canEdit: () => true,
 		editPolicy: "gtd",
 		renderBody: renderProjectBody,
-	},
-	create_todo: {
-		glyph: KIND_META.todo.icon,
-		acceptGlyph: KIND_META.todo.icon,
-		summary: (payload) =>
-			readString(readObject(payload, "todo"), "title") || "New Todo",
-		reviewCopy: "Inkstone wants to add a Todo.",
-		acceptedCopy: "Added Todo.",
-		rejectedCopy: "Dismissed.",
-		acceptLabel: "Add Todo",
-		acceptBusyLabel: "Adding...",
-		rejectLabel: "Dismiss",
-		rejectBusyLabel: "Dismissing...",
-		canEdit: () => true,
-		editPolicy: "gtd",
-		renderBody: renderCreateTodoBody,
-	},
-	update_todo: {
-		glyph: KIND_META.todo.icon,
-		acceptGlyph: KIND_META.todo.icon,
-		summary: () => "Update Todo",
-		reviewCopy: "Inkstone wants to update a Todo.",
-		acceptedCopy: "Updated Todo.",
-		rejectedCopy: "Kept current Todo.",
-		acceptLabel: "Update Todo",
-		acceptBusyLabel: "Updating...",
-		rejectLabel: "Keep current Todo",
-		rejectBusyLabel: "Keeping current Todo...",
-		canEdit: () => true,
-		editPolicy: "gtd",
-		renderBody: renderUpdateTodoBody,
 	},
 	update_person: {
 		glyph: KIND_META.person.icon,

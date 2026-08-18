@@ -2,175 +2,16 @@ import { describe, expect, it } from "vitest";
 import {
 	type CreatePersonDraft,
 	type CreateProjectDraft,
-	type CreateTodoDraft,
 	type GtdEditVariant,
 	gtdEditVariant,
 	isGtdEditKind,
 	overlayCreatePerson,
 	overlayCreateProject,
-	overlayCreateTodo,
-	overlayUpdateTodo,
 	seedCreatePerson,
 	seedCreateProject,
-	seedCreateTodo,
-	seedUpdateTodo,
-	type UpdateTodoDraft,
 } from "@/lib/proposalEdit.js";
 
 const LOCAL_DATETIME_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/;
-
-describe("proposalEdit — create_todo", () => {
-	describe("overlay", () => {
-		const proposed = {
-			todo: {
-				title: "Email Alce about Project Y",
-				note: "Send the migration plan.",
-				status: "active",
-				project_id: "proj-1",
-				due_at: "2026-07-01T00:00:00",
-				recurrence: { interval: 1, unit: "week" },
-			},
-			person_refs: [
-				{ person_id: "alice-1", role: "related" },
-				{ person_id: "bob-1", role: "waiting_on" },
-			],
-			source_journal_entry_id: "je-9",
-		};
-
-		it("editing title preserves person_refs, source_journal_entry_id, and unsurfaced todo fields", () => {
-			const draft = seedCreateTodo(proposed);
-			const edited = overlayCreateTodo(proposed, {
-				...draft,
-				title: "Email Alice about Project Y",
-			});
-			expect(edited).toEqual({
-				todo: {
-					title: "Email Alice about Project Y",
-					note: "Send the migration plan.",
-					status: "active",
-					project_id: "proj-1",
-					due_at: "2026-07-01T00:00:00",
-					recurrence: { interval: 1, unit: "week" },
-				},
-				person_refs: [
-					{ person_id: "alice-1", role: "related" },
-					{ person_id: "bob-1", role: "waiting_on" },
-				],
-				source_journal_entry_id: "je-9",
-			});
-		});
-
-		it("does not mutate the proposed payload (overlay clones)", () => {
-			const draft = seedCreateTodo(proposed);
-			overlayCreateTodo(proposed, { ...draft, title: "Changed" });
-			expect(proposed.todo.title).toBe("Email Alce about Project Y");
-		});
-
-		describe("status↔timestamp coupling", () => {
-			it("active→completed adds a valid completed_at and omits dropped_at", () => {
-				const draft = seedCreateTodo(proposed);
-				const edited = overlayCreateTodo(proposed, {
-					...draft,
-					status: "completed",
-				}) as { todo: Record<string, unknown> };
-				expect(edited.todo.status).toBe("completed");
-				expect(edited.todo.completed_at).toMatch(LOCAL_DATETIME_RE);
-				expect("dropped_at" in edited.todo).toBe(false);
-			});
-
-			it("active→dropped adds a valid dropped_at and omits completed_at", () => {
-				const draft = seedCreateTodo(proposed);
-				const edited = overlayCreateTodo(proposed, {
-					...draft,
-					status: "dropped",
-				}) as { todo: Record<string, unknown> };
-				expect(edited.todo.status).toBe("dropped");
-				expect(edited.todo.dropped_at).toMatch(LOCAL_DATETIME_RE);
-				expect("completed_at" in edited.todo).toBe(false);
-			});
-
-			it("→active clears both completed_at and dropped_at", () => {
-				const completedProposed = {
-					todo: {
-						title: "Done thing",
-						status: "completed",
-						completed_at: "2026-06-01T09:00:00",
-					},
-				};
-				const draft = seedCreateTodo(completedProposed);
-				const edited = overlayCreateTodo(completedProposed, {
-					...draft,
-					status: "active",
-				}) as { todo: Record<string, unknown> };
-				expect(edited.todo.status).toBe("active");
-				expect("completed_at" in edited.todo).toBe(false);
-				expect("dropped_at" in edited.todo).toBe(false);
-			});
-
-			it("leaves a stored completed_at intact when status is unchanged", () => {
-				const completedProposed = {
-					todo: {
-						title: "Done thing",
-						status: "completed",
-						completed_at: "2026-06-01T09:00:00",
-					},
-				};
-				const draft = seedCreateTodo(completedProposed);
-				const edited = overlayCreateTodo(completedProposed, {
-					...draft,
-					title: "Done thing edited",
-				}) as { todo: Record<string, unknown> };
-				expect(edited.todo.completed_at).toBe("2026-06-01T09:00:00");
-			});
-		});
-
-		it("blanking the note omits the note key", () => {
-			const draft = seedCreateTodo(proposed);
-			const edited = overlayCreateTodo(proposed, {
-				...draft,
-				note: "",
-			}) as { todo: Record<string, unknown> };
-			expect("note" in edited.todo).toBe(false);
-		});
-	});
-
-	describe("seed", () => {
-		it("seeds title/note/status from a well-formed proposed todo", () => {
-			const draft = seedCreateTodo({
-				todo: { title: "T", note: "N", status: "completed" },
-			});
-			expect(draft).toEqual({
-				title: "T",
-				note: "N",
-				status: "completed",
-			} satisfies CreateTodoDraft);
-		});
-
-		it("seeds an empty draft from a null payload without throwing", () => {
-			expect(seedCreateTodo(null)).toEqual({
-				title: "",
-				note: "",
-				status: "active",
-			});
-		});
-
-		it("seeds an empty draft from an empty object without throwing", () => {
-			expect(seedCreateTodo({})).toEqual({
-				title: "",
-				note: "",
-				status: "active",
-			});
-		});
-
-		it("degrades a wrong-typed/partial todo without throwing", () => {
-			expect(seedCreateTodo({ todo: { title: 42, status: "weird" } })).toEqual({
-				title: "",
-				note: "",
-				status: "active",
-			});
-		});
-	});
-});
 
 describe("proposalEdit — create_person", () => {
 	const proposed = {
@@ -519,189 +360,8 @@ describe("proposalEdit — create_project", () => {
 	});
 });
 
-describe("proposalEdit — update_todo (partial)", () => {
-	// A representative partial: status surfaced + title surfaced, plus an unsurfaced
-	// `todo` key (project_id) and all three ref lists that must ride byte-for-byte.
-	const proposed = {
-		todo_id: "todo-7",
-		todo: {
-			title: "Email Alice (done)",
-			note: "Send the migration plan.",
-			status: "completed",
-			completed_at: "2026-06-01T09:00:00",
-			project_id: "proj-1",
-		},
-		set_person_refs: [{ person_id: "dave-1", role: "related" }],
-		add_person_refs: [{ person_id: "carol-1", role: "waiting_on" }],
-		remove_person_ids: ["bob-1"],
-	};
-
-	describe("seed", () => {
-		it("seeds title/note/status and marks them present from a partial that carries them", () => {
-			expect(seedUpdateTodo(proposed)).toEqual({
-				title: "Email Alice (done)",
-				titlePresent: true,
-				note: "Send the migration plan.",
-				status: "completed",
-				statusPresent: true,
-			} satisfies UpdateTodoDraft);
-		});
-
-		it("marks status absent when the partial carries no status", () => {
-			const draft = seedUpdateTodo({
-				todo_id: "todo-9",
-				todo: { title: "Rename me" },
-			});
-			expect(draft.statusPresent).toBe(false);
-			expect(draft.titlePresent).toBe(true);
-			expect(draft.status).toBe("active");
-		});
-
-		it("marks title absent when the partial carries no title", () => {
-			const draft = seedUpdateTodo({
-				todo_id: "todo-9",
-				todo: { note: "Just a note change" },
-			});
-			expect(draft.titlePresent).toBe(false);
-			expect(draft.note).toBe("Just a note change");
-		});
-
-		it("seeds an empty, all-absent draft from a null payload without throwing", () => {
-			expect(seedUpdateTodo(null)).toEqual({
-				title: "",
-				titlePresent: false,
-				note: "",
-				status: "active",
-				statusPresent: false,
-			});
-		});
-
-		it("seeds an empty, all-absent draft from a payload whose todo is missing", () => {
-			expect(seedUpdateTodo({ todo_id: "todo-9" })).toEqual({
-				title: "",
-				titlePresent: false,
-				note: "",
-				status: "active",
-				statusPresent: false,
-			});
-		});
-	});
-
-	describe("overlay", () => {
-		it("editing title preserves todo_id, all ref lists, and unsurfaced todo keys", () => {
-			const draft = seedUpdateTodo(proposed);
-			const edited = overlayUpdateTodo(proposed, {
-				...draft,
-				title: "Email Alice about the Q3 migration",
-			});
-			expect(edited).toEqual({
-				todo_id: "todo-7",
-				todo: {
-					title: "Email Alice about the Q3 migration",
-					note: "Send the migration plan.",
-					status: "completed",
-					completed_at: "2026-06-01T09:00:00",
-					project_id: "proj-1",
-				},
-				set_person_refs: [{ person_id: "dave-1", role: "related" }],
-				add_person_refs: [{ person_id: "carol-1", role: "waiting_on" }],
-				remove_person_ids: ["bob-1"],
-			});
-		});
-
-		it("does not mutate the proposed payload (overlay clones)", () => {
-			const draft = seedUpdateTodo(proposed);
-			overlayUpdateTodo(proposed, { ...draft, title: "Changed" });
-			expect(proposed.todo.title).toBe("Email Alice (done)");
-		});
-
-		it("blanking a proposed note omits the note key from the partial", () => {
-			const draft = seedUpdateTodo(proposed);
-			const edited = overlayUpdateTodo(proposed, {
-				...draft,
-				note: "",
-			}) as { todo: Record<string, unknown> };
-			expect("note" in edited.todo).toBe(false);
-		});
-
-		it("emits no status key when the partial had no status (status unsurfaced)", () => {
-			const noStatus = {
-				todo_id: "todo-9",
-				todo: { title: "Rename me", note: "keep" },
-			};
-			const draft = seedUpdateTodo(noStatus);
-			const edited = overlayUpdateTodo(noStatus, {
-				...draft,
-				title: "Renamed",
-			}) as { todo: Record<string, unknown> };
-			expect("status" in edited.todo).toBe(false);
-			expect(edited.todo.title).toBe("Renamed");
-		});
-
-		it("emits no title key when the partial had no title (title unsurfaced)", () => {
-			const noTitle = {
-				todo_id: "todo-9",
-				todo: { note: "Just a note change" },
-			};
-			const draft = seedUpdateTodo(noTitle);
-			const edited = overlayUpdateTodo(noTitle, {
-				...draft,
-				note: "An edited note",
-			}) as { todo: Record<string, unknown> };
-			expect("title" in edited.todo).toBe(false);
-			expect(edited.todo.note).toBe("An edited note");
-		});
-
-		describe("status↔timestamp coupling (when status surfaced + changed)", () => {
-			it("completed→active clears completed_at and dropped_at within the partial", () => {
-				const draft = seedUpdateTodo(proposed);
-				const edited = overlayUpdateTodo(proposed, {
-					...draft,
-					status: "active",
-				}) as { todo: Record<string, unknown> };
-				expect(edited.todo.status).toBe("active");
-				expect("completed_at" in edited.todo).toBe(false);
-				expect("dropped_at" in edited.todo).toBe(false);
-			});
-
-			it("active→completed stamps completed_at and omits dropped_at within the partial", () => {
-				const activeProposed = {
-					todo_id: "todo-3",
-					todo: { title: "Do it", status: "active" },
-				};
-				const draft = seedUpdateTodo(activeProposed);
-				const edited = overlayUpdateTodo(activeProposed, {
-					...draft,
-					status: "completed",
-				}) as { todo: Record<string, unknown> };
-				expect(edited.todo.status).toBe("completed");
-				expect(edited.todo.completed_at).toMatch(LOCAL_DATETIME_RE);
-				expect("dropped_at" in edited.todo).toBe(false);
-			});
-
-			it("leaves a stored completed_at intact when surfaced status is unchanged", () => {
-				const draft = seedUpdateTodo(proposed);
-				const edited = overlayUpdateTodo(proposed, {
-					...draft,
-					title: "Email Alice (done, edited)",
-				}) as { todo: Record<string, unknown> };
-				expect(edited.todo.completed_at).toBe("2026-06-01T09:00:00");
-			});
-		});
-	});
-});
-
-// The single source of GTD-editability: `gtdEditVariant` maps the 6 GTD wire
-// kinds to 4 behavior variants (update_person/update_project collapse onto their
-// create twins), and `isGtdEditKind` is the boolean derived from it. The resolver
-// must reject every non-GTD kind — AND every prototype key ("toString",
-// "constructor", "__proto__", "hasOwnProperty") — with `null`; a bare `?? null`
-// would leak inherited Object.prototype members for the prototype keys.
-
 describe("gtdEditVariant / isGtdEditKind", () => {
 	const GTD_KINDS: ReadonlyArray<[string, GtdEditVariant]> = [
-		["create_todo", "todo_create"],
-		["update_todo", "todo_update"],
 		["create_person", "person"],
 		["update_person", "person"],
 		["create_project", "project"],
@@ -713,7 +373,7 @@ describe("gtdEditVariant / isGtdEditKind", () => {
 	const NULL_KINDS: ReadonlyArray<string> = [
 		"create_journal_entry",
 		"update_journal_entry",
-		"delete_todo",
+		"delete_project",
 		"apply_intent_graph",
 		"",
 		"nonsense_kind",
@@ -750,8 +410,8 @@ describe("gtdEditVariant / isGtdEditKind", () => {
 		}
 	});
 
-	it("isGtdEditKind is true for exactly the 6 GTD kinds and false otherwise", () => {
-		expect(GTD_KINDS.filter(([kind]) => isGtdEditKind(kind))).toHaveLength(6);
+	it("isGtdEditKind is true for exactly the 4 GTD kinds and false otherwise", () => {
+		expect(GTD_KINDS.filter(([kind]) => isGtdEditKind(kind))).toHaveLength(4);
 		expect(NULL_KINDS.filter((kind) => isGtdEditKind(kind))).toHaveLength(0);
 	});
 });

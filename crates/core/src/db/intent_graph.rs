@@ -8,12 +8,10 @@
 //! (if present) — in one transaction. Each node carries its OWN single-entity kind,
 //! so the per-type data normalization, validation, and the seq-1 revision write are
 //! exactly the single-entity create path's, reused. The JE *entity row* is minted
-//! LAST (after people/projects/todos) because its body weaves `journal_ref` mentions
+//! LAST (after people/projects) because its body weaves `journal_ref` mentions
 //! into stored `entity_ref` nodes, which need the referenced entities' ids — see
 //! [`weave_and_mint_journal_entry`] (ADR-0042 "Multi-ref Journal Entry weave is one
-//! write"). The topo INTENT (a parent resolved before its dependent) still holds: a
-//! Todo's `project_id`/person refs resolve before it mints, and the JE references
-//! resolve before it mints.
+//! write").
 //!
 //! Slice 3 adds EXACT-MATCH RESOLUTION (ADR-0042 "disposition"): each entity node
 //! resolves to a `disposition` INSIDE the tx, before the create loop, so it sees
@@ -42,7 +40,7 @@
 //! the graph writes is the JE node's `created_from` user-Message guard row (the
 //! cross-thread-guard input, NOT entity provenance). It is passed as the JE
 //! node's `EntitySource`; every created entity node passes `source: None`, so the
-//! extracted Person/Project/Todo get NO source row — an entity view derives its
+//! extracted Person/Project get NO source row — an entity view derives its
 //! origin from backlinks, not a source row.
 
 use uuid::Uuid;
@@ -74,10 +72,9 @@ pub enum IntentGraphOutcome {
 /// One resolved graph node to MINT in-tx (the JE node + every `create`-disposition
 /// entity node). `kind` is the node's single-entity create kind (selects validator
 /// + Entity Type); `payload` is the reconstructed single-entity payload the create
-/// path expects (the graph-local `handle`/`type`/`existing_id` removed; a Todo
-/// re-wrapped in its `{todo: …}` envelope). `handle` is the node's graph-local
-/// label (`@je`/`@rodeo`) — recorded into the handle→id map as the node mints, so a
-/// later todo's links + the JE body weave can join on it. The JE node's
+/// path expects (the graph-local `handle`/`type`/`existing_id` removed). `handle`
+/// is the node's graph-local label (`@je`/`@rodeo`) — recorded into the handle→id
+/// map as the node mints, so the JE body weave can join on it. The JE node's
 /// `created_from` guard row + anchor reporting are handled by
 /// [`weave_and_mint_journal_entry`], so this struct carries no anchor flag.
 struct ResolvedCreate {
@@ -92,36 +89,22 @@ struct ResolvedCreate {
     existing_id: Option<String>,
 }
 
-/// One intended link between two graph handles (ADR-0042). `from`/`to` are
-/// graph-local handles the resolver joins on the handle→id map; `role` is set only
-/// for `todo_person`. `todo_project` + `todo_person` fold into the linked Todo's
-/// create payload; a `journal_ref` (JE → entity) weaves into the JE body as an
-/// `entity_ref` (mint a row, rewrite the placeholder), in `weave_and_mint_journal_entry`.
+/// One intended `journal_ref` link (JE → entity, ADR-0042; the ONE link kind):
+/// each surviving link is woven into the JE body — mint an `entity_ref` row,
+/// rewrite the body's `{entity_ref, target}` placeholder to `{entity_ref, ref_id}`
+/// — in `weave_and_mint_journal_entry`. `from`/`to` are graph-local handles the
+/// resolver joins on the handle→id map.
 struct Link {
-    kind: LinkKind,
     from: String,
     to: String,
-    /// The `todo_person` role (`waiting_on`/`related`); `None` for the other kinds.
-    role: Option<String>,
-    /// The `journal_ref` link's optional `match_text` — the substring of the JE body
-    /// the model recognized, for later stored-body splicing (ADR-0042). `None` for
-    /// the other kinds.
+    /// The optional `match_text` — the substring of the JE body the model
+    /// recognized, for later stored-body splicing (ADR-0042).
     match_text: Option<String>,
-    /// The `journal_ref` link's optional `append_text` — a model-proposed clause for an
-    /// entity NOT in the entry's prose, appended to the stored body with the chip
-    /// spliced inside it (ADR-0042 amendment, #221). Exactly one of `match_text` /
-    /// `append_text` is set per anchor-reuse `journal_ref` (enforced at apply). `None`
-    /// for the other kinds.
+    /// The optional `append_text` — a model-proposed clause for an entity NOT in
+    /// the entry's prose, appended to the stored body with the chip spliced inside
+    /// it (ADR-0042 amendment, #221). Exactly one of `match_text` / `append_text`
+    /// is set per anchor-reuse `journal_ref` (enforced at apply).
     append_text: Option<String>,
-}
-
-/// The three link kinds (ADR-0042). `JournalRef` (JE → entity) is woven into the JE
-/// body: each surviving link mints an `entity_ref` row and rewrites the body's
-/// `{entity_ref, target}` placeholder to `{entity_ref, ref_id}`.
-enum LinkKind {
-    TodoProject,
-    TodoPerson,
-    JournalRef,
 }
 
 /// One extracted entity node, BEFORE its in-tx disposition is resolved. Carries
@@ -130,18 +113,17 @@ enum LinkKind {
 /// hint) the resolver matches against the accepted set. The JE node is NOT an
 /// `EntityNode` — it is create-only and extracted directly into a `ResolvedCreate`.
 struct EntityNode {
-    /// The node's single-entity create kind (`create_person`/`project`/`todo`).
+    /// The node's single-entity create kind (`create_person`/`create_project`).
     kind: MutationKind,
     /// The reconstructed single-entity create payload (handle/type/existing_id
-    /// stripped; a Todo wrapped in `{todo: …}`).
+    /// stripped).
     payload: serde_json::Value,
-    /// The stored `entities.type` string for this node (`person`/`project`/`todo`).
+    /// The stored `entities.type` string for this node (`person`/`project`).
     type_str: &'static str,
     /// The node's display handle (`@morris`), surfaced in an ambiguous error.
     handle: String,
-    /// The trimmed label to exact-match on — `name` for person/project, `title`
-    /// for todo. `None` when the node carries no usable label (no exact-match
-    /// possible → always `create`).
+    /// The trimmed `name` to exact-match on. `None` when the node carries no
+    /// usable label (no exact-match possible → always `create`).
     label: Option<String>,
     /// The model's optional `existing_id` reuse hint (ADR-0042). Honored when it
     /// names an accepted entity of the matching type; otherwise ignored and the
@@ -298,7 +280,7 @@ async fn resolve_plan_disposition(
     // token-overlap near-matches (ADR-0042 amendment) — the near-match list is
     // only used when the node falls through to `create` (zero exact matches).
     let rows = queries::list_by_type(pool, node.type_str).await?;
-    let labeled = labeled_rows(&rows, node.type_str);
+    let labeled = labeled_rows(&rows);
     let matches: Vec<ResolvedNodeCandidate> = exact_label_matches(&labeled, label)
         .into_iter()
         .map(|(entity_id, label)| ResolvedNodeCandidate {
@@ -392,12 +374,8 @@ pub async fn apply_intent_graph_proposal(
             // silent fallback (ADR-0042) — dropping the tx so nothing lands.
             //
             // A `reuse` node mints nothing but records its handle → existing id into the
-            // handle→id map, so a todo's link can join on it (the #179 existing-project
-            // case). A `create` node is carried forward to mint, SPLIT into TODO vs
-            // NON-TODO: the non-todos (person/project) mint FIRST so a todo's linked ids
-            // are all known before the todo is minted, then the todos mint LAST with their
-            // links folded into the create payload (ADR-0042 topo-order: JE → people/
-            // projects → todos).
+            // handle→id map, so the JE body weave can join on it (the #179
+            // existing-entity case). A `create` node is carried forward to mint.
             let mut handle_to_id: std::collections::HashMap<String, String> =
                 std::collections::HashMap::new();
             // The model-recognized label per resolved handle (`name`/`title`), used as the
@@ -406,8 +384,7 @@ pub async fn apply_intent_graph_proposal(
             // the stored label; for a create it is the minted entity's label.
             let mut handle_to_label: std::collections::HashMap<String, String> =
                 std::collections::HashMap::new();
-            let mut non_todo_creates: Vec<ResolvedCreate> = Vec::new();
-            let mut todo_creates: Vec<ResolvedCreate> = Vec::new();
+            let mut creates: Vec<ResolvedCreate> = Vec::new();
             // Reject the @je node (ADR-0042 "Reject the @je node"): the journal-anchored
             // capture collapses — nothing is woven, there is no anchor — but the non-JE
             // nodes still apply as a JE-less graph (their journal_ref links are dropped by
@@ -426,46 +403,18 @@ pub async fn apply_intent_graph_proposal(
                     handle_to_label.insert(node.handle.clone(), label);
                 }
                 // A node the decision vector REJECTS is not created/reused (ADR-0042). It
-                // is skipped here; its handle never enters `handle_to_id`, so the cascade
-                // in `fold_links_into_todo` (and the JE body weave) drops every link/
-                // placeholder to it (the reject-cascade: a rejected ref collapses to text).
+                // is skipped here; its handle never enters `handle_to_id`, so the JE
+                // body weave drops every link/placeholder to it (the reject-cascade: a
+                // rejected ref collapses to text).
                 if decisions.is_rejected(&node.handle) {
                     continue;
                 }
                 match resolve_node(&mut tx, node, decisions.for_handle(&node.handle)).await? {
                     Disposition::Reuse(existing_id) => {
                         // A reused node mints nothing; its handle resolves to the existing
-                        // id so a todo's link can target it (the #179 existing-project case,
-                        // and the `entity_id` override / picker path).
-                        //
-                        // A reused node is linked-TO, never rewritten (ADR-0042
-                        // create-and-link-only; a reuse "owns its current structured
-                        // state", ADR-0030). Outgoing `todo_project`/`todo_person` links are
-                        // folded only into a CREATED todo's payload (the loop below); a
-                        // REUSED todo never reaches it, so its surviving outgoing links
-                        // would be silently dropped. ADR-0042 forbids a silent drop ("a
-                        // link whose endpoint did not resolve is dropped AND reported, never
-                        // dangling-written"), and we cannot edit an existing Todo here, so
-                        // FAIL LOUD: a reused todo with surviving outgoing relationship
-                        // links is Invalid (editing an existing Todo's links is the picker /
-                        // direct-edit path, #181 — not the graph apply).
-                        if node.type_str == "todo"
-                            && graph.links.iter().any(|link| {
-                                link.from == node.handle
-                                    && matches!(
-                                        link.kind,
-                                        LinkKind::TodoProject | LinkKind::TodoPerson
-                                    )
-                                    && !decisions.is_rejected(&link.to)
-                            })
-                        {
-                            return Err(ApplyError::InvalidMutation(format!(
-                                "intent graph todo {} resolves to an existing Todo but carries \
-                                 outgoing relationship links; the graph does not edit an existing \
-                                 Todo's links",
-                                node.handle
-                            )));
-                        }
+                        // id so the JE body weave can target it (the #179 existing-entity
+                        // case, and the `entity_id` override / picker path). A reused node
+                        // is linked-TO, never rewritten (ADR-0042 create-and-link-only).
                         handle_to_id.insert(node.handle.clone(), existing_id);
                     }
                     Disposition::Create(payload) => {
@@ -479,38 +428,16 @@ pub async fn apply_intent_graph_proposal(
                             // Anchor-reuse is a JE-node concept; entity-node creates carry none.
                             existing_id: None,
                         };
-                        if node.type_str == "todo" {
-                            todo_creates.push(create);
-                        } else {
-                            non_todo_creates.push(create);
-                        }
+                        creates.push(create);
                     }
                 }
             }
 
-            // Mint the non-todo entity creates FIRST, recording each minted handle → id so
-            // the todos minted next can resolve their link endpoints. These entities carry
-            // NO source row (ADR-0042 "No provenance writes").
+            // Mint the entity creates, recording each minted handle → id for the JE
+            // body weave. These entities carry NO source row (ADR-0042 "No
+            // provenance writes").
             let mut first_entity_id: Option<String> = None;
-            for create in &non_todo_creates {
-                let entity_id =
-                    mint_create(&mut tx, create, proposal_id, /* source */ None, now_ms).await?;
-                handle_to_id.insert(create.handle.clone(), entity_id.clone());
-                first_entity_id.get_or_insert(entity_id);
-            }
-
-            // Mint the todos NEXT, folding their `todo_project`/`todo_person` links into
-            // the create payload so the SAME `apply_entity_mutation(CreateTodo, …)` writes
-            // `project_id` (with its in-tx `recheck_todo_project_link`) and the
-            // `todo_person_refs` rows — link application reuses the create-todo path.
-            for create in &mut todo_creates {
-                fold_links_into_todo(
-                    &graph.links,
-                    &create.handle,
-                    &mut create.payload,
-                    &handle_to_id,
-                    &decisions,
-                )?;
+            for create in &creates {
                 let entity_id =
                     mint_create(&mut tx, create, proposal_id, /* source */ None, now_ms).await?;
                 handle_to_id.insert(create.handle.clone(), entity_id.clone());
@@ -626,11 +553,7 @@ impl NodeDecisions {
 }
 
 /// Mint one resolved create node via the shared single-entity create path
-/// (`apply_entity_mutation`), inside the caller's tx. The graph applies a
-/// `todo_project`/`todo_person` link FOR FREE by folding it into the Todo's create
-/// payload before this call: the create-todo path then writes `project_id` (with
-/// its in-tx `recheck_todo_project_link`) and the `todo_person_refs` rows itself.
-/// Returns the minted entity id.
+/// (`apply_entity_mutation`), inside the caller's tx. Returns the minted entity id.
 async fn mint_create(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     create: &ResolvedCreate,
@@ -669,9 +592,8 @@ struct WeaveContext<'a> {
 }
 
 /// The surviving `journal_ref` links from the JE node — the ONE filter both
-/// weave strategies open with: kind == `JournalRef`, `from` == the JE handle,
-/// target neither rejected nor unresolved (a dropped target's body placeholder
-/// collapses to text). Yields `(link, target_entity_id)`; everything past this
+/// weave strategies open with: `from` == the JE handle, target neither rejected
+/// nor unresolved (a dropped target's body placeholder collapses to text). Yields `(link, target_entity_id)`; everything past this
 /// filter (mint-plan-then-insert vs insert-then-read-authoritative-id) stays
 /// strategy-specific by design — see the dangling-chip comments in each fn.
 fn surviving_journal_refs<'a>(
@@ -680,7 +602,7 @@ fn surviving_journal_refs<'a>(
 ) -> impl Iterator<Item = (&'a Link, &'a String)> {
     ctx.links
         .iter()
-        .filter(move |l| matches!(l.kind, LinkKind::JournalRef) && l.from == je_handle)
+        .filter(move |l| l.from == je_handle)
         .filter(|l| !ctx.decisions.is_rejected(&l.to))
         .filter_map(|l| ctx.handle_to_id.get(&l.to).map(|id| (l, id)))
 }
@@ -1016,105 +938,10 @@ async fn anchor_reuse_journal_entry(
     Ok(existing_id.to_string())
 }
 
-/// Fold the `todo_project` + `todo_person` links whose `from` is `todo_handle`
-/// into the Todo's create payload (ADR-0042), so the SAME create-todo path applies
-/// them. The payload is the `{todo: TodoData}` envelope `apply_entity_mutation`
-/// expects:
-///   - `todo_project` → set `todo.project_id` to the resolved Project id. A Todo
-///     belongs to AT MOST ONE Project (ADR-0031), so two `todo_project` links from
-///     one Todo is a graph error → `InvalidMutation`.
-///   - `todo_person` → append `{person_id, role}` to the envelope's `person_refs`
-///     array (the create-todo path writes the `todo_person_refs` rows from it).
-///
-/// The reject-CASCADE (ADR-0042 "Core owns the cascade"): a link whose `to` names
-/// a node the decision vector REJECTED is **dropped** — not applied, not an error.
-/// A `todo_project` link to a rejected Project drops, so the Todo lands standalone
-/// (ADR-0031 "keep the Todo valid on its own"); a `todo_person` link to a rejected
-/// Person drops. A link to an UNKNOWN handle (one naming no node at all) was
-/// already rejected as a malformed graph at extraction (`validate_links`), so by
-/// here every surviving endpoint is either resolved (in `handle_to_id`) or
-/// dropped-because-rejected — `resolve_endpoint`'s "no node" arm stays unreachable.
-fn fold_links_into_todo(
-    links: &[Link],
-    todo_handle: &str,
-    payload: &mut serde_json::Value,
-    handle_to_id: &std::collections::HashMap<String, String>,
-    decisions: &NodeDecisions,
-) -> Result<(), ApplyError> {
-    let obj = payload.as_object_mut().ok_or_else(|| {
-        ApplyError::InvalidMutation("intent graph todo payload must be an object".to_string())
-    })?;
-
-    let mut project_linked = false;
-    let mut person_refs: Vec<serde_json::Value> = Vec::new();
-
-    for link in links.iter().filter(|l| l.from == todo_handle) {
-        // Reject-cascade: drop a link whose target node was rejected. The Todo
-        // survives the dropped link (standalone, ADR-0031); only the relationship
-        // is severed.
-        if decisions.is_rejected(&link.to) {
-            continue;
-        }
-        match link.kind {
-            LinkKind::TodoProject => {
-                if project_linked {
-                    // ADR-0031: a Todo belongs to one Project. Two todo_project
-                    // links from one Todo is a graph error.
-                    return Err(ApplyError::InvalidMutation(format!(
-                        "intent graph todo {todo_handle} has more than one todo_project link"
-                    )));
-                }
-                project_linked = true;
-                let project_id = resolve_endpoint(handle_to_id, &link.to, "todo_project")?;
-                let todo = obj
-                    .get_mut("todo")
-                    .and_then(serde_json::Value::as_object_mut)
-                    .ok_or_else(|| {
-                        ApplyError::InvalidMutation(
-                            "intent graph todo payload is missing its todo envelope".to_string(),
-                        )
-                    })?;
-                todo.insert("project_id".to_string(), serde_json::json!(project_id));
-            }
-            LinkKind::TodoPerson => {
-                let person_id = resolve_endpoint(handle_to_id, &link.to, "todo_person")?;
-                // The schema requires a role on todo_person; default to `related`
-                // defensively (the create-todo dedup also defaults a missing role).
-                let role = link.role.as_deref().unwrap_or("related");
-                person_refs.push(serde_json::json!({ "person_id": person_id, "role": role }));
-            }
-            // A todo is never a journal_ref `from` (journal_ref is JE → entity, woven
-            // into the JE body, not the Todo), so this arm is unreachable for a
-            // well-formed graph; ignore it regardless.
-            LinkKind::JournalRef => {}
-        }
-    }
-
-    if !person_refs.is_empty() {
-        obj.insert("person_refs".to_string(), serde_json::Value::Array(person_refs));
-    }
-    Ok(())
-}
-
-/// Resolve a link endpoint handle to its entity id via the handle→id map. An
-/// unknown handle is a malformed graph in slice 4 → `InvalidMutation` (the whole
-/// tx fails). `link_kind` names the offending link in the error.
-fn resolve_endpoint(
-    handle_to_id: &std::collections::HashMap<String, String>,
-    handle: &str,
-    link_kind: &str,
-) -> Result<String, ApplyError> {
-    handle_to_id.get(handle).cloned().ok_or_else(|| {
-        ApplyError::InvalidMutation(format!(
-            "intent graph {link_kind} link endpoint {handle:?} does not resolve to any node"
-        ))
-    })
-}
-
 /// One entity node's resolved disposition (ADR-0042). `ambiguous` is not a variant
 /// — it surfaces as an `Err(InvalidMutation)` from [`resolve_node`] so the whole
 /// apply fails with no fallback. `Reuse`'s id is recorded into the handle→id map so
-/// a todo's link can target a reused Project/Person (the #179 case). `Create`
+/// the JE body weave can target a reused Person/Project (the #179 case). `Create`
 /// carries the create payload — usually the node's own, but a per-node
 /// `edited_fields` correction is merged into it first (ADR-0042).
 enum Disposition {
@@ -1186,7 +1013,7 @@ async fn resolve_node(
     if let Some(edits) = edited_fields {
         return match disposition {
             Disposition::Create(payload) => {
-                let merged = merge_edited_fields(node.type_str, payload, edits)?;
+                let merged = merge_edited_fields(payload, edits)?;
                 // Re-validate the CORRECTED payload through the per-type create
                 // validator before minting — parity with the single-entity edit
                 // path (`decide.rs` validates the edited payload). A correction
@@ -1209,19 +1036,14 @@ async fn resolve_node(
 
 /// Merge a per-node `edited_fields` correction over a CREATE node's payload
 /// (ADR-0042): the edited fields override the model's proposed fields, then the
-/// per-type validator re-runs in `resolve_node` on the merged result. The graph
-/// wraps a Todo's data in a `{todo: TodoData}` envelope, so a Todo's edits merge
-/// into the INNER `todo` object; Person/Project edit the flat payload.
+/// per-type validator re-runs in `resolve_node` on the merged result.
 /// `edited_fields` must be a JSON object.
 ///
 /// A `null` edit value is a CLEAR directive (ADR-0033): it REMOVES the key rather
 /// than inserting a JSON null, so blanking a model-proposed optional yields an
-/// absent field — valid uniformly for person/project/todo (a Todo's `note` is not
-/// clearable in create mode, so an inserted `null` would be rejected at validation;
-/// removal sidesteps that). A `null` for a required field (a blanked title/name)
-/// drops it to absent and the re-validation in `resolve_node` rejects it.
+/// absent field. A `null` for a required field (a blanked name) drops it to absent
+/// and the re-validation in `resolve_node` rejects it.
 fn merge_edited_fields(
-    type_str: &str,
     mut payload: serde_json::Value,
     edited_fields: &serde_json::Value,
 ) -> Result<serde_json::Value, ApplyError> {
@@ -1229,23 +1051,9 @@ fn merge_edited_fields(
         ApplyError::InvalidMutation("intent graph edited_fields must be an object".to_string())
     })?;
 
-    // A Todo's create payload is `{todo: TodoData}`; edits target the inner object.
-    // Person/Project payloads are flat.
-    let target = if type_str == "todo" {
-        payload
-            .as_object_mut()
-            .and_then(|o| o.get_mut("todo"))
-            .and_then(serde_json::Value::as_object_mut)
-            .ok_or_else(|| {
-                ApplyError::InvalidMutation(
-                    "intent graph todo payload is missing its todo envelope".to_string(),
-                )
-            })?
-    } else {
-        payload.as_object_mut().ok_or_else(|| {
-            ApplyError::InvalidMutation("intent graph entity payload must be an object".to_string())
-        })?
-    };
+    let target = payload.as_object_mut().ok_or_else(|| {
+        ApplyError::InvalidMutation("intent graph entity payload must be an object".to_string())
+    })?;
     for (key, value) in edits {
         if value.is_null() {
             target.remove(key);
@@ -1287,7 +1095,7 @@ async fn resolve_disposition(
         return Ok(Disposition::Create(node.payload.clone()));
     };
     let rows = queries::list_by_type(&mut **tx, node.type_str).await?;
-    let labeled = labeled_rows(&rows, node.type_str);
+    let labeled = labeled_rows(&rows);
     let mut matches = exact_label_matches(&labeled, label).into_iter();
 
     let Some((first_id, _)) = matches.next() else {
@@ -1306,22 +1114,18 @@ async fn resolve_disposition(
     Ok(Disposition::Reuse(first_id.clone()))
 }
 
-/// Parse each accepted same-type row's display label out of its `data` JSON via
-/// [`label_key_for`], yielding `(entity_id, stored_label)` in row order (rows
+/// Parse each accepted same-type row's display label out of its `data` JSON (the
+/// `name` key), yielding `(entity_id, stored_label)` in row order (rows
 /// whose data is unparseable or label-less drop out). Both resolvers feed
 /// [`exact_label_matches`] from this ONE parse; the plan path additionally runs
 /// its near-match pass over the same parsed labels (one read, one parse).
-fn labeled_rows(
-    rows: &[(String, String, String, i64, i64)],
-    type_str: &str,
-) -> Vec<(String, String)> {
-    let label_key = label_key_for(type_str);
+fn labeled_rows(rows: &[(String, String, String, i64, i64)]) -> Vec<(String, String)> {
     rows.iter()
         .filter_map(|(id, _, data, _, _)| {
             let stored = serde_json::from_str::<serde_json::Value>(data)
                 .ok()
                 .as_ref()
-                .and_then(|v| v.get(label_key))
+                .and_then(|v| v.get("name"))
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string)?;
             Some((id.clone(), stored))
@@ -1345,16 +1149,6 @@ fn exact_label_matches<'a>(
         .iter()
         .filter(|(_, stored)| stored.trim().to_lowercase() == needle)
         .collect()
-}
-
-/// The `data` key holding a node's exact-match label, per Entity Type (mirrors
-/// `search_entities`'s `label_key`): `name` for person/project, `title` for todo.
-fn label_key_for(type_str: &str) -> &'static str {
-    match type_str {
-        "todo" => "title",
-        // person | project (the only other node types `resolve_entity_node` emits).
-        _ => "name",
-    }
 }
 
 /// Extract the graph payload into the create-only JE node (if present) and the
@@ -1413,10 +1207,6 @@ fn extract_graph(payload: &serde_json::Value) -> Result<ExtractedGraph, ApplyErr
     // endpoint types must match the link kind. This is type-correct because
     // disposition guarantees a resolved id matches its node's declared type (an
     // `existing_id` hint is `entity_is_type`-checked; exact-match is type-scoped).
-    // Without this, a `todo_person` link whose `to` is a Project handle would fold
-    // a Project id into `todo_person_refs` (which has no type check) and corrupt
-    // tier-2 silently, and a link whose `from` is the wrong type / unknown handle
-    // would be silently dropped rather than failing the apply.
     validate_links(&journal_entry, &entities, &links)?;
 
     Ok(ExtractedGraph {
@@ -1469,11 +1259,10 @@ fn handle_declared_types(
 }
 
 /// Validate every link's endpoints against the declared handle types (ADR-0042):
-/// both endpoints must resolve to a known handle, and each kind constrains its
-/// endpoint types — `todo_project`: todo → project; `todo_person`: todo → person;
-/// `journal_ref`: journal_entry → person|project|todo. A violation fails the whole
-/// apply as `InvalidMutation` before any tx opens (all-or-nothing). The softer
-/// drop+report on a node a later decision REJECTS is the cascade (in the resolver).
+/// both endpoints must resolve to a known handle, and a `journal_ref` runs
+/// journal_entry → person|project. A violation fails the whole apply as
+/// `InvalidMutation` before any tx opens (all-or-nothing). The softer drop+report
+/// on a node a later decision REJECTS is the cascade (in the resolver).
 ///
 /// Slice 6 also pins the JE body ↔ `journal_ref` consistency: every JE body
 /// `{type:entity_ref, target:@handle}` placeholder MUST name a declared
@@ -1494,36 +1283,21 @@ fn validate_links(
             ))
         })
     };
-    let expect = |handle: &str, want: &str, side: &str, kind: &str| -> Result<(), ApplyError> {
-        let got = declared(handle)?;
-        if got != want {
+    for link in links {
+        // JE → a referenceable entity, woven into the JE body at mint.
+        let from = declared(&link.from)?;
+        if from != "journal_entry" {
             return Err(ApplyError::InvalidMutation(format!(
-                "intent graph {kind} link {side} {handle:?} must be a {want}, but it is a {got}"
+                "intent graph journal_ref link from {:?} must be a journal_entry, but it is a {from}",
+                link.from
             )));
         }
-        Ok(())
-    };
-    for link in links {
-        match link.kind {
-            LinkKind::TodoProject => {
-                expect(&link.from, "todo", "from", "todo_project")?;
-                expect(&link.to, "project", "to", "todo_project")?;
-            }
-            LinkKind::TodoPerson => {
-                expect(&link.from, "todo", "from", "todo_person")?;
-                expect(&link.to, "person", "to", "todo_person")?;
-            }
-            LinkKind::JournalRef => {
-                // JE → a referenceable entity, woven into the JE body at mint.
-                expect(&link.from, "journal_entry", "from", "journal_ref")?;
-                let to = declared(&link.to)?;
-                if !matches!(to, "person" | "project" | "todo") {
-                    return Err(ApplyError::InvalidMutation(format!(
-                        "intent graph journal_ref link to {:?} must be a person, project, or todo, but it is a {to}",
-                        link.to
-                    )));
-                }
-            }
+        let to = declared(&link.to)?;
+        if !matches!(to, "person" | "project") {
+            return Err(ApplyError::InvalidMutation(format!(
+                "intent graph journal_ref link to {:?} must be a person or project, but it is a {to}",
+                link.to
+            )));
         }
     }
 
@@ -1556,7 +1330,7 @@ fn validate_body_targets(
     // declarations a body placeholder must match).
     let journal_ref_targets: std::collections::HashSet<&str> = links
         .iter()
-        .filter(|l| matches!(l.kind, LinkKind::JournalRef) && l.from == je.handle)
+        .filter(|l| l.from == je.handle)
         .map(|l| l.to.as_str())
         .collect();
 
@@ -1577,10 +1351,10 @@ fn validate_body_targets(
             })?;
         // The target must name a declared referenceable handle.
         match types.get(target).copied() {
-            Some("person" | "project" | "todo") => {}
+            Some("person" | "project") => {}
             Some(other) => {
                 return Err(ApplyError::InvalidMutation(format!(
-                    "intent graph journal entry body entity_ref target {target:?} must be a person, project, or todo, but it is a {other}"
+                    "intent graph journal entry body entity_ref target {target:?} must be a person or project, but it is a {other}"
                 )));
             }
             None => {
@@ -1599,24 +1373,22 @@ fn validate_body_targets(
     Ok(())
 }
 
-/// Parse one `links[]` element into a [`Link`] (ADR-0042). A `todo_project`/
-/// `journal_ref` carries `{kind, from, to}`; a `todo_person` additionally carries
-/// `role`. A malformed link (non-object, missing/blank `from`/`to`, unknown kind)
-/// is `InvalidMutation` — the whole apply fails before any tx opens.
+/// Parse one `links[]` element into a [`Link`] (ADR-0042): `{kind: "journal_ref",
+/// from, to, match_text?, append_text?}`. A malformed link (non-object,
+/// missing/blank `from`/`to`, unknown kind) is `InvalidMutation` — the whole apply
+/// fails before any tx opens.
 fn parse_link(value: &serde_json::Value) -> Result<Link, ApplyError> {
     let obj = value.as_object().ok_or_else(|| {
         ApplyError::InvalidMutation("intent graph link must be an object".to_string())
     })?;
-    let kind = match obj.get("kind").and_then(serde_json::Value::as_str) {
-        Some("todo_project") => LinkKind::TodoProject,
-        Some("todo_person") => LinkKind::TodoPerson,
-        Some("journal_ref") => LinkKind::JournalRef,
+    match obj.get("kind").and_then(serde_json::Value::as_str) {
+        Some("journal_ref") => {}
         other => {
             return Err(ApplyError::InvalidMutation(format!(
                 "unknown intent graph link kind {other:?}"
             )));
         }
-    };
+    }
     let endpoint = |key: &str| -> Result<String, ApplyError> {
         obj.get(key)
             .and_then(serde_json::Value::as_str)
@@ -1629,27 +1401,19 @@ fn parse_link(value: &serde_json::Value) -> Result<Link, ApplyError> {
     };
     let from = endpoint("from")?;
     let to = endpoint("to")?;
-    let role = obj
-        .get("role")
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_string);
-    // The optional `journal_ref` match_text (parsed generically like `role`; only
-    // meaningful for journal_ref) — the recognized body substring for later splicing.
+    // The optional match_text — the recognized body substring for later splicing.
     let match_text = obj
         .get("match_text")
         .and_then(serde_json::Value::as_str)
         .map(str::to_string);
-    // The optional `journal_ref` append_text (parsed generically like `match_text`;
-    // only meaningful for journal_ref) — the model-proposed clause to append.
+    // The optional append_text — the model-proposed clause to append.
     let append_text = obj
         .get("append_text")
         .and_then(serde_json::Value::as_str)
         .map(str::to_string);
     Ok(Link {
-        kind,
         from,
         to,
-        role,
         match_text,
         append_text,
     })
@@ -1709,9 +1473,7 @@ fn resolve_journal_entry_node(node: &serde_json::Value) -> Result<ResolvedCreate
 /// Reconstruct one typed entity node into an [`EntityNode`]: its single-entity
 /// create payload plus the exact-match inputs the resolver needs. Strips the
 /// graph-local `handle`/`type`/`existing_id` from the create payload (none are
-/// entity data); the `type` discriminant selects the create kind. A Todo's data
-/// is wrapped in the `{todo: …}` envelope the `create_todo` path expects (it
-/// unwraps + stores the inner TodoData); Person/Project pass their data flat.
+/// entity data); the `type` discriminant selects the create kind.
 /// `apply_entity_mutation` runs the per-type validator + data normalization (e.g.
 /// a Project's default status/review seeding) on the reconstructed payload.
 fn resolve_entity_node(node: &serde_json::Value) -> Result<EntityNode, ApplyError> {
@@ -1736,9 +1498,6 @@ fn resolve_entity_node(node: &serde_json::Value) -> Result<EntityNode, ApplyErro
     let (kind, type_str, payload) = match node_type {
         "person" => (MutationKind::CreatePerson, "person", data),
         "project" => (MutationKind::CreateProject, "project", data),
-        // The create_todo path expects (and the data-seam unwraps) a
-        // `{todo: TodoData}` envelope, so wrap the node's data.
-        "todo" => (MutationKind::CreateTodo, "todo", serde_json::json!({ "todo": data })),
         other => {
             return Err(ApplyError::InvalidMutation(format!(
                 "unknown intent graph entity type {other:?}"
@@ -1746,11 +1505,10 @@ fn resolve_entity_node(node: &serde_json::Value) -> Result<EntityNode, ApplyErro
         }
     };
 
-    // The exact-match label is the node's own `name`/`title` (read off the raw
-    // node, not the wrapped Todo payload). A blank/whitespace-only label is not a
-    // usable match key → `None` (the node will always `create`).
+    // The exact-match label is the node's own `name`. A blank/whitespace-only
+    // label is not a usable match key → `None` (the node will always `create`).
     let label = obj
-        .get(label_key_for(type_str))
+        .get("name")
         .and_then(serde_json::Value::as_str)
         .map(str::trim)
         .filter(|s| !s.is_empty())
@@ -1791,8 +1549,7 @@ mod tests {
     async fn insert_named(pool: &sqlx::SqlitePool, entity_type: &str, label: &str) -> String {
         let id = Uuid::now_v7().to_string();
         let now = crate::db::now_ms();
-        let label_key = if entity_type == "todo" { "title" } else { "name" };
-        let data = serde_json::json!({ label_key: label }).to_string();
+        let data = serde_json::json!({ "name": label }).to_string();
         sqlx::query(
             "INSERT INTO entities (id, type, schema_version, data, created_by, created_at, updated_at) \
              VALUES (?, ?, 1, ?, 'user', ?, ?)",

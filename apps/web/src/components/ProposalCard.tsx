@@ -7,29 +7,18 @@ import {
 	useRef,
 	useState,
 } from "react";
-import {
-	PROJECT_STATUS_OPTIONS,
-	type ProjectStatus,
-	TODO_STATUS_OPTIONS,
-	type TodoStatus,
-} from "@/lib/entityFields";
+import { PROJECT_STATUS_OPTIONS, type ProjectStatus } from "@/lib/entityFields";
 import { useLibraryItems } from "@/lib/hooks/useLibraryItems";
 import { libraryItemTitle } from "@/lib/libraryItems";
 import {
 	type CreatePersonDraft,
 	type CreateProjectDraft,
-	type CreateTodoDraft,
 	type GtdEditVariant,
 	gtdEditVariant,
 	overlayCreatePerson,
 	overlayCreateProject,
-	overlayCreateTodo,
-	overlayUpdateTodo,
 	seedCreatePerson,
 	seedCreateProject,
-	seedCreateTodo,
-	seedUpdateTodo,
-	type UpdateTodoDraft,
 } from "@/lib/proposalEdit";
 import { readString } from "@/lib/readPayload";
 import type { PendingProposal } from "@/store/chat";
@@ -485,11 +474,9 @@ function SingleEntityProposalCard({
 
 // The draft a GtdEditForm holds, discriminated by the slice-1 GTD edit variant so
 // tsc type-checks each render arm and each setter against the right draft shape.
-// The 6 GTD wire kinds collapse to these 4 variants (update_person/update_project
+// The 4 GTD wire kinds collapse to these 2 variants (update_person/update_project
 // share the create person/project variant — their seed/overlay are pure delegations).
 type GtdDraft =
-	| { variant: "todo_create"; draft: CreateTodoDraft }
-	| { variant: "todo_update"; draft: UpdateTodoDraft }
 	| { variant: "person"; draft: CreatePersonDraft }
 	| { variant: "project"; draft: CreateProjectDraft };
 
@@ -498,10 +485,6 @@ type GtdDraft =
 // that re-seeds — that is the re-seed-per-open behavior.
 function seedGtdDraft(variant: GtdEditVariant, payload: unknown): GtdDraft {
 	switch (variant) {
-		case "todo_create":
-			return { variant, draft: seedCreateTodo(payload) };
-		case "todo_update":
-			return { variant, draft: seedUpdateTodo(payload) };
 		case "person":
 			return { variant, draft: seedCreatePerson(payload) };
 		case "project":
@@ -509,20 +492,14 @@ function seedGtdDraft(variant: GtdEditVariant, payload: unknown): GtdDraft {
 	}
 }
 
-// The variant's required-field gate (Save disabled when it returns true). Todo-create
-// gates on a blank title; person/project on a blank name; todo-update gates only when
-// the partial proposed a title (blanking an existing title would be invalid; a partial
-// with no title key has nothing to gate, so Save stays enabled).
+// The variant's required-field gate (Save disabled when it returns true):
+// person/project gate on a blank name.
 function gtdRequiredEmpty(state: GtdDraft): boolean {
 	switch (state.variant) {
-		case "todo_create":
-			return state.draft.title.trim() === "";
 		case "person":
 			return state.draft.name.trim() === "";
 		case "project":
 			return state.draft.name.trim() === "";
-		case "todo_update":
-			return state.draft.titlePresent && state.draft.title.trim() === "";
 	}
 }
 
@@ -535,10 +512,6 @@ function gtdOverlay(
 	payload: unknown,
 ): Record<string, unknown> {
 	switch (state.variant) {
-		case "todo_create":
-			return overlayCreateTodo(payload, state.draft);
-		case "todo_update":
-			return overlayUpdateTodo(payload, state.draft);
 		case "person":
 			return overlayCreatePerson(payload, state.draft);
 		case "project":
@@ -572,7 +545,6 @@ function GtdEditForm({
 	onCancel: () => void;
 }): ReactNode {
 	const variant = gtdEditVariant(kind);
-	const titleInputId = useId();
 	const noteInputId = useId();
 	const statusInputId = useId();
 	const nameInputId = useId();
@@ -602,60 +574,10 @@ function GtdEditForm({
 			className="flex flex-col gap-3 border-border border-t pt-3"
 		>
 			{/* Each variant surfaces exactly the fields the user can change
-			    (approval-gate legibility); the required field (Todo title /
-			    Person+Project name) autoFocuses on open (mirrors the journal form
-			    focusing its body — autoFocus rides through EditorInput → Input onto the
-			    real <input>). */}
-			{state.variant === "todo_create" ? (
-				<>
-					<EditorField label="Title" htmlFor={titleInputId}>
-						<EditorInput
-							id={titleInputId}
-							autoFocus
-							value={state.draft.title}
-							onChange={(event) =>
-								setState({
-									variant: "todo_create",
-									draft: { ...state.draft, title: event.target.value },
-								})
-							}
-						/>
-					</EditorField>
-					<EditorField label="Note" htmlFor={noteInputId}>
-						<EditorTextarea
-							id={noteInputId}
-							value={state.draft.note}
-							onChange={(event) =>
-								setState({
-									variant: "todo_create",
-									draft: { ...state.draft, note: event.target.value },
-								})
-							}
-						/>
-					</EditorField>
-					<EditorField label="Status" htmlFor={statusInputId}>
-						<EditorSelect
-							id={statusInputId}
-							value={state.draft.status}
-							onChange={(event) =>
-								setState({
-									variant: "todo_create",
-									draft: {
-										...state.draft,
-										status: event.target.value as TodoStatus,
-									},
-								})
-							}
-						>
-							{TODO_STATUS_OPTIONS.map((o) => (
-								<option key={o.value} value={o.value}>
-									{o.label}
-								</option>
-							))}
-						</EditorSelect>
-					</EditorField>
-				</>
-			) : state.variant === "person" ? (
+			    (approval-gate legibility); the required field (Person/Project name)
+			    autoFocuses on open (mirrors the journal form focusing its body —
+			    autoFocus rides through EditorInput → Input onto the real <input>). */}
+			{state.variant === "person" ? (
 				<>
 					<EditorField label="Name" htmlFor={nameInputId}>
 						<EditorInput
@@ -696,7 +618,7 @@ function GtdEditForm({
 						/>
 					</EditorField>
 				</>
-			) : state.variant === "project" ? (
+			) : (
 				<>
 					<EditorField label="Name" htmlFor={nameInputId}>
 						<EditorInput
@@ -756,65 +678,6 @@ function GtdEditForm({
 							))}
 						</EditorSelect>
 					</EditorField>
-				</>
-			) : (
-				/* todo_update — edits the proposed PARTIAL in place. Title shows only
-				   when the partial proposed one; Status shows only when the partial
-				   carried a status (surfacing a select would inject an unrequested field
-				   into the partial). Note is always surfaced; autoFocus falls to Note when
-				   the title field is absent. */
-				<>
-					{state.draft.titlePresent ? (
-						<EditorField label="Title" htmlFor={titleInputId}>
-							<EditorInput
-								id={titleInputId}
-								autoFocus
-								value={state.draft.title}
-								onChange={(event) =>
-									setState({
-										variant: "todo_update",
-										draft: { ...state.draft, title: event.target.value },
-									})
-								}
-							/>
-						</EditorField>
-					) : null}
-					<EditorField label="Note" htmlFor={noteInputId}>
-						<EditorTextarea
-							id={noteInputId}
-							autoFocus={!state.draft.titlePresent}
-							value={state.draft.note}
-							onChange={(event) =>
-								setState({
-									variant: "todo_update",
-									draft: { ...state.draft, note: event.target.value },
-								})
-							}
-						/>
-					</EditorField>
-					{state.draft.statusPresent ? (
-						<EditorField label="Status" htmlFor={statusInputId}>
-							<EditorSelect
-								id={statusInputId}
-								value={state.draft.status}
-								onChange={(event) =>
-									setState({
-										variant: "todo_update",
-										draft: {
-											...state.draft,
-											status: event.target.value as TodoStatus,
-										},
-									})
-								}
-							>
-								{TODO_STATUS_OPTIONS.map((o) => (
-									<option key={o.value} value={o.value}>
-										{o.label}
-									</option>
-								))}
-							</EditorSelect>
-						</EditorField>
-					) : null}
 				</>
 			)}
 			<EditFormFooter

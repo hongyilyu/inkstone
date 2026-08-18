@@ -14,7 +14,7 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use crate::localtime::parse_local_datetime;
-use crate::mutation::{todo_data_spec, EntityType, Mode, MutationKind};
+use crate::mutation::{EntityType, MutationKind};
 
 /// Validate a proposed mutation payload against its schema (ADR-0016) — the
 /// ergonomic `(kind, payload)` entry over the contract's `validate` facet, for
@@ -108,10 +108,6 @@ pub(crate) fn render_accept_delete_project(payload: &Value, _entity_id: Option<&
     render_accept_delete(EntityType::Project, payload)
 }
 
-pub(crate) fn render_accept_delete_todo(payload: &Value, _entity_id: Option<&str>) -> String {
-    render_accept_delete(EntityType::Todo, payload)
-}
-
 pub(crate) fn render_accept_reference_existing_entity_from_journal_entry(
     payload: &Value,
     _entity_id: Option<&str>,
@@ -170,28 +166,6 @@ pub(crate) fn render_accept_update_project(payload: &Value, _entity_id: Option<&
         .and_then(Value::as_str)
         .unwrap_or("unknown");
     format!("Accepted. Updated Project (name={name}, status={status}).")
-}
-
-pub(crate) fn render_accept_create_todo(payload: &Value, entity_id: Option<&str>) -> String {
-    let entity_id = entity_id.expect("create accept rendering requires entity_id");
-    let todo = payload.get("todo");
-    let title = todo
-        .and_then(|t| t.get("title"))
-        .and_then(Value::as_str)
-        .unwrap_or("unknown");
-    let status = todo
-        .and_then(|t| t.get("status"))
-        .and_then(Value::as_str)
-        .unwrap_or("active");
-    format!("Accepted. Created Todo (entity_id={entity_id}, title={title}, status={status}).")
-}
-
-pub(crate) fn render_accept_update_todo(payload: &Value, _entity_id: Option<&str>) -> String {
-    let todo_id = payload
-        .get("todo_id")
-        .and_then(Value::as_str)
-        .unwrap_or("unknown");
-    format!("Accepted. Updated Todo (todo_id={todo_id}).")
 }
 
 // The graph applies many entities in one tx (ADR-0042); the model reads
@@ -501,10 +475,6 @@ pub(crate) fn validate_delete_project(payload: &Value) -> Result<(), String> {
     validate_entity_id_only(MutationKind::DeleteProject, payload)
 }
 
-pub(crate) fn validate_delete_todo(payload: &Value) -> Result<(), String> {
-    validate_entity_id_only(MutationKind::DeleteTodo, payload)
-}
-
 pub(crate) fn validate_delete_media(payload: &Value) -> Result<(), String> {
     validate_entity_id_only(MutationKind::DeleteMedia, payload)
 }
@@ -635,77 +605,53 @@ pub(crate) fn validate_project_data(payload: &Value) -> Result<(), String> {
     project_status_timestamp_invariant(payload.as_object().expect("check accepted an object"))
 }
 
-/// The Project status↔timestamp invariant (ADR-0031). A `null` timestamp is the
-/// ADR-0033 clear directive, so it counts as ABSENT (`null_is_absent = true`) —
-/// distinct from the Todo invariant, whose spec already rejects a `null` timestamp
-/// so a present key is a concrete value.
+/// The Project status↔timestamp invariant (ADR-0031), the single owner of
+/// "completed requires `completed_at` and forbids `dropped_at`; dropped is the
+/// mirror; active/on_hold forbid both". An absent status defaults to active. A
+/// `null` timestamp is the ADR-0033 clear directive, so it counts as ABSENT.
 fn project_status_timestamp_invariant(obj: &serde_json::Map<String, Value>) -> Result<(), String> {
-    status_timestamp_invariant(obj, "project", true)
-}
-
-/// Whether `key` is present in `obj` with a non-`null` value. A `null` value is the
-/// sentinel-clear directive (ADR-0033), counting as absent (the apply path drops
-/// null keys from stored data). Shared by the Media terminal-field guard and (via
-/// `null_is_absent`) the Project branch of [`status_timestamp_invariant`].
-fn present_non_null(obj: &serde_json::Map<String, Value>, key: &str) -> bool {
-    matches!(obj.get(key), Some(v) if !v.is_null())
-}
-
-/// The shared GTD status↔timestamp state machine for Todo and Project (ADR-0031),
-/// the single owner of "completed requires `completed_at` and forbids `dropped_at`;
-/// dropped is the mirror; active/on_hold forbid both". An absent status defaults to
-/// active. `noun` names the Entity in the client-facing error; `null_is_absent`
-/// selects the timestamp-presence rule: Project treats a `null` timestamp as the
-/// ADR-0033 sentinel-clear (absent), Todo treats a present key as a concrete value
-/// (its spec already rejects `null`). Todo never sends `on_hold` (its status enum
-/// omits it — rejected before this hook), so the shared `active | on_hold` arm is
-/// safe for both.
-fn status_timestamp_invariant(
-    obj: &serde_json::Map<String, Value>,
-    noun: &str,
-    null_is_absent: bool,
-) -> Result<(), String> {
     let status = obj
         .get("status")
         .and_then(Value::as_str)
         .unwrap_or("active");
-    let present = |key: &str| {
-        if null_is_absent {
-            present_non_null(obj, key)
-        } else {
-            obj.contains_key(key)
-        }
-    };
-    let has_completed_at = present("completed_at");
-    let has_dropped_at = present("dropped_at");
+    let has_completed_at = present_non_null(obj, "completed_at");
+    let has_dropped_at = present_non_null(obj, "dropped_at");
     match status {
         "active" | "on_hold" => {
             if has_completed_at {
-                return Err(format!("{status} {noun} must not have completed_at"));
+                return Err(format!("{status} project must not have completed_at"));
             }
             if has_dropped_at {
-                return Err(format!("{status} {noun} must not have dropped_at"));
+                return Err(format!("{status} project must not have dropped_at"));
             }
         }
         "completed" => {
             if !has_completed_at {
-                return Err(format!("completed {noun} requires completed_at"));
+                return Err("completed project requires completed_at".to_string());
             }
             if has_dropped_at {
-                return Err(format!("completed {noun} must not have dropped_at"));
+                return Err("completed project must not have dropped_at".to_string());
             }
         }
         "dropped" => {
             if !has_dropped_at {
-                return Err(format!("dropped {noun} requires dropped_at"));
+                return Err("dropped project requires dropped_at".to_string());
             }
             if has_completed_at {
-                return Err(format!("dropped {noun} must not have completed_at"));
+                return Err("dropped project must not have completed_at".to_string());
             }
         }
         _ => unreachable!("status validated by the spec"),
     }
     Ok(())
+}
+
+/// Whether `key` is present in `obj` with a non-`null` value. A `null` value is the
+/// sentinel-clear directive (ADR-0033), counting as absent (the apply path drops
+/// null keys from stored data). Shared by the Media terminal-field guard and
+/// [`project_status_timestamp_invariant`].
+fn present_non_null(obj: &serde_json::Map<String, Value>, key: &str) -> bool {
+    matches!(obj.get(key), Some(v) if !v.is_null())
 }
 
 /// Validate an `update_project` payload against the kind's full spec: the
@@ -719,8 +665,8 @@ pub(crate) fn validate_update_project(payload: &Value) -> Result<(), String> {
 }
 
 /// The optional `source_journal_entry_id` provenance directive (ADR-0030/0031) on
-/// a `create_{person,project,todo}` payload, read from the top level (the
-/// person/project payload, or the todo envelope). When present, the accept path
+/// a `create_{person,project}` payload, read from the top level. When present,
+/// the accept path
 /// sources the new Entity `created_from` this Journal Entry rather than the user
 /// Message. Decide verifies it names an actual Journal Entry.
 pub(crate) fn source_journal_entry_id(payload: &Value) -> Option<&str> {
@@ -728,216 +674,6 @@ pub(crate) fn source_journal_entry_id(payload: &Value) -> Option<&str> {
         .get("source_journal_entry_id")
         .and_then(Value::as_str)
         .filter(|id| !id.is_empty())
-}
-
-/// Validate a Todo's `recurrence` rule in ISOLATION (ADR-0037): every invariant
-/// that needs only the rule itself. The cross-field `anchor` presence check —
-/// the Todo must carry the date field the `anchor` names — needs the whole Todo
-/// and lives in [`validate_todo_data`], not here.
-fn validate_recurrence(value: &Value) -> Result<(), String> {
-    let obj = value
-        .as_object()
-        .ok_or_else(|| "recurrence must be an object".to_string())?;
-
-    for key in obj.keys() {
-        match key.as_str() {
-            "interval" | "unit" | "anchor" | "end" => {}
-            other => return Err(format!("unsupported recurrence field {other:?}")),
-        }
-    }
-
-    match obj.get("interval") {
-        Some(Value::Number(n)) => match n.as_u64() {
-            Some(interval) if interval >= 1 => {}
-            _ => return Err("recurrence interval must be a positive integer".to_string()),
-        },
-        Some(_) => return Err("recurrence interval must be a positive integer".to_string()),
-        None => return Err("recurrence interval is required".to_string()),
-    }
-
-    match obj.get("unit") {
-        Some(Value::String(unit)) => match unit.as_str() {
-            "minute" | "hour" | "day" | "week" | "month" | "year" => {}
-            _ => {
-                return Err(
-                    "recurrence unit must be one of minute, hour, day, week, month, year"
-                        .to_string(),
-                );
-            }
-        },
-        Some(_) => return Err("recurrence unit must be a string".to_string()),
-        None => return Err("recurrence unit is required".to_string()),
-    };
-
-    match obj.get("anchor") {
-        Some(Value::String(anchor)) => match anchor.as_str() {
-            "defer_at" | "due_at" => {}
-            _ => return Err("recurrence anchor must be one of defer_at, due_at".to_string()),
-        },
-        Some(_) => return Err("recurrence anchor must be a string".to_string()),
-        None => return Err("recurrence anchor is required".to_string()),
-    }
-
-    if let Some(end) = obj.get("end") {
-        validate_recurrence_end(end)?;
-    }
-
-    Ok(())
-}
-
-/// Validate `recurrence.end` (ADR-0037): a non-empty object carrying at most one
-/// of `until` (a parseable `YYYY-MM-DDTHH:MM:SS` wall clock) or `after_count`
-/// (an integer `>= 1`).
-fn validate_recurrence_end(value: &Value) -> Result<(), String> {
-    let obj = value
-        .as_object()
-        .ok_or_else(|| "recurrence end must be an object".to_string())?;
-
-    for key in obj.keys() {
-        match key.as_str() {
-            "until" | "after_count" => {}
-            other => return Err(format!("unsupported recurrence end field {other:?}")),
-        }
-    }
-
-    let has_until = obj.contains_key("until");
-    let has_after_count = obj.contains_key("after_count");
-    if !has_until && !has_after_count {
-        return Err("recurrence end must carry until or after_count".to_string());
-    }
-    if has_until && has_after_count {
-        return Err("recurrence end must carry at most one of until, after_count".to_string());
-    }
-
-    if let Some(until) = obj.get("until") {
-        match until {
-            Value::String(t) if !t.trim().is_empty() => {
-                parse_local_datetime(t, "recurrence end until")?;
-            }
-            Value::String(_) => return Err("recurrence end until must not be empty".to_string()),
-            _ => return Err("recurrence end until must be a string".to_string()),
-        }
-    }
-
-    if let Some(after_count) = obj.get("after_count") {
-        match after_count {
-            Value::Number(n) => match n.as_u64() {
-                Some(count) if count >= 1 => {}
-                _ => {
-                    return Err("recurrence end after_count must be a positive integer".to_string());
-                }
-            },
-            _ => return Err("recurrence end after_count must be a positive integer".to_string()),
-        }
-    }
-
-    Ok(())
-}
-
-/// Validate a `create_todo` payload: an ENVELOPE `{todo: TodoData, person_refs?}`
-/// (ADR-0031). `todo` is required and validated as `TodoData`; `person_refs`, when
-/// present, must be an array of refs, each an object with a required non-empty
-/// `person_id` and an optional `role` ∈ {waiting_on, related} (a missing role
-/// defaults to `related` at apply-time). Any other top-level key is rejected.
-/// `person_id` existence (an Accepted Person) is checked at decide-time, not here.
-pub(crate) fn validate_todo(payload: &Value) -> Result<(), String> {
-    // Envelope shape (`{todo, person_refs?, source_journal_entry_id?}`) from the
-    // single source — including the person_refs element shape, now spec-driven —
-    // then the TodoData hook validates the `todo` value (its cross-field
-    // invariants exceed a flat walk).
-    MutationKind::CreateTodo.payload_spec().check(payload)?;
-    let todo = payload.get("todo").ok_or_else(|| "todo is required".to_string())?;
-    validate_todo_data(todo)
-}
-
-/// Validate the `TodoData` sub-object (ADR-0031): a required non-empty `title`;
-/// optional string `note`/`project_id` (`project_id` existence is checked at
-/// decide-time, not here); an optional `status` ∈ {active, completed, dropped}
-/// defaulting to active when absent (Todo has NO `on_hold`); concrete
-/// `defer_at`/`due_at`/`completed_at`/`dropped_at` timestamps; and the
-/// status↔timestamp invariants. Any other field is rejected. `pub(crate)` so the
-/// apply path can re-validate a MERGED `update_todo` result as a whole.
-pub(crate) fn validate_todo_data(payload: &Value) -> Result<(), String> {
-    // Flat shape (fields, title, note, project_id, status enum, datetime parse)
-    // from the single source; the status↔timestamp + recurrence (rule-in-isolation
-    // and anchor-presence) invariants — which exceed a flat walk — stay hooks.
-    todo_data_spec(Mode::Full).check(payload)?;
-    let obj = payload.as_object().expect("check accepted an object");
-    todo_status_timestamp_invariant(obj)?;
-    todo_recurrence_invariant(obj)
-}
-
-/// The Todo status↔timestamp invariant (ADR-0031). Unlike Project, Todo timestamps
-/// reject `null` (the spec already did), so a present key is a concrete timestamp —
-/// hence `null_is_absent = false` ([`status_timestamp_invariant`], the shared owner).
-fn todo_status_timestamp_invariant(obj: &serde_json::Map<String, Value>) -> Result<(), String> {
-    status_timestamp_invariant(obj, "todo", false)
-}
-
-/// The Todo `recurrence` invariant (ADR-0037): validate the rule in isolation
-/// (the `HookValidated` spec leaves it to us), then enforce anchor-presence — the
-/// Todo must carry a non-empty date at the field the rule's `anchor` names. Holds
-/// for any valid stored Todo, so the apply-time re-validation of a merged
-/// `update_todo` enforces it too.
-fn todo_recurrence_invariant(obj: &serde_json::Map<String, Value>) -> Result<(), String> {
-    if let Some(recurrence) = obj.get("recurrence") {
-        validate_recurrence(recurrence)?;
-        if let Some(Value::String(anchor)) = recurrence.get("anchor") {
-            let present =
-                matches!(obj.get(anchor.as_str()), Some(Value::String(t)) if !t.trim().is_empty());
-            if !present {
-                return Err(format!(
-                    "recurrence anchor {anchor:?} requires the todo to have {anchor}"
-                ));
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Validate an `update_todo` envelope (ADR-0031): a required UUID `todo_id` (the
-/// TARGET key, NOT `entity_id`); an optional `todo` Partial<TodoData> whose keys
-/// are a SUBSET of TodoData fields with each SUPPLIED field individually valid
-/// (title if present non-empty; status if present ∈ {active, completed, dropped};
-/// timestamps parseable) — the status↔timestamp invariants are NOT enforced here
-/// because the pure validator lacks the current Todo state; the apply path
-/// re-validates the MERGED whole via [`validate_todo_data`]. Optional
-/// `set_person_refs`/`add_person_refs` (each a ref array) and `remove_person_ids`
-/// (an array of non-empty strings). Any other top-level key is rejected.
-pub(crate) fn validate_update_todo(payload: &Value) -> Result<(), String> {
-    // Envelope shape (`todo_id`, set/add `person_refs`, `remove_person_ids`) from
-    // the single source; the partial `todo` value's recurrence rule (a non-null
-    // value validated in isolation) is the one cross-field bit the spec defers.
-    MutationKind::UpdateTodo.payload_spec().check(payload)?;
-    if let Some(todo) = payload.get("todo") {
-        validate_partial_todo_data(todo)?;
-    }
-    Ok(())
-}
-
-/// Validate a `Partial<TodoData>` (ADR-0031, ADR-0033): each SUPPLIED key must be
-/// a TodoData field and individually valid (title non-empty; status enum;
-/// note/project_id strings; timestamps parseable). No field is required and the
-/// status↔timestamp invariants are deferred to the apply-time re-validation of
-/// the merged whole, so a partial that supplies only `status` or only a
-/// timestamp is accepted here. A `null` value on a CLEARABLE optional field
-/// (`note`, `project_id`, `defer_at`, `due_at`, `completed_at`, `dropped_at`) is
-/// the sentinel-clear directive — accepted here and translated to remove-the-key
-/// by the apply-time merge. `null` on the required, non-clearable `title`/`status`
-/// stays rejected (clearing them is meaningless).
-fn validate_partial_todo_data(payload: &Value) -> Result<(), String> {
-    // Flat partial shape from the single source (Mode::Partial: every field
-    // optional; `note`/`project_id`/timestamps/`recurrence` clearable via `null`;
-    // `title`/`status` optional-but-not-clearable). The recurrence rule, when a
-    // non-null value is supplied, is validated in isolation here — the
-    // anchor-presence cross-check is NOT done (a partial lacks the whole Todo; the
-    // apply-time re-validation of the merged whole enforces it).
-    todo_data_spec(Mode::Partial).check(payload)?;
-    let obj = payload.as_object().expect("check accepted an object");
-    match obj.get("recurrence") {
-        Some(Value::Null) | None => Ok(()),
-        Some(recurrence) => validate_recurrence(recurrence),
-    }
 }
 
 /// Validate an `apply_intent_graph` payload. The intent graph (ADR-0042)
@@ -1285,8 +1021,8 @@ mod tests {
     }
 
     #[test]
-    fn validate_delete_person_and_todo_accept_a_uuid_entity_id() {
-        for kind in ["delete_person", "delete_todo"] {
+    fn validate_delete_person_and_media_accept_a_uuid_entity_id() {
+        for kind in ["delete_person", "delete_media"] {
             assert!(
                 validate(kind, &json!({ "entity_id": Uuid::now_v7().to_string() })).is_ok(),
                 "{kind} with a UUID entity_id validates"
@@ -1295,8 +1031,8 @@ mod tests {
     }
 
     #[test]
-    fn validate_delete_person_and_todo_reject_unsupported_field() {
-        for kind in ["delete_person", "delete_todo"] {
+    fn validate_delete_person_and_media_reject_unsupported_field() {
+        for kind in ["delete_person", "delete_media"] {
             let reason = validate(
                 kind,
                 &json!({ "entity_id": Uuid::now_v7().to_string(), "name": "Alice" }),
@@ -1310,8 +1046,8 @@ mod tests {
     }
 
     #[test]
-    fn validate_delete_person_and_todo_reject_missing_entity_id() {
-        for kind in ["delete_person", "delete_todo"] {
+    fn validate_delete_person_and_media_reject_missing_entity_id() {
+        for kind in ["delete_person", "delete_media"] {
             let reason =
                 validate(kind, &json!({})).expect_err("a delete requires an entity_id target");
             assert!(
@@ -1322,8 +1058,8 @@ mod tests {
     }
 
     #[test]
-    fn validate_delete_person_and_todo_reject_non_uuid_entity_id() {
-        for kind in ["delete_person", "delete_todo"] {
+    fn validate_delete_person_and_media_reject_non_uuid_entity_id() {
+        for kind in ["delete_person", "delete_media"] {
             let reason = validate(kind, &json!({ "entity_id": "not-a-uuid" }))
                 .expect_err("a delete entity_id must be a UUID");
             assert!(
@@ -1503,7 +1239,7 @@ mod tests {
     #[test]
     fn rejects_null_project_status() {
         // `status` is optional (absent ⇒ active) but NOT clearable: an explicit
-        // `null` is rejected, matching Todo `status` and the pre-spec validator.
+        // `null` is rejected, matching the pre-spec validator.
         // Clearing a status is meaningless, so `null` must not slip through as a
         // silent "active".
         let reason = validate_project(&json!({ "name": "Roadmap", "status": null }))
@@ -1656,7 +1392,7 @@ mod tests {
 
     #[test]
     fn rejects_disallowed_project_fields() {
-        for field in ["type", "person_ids", "todo_ids", "tags"] {
+        for field in ["type", "person_ids", "tags"] {
             let reason = validate_project(&json!({ "name": "Roadmap", field: "x" }))
                 .expect_err("disallowed ProjectData field");
             assert!(
@@ -1759,206 +1495,6 @@ mod tests {
     }
 
     #[test]
-    fn accepts_minimal_todo_without_status() {
-        assert!(validate_todo(&json!({ "todo": { "title": "buy milk" } })).is_ok());
-    }
-
-    #[test]
-    fn accepts_todo_with_each_valid_status() {
-        assert!(validate_todo(&json!({ "todo": { "title": "x", "status": "active" } })).is_ok());
-        assert!(validate_todo(&json!({
-            "todo": { "title": "x", "status": "completed", "completed_at": "2026-06-10T10:00:00" }
-        }))
-        .is_ok());
-        assert!(validate_todo(&json!({
-            "todo": { "title": "x", "status": "dropped", "dropped_at": "2026-06-10T10:00:00" }
-        }))
-        .is_ok());
-    }
-
-    #[test]
-    fn accepts_todo_with_project_link_and_person_refs_array() {
-        // project_id existence is a decide-time check, not the pure validator's.
-        assert!(validate_todo(&json!({
-            "todo": { "title": "x", "project_id": "some-id" },
-            "person_refs": [{ "person_id": "alice", "role": "waiting_on" }]
-        }))
-        .is_ok());
-    }
-
-    #[test]
-    fn rejects_blank_todo_project_id() {
-        // A blank project_id would slip past the decide-time Accepted-Project
-        // check (which filters empty ids) and persist "" into Todo JSON, leaving
-        // the Todo neither projectless nor linked. Reject it at validate.
-        let reason = validate_todo(&json!({ "todo": { "title": "x", "project_id": "" } }))
-            .expect_err("blank project_id is rejected");
-        assert!(
-            reason.contains("project_id"),
-            "reason names project_id: {reason}"
-        );
-        let reason = validate_todo(&json!({ "todo": { "title": "x", "project_id": "   " } }))
-            .expect_err("whitespace project_id is rejected");
-        assert!(
-            reason.contains("project_id"),
-            "reason names project_id: {reason}"
-        );
-        // The same guard on the update_todo partial path.
-        let reason = validate_partial_todo_data(&json!({ "project_id": "" }))
-            .expect_err("blank project_id is rejected on update");
-        assert!(
-            reason.contains("project_id"),
-            "reason names project_id: {reason}"
-        );
-    }
-
-    #[test]
-    fn rejects_missing_or_blank_todo_title() {
-        let reason = validate_todo(&json!({ "todo": { "note": "no title" } }))
-            .expect_err("title is required");
-        assert!(reason.contains("title"), "reason names title: {reason}");
-        let reason = validate_todo(&json!({ "todo": { "title": "   " } }))
-            .expect_err("blank title is not a title");
-        assert!(reason.contains("title"), "reason names title: {reason}");
-    }
-
-    #[test]
-    fn rejects_completed_todo_without_completed_at_and_active_with_completed_at() {
-        let reason = validate_todo(&json!({ "todo": { "title": "x", "status": "completed" } }))
-            .expect_err("completed requires completed_at");
-        assert!(
-            reason.contains("completed_at"),
-            "reason names completed_at: {reason}"
-        );
-        let reason = validate_todo(&json!({
-            "todo": { "title": "x", "status": "active", "completed_at": "2026-06-10T10:00:00" }
-        }))
-        .expect_err("active forbids completed_at");
-        assert!(
-            reason.contains("completed_at"),
-            "reason names completed_at: {reason}"
-        );
-    }
-
-    #[test]
-    fn rejects_unparseable_todo_timestamps() {
-        let reason = validate_todo(&json!({ "todo": { "title": "x", "defer_at": "banana" } }))
-            .expect_err("defer_at must be parseable");
-        assert!(
-            reason.contains("defer_at"),
-            "reason names defer_at: {reason}"
-        );
-        let reason = validate_todo(&json!({ "todo": { "title": "x", "due_at": "soon" } }))
-            .expect_err("due_at must be parseable");
-        assert!(reason.contains("due_at"), "reason names due_at: {reason}");
-    }
-
-    #[test]
-    fn rejects_on_hold_status_value() {
-        let reason = validate_todo(&json!({ "todo": { "title": "x", "status": "on_hold" } }))
-            .expect_err("todo has no on_hold status");
-        assert!(reason.contains("status"), "reason names status: {reason}");
-    }
-
-    #[test]
-    fn rejects_disallowed_todo_fields() {
-        for field in [
-            "repeat",
-            "inbox",
-            "standalone",
-            "blocked",
-            "on_hold",
-            "subtasks",
-            "tags",
-            "person_ids",
-        ] {
-            let reason = validate_todo(&json!({ "todo": { "title": "x", field: "v" } }))
-                .expect_err("disallowed TodoData field");
-            assert!(
-                reason.contains(field),
-                "reason names the unsupported field {field}: {reason}"
-            );
-        }
-    }
-
-    #[test]
-    fn non_object_todo_envelope_keeps_exact_validator_error_text() {
-        // Pins the exact non-object `todo` error text for both validators.
-        assert_eq!(
-            validate_todo(&json!({ "todo": "x" })),
-            Err("todo must be a JSON object".to_string())
-        );
-        assert_eq!(
-            validate_update_todo(&json!({
-                "todo_id": "00000000-0000-4000-8000-000000000000",
-                "todo": "x"
-            })),
-            Err("todo must be a JSON object".to_string())
-        );
-    }
-
-    #[test]
-    fn rejects_create_todo_envelope_violations() {
-        // Missing todo.
-        let reason = validate_todo(&json!({ "person_refs": [] })).expect_err("todo is required");
-        assert!(reason.contains("todo"), "reason names todo: {reason}");
-        // person_refs must be an array when present.
-        let reason = validate_todo(&json!({
-            "todo": { "title": "x" },
-            "person_refs": "alice"
-        }))
-        .expect_err("person_refs must be an array");
-        assert!(
-            reason.contains("person_refs"),
-            "reason names person_refs: {reason}"
-        );
-    }
-
-    #[test]
-    fn validates_create_todo_person_ref_elements() {
-        // Valid: a ref with an explicit role, and a ref with role omitted (the
-        // missing role is friendly — defaulted to related at apply-time).
-        assert!(validate_todo(&json!({
-            "todo": { "title": "x" },
-            "person_refs": [
-                { "person_id": "alice", "role": "waiting_on" },
-                { "person_id": "bob" }
-            ]
-        }))
-        .is_ok());
-
-        // Missing person_id.
-        let reason = validate_todo(&json!({
-            "todo": { "title": "x" },
-            "person_refs": [{ "role": "related" }]
-        }))
-        .expect_err("person_id is required");
-        assert!(
-            reason.contains("person_id"),
-            "reason names missing person_id: {reason}"
-        );
-
-        // Bad role value.
-        let reason = validate_todo(&json!({
-            "todo": { "title": "x" },
-            "person_refs": [{ "person_id": "alice", "role": "blocking" }]
-        }))
-        .expect_err("role must be a known enum");
-        assert!(reason.contains("role"), "reason names bad role: {reason}");
-
-        // Extra key in a ref element.
-        let reason = validate_todo(&json!({
-            "todo": { "title": "x" },
-            "person_refs": [{ "person_id": "alice", "note": "hi" }]
-        }))
-        .expect_err("extra person_refs keys are rejected");
-        assert!(
-            reason.contains("note"),
-            "reason names the unsupported ref field: {reason}"
-        );
-    }
-
-    #[test]
     fn create_accepts_valid_source_journal_entry_id_and_validates_the_rest() {
         let je = Uuid::now_v7().to_string();
         // A valid source rides alongside the entity fields and the rest validates.
@@ -1970,11 +1506,6 @@ mod tests {
         assert!(validate(
             "create_project",
             &json!({ "name": "Roadmap", "source_journal_entry_id": je })
-        )
-        .is_ok());
-        assert!(validate(
-            "create_todo",
-            &json!({ "todo": { "title": "follow up" }, "source_journal_entry_id": je })
         )
         .is_ok());
     }
@@ -1992,15 +1523,6 @@ mod tests {
                 "{kind} names the malformed source: {reason}"
             );
         }
-        let reason = validate(
-            "create_todo",
-            &json!({ "todo": { "title": "x" }, "source_journal_entry_id": "not-a-uuid" }),
-        )
-        .expect_err("source must be a UUID");
-        assert!(
-            reason.contains("source_journal_entry_id") && reason.contains("UUID"),
-            "create_todo names the malformed source: {reason}"
-        );
     }
 
     #[test]
@@ -2013,133 +1535,6 @@ mod tests {
         assert!(
             reason.contains("name"),
             "reason names the missing name: {reason}"
-        );
-    }
-
-    #[test]
-    fn render_accept_create_todo_confirms_creation() {
-        let text = render_accept(
-            "create_todo",
-            &json!({ "todo": { "title": "Ship it", "status": "active" } }),
-        );
-        assert!(
-            text.contains("Created Todo") && text.contains("Ship it") && text.contains("active"),
-            "confirmation names the created Todo fields: {text}"
-        );
-    }
-
-    #[test]
-    fn update_todo_accepts_partial_todo_and_ref_ops() {
-        // A partial `todo` may omit title; ref arrays + remove ids are shape-valid.
-        assert!(validate(
-            "update_todo",
-            &json!({
-                "todo_id": Uuid::now_v7().to_string(),
-                "todo": { "due_at": "2026-07-01T09:00:00" },
-                "set_person_refs": [{ "person_id": "alice", "role": "related" }],
-                "add_person_refs": [{ "person_id": "bob" }],
-                "remove_person_ids": ["carol"]
-            })
-        )
-        .is_ok());
-        // A lone status (no completed_at) is fine for the PURE validator — the
-        // invariant is checked on the merged whole at apply-time.
-        assert!(validate(
-            "update_todo",
-            &json!({ "todo_id": Uuid::now_v7().to_string(), "todo": { "status": "completed" } })
-        )
-        .is_ok());
-        // A bare todo_id (no changes) is also valid.
-        assert!(validate(
-            "update_todo",
-            &json!({ "todo_id": Uuid::now_v7().to_string() })
-        )
-        .is_ok());
-    }
-
-    #[test]
-    fn update_todo_requires_a_uuid_todo_id() {
-        let reason = validate(
-            "update_todo",
-            &json!({ "todo": { "due_at": "2026-07-01T09:00:00" } }),
-        )
-        .expect_err("update requires a target todo_id");
-        assert!(
-            reason.contains("todo_id"),
-            "reason names the missing todo_id: {reason}"
-        );
-        let reason = validate("update_todo", &json!({ "todo_id": "nope" }))
-            .expect_err("todo_id must be a UUID");
-        assert!(
-            reason.contains("UUID"),
-            "reason names the malformed todo_id: {reason}"
-        );
-    }
-
-    #[test]
-    fn update_todo_rejects_unknown_top_level_key_and_bad_partial_field() {
-        let reason = validate(
-            "update_todo",
-            &json!({ "todo_id": Uuid::now_v7().to_string(), "entity_id": "x" }),
-        )
-        .expect_err("update_todo's target key is todo_id, not entity_id");
-        assert!(
-            reason.contains("entity_id"),
-            "reason names the unsupported top-level field: {reason}"
-        );
-        // The partial todo still rejects non-TodoData fields and a blank title.
-        let reason = validate(
-            "update_todo",
-            &json!({ "todo_id": Uuid::now_v7().to_string(), "todo": { "on_hold": true } }),
-        )
-        .expect_err("todo has no on_hold field");
-        assert!(
-            reason.contains("on_hold"),
-            "reason names the unsupported todo field: {reason}"
-        );
-        let reason = validate(
-            "update_todo",
-            &json!({ "todo_id": Uuid::now_v7().to_string(), "todo": { "title": "   " } }),
-        )
-        .expect_err("a supplied title must be non-empty");
-        assert!(
-            reason.contains("title"),
-            "reason names the blank title: {reason}"
-        );
-    }
-
-    #[test]
-    fn update_todo_rejects_malformed_ref_ops() {
-        let reason = validate(
-            "update_todo",
-            &json!({ "todo_id": Uuid::now_v7().to_string(), "set_person_refs": "alice" }),
-        )
-        .expect_err("set_person_refs must be an array");
-        assert!(
-            reason.contains("set_person_refs"),
-            "reason names set_person_refs: {reason}"
-        );
-        let reason = validate(
-            "update_todo",
-            &json!({ "todo_id": Uuid::now_v7().to_string(), "remove_person_ids": [""] }),
-        )
-        .expect_err("remove_person_ids entries must be non-empty");
-        assert!(
-            reason.contains("remove_person_ids"),
-            "reason names remove_person_ids: {reason}"
-        );
-    }
-
-    #[test]
-    fn render_accept_update_todo_confirms_update() {
-        let todo_id = Uuid::now_v7().to_string();
-        let text = render_accept(
-            "update_todo",
-            &json!({ "todo_id": todo_id, "todo": { "due_at": "2026-07-01T09:00:00" } }),
-        );
-        assert!(
-            text.contains("Updated Todo") && text.contains("todo_id="),
-            "confirmation names the updated Todo target: {text}"
         );
     }
 
@@ -2480,263 +1875,4 @@ mod tests {
         assert_eq!(schema_version("delete_habit"), 1);
     }
 
-    // ─── recurrence rule (ADR-0037) ────────────────────────────────────────
-
-    /// A `create_todo` envelope carrying a Todo with both anchor dates present
-    /// (so any `anchor` choice satisfies anchor-presence) plus the given rule.
-    fn todo_with_recurrence(recurrence: Value) -> Value {
-        json!({
-            "todo": {
-                "title": "water the plants",
-                "defer_at": "2026-06-14T09:00:00",
-                "due_at": "2026-06-14T18:00:00",
-                "recurrence": recurrence
-            }
-        })
-    }
-
-    #[test]
-    fn accepts_recurrence_rules() {
-        // The slimmed shape (ADR-0039): interval + unit across all six units, both
-        // anchors, and the two end conditions.
-        let rules = [
-            json!({ "interval": 1, "unit": "minute", "anchor": "due_at" }),
-            json!({ "interval": 2, "unit": "hour", "anchor": "due_at" }),
-            json!({ "interval": 3, "unit": "day", "anchor": "defer_at" }),
-            json!({ "interval": 1, "unit": "week", "anchor": "due_at" }),
-            json!({ "interval": 6, "unit": "month", "anchor": "due_at" }),
-            json!({ "interval": 1, "unit": "year", "anchor": "defer_at" }),
-            // end via until.
-            json!({
-                "interval": 1, "unit": "day", "anchor": "due_at",
-                "end": { "until": "2026-12-31T23:59:59" }
-            }),
-            // end via after_count.
-            json!({
-                "interval": 1, "unit": "day", "anchor": "due_at",
-                "end": { "after_count": 10 }
-            }),
-        ];
-        for rule in rules {
-            assert!(
-                validate("create_todo", &todo_with_recurrence(rule.clone())).is_ok(),
-                "valid recurrence rule should be accepted: {rule}"
-            );
-        }
-    }
-
-    #[test]
-    fn rejects_recurrence_invariant_violations() {
-        // Each entry: (rule, substring the reason must contain). The Todo carries
-        // both anchor dates so only the rule's own invariant trips.
-        let cases: [(Value, &str); 8] = [
-            // interval must be an integer >= 1.
-            (
-                json!({ "interval": 0, "unit": "day", "anchor": "due_at" }),
-                "interval",
-            ),
-            (
-                json!({ "interval": 1.5, "unit": "day", "anchor": "due_at" }),
-                "interval",
-            ),
-            // unit must be one of the six.
-            (
-                json!({ "interval": 1, "unit": "fortnight", "anchor": "due_at" }),
-                "unit",
-            ),
-            // anchor enum.
-            (
-                json!({ "interval": 1, "unit": "day", "anchor": "planned_at" }),
-                "anchor",
-            ),
-            // anchor is required.
-            (json!({ "interval": 1, "unit": "day" }), "anchor"),
-            // end carrying both keys.
-            (
-                json!({
-                    "interval": 1, "unit": "day", "anchor": "due_at",
-                    "end": { "until": "2026-12-31T23:59:59", "after_count": 5 }
-                }),
-                "end",
-            ),
-            // end.until unparseable.
-            (
-                json!({
-                    "interval": 1, "unit": "day", "anchor": "due_at",
-                    "end": { "until": "next year" }
-                }),
-                "until",
-            ),
-            // empty end object.
-            (
-                json!({
-                    "interval": 1, "unit": "day", "anchor": "due_at",
-                    "end": {}
-                }),
-                "end",
-            ),
-        ];
-        for (rule, needle) in cases {
-            let reason = validate("create_todo", &todo_with_recurrence(rule.clone()))
-                .expect_err("invalid recurrence rule should be rejected");
-            assert!(
-                reason.contains(needle),
-                "reason should name {needle:?}: {reason} (rule {rule})"
-            );
-        }
-    }
-
-    #[test]
-    fn rejects_removed_recurrence_fields() {
-        // schedule/catch_up/only_on were removed from the durable shape (ADR-0039
-        // amendment). A rule carrying any of them is now an unknown-field error —
-        // proves a stored/proposed rule can't smuggle a dead field back in.
-        for field in ["schedule", "catch_up", "only_on"] {
-            let mut rule = serde_json::Map::new();
-            rule.insert("interval".into(), json!(1));
-            rule.insert("unit".into(), json!("week"));
-            rule.insert("anchor".into(), json!("due_at"));
-            rule.insert(field.into(), json!("regular"));
-            let reason = validate("create_todo", &todo_with_recurrence(Value::Object(rule)))
-                .expect_err("a removed recurrence field is rejected as unknown");
-            assert!(
-                reason.contains(field),
-                "reason names the removed field {field:?}: {reason}"
-            );
-        }
-    }
-
-    #[test]
-    fn rejects_recurrence_unknown_fields() {
-        // Unknown key on the rule and on end.
-        let reason = validate(
-            "create_todo",
-            &todo_with_recurrence(json!({
-                "interval": 1, "unit": "day", "anchor": "due_at",
-                "timezone": "UTC"
-            })),
-        )
-        .expect_err("unknown recurrence field is rejected");
-        assert!(
-            reason.contains("timezone"),
-            "names the unknown field: {reason}"
-        );
-
-        let reason = validate(
-            "create_todo",
-            &todo_with_recurrence(json!({
-                "interval": 1, "unit": "day", "anchor": "due_at",
-                "end": { "after_count": 3, "grace": 1 }
-            })),
-        )
-        .expect_err("unknown end field is rejected");
-        assert!(
-            reason.contains("grace"),
-            "names the unknown end field: {reason}"
-        );
-    }
-
-    #[test]
-    fn rejects_recurrence_anchor_naming_an_absent_date() {
-        // anchor names due_at but the Todo has only defer_at → rejected as a
-        // cross-field check against the whole Todo.
-        let reason = validate(
-            "create_todo",
-            &json!({
-                "todo": {
-                    "title": "water the plants",
-                    "defer_at": "2026-06-14T09:00:00",
-                    "recurrence": {
-                        "interval": 1, "unit": "day", "anchor": "due_at"
-                    }
-                }
-            }),
-        )
-        .expect_err("anchor must name a date the Todo has");
-        assert!(
-            reason.contains("anchor") && reason.contains("due_at"),
-            "reason names the missing anchor date: {reason}"
-        );
-        // The mirror: anchor defer_at with only due_at present.
-        let reason = validate(
-            "create_todo",
-            &json!({
-                "todo": {
-                    "title": "water the plants",
-                    "due_at": "2026-06-14T18:00:00",
-                    "recurrence": {
-                        "interval": 1, "unit": "day", "anchor": "defer_at"
-                    }
-                }
-            }),
-        )
-        .expect_err("anchor must name a date the Todo has");
-        assert!(
-            reason.contains("anchor") && reason.contains("defer_at"),
-            "reason names the missing anchor date: {reason}"
-        );
-    }
-
-    #[test]
-    fn update_todo_partial_accepts_recurrence_and_null_clear() {
-        // A supplied valid rule is accepted; `null` is the sentinel-clear directive
-        // (ADR-0037). The anchor-presence cross-check is NOT done here — the partial
-        // lacks the whole Todo; the merged-whole re-validation in apply enforces it.
-        assert!(validate(
-            "update_todo",
-            &json!({
-                "todo_id": Uuid::now_v7().to_string(),
-                "todo": {
-                    "recurrence": {
-                        "interval": 1, "unit": "week", "anchor": "due_at"
-                    }
-                }
-            })
-        )
-        .is_ok());
-        assert!(
-            validate(
-                "update_todo",
-                &json!({ "todo_id": Uuid::now_v7().to_string(), "todo": { "recurrence": null } })
-            )
-            .is_ok(),
-            "recurrence: null is the sentinel-clear directive"
-        );
-    }
-
-    #[test]
-    fn update_todo_partial_rejects_invalid_recurrence_rule() {
-        // The standalone rule check still runs on a supplied (non-null) rule.
-        let reason = validate(
-            "update_todo",
-            &json!({
-                "todo_id": Uuid::now_v7().to_string(),
-                "todo": {
-                    "recurrence": {
-                        "interval": 1, "unit": "fortnight", "anchor": "due_at"
-                    }
-                }
-            }),
-        )
-        .expect_err("an invalid unit is rejected in the partial");
-        assert!(
-            reason.contains("unit"),
-            "reason names the bad unit: {reason}"
-        );
-        // A removed field (only_on) is an unknown-field error in the partial too.
-        let reason = validate(
-            "update_todo",
-            &json!({
-                "todo_id": Uuid::now_v7().to_string(),
-                "todo": {
-                    "recurrence": {
-                        "interval": 1, "unit": "week", "anchor": "due_at",
-                        "only_on": { "weekdays": ["mon"] }
-                    }
-                }
-            }),
-        )
-        .expect_err("a removed recurrence field is rejected in the partial");
-        assert!(reason.contains("only_on"), "reason names only_on: {reason}");
-    }
 }

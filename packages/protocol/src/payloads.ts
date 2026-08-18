@@ -6,12 +6,11 @@
 // asserts deep-equality with the committed Rust fixture (`fixtures/<kind>.json`,
 // the schema-of-record).
 //
-// All 15 wire kinds are authored and registered in `schemas`. `create_todo` is
-// the deepest single-entity payload — nested objects 3 levels deep, arrays of
-// objects, enums, positive integers, datetime pattern+description, the
-// bare-vs-patterned UUID split — so its leaf builders (defined first, below) are
-// the shared vocabulary the other kinds reuse. `apply_intent_graph` (ADR-0042)
-// is the widest: nested oneOf node-unions for entities, links, and the JE body.
+// All 12 wire kinds are authored and registered in `schemas`. The leaf builders
+// (defined first, below) — enums, positive integers, datetime
+// pattern+description, the bare-vs-patterned UUID split — are the shared
+// vocabulary the kinds reuse. `apply_intent_graph` (ADR-0042) is the widest:
+// nested oneOf node-unions for entities, links, and the JE body.
 
 import { Schema as S } from "effect";
 
@@ -60,98 +59,13 @@ const patternedUuid = S.String.pipe(
 	),
 );
 
-// ── create_todo sub-schemas (shared leaf builders reused across kinds) ──
-
-/** `recurrence.end` (ADR-0037): an `until` datetime or an `after_count`. */
-const recurrenceEnd = S.Struct({
-	until: S.optional(localDateTime),
-	after_count: S.optional(positiveInt),
-});
-
-/** The recurrence cadence units (ADR-0037). The single source the write
- * schema's `unit` literal AND the Web codec's runtime membership check both
- * derive from — previously triplicated (here, `entityCodec.ts`, `recurrence.rs`).
- * `as const` so `S.Literal(...)` emits the same fixed-domain schema. */
-export const RECURRENCE_UNITS = [
-	"minute",
-	"hour",
-	"day",
-	"week",
-	"month",
-	"year",
-] as const;
-
-/** The recurrence rule (ADR-0037, slimmed by ADR-0039). */
-const recurrence = S.Struct({
-	interval: positiveInt,
-	unit: S.Literal(...RECURRENCE_UNITS),
-	anchor: S.Literal("defer_at", "due_at"),
-	end: S.optional(recurrenceEnd),
-});
-
-/** The TodoData fields OTHER than `title` — already all optional, and identical
- * across both `Mode`s. Spread into the full/partial structs so the two variants
- * differ only in how they declare `title`. */
-const todoDataRest = {
-	note: S.optional(S.String),
-	status: S.optional(S.Literal("active", "completed", "dropped")),
-	project_id: S.optional(nonEmptyString),
-	defer_at: S.optional(localDateTime),
-	due_at: S.optional(localDateTime),
-	completed_at: S.optional(localDateTime),
-	dropped_at: S.optional(localDateTime),
-	recurrence: S.optional(recurrence),
-};
-
-/** The TodoData core in `Mode::Full` (create path): `title` required, the rest
- * optional. Exported so the read-data superset gate (`readSchemas.test.ts`) can
- * introspect its field-set independently of the read schema. */
-export const todoDataFull = S.Struct({
-	title: nonEmptyString,
-	...todoDataRest,
-});
-
-/** The TodoData core in `Mode::Partial` (`update_todo`'s `todo`): EVERY field
- * optional, `title` included — so the struct emits no `required` array, matching
- * the fixture (a partial update sets only the fields it carries). */
-const todoDataPartial = S.Struct({
-	title: S.optional(nonEmptyString),
-	...todoDataRest,
-});
-
-/** One `person_refs` element (ADR-0031): a required `person_id` + optional role. */
-const personRef = S.Struct({
-	person_id: nonEmptyString,
-	role: S.optional(S.Literal("waiting_on", "related")),
-});
-
-/** `create_todo` payload: the `todo` envelope + optional Person References +
- * optional provenance id. */
-const createTodo = S.Struct({
-	todo: todoDataFull,
-	person_refs: S.optional(S.Array(personRef)),
-	source_journal_entry_id: S.optional(patternedUuid),
-});
-
-/** `update_todo` payload (ADR-0031): required `todo_id` (bare) + an optional
- * partial `todo` + the three Person-Reference edit lists — `set`/`add` carry
- * person_ref objects, `remove` carries BARE id strings (the non-empty rule is
- * validator-only). All four lists optional; only the id is required. */
-const updateTodo = S.Struct({
-	todo_id: S.String,
-	todo: S.optional(todoDataPartial),
-	set_person_refs: S.optional(S.Array(personRef)),
-	add_person_refs: S.optional(S.Array(personRef)),
-	remove_person_ids: S.optional(S.Array(S.String)),
-});
-
 // ── delete payloads ──
 //
-// The four deletes (`delete_person` / `delete_project` / `delete_todo`, plus
+// The three deletes (`delete_person` / `delete_project`, plus
 // `delete_journal_entry`, registered under the journal section below) are the
 // identical `{entity_id}` shape: a bare-string id (a UUID at runtime, but
-// advertised bare per the dialect — `FieldSpec::Uuid` WITHOUT `schema_regex`,
-// like `todo_id`), required. One shared factory, four entries.
+// advertised bare per the dialect — `FieldSpec::Uuid` WITHOUT `schema_regex`),
+// required. One shared factory, three entries.
 
 /** The shared single-`entity_id` delete payload. */
 const deleteByEntityId = S.Struct({
@@ -190,7 +104,7 @@ const updatePerson = S.Struct({
 // ── project payloads (`create_project` / `update_project`) ──
 
 /** `project.review_every` (ADR-0036): a positive-int interval + a cadence unit.
- * Both required. (Distinct from the Todo `recurrence` unit — no minute/hour.) */
+ * Both required. */
 const reviewEvery = S.Struct({
 	interval: positiveInt,
 	unit: S.Literal("day", "week", "month", "year"),
@@ -301,12 +215,11 @@ const referenceExistingEntityFromJournalEntry = S.Struct({
 // ── apply_intent_graph payload (ADR-0042) ──
 //
 // One intent graph: an optional `journal_entry` node, a `minItems:1` array of
-// typed entity nodes (person/project/todo), and an array of three link kinds.
+// typed entity nodes (person/project), and an array of `journal_ref` links.
 // Every node is a tagged object; the entity/link/body arrays are `S.Union(...)`
 // of inlined variants → `JSONSchema.make` emits `anyOf` (the normalizer renames
 // to `oneOf`), kept POSITIONAL, so members are declared in the SAME order Rust
-// emits them (`mutation.rs`): entities person→project→todo; body text→entity_ref;
-// links todo_project→todo_person→journal_ref. Each node carries
+// emits them (`mutation.rs`): entities person→project; body text→entity_ref. Each node carries
 // `additionalProperties:false` (every Effect `S.Struct` does), matching Rust.
 // Deep cross-node validation (handle references, duplicate handles) is the
 // resolver's job — NOT advertised here, mirroring the Rust spec.
@@ -331,16 +244,6 @@ const intentGraphProjectNode = S.Struct({
 	name: nonEmptyString,
 	outcome: S.optional(S.String),
 	note: S.optional(S.String),
-});
-
-const intentGraphTodoNode = S.Struct({
-	handle,
-	type: S.Literal("todo"),
-	existing_id: S.optional(patternedUuid),
-	title: nonEmptyString,
-	note: S.optional(S.String),
-	defer_at: S.optional(localDateTime),
-	due_at: S.optional(localDateTime),
 });
 
 /** A `journal_entry` body node: text or an `entity_ref` whose `target` is a
@@ -371,18 +274,7 @@ const intentGraphJournalEntry = S.Struct({
 	),
 });
 
-/** The three link kinds, declared todo_project→todo_person→journal_ref. */
-const intentGraphTodoProjectLink = S.Struct({
-	kind: S.Literal("todo_project"),
-	from: handle,
-	to: handle,
-});
-const intentGraphTodoPersonLink = S.Struct({
-	kind: S.Literal("todo_person"),
-	from: handle,
-	to: handle,
-	role: S.Literal("waiting_on", "related"),
-});
+/** The ONE link kind (the todo links retired with the TickTick cutover). */
 const intentGraphJournalRefLink = S.Struct({
 	kind: S.Literal("journal_ref"),
 	from: handle,
@@ -396,15 +288,9 @@ const intentGraphJournalRefLink = S.Struct({
 export const applyIntentGraph = S.Struct({
 	journal_entry: S.optional(intentGraphJournalEntry),
 	entities: S.Array(
-		S.Union(intentGraphPersonNode, intentGraphProjectNode, intentGraphTodoNode),
+		S.Union(intentGraphPersonNode, intentGraphProjectNode),
 	).pipe(S.minItems(1, { description: undefined })),
-	links: S.Array(
-		S.Union(
-			intentGraphTodoProjectLink,
-			intentGraphTodoPersonLink,
-			intentGraphJournalRefLink,
-		),
-	),
+	links: S.Array(S.Union(intentGraphJournalRefLink)),
 });
 
 // ── record_observations payload (ADR-0053) ──
@@ -499,20 +385,17 @@ export const recordObservations = S.Struct({
 	evidence: S.optional(observationEvidence),
 });
 
-/** The kind → Effect Schema registry the parity test iterates. All 15 wire
+/** The kind → Effect Schema registry the parity test iterates. All 12 wire
  * kinds are registered here; the test asserts each against its committed
  * `fixtures/<kind>.json`, and `completeness.test.ts` locks this key set to the
  * fixtures dir and the canonical wire-kind list. */
 export const schemas = {
-	create_todo: createTodo,
 	create_person: createPerson,
 	update_person: updatePerson,
 	create_project: createProject,
 	update_project: updateProject,
-	update_todo: updateTodo,
 	delete_person: deleteByEntityId,
 	delete_project: deleteByEntityId,
-	delete_todo: deleteByEntityId,
 	create_journal_entry: createJournalEntry,
 	update_journal_entry: updateJournalEntry,
 	delete_journal_entry: deleteByEntityId,
@@ -532,7 +415,7 @@ export type WireKind = keyof typeof schemas;
 // the proposable-kind completeness lock and the parity iteration). They are
 // authored here for the Web codec to import directly; the codec's own round-trip
 // test is their only guard. `title` required non-empty; `medium`/`state` are
-// required fixed-domain enums (`S.Literal(...)`, the Todo `status` dialect);
+// required fixed-domain enums (`S.Literal(...)`);
 // `rating`/`finished_at`/`url`/`note` optional; `tags` an array of BARE strings
 // (the Person `aliases` dialect). The cross-field rule that `rating`/
 // `finished_at` are meaningful only in a terminal `state` lives in Core's
@@ -592,20 +475,6 @@ export const deleteMedia = deleteByEntityId;
 
 /** A read-data field: present-or-absent, any stored value (the codec coerces). */
 const readField = S.optional(S.Unknown);
-
-/** Relaxed read schema for a stored Todo's `data` (ADR-0031/0037). Superset of
- * `todoDataFull`'s field-set; every field tolerant. */
-export const readTodoData = S.Struct({
-	title: readField,
-	note: readField,
-	status: readField,
-	project_id: readField,
-	defer_at: readField,
-	due_at: readField,
-	completed_at: readField,
-	dropped_at: readField,
-	recurrence: readField,
-});
 
 /** Relaxed read schema for a stored Person's `data` (ADR-0031). Superset of
  * `personCore`'s field-set. */

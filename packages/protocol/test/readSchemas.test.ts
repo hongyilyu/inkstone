@@ -21,8 +21,6 @@ import {
 	projectCore,
 	readPersonData,
 	readProjectData,
-	readTodoData,
-	todoDataFull,
 } from "../src/index.js";
 
 /** Field names of a Struct (`.fields`) or a plain field-map, sorted. */
@@ -32,14 +30,13 @@ const keysOf = (schemaOrFields: object): string[] => {
 	return Object.keys(fields ?? schemaOrFields).sort();
 };
 
-describe("read-data schema is a superset of the write-data schema (gated trio)", () => {
-	const trio = [
-		{ name: "todo", read: readTodoData, write: todoDataFull },
+describe("read-data schema is a superset of the write-data schema (gated pair)", () => {
+	const pair = [
 		{ name: "person", read: readPersonData, write: personCore },
 		{ name: "project", read: readProjectData, write: projectCore },
 	] as const;
 
-	for (const { name, read, write } of trio) {
+	for (const { name, read, write } of pair) {
 		it(`read ${name} field-set ⊇ write ${name} field-set`, () => {
 			const readKeys = new Set(keysOf(read));
 			const missing = keysOf(write).filter((k) => !readKeys.has(k));
@@ -53,33 +50,28 @@ describe("read-data schema is a superset of the write-data schema (gated trio)",
 	// vacuity that would silently turn the gate into a no-op) can no longer pass.
 	it("flags a write field the read schema is missing (the gate is not vacuous)", () => {
 		const writeWithExtra = S.Struct({
-			...todoDataFull.fields,
+			...personCore,
 			brand_new_write_field: S.String,
 		});
-		const readKeys = new Set(keysOf(readTodoData));
+		const readKeys = new Set(keysOf(readPersonData));
 		const missing = keysOf(writeWithExtra).filter((k) => !readKeys.has(k));
 		expect(missing).toEqual(["brand_new_write_field"]);
 	});
 });
 
 describe("read-data schema tolerates what the write schema rejects", () => {
-	it("read todo accepts an empty row; write todo rejects it (title required)", () => {
-		expect(() => S.decodeUnknownSync(todoDataFull)({})).toThrow();
-		expect(S.decodeUnknownSync(readTodoData)({})).toEqual({});
-	});
-
 	it("read person accepts an empty row; write person rejects it (name required)", () => {
 		expect(() => S.decodeUnknownSync(S.Struct(personCore))({})).toThrow();
 		expect(S.decodeUnknownSync(readPersonData)({})).toEqual({});
 	});
 
-	it("read todo accepts every field a valid write todo carries", () => {
+	it("read project accepts every field a valid write project carries", () => {
 		const full = {
-			title: "buy milk",
+			name: "Lead Ads",
 			status: "active",
-			note: "from the corner store",
+			note: "the Q3 push",
 			defer_at: "2026-06-22T09:00:00",
 		};
-		expect(S.decodeUnknownSync(readTodoData)(full)).toEqual(full);
+		expect(S.decodeUnknownSync(readProjectData)(full)).toEqual(full);
 	});
 });

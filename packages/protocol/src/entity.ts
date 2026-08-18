@@ -1,38 +1,7 @@
-// entity/*, journal_entry/rescan, message/search, and recurrence/preview
-// wire schemas (ADR-0009 hand-mirror).
+// entity/*, journal_entry/rescan, and message/search wire schemas
+// (ADR-0009 hand-mirror).
 
 import { Schema as S } from "effect";
-
-/** `recurrence/preview` params (ADR-0039 amendment, #227): a draft Recurrence
- * Rule + the editing Todo's current `defer_at`/`due_at`. The editor sends this
- * read-only request to preview where the next occurrence would land. `recurrence`
- * is the opaque rule object (Core's date math validates it via a fail-safe, never
- * rejects here); the dates are optional because a Todo may carry only one anchor.
- * Hand-authored wire params (what Web sends). */
-export const RecurrencePreviewParams = S.Struct({
-	recurrence: S.Unknown,
-	defer_at: S.optional(S.String),
-	due_at: S.optional(S.String),
-});
-
-export type RecurrencePreviewParams = S.Schema.Type<
-	typeof RecurrencePreviewParams
->;
-
-/** `recurrence/preview` result (ADR-0039 amendment, #227): the next occurrence's
- * dates, or `ended: true` when completing the Todo would spawn no successor (end
- * condition reached, or a malformed/partial draft rule). `ended: true` is a normal
- * result, not an error. When `ended` is false, `defer_at`/`due_at` mirror the
- * input's anchor presence; each is omitted (not null) when absent. */
-export const RecurrencePreviewResult = S.Struct({
-	ended: S.Boolean,
-	defer_at: S.optional(S.String),
-	due_at: S.optional(S.String),
-});
-
-export type RecurrencePreviewResult = S.Schema.Type<
-	typeof RecurrencePreviewResult
->;
 
 // entity/* (ADR-0004): the accepted Entities the Library reads; `entity/list` is type-parameterized (one type per call).
 
@@ -45,24 +14,12 @@ export const ResolvedEntityRef = S.Struct({
 	id: S.String,
 	source_entity_id: S.String,
 	target_entity_id: S.String,
-	target_entity_type: S.Literal("person", "project", "todo"),
+	target_entity_type: S.Literal("person", "project"),
 	target_title: S.optional(S.String),
 	label_snapshot: S.optional(S.String),
 });
 
 export type ResolvedEntityRef = S.Schema.Type<typeof ResolvedEntityRef>;
-
-/**
- * One Todo Person Reference on a Todo `entity/list` row (ADR-0031, ADR-0032):
- * the task-relationship analogue of `refs`. `role` carries the GTD semantics
- * (`waiting_on` ⊇ `related`). Clients derive Project↔Person↔Todo from these.
- */
-export const TodoPersonRefView = S.Struct({
-	person_id: S.String,
-	role: S.Literal("waiting_on", "related"),
-});
-
-export type TodoPersonRefView = S.Schema.Type<typeof TodoPersonRefView>;
 
 /**
  * One Entity's origin provenance on an `entity/list` row ("Captured from",
@@ -91,8 +48,6 @@ export const EntityRow = S.Struct({
 	created_at: S.Number,
 	updated_at: S.Number,
 	refs: S.optional(S.Array(ResolvedEntityRef)),
-	/** Present on Todo rows: the Todo's Person References (ADR-0032). */
-	person_refs: S.optional(S.Array(TodoPersonRefView)),
 	/** The Entity's origin provenance (ADR-0030); absent for a user-authored Entity. */
 	source: S.optional(EntitySourceView),
 });
@@ -110,14 +65,12 @@ export const EntityBacklinksParams = S.Struct({ entity_id: S.String });
 export type EntityBacklinksParams = S.Schema.Type<typeof EntityBacklinksParams>;
 
 /**
- * `entity/backlinks` result (ADR-0050): the two reverse sets Core resolves for the
+ * `entity/backlinks` result (ADR-0050): the reverse set Core resolves for the
  * detail Inspector — `mentioned_in` (distinct Journal Entries referencing this
- * Entity) and `linked_todos` (Todos linked via `project_id` / `person_refs`).
- * Both arrays are always present (possibly empty); reuses {@link EntityRow}.
+ * Entity). Always present (possibly empty); reuses {@link EntityRow}.
  */
 export const EntityBacklinksResult = S.Struct({
 	mentioned_in: S.Array(EntityRow),
-	linked_todos: S.Array(EntityRow),
 });
 
 export type EntityBacklinksResult = S.Schema.Type<typeof EntityBacklinksResult>;
@@ -144,7 +97,7 @@ export type EntityMutateResult = S.Schema.Type<typeof EntityMutateResult>;
 
 /**
  * `journal_entry/rescan` params (ADR-0042): the Journal Entry to re-scan for
- * people/projects/tasks mentioned but not yet captured. Core resolves the JE's
+ * people/projects mentioned but not yet captured. Core resolves the JE's
  * origin Thread and starts an ordinary agent Run there.
  */
 export const JournalEntryRescanParams = S.Struct({

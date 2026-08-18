@@ -126,8 +126,7 @@ export function rejectAll(plan: readonly ResolvedNode[]): StagingBuffer {
  */
 export type GraphNodeDraft =
 	| { type: "person"; name: string; note: string; aliases: string }
-	| { type: "project"; name: string; outcome: string; note: string }
-	| { type: "todo"; title: string; note: string };
+	| { type: "project"; name: string; outcome: string; note: string };
 
 /** The per-handle draft buffer (component state), holding a draft for every create
  * node the user has opened for edit. A handle with no entry was never edited. */
@@ -322,29 +321,20 @@ export function seedNodeDraft(
 				outcome: readString(entity, "outcome"),
 				note: readString(entity, "note"),
 			};
-		case "todo":
-			return {
-				type: "todo",
-				title: readString(entity, "title"),
-				note: readString(entity, "note"),
-			};
 	}
 }
 
-/** A node's required field (Person/Project `name`, Todo `title`) — the one the Save
- * is gated on. Blank ⇒ Save disabled (Core would reject an empty required field;
- * the gate keeps it client-side too). */
+/** A node's required `name` — the one the Save is gated on. Blank ⇒ Save disabled
+ * (Core would reject an empty required field; the gate keeps it client-side too). */
 export function draftRequiredEmpty(draft: GraphNodeDraft): boolean {
-	const required = draft.type === "todo" ? draft.title : draft.name;
-	return required.trim() === "";
+	return draft.name.trim() === "";
 }
 
 /** The label to show on a node's COLLAPSED row: the edited name/title when a draft
  * has been opened (so the row reflects the correction), else the node's original
  * label. Falls back to the original when the edited required field is blank. */
 export function draftLabel(node: ResolvedNode, draft: GraphNodeDraft): string {
-	const edited = (draft.type === "todo" ? draft.title : draft.name).trim();
-	return edited || node.label;
+	return draft.name.trim() || node.label;
 }
 
 /** Diff one clearable optional string field: returns `undefined` when unchanged,
@@ -373,9 +363,7 @@ function diffRequired(original: string, next: string): string | undefined {
  * the node's ORIGINAL proposed fields to the draft (ADR-0042). A changed field is
  * set; a blanked clearable optional is `null` (Core removes the key); an unchanged
  * field is omitted. Returns `undefined` when nothing changed — the node then commits
- * as a plain accept (no `edited_fields`). Person/Project edit flat fields; a Todo's
- * fields target the inner `{todo}` envelope Core-side, but the wire `edited_fields`
- * is flat (Core merges into the right object by node type). */
+ * as a plain accept (no `edited_fields`). Person/Project edit flat fields. */
 export function buildEditedFields(
 	original: Record<string, unknown> | undefined,
 	draft: GraphNodeDraft,
@@ -405,14 +393,6 @@ export function buildEditedFields(
 			setOptional(
 				"outcome",
 				diffOptional(readString(source, "outcome"), draft.outcome),
-			);
-			setOptional("note", diffOptional(readString(source, "note"), draft.note));
-			break;
-		}
-		case "todo": {
-			setRequired(
-				"title",
-				diffRequired(readString(source, "title"), draft.title),
 			);
 			setOptional("note", diffOptional(readString(source, "note"), draft.note));
 			break;
@@ -521,34 +501,13 @@ export function candidateSubtitle(
 	return trimmed ? `${trimmed} · ${idTag}` : idTag;
 }
 
-/** A reconcile notice surfaced BEFORE commit (ADR-0042 "shows this downgrade
- * before Apply"): when a Todo is staged `accept` but a Project/Person it links to
- * is staged `reject`, the link drops and the Todo lands degraded. We derive the
- * dependency from the plan's link metadata — but `ResolvedNode` carries no links,
- * so the caller passes the parsed graph links. Each notice names the dependent
- * Todo and the dropped link target. */
-export interface DowngradeNotice {
-	/** The handle of the Todo that loses a link. */
-	readonly todoHandle: string;
-	/** The handle of the rejected target whose link drops. */
-	readonly targetHandle: string;
-	/** The Todo's label, for display. */
-	readonly todoLabel: string;
-	/** A human sentence describing the dropped link. */
-	readonly message: string;
-	/** A stable render key, unique per dropped (todo, target, kind) link — a Todo
-	 * can lose more than one link, so `todoHandle` alone would collide. */
-	readonly key: string;
-}
-
-/** One intended link between two graph handles, parsed from the proposal payload
- * (the same `links[]` Core stores). Only `todo_project`/`todo_person` matter for
- * the downgrade notice (a `journal_ref` to a rejected entity collapses to text,
- * not a Todo downgrade). A `journal_ref` may carry `appendText` — a model-proposed
- * clause Core will APPEND to the saved entry's prose (ADR-0042 #221); it is surfaced
- * on the card so the user reviews the new sentence before accepting it. */
+/** One intended `journal_ref` link between two graph handles, parsed from the
+ * proposal payload (the same `links[]` Core stores). A `journal_ref` may carry
+ * `appendText` — a model-proposed clause Core will APPEND to the saved entry's
+ * prose (ADR-0042 #221); it is surfaced on the card so the user reviews the new
+ * sentence before accepting it. */
 export interface GraphLink {
-	readonly kind: "todo_project" | "todo_person" | "journal_ref";
+	readonly kind: "journal_ref";
 	readonly from: string;
 	readonly to: string;
 	/** A `journal_ref`'s `append_text`: the clause appended to the entry's prose. */
@@ -598,57 +557,9 @@ export function appendedClauses(
 	return out;
 }
 
-/** Compute the downgrade notices for the current staging (ADR-0042 reconcile): for
- * every `todo_project`/`todo_person` link whose `from` Todo is staged accept and
- * whose `to` target is staged reject, the link drops and the Todo lands standalone
- * — surfaced so the user sees the downgrade before Apply.
- *
- * `repoints` is consulted (like every other staging read) so a PICKED ambiguous
- * link target reads as `accept`, not its pre-pick `reject` default: a Todo linked to
- * a person/project node the user disambiguated keeps that link at apply, so it must
- * NOT surface a spurious "without its link" notice. */
-export function downgradeNotices(
-	plan: readonly ResolvedNode[],
-	links: readonly GraphLink[],
-	buffer: StagingBuffer,
-	repoints: RepointBuffer = new Map(),
-): DowngradeNotice[] {
-	const byHandle = new Map(plan.map((node) => [node.handle, node]));
-	const isAccepted = (handle: string): boolean => {
-		const node = byHandle.get(handle);
-		return node !== undefined && stageFor(buffer, node, repoints) === "accept";
-	};
-	const isRejected = (handle: string): boolean => {
-		const node = byHandle.get(handle);
-		return node !== undefined && stageFor(buffer, node, repoints) === "reject";
-	};
-
-	const notices: DowngradeNotice[] = [];
-	for (const link of links) {
-		if (link.kind === "journal_ref") continue;
-		if (!isAccepted(link.from) || !isRejected(link.to)) continue;
-		const todo = byHandle.get(link.from);
-		const target = byHandle.get(link.to);
-		if (todo === undefined || target === undefined) continue;
-		const targetLabel = target.label || target.handle;
-		const todoLabel = todo.label || todo.handle;
-		notices.push({
-			todoHandle: link.from,
-			targetHandle: link.to,
-			todoLabel,
-			key: `${link.from}:${link.to}:${link.kind}`,
-			message:
-				link.kind === "todo_project"
-					? `“${todoLabel}” will be created without its project link to “${targetLabel}”.`
-					: `“${todoLabel}” will be created without its link to “${targetLabel}”.`,
-		});
-	}
-	return notices;
-}
-
 /** Parse the `links[]` from an opaque `apply_intent_graph` payload, degrading any
  * malformed link rather than throwing (the wire payload is unvalidated, ADR-0014).
- * Only the three known kinds survive. */
+ * Only the `journal_ref` kind survives. */
 export function parseGraphLinks(payload: unknown): GraphLink[] {
 	if (!payload || typeof payload !== "object") return [];
 	const raw = (payload as Record<string, unknown>).links;
@@ -661,9 +572,7 @@ export function parseGraphLinks(payload: unknown): GraphLink[] {
 		const from = record.from;
 		const to = record.to;
 		if (
-			(kind === "todo_project" ||
-				kind === "todo_person" ||
-				kind === "journal_ref") &&
+			kind === "journal_ref" &&
 			typeof from === "string" &&
 			typeof to === "string"
 		) {
@@ -672,9 +581,7 @@ export function parseGraphLinks(payload: unknown): GraphLink[] {
 				kind,
 				from,
 				to,
-				...(kind === "journal_ref" && typeof appendText === "string"
-					? { appendText }
-					: {}),
+				...(typeof appendText === "string" ? { appendText } : {}),
 			});
 		}
 	}

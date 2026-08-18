@@ -10,7 +10,7 @@ import {
 	WsRequestError,
 } from "@inkstone/ui-sdk";
 import { renderWithCore } from "@test/test-utils/renderWithCore";
-import { journalEntryRow, todoRow } from "@test/test-utils/rows";
+import { journalEntryRow } from "@test/test-utils/rows";
 import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Effect } from "effect";
@@ -23,7 +23,6 @@ import {
 	type LibraryItem,
 	type Person,
 	type Project,
-	type Todo,
 } from "@/lib/libraryItems";
 
 const { navigate } = vi.hoisted(() => ({ navigate: vi.fn() }));
@@ -54,9 +53,9 @@ afterEach(() => {
 // Stub verbs for the Core harness: `entityMutate` and `getBacklinks` run the
 // supplied handlers; other un-stubbed request verbs die, while the harness
 // serves empty entity/run-event reads. `getBacklinks` defaults to a DYING read
-// so a test that doesn't seed backlinks lands on the `isError` fallback — i.e.
-// the inspector derives Waiting/Tasks/Todos from `allEntities` exactly as it did
-// pre-Core (ADR-0050 §7). Tests that prove the Core path override it with real rows.
+// so a test that doesn't seed backlinks lands on the `degraded` branch, where the
+// inspector simply omits "Mentioned in" (it has no client fallback, ADR-0050 §7).
+// Tests that prove the Core path override it with real rows.
 function makeOverrides(
 	entityMutate: (
 		params: EntityMutateParams,
@@ -76,15 +75,15 @@ function makeOverrides(
 
 // Build an `EntityBacklinksResult` for the Core-sourced inspector. Rows are wire
 // `EntityRow`s (snake_case `data` + `created_at`/`updated_at` + ride-along
-// `refs`/`person_refs`), the same shape Core emits and `entityCodec` parses.
+// `refs`), the same shape Core emits and `entityCodec` parses.
 function backlinks(
 	result: Partial<EntityBacklinksResult>,
 ): EntityBacklinksResult {
-	return { mentioned_in: [], linked_todos: [], ...result };
+	return { mentioned_in: [], ...result };
 }
 
 let backlinkRowSeq = 0;
-/** A fresh row id so two `jeBacklinkRow`/`todoBacklinkRow` calls never collide. */
+/** A fresh row id so two `jeBacklinkRow` calls never collide. */
 function nextBacklinkSeq(): number {
 	backlinkRowSeq += 1;
 	return backlinkRowSeq;
@@ -103,26 +102,6 @@ function jeBacklinkRow(
 		[{ type: "text", text }],
 		{ occurred_at: "2026-06-10T10:30:00" },
 		{ created_at: 1000, updated_at: 1000 },
-	);
-}
-
-/** A wire Todo `EntityRow` linked to a person via a `person_refs` role. */
-function todoBacklinkRow(
-	title: string,
-	personId: string,
-	role: "waiting_on" | "related",
-	status: Todo["status"] = "active",
-	id = `t_bl_${nextBacklinkSeq()}`,
-): EntityBacklinksResult["linked_todos"][number] {
-	return todoRow(
-		id,
-		title,
-		{ status },
-		{
-			created_at: 2000,
-			updated_at: 2000,
-			person_refs: [{ person_id: personId, role }],
-		},
 	);
 }
 
@@ -291,234 +270,19 @@ const project = (
 	...extra,
 });
 
-const todoItem = (id: string, extra: Partial<Todo> = {}): Todo => ({
-	id,
-	kind: "todo",
-	title: id,
-	status: "active",
-	personRefs: [],
-	recency: 1,
-	createdAt: "fixture",
-	...extra,
-});
-
-describe("EntityDetail Todo projection", () => {
-	it("shows status, dates, project, and linked people with role labels", () => {
-		const alice = person("p_alice", "Alice");
-		const proj = project("pr_1", "Daycare move");
-		const todo = todoItem("t_1", {
-			title: "Send Alice the schedule",
-			status: "active",
-			dueAt: "2999-06-14T17:00:00",
-			deferAt: "2999-06-10T00:00:00",
-			projectId: "pr_1",
-			personRefs: [{ personId: "p_alice", role: "waiting_on" }],
-		});
-		const all: LibraryItem[] = [alice, proj, todo];
-
-		renderDetail(<EntityDetail entity={todo} allEntities={all} />);
-
-		// Status + due also appear in the header subtitle, so allow >1.
-		expect(screen.getAllByText("Active").length).toBeGreaterThanOrEqual(1);
-		// The inspector badge humanizes the day through `formatDay` (e.g. "Jun 14,
-		// 2999" in en-US) — derive the expected text from the same formatter so the
-		// assertion holds on any ICU locale.
-		expect(
-			screen.getAllByText(dayBadge("Due ", "2999-06-14T17:00:00")).length,
-		).toBeGreaterThanOrEqual(1);
-		expect(
-			screen.getByText(dayBadge("Deferred to ", "2999-06-10T00:00:00")),
-		).toBeInTheDocument();
-		expect(screen.getByText("Daycare move")).toBeInTheDocument();
-		// Linked person rendered with its waiting_on role label.
-		expect(screen.getByText("Alice")).toBeInTheDocument();
-		expect(screen.getByText("Waiting on")).toBeInTheDocument();
-	});
-
-	it("shows the dropped date for a dropped todo", () => {
-		const todo = todoItem("t_drop", {
-			title: "Old vendor eval",
-			status: "dropped",
-			droppedAt: "2026-05-20T12:00:00",
-		});
-		renderDetail(<EntityDetail entity={todo} allEntities={[todo]} />);
-		expect(screen.getByText("Dropped")).toBeInTheDocument();
-		expect(
-			screen.getByText(dayBadge("Dropped ", "2026-05-20T12:00:00")),
-		).toBeInTheDocument();
-	});
-
-	it("renders a recurrence summary badge for a recurring todo (ADR-0037)", () => {
-		const todo = todoItem("t_rec", {
-			title: "Weekly review",
-			deferAt: "2026-06-14T09:00:00",
-			recurrence: {
-				interval: 1,
-				unit: "week",
-				anchor: "defer_at",
-			},
-		});
-		renderDetail(<EntityDetail entity={todo} allEntities={[todo]} />);
-		expect(screen.getByText("Repeats weekly")).toBeInTheDocument();
-	});
-
-	it("renders no recurrence badge for a non-recurring todo (ADR-0037)", () => {
-		const todo = todoItem("t_norec", { title: "One-off task" });
-		renderDetail(<EntityDetail entity={todo} allEntities={[todo]} />);
-		expect(screen.queryByText(/^Repeats/)).not.toBeInTheDocument();
-	});
-});
-
-describe("EntityDetail Todo edit", () => {
-	it("toggles to an edit form and saves a changed title as update_todo", async () => {
-		const user = userEvent.setup();
-		const seen: EntityMutateParams[] = [];
-		const todo = todoItem("t_edit", { title: "Old title" });
-		renderDetail(
-			<EntityDetail entity={todo} allEntities={[todo]} />,
-			makeOverrides((params) => {
-				seen.push(params);
-				return Effect.succeed({ entity_id: todo.id });
-			}),
-		);
-
-		await user.click(screen.getByRole("button", { name: /edit todo/i }));
-		const title = screen.getByLabelText(/title/i);
-		await user.clear(title);
-		await user.type(title, "New title");
-		await user.click(screen.getByRole("button", { name: /^save$/i }));
-
-		await waitFor(() =>
-			expect(seen).toEqual([
-				{
-					mutation_kind: "update_todo",
-					payload: { todo_id: todo.id, todo: { title: "New title" } },
-				},
-			]),
-		);
-		// Back to view mode: the editor's Save button is gone.
-		await waitFor(() =>
-			expect(
-				screen.queryByRole("button", { name: /^save$/i }),
-			).not.toBeInTheDocument(),
-		);
-	});
-});
-
-describe("EntityDetail Todo delete", () => {
-	it("confirms inline, deletes, and clears the rail selection", async () => {
-		const user = userEvent.setup();
-		const seen: EntityMutateParams[] = [];
-		const todo = todoItem("t_del", { title: "Stale task" });
-		renderDetail(
-			<EntityDetail entity={todo} allEntities={[todo]} />,
-			makeOverrides((params) => {
-				seen.push(params);
-				return Effect.succeed({});
-			}),
-		);
-
-		// First click reveals the inline confirm, not a dialog.
-		await user.click(screen.getByRole("button", { name: /delete todo/i }));
-		expect(screen.getByText(/delete this todo\?/i)).toBeInTheDocument();
-		await user.click(screen.getByRole("button", { name: /^delete$/i }));
-
-		await waitFor(() =>
-			expect(seen).toEqual([
-				{ mutation_kind: "delete_todo", payload: { entity_id: todo.id } },
-			]),
-		);
-		await waitFor(() =>
-			// Stays on the current route (the rail can be opened in-place from a
-			// derived view) and only clears `?id`.
-			expect(navigate).toHaveBeenCalledWith({
-				to: ".",
-				search: {},
-			}),
-		);
-	});
-
-	it("can cancel the delete confirm without writing", async () => {
-		const user = userEvent.setup();
-		const seen: EntityMutateParams[] = [];
-		const todo = todoItem("t_keep", { title: "Keep me" });
-		renderDetail(
-			<EntityDetail entity={todo} allEntities={[todo]} />,
-			makeOverrides((params) => {
-				seen.push(params);
-				return Effect.succeed({});
-			}),
-		);
-
-		await user.click(screen.getByRole("button", { name: /delete todo/i }));
-		await user.click(screen.getByRole("button", { name: /cancel/i }));
-
-		expect(screen.queryByText(/delete this todo\?/i)).not.toBeInTheDocument();
-		expect(seen).toHaveLength(0);
-	});
-});
-
 describe("EntityDetail Person projection", () => {
-	it("shows aliases, waiting tasks, and projects derived through todos", async () => {
-		const alice = person("p_alice", "Alice", { aliases: ["Allie", "A."] });
-		const proj = project("pr_1", "Daycare move");
-		const waitingTodo = todoItem("t_wait", {
-			title: "Schedule from Alice",
-			projectId: "pr_1",
-			personRefs: [{ personId: "p_alice", role: "waiting_on" }],
+	it("shows aliases and the note", () => {
+		const alice = person("p_alice", "Alice", {
+			aliases: ["Allie", "A."],
+			note: "Handles the daycare transition.",
 		});
-		// allEntities still holds the todo (the live Library loads every row — it
-		// drives the client Person→Projects join); the Waiting/Tasks sections
-		// re-source from the Core `linked_todos` set (ADR-0050).
-		const all: LibraryItem[] = [alice, proj, waitingTodo];
 
-		renderDetail(
-			<EntityDetail entity={alice} allEntities={all} />,
-			makeOverrides(undefined, () =>
-				Effect.succeed(
-					backlinks({
-						linked_todos: [
-							todoBacklinkRow("Schedule from Alice", "p_alice", "waiting_on"),
-						],
-					}),
-				),
-			),
-		);
+		renderDetail(<EntityDetail entity={alice} allEntities={[alice]} />);
 
 		expect(screen.getByText(/Allie, A\./)).toBeInTheDocument();
-		// Waiting-on section lists the Core task; Projects derives pr_1 through the
-		// allEntities todo (the join stays client-side).
-		expect(await screen.findByText("Schedule from Alice")).toBeInTheDocument();
-		expect(screen.getByText("Daycare move")).toBeInTheDocument();
-	});
-
-	it("keeps a resolved waiting_on todo out of 'Waiting on' (active only)", async () => {
-		const alice = person("p_alice", "Alice");
-		renderDetail(
-			<EntityDetail entity={alice} allEntities={[alice]} />,
-			makeOverrides(undefined, () =>
-				Effect.succeed(
-					backlinks({
-						linked_todos: [
-							todoBacklinkRow(
-								"Already got the draft",
-								"p_alice",
-								"waiting_on",
-								"completed",
-							),
-						],
-					}),
-				),
-			),
-		);
-
-		// It still appears as a (historical) task on arrival of the Core read.
 		expect(
-			await screen.findByText("Already got the draft"),
+			screen.getByText("Handles the daycare transition."),
 		).toBeInTheDocument();
-		expect(screen.getByText(/Tasks/)).toBeInTheDocument();
-		// The completed task is not a live follow-up — no "Waiting on" section.
-		expect(screen.queryByText(/Waiting on/)).not.toBeInTheDocument();
 	});
 
 	it("shows 'Mentioned in' journal entries the Core read returns", async () => {
@@ -544,29 +308,14 @@ describe("EntityDetail Person projection", () => {
 });
 
 describe("EntityDetail Project projection", () => {
-	it("shows note, review state, and people derived through its todos", async () => {
-		const alice = person("p_alice", "Alice");
+	it("shows note and review state", () => {
 		const proj = project("pr_1", "Daycare move", {
 			note: "Provider switch by August.",
 			nextReviewAt: "2026-06-21T20:00:00",
 			lastReviewedAt: "2026-06-14T20:00:00",
 		});
-		// People derive (client-side join) from the Core `linked_todos` set + the
-		// Person in allEntities (ADR-0050).
-		const all: LibraryItem[] = [alice, proj];
 
-		renderDetail(
-			<EntityDetail entity={proj} allEntities={all} />,
-			makeOverrides(undefined, () =>
-				Effect.succeed(
-					backlinks({
-						linked_todos: [
-							todoBacklinkRow("Daycare task", "p_alice", "related"),
-						],
-					}),
-				),
-			),
-		);
+		renderDetail(<EntityDetail entity={proj} allEntities={[proj]} />);
 
 		expect(screen.getByText("Provider switch by August.")).toBeInTheDocument();
 		expect(
@@ -575,23 +324,16 @@ describe("EntityDetail Project projection", () => {
 		expect(
 			screen.getByText(dayBadge("last reviewed ", "2026-06-14T20:00:00")),
 		).toBeInTheDocument();
-		// Person derived through the project's Core-linked todo appears (no direct
-		// link) — on arrival of the async read.
-		expect(await screen.findByText("Alice")).toBeInTheDocument();
 	});
 });
 
 // ── Core-sourced backlinks (ADR-0050) ────────────────────────────────────────
 
 describe("EntityDetail Core-sourced backlinks", () => {
-	it("renders 'Mentioned in' from the Core read for Person, Project, and Todo", async () => {
+	it("renders 'Mentioned in' from the Core read for Person and Project", async () => {
 		const subjects: { entity: LibraryItem; text: string }[] = [
 			{ entity: person("p_x", "Person X"), text: "Mentions the person." },
 			{ entity: project("pr_x", "Project X"), text: "Mentions the project." },
-			{
-				entity: todoItem("t_x", { title: "Todo X" }),
-				text: "Mentions the todo.",
-			},
 		];
 		for (const { entity, text } of subjects) {
 			renderDetail(
@@ -643,77 +385,38 @@ describe("EntityDetail Core-sourced backlinks", () => {
 		expect(screen.getByText(/Mentioned in · 2/)).toBeInTheDocument();
 	});
 
-	it("derives Person Waiting/Tasks from the Core linked_todos set", async () => {
-		const alice = person("p_core", "Alice");
+	it("omits Mentioned-in on a Person read error (no client fallback)", async () => {
+		const alice = person("p_err", "Alice", { note: "Still renders." });
 		renderDetail(
 			<EntityDetail entity={alice} allEntities={[alice]} />,
-			makeOverrides(undefined, () =>
-				Effect.succeed(
-					backlinks({
-						linked_todos: [
-							todoBacklinkRow("Awaiting Alice's reply", "p_core", "waiting_on"),
-							todoBacklinkRow("Follow up with Alice", "p_core", "related"),
-						],
-					}),
-				),
-			),
-		);
-
-		// Both the waiting_on follow-up and the related task come from the Core set,
-		// not a scan of `allEntities` (which holds only the Person here).
-		expect(
-			await screen.findByText("Awaiting Alice's reply"),
-		).toBeInTheDocument();
-		expect(screen.getByText("Follow up with Alice")).toBeInTheDocument();
-		expect(screen.getByText(/Waiting on/)).toBeInTheDocument();
-		expect(screen.getByText(/Tasks/)).toBeInTheDocument();
-	});
-
-	it("falls back to allEntities-derived Waiting/Tasks and omits Mentioned-in on a read error", async () => {
-		const alice = person("p_err", "Alice");
-		const waitingTodo = todoItem("t_err", {
-			title: "Schedule from Alice",
-			personRefs: [{ personId: "p_err", role: "waiting_on" }],
-		});
-		renderDetail(
-			<EntityDetail entity={alice} allEntities={[alice, waitingTodo]} />,
 			makeOverrides(undefined, () =>
 				Effect.fail(new WsRequestError({ reason: "core unreachable" })),
 			),
 		);
 
-		// The relation never vanishes — it degrades to the client-derived set.
-		expect(await screen.findByText("Schedule from Alice")).toBeInTheDocument();
-		expect(screen.getByText(/Waiting on/)).toBeInTheDocument();
+		// The Person's own fields still render; only the Core-sourced section drops.
+		expect(await screen.findByText("Still renders.")).toBeInTheDocument();
 		// Mentioned-in has no client fallback, so it is simply absent on error.
 		expect(screen.queryByText(/Mentioned in/)).not.toBeInTheDocument();
 	});
 
-	it("falls back to allEntities-derived Todos and People on a Project read error", async () => {
-		// The Project error branch is a DISTINCT path from the Person one: it derives
-		// Todos via `todosForProject` then People/Progress via `peopleFromTodos` over
-		// the same fallback set. Cover it independently so dropping the Project
-		// fallback (e.g. rendering `linked_todos` empty on a Core-unreachable read)
-		// can't pass with only the Person error test green.
-		const alice = person("p_perr", "Alice");
-		const proj = project("pr_perr", "Daycare move");
-		const projectTodo = todoItem("t_perr", {
-			title: "Tour the new daycare",
-			projectId: "pr_perr",
-			personRefs: [{ personId: "p_perr", role: "related" }],
+	it("omits Mentioned-in on a Project read error (a distinct body path)", async () => {
+		// ProjectBody is a DISTINCT path from PersonBody, so cover its degraded
+		// branch independently — a regression that rendered an empty "Mentioned in"
+		// header on a failed Project read can't hide behind the Person test.
+		const proj = project("pr_perr", "Daycare move", {
+			note: "Provider switch by August.",
 		});
 		renderDetail(
-			<EntityDetail entity={proj} allEntities={[alice, proj, projectTodo]} />,
+			<EntityDetail entity={proj} allEntities={[proj]} />,
 			makeOverrides(undefined, () =>
 				Effect.fail(new WsRequestError({ reason: "core unreachable" })),
 			),
 		);
 
-		// Todos (todosForProject) and the People derived through them
-		// (peopleFromTodos) both survive a failed read — the relation never vanishes.
-		expect(await screen.findByText("Tour the new daycare")).toBeInTheDocument();
-		expect(screen.getByText("Alice")).toBeInTheDocument();
-		// Mentioned-in has no client fallback, so it is absent on error.
+		expect(
+			await screen.findByText("Provider switch by August."),
+		).toBeInTheDocument();
 		expect(screen.queryByText(/Mentioned in/)).not.toBeInTheDocument();
 	});
 });
@@ -866,8 +569,8 @@ describe("EntityDetail Journal Entry rescan", () => {
 	});
 
 	it("does not show 'Scan again' on a non-Journal-Entry detail", () => {
-		const todo = todoItem("t_norescan", { title: "Buy milk" });
-		renderDetail(<EntityDetail entity={todo} allEntities={[todo]} />);
+		const subject = person("p_norescan", "Alice");
+		renderDetail(<EntityDetail entity={subject} allEntities={[subject]} />);
 
 		expect(
 			screen.queryByRole("button", { name: /scan again/i }),
@@ -908,15 +611,14 @@ describe("EntityDetail Journal Entry rescan", () => {
 describe("EntityDetail Captured from", () => {
 	it("links a Thread-sourced Entity back to its originating chat (no capturing message)", async () => {
 		const user = userEvent.setup();
-		const todo = todoItem("t_msg", {
-			title: "Buy milk",
+		const subject = person("p_msg", "Alice", {
 			source: {
 				kind: "thread",
 				threadId: "thr_1",
 				threadTitle: "Morning brain dump",
 			},
 		});
-		renderDetail(<EntityDetail entity={todo} allEntities={[todo]} />);
+		renderDetail(<EntityDetail entity={subject} allEntities={[subject]} />);
 
 		await user.click(
 			screen.getByRole("button", { name: /Morning brain dump/ }),
@@ -939,8 +641,7 @@ describe("EntityDetail Captured from", () => {
 
 	it("deep-links to the capturing message when the source carries one (#184)", async () => {
 		const user = userEvent.setup();
-		const todo = todoItem("t_msg", {
-			title: "Buy milk",
+		const subject = person("p_msg", "Alice", {
 			source: {
 				kind: "thread",
 				threadId: "thr_1",
@@ -948,7 +649,7 @@ describe("EntityDetail Captured from", () => {
 				messageId: "msg_1",
 			},
 		});
-		renderDetail(<EntityDetail entity={todo} allEntities={[todo]} />);
+		renderDetail(<EntityDetail entity={subject} allEntities={[subject]} />);
 
 		await user.click(
 			screen.getByRole("button", { name: /Morning brain dump/ }),
@@ -975,22 +676,22 @@ describe("EntityDetail Captured from", () => {
 			createdAt: "fixture",
 			recency: 1,
 		};
-		const todo = todoItem("t_je", {
-			title: "Email Alice",
+		const subject = person("p_je", "Alice", {
 			source: { kind: "journal_entry", journalEntryId: "je_1" },
 		});
-		renderDetail(<EntityDetail entity={todo} allEntities={[todo, entry]} />);
+		renderDetail(
+			<EntityDetail entity={subject} allEntities={[subject, entry]} />,
+		);
 
 		expect(screen.queryByText(/Captured from/)).not.toBeInTheDocument();
 		expect(screen.queryByRole("button", { name: /Standup notes/ })).toBeNull();
 	});
 
 	it("renders no footer for a user-authored Entity (no source)", () => {
-		const todo = todoItem("t_user", {
-			title: "Hand-made",
+		const subject = person("p_user", "Hand-made", {
 			createdAt: "Jun 14",
 		});
-		renderDetail(<EntityDetail entity={todo} allEntities={[todo]} />);
+		renderDetail(<EntityDetail entity={subject} allEntities={[subject]} />);
 
 		// A user-authored Entity has no provenance, so the footer is absent
 		// entirely — no "Captured from" header, no origin line.
@@ -999,13 +700,12 @@ describe("EntityDetail Captured from", () => {
 	});
 
 	it("renders no footer for a Journal-Entry source whose entry is gone (cascade-deleted)", () => {
-		const todo = todoItem("t_orphan", {
-			title: "Orphaned",
+		const subject = person("p_orphan", "Orphaned", {
 			source: { kind: "journal_entry", journalEntryId: "missing_je" },
 		});
 		// A Journal-Entry source never renders the footer (ADR-0050), whether or not
 		// the entry is still loaded.
-		renderDetail(<EntityDetail entity={todo} allEntities={[todo]} />);
+		renderDetail(<EntityDetail entity={subject} allEntities={[subject]} />);
 
 		expect(screen.queryByText(/Captured from/)).not.toBeInTheDocument();
 	});

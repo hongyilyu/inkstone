@@ -128,7 +128,7 @@ CREATE INDEX idx_proposals_status ON proposals(status) WHERE status = 'pending';
 -- Entities and revisions -----------------------------------------------
 CREATE TABLE entities (
   id                       TEXT PRIMARY KEY,
-  type                     TEXT NOT NULL,            -- journal_entry / person / todo / project / …
+  type                     TEXT NOT NULL,            -- journal_entry / person / project / …
   schema_version           INTEGER NOT NULL,
   data                     TEXT NOT NULL,            -- JSON; current state (= revisions.data of latest seq)
   created_by               TEXT NOT NULL CHECK (created_by IN ('user','proposal')),
@@ -301,23 +301,6 @@ CREATE INDEX idx_media_attachments_entity      ON media_attachments(target_entit
 CREATE INDEX idx_media_attachments_message     ON media_attachments(target_message_id)     WHERE target_message_id     IS NOT NULL;
 CREATE INDEX idx_media_attachments_observation ON media_attachments(target_observation_id) WHERE target_observation_id IS NOT NULL;
 CREATE INDEX idx_media_attachments_proposal    ON media_attachments(target_proposal_id)    WHERE target_proposal_id    IS NOT NULL;
-
--- Todo Person References (ADR-0031) ------------------------------------
--- A task-specific Person association on a Todo (not a generic relationship
--- graph, not an Entity Reference). At most one row per (todo_id, person_id);
--- `waiting_on` includes related semantics so no second `related` row is stored
--- for the same Person. Both FKs cascade so deleting a Todo or a Person frees
--- its refs.
-CREATE TABLE todo_person_refs (
-  todo_id    TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
-  person_id  TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
-  role       TEXT NOT NULL CHECK (role IN ('waiting_on','related')),
-  created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL,
-  PRIMARY KEY (todo_id, person_id)
-);
-CREATE INDEX idx_todo_person_refs_person ON todo_person_refs(person_id);
-CREATE INDEX idx_todo_person_refs_role   ON todo_person_refs(role);
 
 -- Settings (ADR-0024) --------------------------------------------------
 -- The user's preferred model per Workflow and the global effort (thinking)

@@ -1,12 +1,12 @@
 //! Wall-clock / civil-calendar date math (proleptic Gregorian, Howard Hinnant's
-//! `civil_from_days`/`days_from_civil` algorithms). A self-contained leaf with no
-//! dependency on any entity concept: it parses and formats the `YYYY-MM-DDTHH:MM:SS`
-//! wall-clock string (ADR-0031/0034), decomposes epoch-ms instants into a local
+//! `civil_from_days` algorithm). A self-contained leaf with no dependency on any
+//! entity concept: it parses and formats the `YYYY-MM-DDTHH:MM:SS` wall-clock
+//! string (ADR-0031/0034), decomposes epoch-ms instants into a local
 //! review-anchor clock, and computes the Sunday-20:00 review anchors. Shared by
-//! entity validation ([`crate::entities`]), the recurrence date math (ADR-0039,
-//! [`crate::recurrence`]), observation time-range reads ([`crate::observations`]),
-//! the field-spec datetime check ([`crate::field_spec`]), and the mark-reviewed
-//! apply path ([`crate::db::apply`]).
+//! entity validation ([`crate::entities`]), observation time-range reads
+//! ([`crate::observations`]), the field-spec datetime check
+//! ([`crate::field_spec`]), and the mark-reviewed apply path
+//! ([`crate::db::apply`]).
 
 pub(crate) fn parse_local_datetime(
     value: &str,
@@ -60,9 +60,8 @@ fn parse_digits(value: &str, start: usize, end: usize, field: &str) -> Result<u3
 }
 
 /// The number of days in a civil month (proleptic Gregorian), `0` for an
-/// out-of-range month. `pub(crate)` so the recurrence date math (ADR-0039) can
-/// clamp a month/year advance to the target month's last valid day.
-pub(crate) fn days_in_month(year: u32, month: u32) -> u32 {
+/// out-of-range month.
+fn days_in_month(year: u32, month: u32) -> u32 {
     match month {
         1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
         4 | 6 | 9 | 11 => 30,
@@ -147,10 +146,8 @@ pub(crate) fn now_local(now_ms: i64, offset_minutes: i64) -> String {
 }
 
 /// Format a civil date + time as the `YYYY-MM-DDTHH:MM:SS` wall-clock string —
-/// the one owner of the wall-clock format used by [`now_local`] and the
-/// recurrence date math (ADR-0039). `pub(crate)` so the recurrence module shares
-/// this string rather than re-deriving it.
-pub(crate) fn format_local_datetime(
+/// the one owner of the wall-clock format used by [`now_local`].
+fn format_local_datetime(
     year: i64,
     month: i64,
     day: i64,
@@ -162,9 +159,8 @@ pub(crate) fn format_local_datetime(
 }
 
 /// Civil (year, month, day) for a count of days since 1970-01-01, proleptic
-/// Gregorian (Howard Hinnant's `civil_from_days`). `pub(crate)` so the recurrence
-/// date math (ADR-0039) shares one civil calendar with the review-date helpers.
-pub(crate) fn civil_from_days(days: i64) -> (i64, i64, i64) {
+/// Gregorian (Howard Hinnant's `civil_from_days`).
+fn civil_from_days(days: i64) -> (i64, i64, i64) {
     let z = days + 719_468;
     let era = (if z >= 0 { z } else { z - 146_096 }) / 146_097;
     let doe = z - era * 146_097;
@@ -175,19 +171,6 @@ pub(crate) fn civil_from_days(days: i64) -> (i64, i64, i64) {
     let d = doy - (153 * mp + 2) / 5 + 1;
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     (y + if m <= 2 { 1 } else { 0 }, m, d)
-}
-
-/// Days since 1970-01-01 for a civil (year, month, day), proleptic Gregorian
-/// (Howard Hinnant's `days_from_civil`); the inverse of [`civil_from_days`].
-/// `pub(crate)` so the recurrence date math (ADR-0039) can convert a clamped
-/// civil date back to a day count for the day/week advance.
-pub(crate) fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
-    let y = year - if month <= 2 { 1 } else { 0 };
-    let era = (if y >= 0 { y } else { y - 399 }) / 400;
-    let yoe = y - era * 400;
-    let doy = (153 * (if month > 2 { month - 3 } else { month + 9 }) + 2) / 5 + day - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146_097 + doe - 719_468
 }
 
 #[cfg(test)]
@@ -290,12 +273,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn civil_days_round_trip() {
-        for (y, m, d) in [(1970, 1, 1), (2026, 6, 14), (2026, 6, 21), (2000, 2, 29)] {
-            let days = days_from_civil(y, m, d);
-            assert_eq!(civil_from_days(days), (y, m, d), "round-trips {y}-{m}-{d}");
-        }
-        assert_eq!(days_from_civil(1970, 1, 1), 0, "epoch is day 0");
-    }
 }

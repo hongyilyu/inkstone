@@ -7,7 +7,7 @@ the tree as history. Prose may be refreshed in place to track the code, but the
 recorded *decision* does not.
 
 New ADR: copy [`0000-template.md`](./0000-template.md), take the next free number
-(currently **0062**), and add a row below. When superseding, add the
+(currently **0064**), and add a row below. When superseding, add the
 `/ supersedes` and `/ superseded by` pointers to both files and update the table.
 
 ## Conventions
@@ -52,15 +52,15 @@ New ADR: copy [`0000-template.md`](./0000-template.md), take the next free numbe
 | 0028 | Run and Proposal status are materialized, changed only through guarded transitions | Accepted |
 | 0029 | Request handlers are `Result<S, HandlerError>` behind one framing combinator | Accepted |
 | 0030 | Journal Entries anchor chat capture; Daily Notes are derived views | Superseded in part by 0042 |
-| 0031 | GTD Todo, Person, and Project entity model | Accepted |
-| 0032 | GTD relations ride on entity/list; clients derive Project↔Person↔Todo | Accepted (presentation annotated by 0054) |
+| 0031 | GTD Todo, Person, and Project entity model | Superseded in part by 0064 |
+| 0032 | GTD relations ride on entity/list; clients derive Project↔Person↔Todo | Superseded in part by 0064 (presentation annotated by 0054) |
 | 0033 | User-initiated Entity CRUD writes directly; Proposals gate only the agent | Accepted |
 | 0034 | Mark-project-reviewed: a Core-owned review-advance write path | Accepted |
 | 0035 | Message search: a substring scan over completed message text | Accepted |
 | 0036 | Skills: drop-in markdown procedures the model loads mid-Run | Accepted |
-| 0037 | Todo recurrence rule: an OmniFocus-style repeat persisted in Todo data | Accepted |
+| 0037 | Todo recurrence rule: an OmniFocus-style repeat persisted in Todo data | Superseded by 0064 |
 | 0038 | Diagnostic logs are structured `tracing` events on a rolling JSONL file | Accepted |
-| 0039 | Recurring Todo occurrence generation: completing a recurring Todo spawns its successor | Accepted |
+| 0039 | Recurring Todo occurrence generation: completing a recurring Todo spawns its successor | Superseded by 0064 |
 | 0040 | The Provider Helper lives in its own package | Accepted |
 | 0041 | Compiled Worker / Provider-Helper binaries, resolved by Core | Accepted |
 | 0042 | Workspace capture is one intent graph: batched recognition, deterministic resolve, atomic apply | Accepted |
@@ -76,17 +76,22 @@ New ADR: copy [`0000-template.md`](./0000-template.md), take the next free numbe
 | 0052 | Thread archive lifecycle (archive-not-delete, rename) | Accepted |
 | 0053 | Observation records for high-volume tracker facts | Accepted |
 | 0054 | Topic navigation replaces the flat entity-type Library as the browse axis | Accepted |
-| 0055 | GTD ownership boundaries and the canonical relation read | Accepted |
+| 0055 | GTD ownership boundaries and the canonical relation read | Superseded in part by 0064 |
 | 0056 | Habit tracker model (entity config + check-in observation stream) | Accepted |
 | 0057 | Backend timeline read model: a typed `(occurred_at, kind, ref)` union | Accepted (design; slice unbuilt) |
 | 0058 | Media and attachment backend substrate | Accepted |
 | 0059 | Media: a queue+log Entity Type, replacing Bookmark | Accepted (supersedes 0060) |
 | 0060 | Bookmark Entity Type (replaced the `recipe` placeholder) | Superseded by 0059 |
 | 0061 | URL-addressable Threads: the route is the source of truth for thread focus | Accepted |
+| 0062 | Provider auth-kind abstraction | Accepted |
+| 0063 | Deterministic skill triggers: matched-skill directive at dispatch | Accepted |
+| 0064 | Task ownership moves to TickTick: native Todo retirement + two external read paths | Accepted (supersedes 0037/0039; in part 0031/0032/0055) |
 
 ## Supersession map
 
 - **0060 Bookmark → 0059 Media** — Bookmark replaced outright by the richer Media queue+log type.
+- **0037 + 0039 (Todo recurrence) → 0064** — superseded outright: the native Todo retired, so recurrence and occurrence generation went with it.
+- **0031 / 0032 / 0055 (GTD model) → 0064** — superseded *in part*: the Todo entity, Todo Person References, and todo relation reads retired; Person, Project, and Project Review survive.
 - **0043 + 0044 (rehydration) → 0045** — superseded *in part*: 0045 replaced their wire
   projection (`MessageView.tool_calls` / `.proposal` → `Segment` timeline); their
   persistence and settled-vs-in-flight rules still hold.

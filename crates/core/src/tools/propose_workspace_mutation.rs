@@ -8,7 +8,7 @@ use crate::mutation::{MutationKind, ProposableMutation};
 use crate::protocol::CoreToolDescriptor;
 
 pub const NAME: &str = "propose_workspace_mutation";
-const DESCRIPTION: &str = "Propose a Workspace mutation for user review: capture a journal-worthy lived event or reflection as a Journal Entry, or extract People/Projects/Todos from an already-accepted Journal Entry. Do not create a Journal Entry for a bare reminder, task, or future obligation the user only wants remembered.";
+const DESCRIPTION: &str = "Propose a Workspace mutation for user review: capture a journal-worthy lived event or reflection as a Journal Entry, or extract People/Projects from an already-accepted Journal Entry. Do not create a Journal Entry for a bare reminder, task, or future obligation the user only wants remembered.";
 const LABEL: &str = "Propose Workspace mutation";
 
 /// The agent tool descriptor (ADR-0018): a top-level `oneOf` over the closed
@@ -189,18 +189,6 @@ mod tests {
                 include_str!("../../../../tests/contract/fixtures/delete_project.json"),
             ),
             (
-                "create_todo",
-                include_str!("../../../../tests/contract/fixtures/create_todo.json"),
-            ),
-            (
-                "update_todo",
-                include_str!("../../../../tests/contract/fixtures/update_todo.json"),
-            ),
-            (
-                "delete_todo",
-                include_str!("../../../../tests/contract/fixtures/delete_todo.json"),
-            ),
-            (
                 "apply_intent_graph",
                 include_str!("../../../../tests/contract/fixtures/apply_intent_graph.json"),
             ),
@@ -327,11 +315,11 @@ mod tests {
                 && description.contains("do not create a journal entry"),
             "tool description must keep bare reminders out of Journal Entry creation, got {description:?}"
         );
-        // …but Todo (and Person/Project) extraction from an accepted Journal Entry
-        // is now a supported path, so the descriptor must not blanket-prohibit todos.
+        // …but Person/Project extraction from an accepted Journal Entry is a
+        // supported path, so the descriptor must advertise extraction.
         assert!(
-            description.contains("extract") && description.contains("todos"),
-            "tool description must advertise People/Projects/Todos extraction, got {description:?}"
+            description.contains("extract") && description.contains("people/projects"),
+            "tool description must advertise People/Projects extraction, got {description:?}"
         );
     }
 
@@ -544,11 +532,11 @@ mod tests {
     }
 
     #[test]
-    fn create_person_and_create_todo_payloads_validate_against_their_kind() {
+    fn create_person_payload_validates_against_its_kind() {
         // The wire payload is opaque `Value` validated by `entities::validate`
         // (the dead `Input` enum that once deserialized these is gone). This is
-        // the equivalent guard: a representative create_person / create_todo
-        // envelope validates against its kind through the single-source spec.
+        // the equivalent guard: a representative create_person envelope
+        // validates against its kind through the single-source spec.
         use crate::mutation::MutationKind;
         let je = "00000000-0000-4000-8000-000000000000";
 
@@ -557,44 +545,10 @@ mod tests {
             &serde_json::json!({ "name": "Alice", "source_journal_entry_id": je }),
         )
         .expect("create_person payload validates");
-
-        crate::entities::validate(
-            MutationKind::CreateTodo,
-            &serde_json::json!({
-                "todo": { "title": "Email Alice" },
-                "person_refs": [{ "person_id": "p1", "role": "related" }],
-                "source_journal_entry_id": je
-            }),
-        )
-        .expect("create_todo payload validates");
     }
 
     #[test]
-    fn create_todo_with_full_recurrence_validates_against_its_kind() {
-        // A `create_todo` envelope whose `todo` carries a full recurrence rule
-        // (interval, unit, anchor, plus an `end` condition) alongside its `due_at`
-        // anchor validates against CreateTodo (ADR-0037 slimmed by ADR-0039).
-        use crate::mutation::MutationKind;
-        crate::entities::validate(
-            MutationKind::CreateTodo,
-            &serde_json::json!({
-                "todo": {
-                    "title": "Weekly review",
-                    "due_at": "2026-06-15T09:00:00",
-                    "recurrence": {
-                        "interval": 1,
-                        "unit": "week",
-                        "anchor": "due_at",
-                        "end": { "after_count": 10 }
-                    }
-                }
-            }),
-        )
-        .expect("create_todo payload with recurrence validates");
-    }
-
-    #[test]
-    fn descriptor_binds_all_nine_gtd_mutation_kinds() {
+    fn descriptor_binds_all_six_gtd_mutation_kinds() {
         let d = descriptor();
         for kind in [
             "create_person",
@@ -603,9 +557,6 @@ mod tests {
             "create_project",
             "update_project",
             "delete_project",
-            "create_todo",
-            "update_todo",
-            "delete_todo",
         ] {
             assert!(
                 top_level_variant(&d.json_schema, kind).is_some(),
@@ -691,7 +642,7 @@ mod tests {
             "journal_entry is optional (absent for direct multi-entity capture): {payload}"
         );
 
-        // entities is an array with minItems:1 over a oneOf of person/project/todo
+        // entities is an array with minItems:1 over a oneOf of person/project
         // nodes; the node shape carries handle + type + optional existing_id.
         let entities = &payload["properties"]["entities"];
         assert_eq!(
@@ -704,17 +655,11 @@ mod tests {
         });
         assert_eq!(
             entity_variants.len(),
-            3,
-            "person/project/todo entity nodes: {entities}"
+            2,
+            "person/project entity nodes: {entities}"
         );
         let schema_text = d.json_schema.to_string();
-        for needle in [
-            "handle",
-            "existing_id",
-            "todo_project",
-            "todo_person",
-            "journal_ref",
-        ] {
+        for needle in ["handle", "existing_id", "journal_ref"] {
             assert!(
                 schema_text.contains(needle),
                 "apply_intent_graph schema advertises {needle}: {}",
@@ -722,15 +667,11 @@ mod tests {
             );
         }
 
-        // links is a oneOf of the three link kinds.
+        // links is a oneOf of the one link kind.
         let link_variants = payload["properties"]["links"]["items"]["oneOf"]
             .as_array()
             .unwrap_or_else(|| panic!("links items must be a oneOf of link kinds: {payload}"));
-        assert_eq!(
-            link_variants.len(),
-            3,
-            "todo_project/todo_person/journal_ref: {payload}"
-        );
+        assert_eq!(link_variants.len(), 1, "journal_ref: {payload}");
     }
 
     /// The advertised graph schema must carry NO `$ref` anywhere (Anthropic
@@ -767,12 +708,9 @@ mod tests {
                     "type": "project",
                     "name": "Lead Ads",
                     "existing_id": "00000000-0000-4000-8000-000000000000"
-                },
-                { "handle": "@rodeo", "type": "todo", "title": "Figure out the Rodeo side" }
+                }
             ],
             "links": [
-                { "kind": "todo_project", "from": "@rodeo", "to": "@leadads" },
-                { "kind": "todo_person", "from": "@rodeo", "to": "@morris", "role": "related" },
                 { "kind": "journal_ref", "from": "@je", "to": "@morris" }
             ]
         });
@@ -790,11 +728,9 @@ mod tests {
         let graph = serde_json::json!({
             "entities": [
                 { "handle": "@alice", "type": "person", "name": "Alice" },
-                { "handle": "@email", "type": "todo", "title": "Email Alice" }
+                { "handle": "@roadmap", "type": "project", "name": "Roadmap" }
             ],
-            "links": [
-                { "kind": "todo_person", "from": "@email", "to": "@alice", "role": "waiting_on" }
-            ]
+            "links": []
         });
         MutationKind::ApplyIntentGraph
             .payload_spec()
@@ -968,81 +904,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn descriptor_create_todo_requires_title_and_allows_envelope_and_source() {
-        let d = descriptor();
-        let create_todo = top_level_variant(&d.json_schema, "create_todo")
-            .unwrap_or_else(|| panic!("schema must bind create_todo: {}", d.json_schema));
-        let payload = payload_schema(&d.json_schema, create_todo);
-
-        // The envelope requires `todo` and the nested TodoData requires `title`.
-        let required = payload["required"].as_array().unwrap_or_else(|| {
-            panic!(
-                "create_todo payload declares required fields: {}",
-                d.json_schema
-            )
-        });
-        assert!(
-            required.iter().any(|f| f.as_str() == Some("todo")),
-            "create_todo envelope must require `todo`: {}",
-            d.json_schema
-        );
-        let todo = resolve_ref(&d.json_schema, &payload["properties"]["todo"]);
-        let todo_required = todo["required"]
-            .as_array()
-            .unwrap_or_else(|| panic!("TodoData declares required fields: {}", d.json_schema));
-        assert!(
-            todo_required.iter().any(|f| f.as_str() == Some("title")),
-            "TodoData must require `title`: {}",
-            d.json_schema
-        );
-
-        // The envelope allows person_refs and source_journal_entry_id but does not
-        // require them.
-        assert!(
-            payload["properties"]["person_refs"].is_object(),
-            "create_todo envelope must allow person_refs: {}",
-            d.json_schema
-        );
-        assert!(
-            payload["properties"]["source_journal_entry_id"].is_object(),
-            "create_todo envelope must allow source_journal_entry_id: {}",
-            d.json_schema
-        );
-        assert!(
-            !required.iter().any(|f| matches!(
-                f.as_str(),
-                Some("person_refs") | Some("source_journal_entry_id")
-            )),
-            "person_refs and source_journal_entry_id are optional: {}",
-            d.json_schema
-        );
-    }
-
-    #[test]
-    fn descriptor_update_todo_requires_todo_id() {
-        let d = descriptor();
-        let update_todo = top_level_variant(&d.json_schema, "update_todo")
-            .unwrap_or_else(|| panic!("schema must bind update_todo: {}", d.json_schema));
-        let payload = payload_schema(&d.json_schema, update_todo);
-        let required = payload["required"].as_array().unwrap_or_else(|| {
-            panic!(
-                "update_todo payload declares required fields: {}",
-                d.json_schema
-            )
-        });
-        assert!(
-            required.iter().any(|f| f.as_str() == Some("todo_id")),
-            "update_todo must require todo_id: {}",
-            d.json_schema
-        );
-        assert!(
-            !required.iter().any(|f| f.as_str() == Some("entity_id")),
-            "update_todo targets todo_id, not entity_id: {}",
-            d.json_schema
-        );
-    }
-
     fn payload_requires<'a>(schema: &'a Value, kind: &str) -> Vec<String> {
         let variant = top_level_variant(schema, kind)
             .unwrap_or_else(|| panic!("schema must bind {kind}: {schema}"));
@@ -1082,7 +943,7 @@ mod tests {
             );
         }
 
-        for kind in ["delete_person", "delete_project", "delete_todo"] {
+        for kind in ["delete_person", "delete_project"] {
             let required = payload_requires(&d.json_schema, kind);
             assert!(
                 required.iter().any(|f| f == "entity_id"),
@@ -1118,29 +979,18 @@ mod tests {
         // Every optional GTD field the model should OMIT rather than send as null
         // must be non-nullable in the emitted schema (mirrors ended_at).
         for property in [
-            "title",
             "note",
             "outcome",
             "aliases",
             "status",
-            "project_id",
-            "person_refs",
-            "role",
             "source_journal_entry_id",
             "review_every",
-            "todo",
-            "set_person_refs",
-            "add_person_refs",
-            "remove_person_ids",
             "defer_at",
             "due_at",
             "completed_at",
             "dropped_at",
             "next_review_at",
             "last_reviewed_at",
-            "end",
-            "until",
-            "after_count",
         ] {
             let mut occurrences = Vec::new();
             collect_property_schemas(&d.json_schema, property, &mut occurrences);
@@ -1205,13 +1055,13 @@ mod tests {
     /// [`crate::mutation::ProposableMutation::payload_spec`], and — critically — the
     /// schema/validator DIVERGENCES that no other test pins are nailed here, so
     /// single-sourcing cannot silently change the wire contract:
-    /// - `entity_id`/`todo_id` advertise BARE (no `pattern`) though the validator
-    ///   UUID-checks them; the reference/source ids advertise the full UUID pattern.
-    /// - `aliases`/`tags`/`remove_person_ids` advertise PLAIN string items (no
-    ///   `minLength`) though the validator requires each non-empty.
+    /// - `entity_id` advertises BARE (no `pattern`) though the validator
+    ///   UUID-checks it; the reference/source ids advertise the full UUID pattern.
+    /// - `aliases`/`tags` advertise PLAIN string items (no `minLength`) though
+    ///   the validator requires each non-empty.
     /// - only intentional non-empty arrays carry `minItems` (`body`, graph
-    ///   `entities`, `record_observations.observations`); `person_refs`,
-    ///   `aliases`, `tags` do not.
+    ///   `entities`, `record_observations.observations`); `aliases`, `tags` do
+    ///   not.
     #[test]
     fn schema_fields_and_divergences_trace_to_the_spec() {
         let d = descriptor();
@@ -1286,22 +1136,6 @@ mod tests {
                 &["entity_id", "name"],
             ),
             (
-                "create_todo",
-                &["person_refs", "source_journal_entry_id", "todo"],
-                &["todo"],
-            ),
-            (
-                "update_todo",
-                &[
-                    "add_person_refs",
-                    "remove_person_ids",
-                    "set_person_refs",
-                    "todo",
-                    "todo_id",
-                ],
-                &["todo_id"],
-            ),
-            (
                 "create_journal_entry",
                 &["body", "ended_at", "occurred_at"],
                 &["body", "occurred_at"],
@@ -1314,7 +1148,6 @@ mod tests {
             ("delete_journal_entry", &["entity_id"], &["entity_id"]),
             ("delete_person", &["entity_id"], &["entity_id"]),
             ("delete_project", &["entity_id"], &["entity_id"]),
-            ("delete_todo", &["entity_id"], &["entity_id"]),
             (
                 "reference_existing_entity_from_journal_entry",
                 &[
@@ -1370,16 +1203,6 @@ mod tests {
             "entity_id is advertised bare (no pattern), though the validator UUID-checks it: {}",
             update_person
         );
-        let update_todo = payload_schema(
-            &d.json_schema,
-            top_level_variant(&d.json_schema, "update_todo").unwrap(),
-        );
-        assert!(
-            update_todo["properties"]["todo_id"]
-                .get("pattern")
-                .is_none(),
-            "todo_id is advertised bare (no pattern): {update_todo}"
-        );
         let reference = payload_schema(
             &d.json_schema,
             top_level_variant(
@@ -1404,14 +1227,7 @@ mod tests {
                 .is_none(),
             "aliases items advertise plain (no minLength), though the validator requires non-empty: {create_person}"
         );
-        assert!(
-            update_todo["properties"]["remove_person_ids"]["items"]
-                .get("minLength")
-                .is_none(),
-            "remove_person_ids items advertise plain (no minLength): {update_todo}"
-        );
-
-        // Divergence 3: minItems on the journal body only, not on person_refs.
+        // Divergence 3: minItems on the journal body only.
         let create_journal = payload_schema(
             &d.json_schema,
             top_level_variant(&d.json_schema, "create_journal_entry").unwrap(),
@@ -1420,16 +1236,6 @@ mod tests {
             create_journal["properties"]["body"]["minItems"],
             serde_json::json!(1),
             "journal body requires at least one node: {create_journal}"
-        );
-        let create_todo = payload_schema(
-            &d.json_schema,
-            top_level_variant(&d.json_schema, "create_todo").unwrap(),
-        );
-        assert!(
-            create_todo["properties"]["person_refs"]
-                .get("minItems")
-                .is_none(),
-            "person_refs carries no minItems: {create_todo}"
         );
     }
 }
