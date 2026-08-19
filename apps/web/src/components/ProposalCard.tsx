@@ -194,10 +194,8 @@ function SingleEntityProposalCard({
 			: null;
 	// Non-journal cards carry no journal-style payload validation.
 	const canApply = payloadIssue === null;
-	// The TickTick write family (ticktick-writes W3). Staleness is DERIVED from
-	// the pending read shape on EVERY render — a reload or second tab re-derives
-	// it, never a connection-local flag — so a stale card warns with accept (and
-	// edit — an edit IS an accept) disabled while reject stays enabled.
+	// Staleness is DERIVED from the read shape on EVERY render (never a
+	// connection-local flag), so accept + edit stay disabled after any reload.
 	const ticktickWrite = proposal.ticktick_write;
 	const staleConnection =
 		ticktickWrite?.state === "proposed" && ticktickWrite.stale_connection;
@@ -273,14 +271,9 @@ function SingleEntityProposalCard({
 		onDecide("edit", editedPayload);
 	};
 
-	// A write-family Proposal with a live/settled write state renders its
-	// DURABLE outcome row — executing (with the bounded poll driving it to the
-	// recorded outcome), created, failed, unknown, or the past-deadline "still
-	// unresolved" with the Resolve-now re-decide — never a generic accepted
-	// pill over a write whose outcome is its own value (ticktick-writes W-A4).
-	// `deciding` is included so a Resolve-now re-decide (and the mid-decide
-	// accept notification) keeps the calm outcome row instead of flashing the
-	// full review card over a payload-less hydrated record.
+	// The write family renders its DURABLE outcome row, never a generic
+	// accepted pill (ticktick-writes W-A4). `deciding` is included so a
+	// Resolve-now re-decide keeps the outcome row instead of flashing the card.
 	if (
 		(status === "accepted" || status === "deciding") &&
 		ticktickWrite !== undefined &&
@@ -767,14 +760,10 @@ const TICKTICK_POLL_INTERVAL_MS = 1_500;
 const TICKTICK_POLL_EPSILON_MS = 2_000;
 
 /**
- * The bounded observe-poll (ticktick-writes W-A4): an `executing` write state
- * entered from hydration or replay drives itself to the recorded outcome by
- * polling `thread/get`, capped by the variant's Core-supplied `deadline_at`
- * (+ ε) — never a client-computed bound. The watchdog guarantees the server
- * settles by then, so the poll normally ends at the outcome with no user
- * action. Polling OBSERVES; it never settles server-side. Past the bound with
- * the read still executing, polling stops and the caller renders "still
- * unresolved" with the Resolve-now re-decide (a write — the past-bound belt).
+ * The bounded observe-poll (ticktick-writes W-A4): an `executing` write drives
+ * itself to the recorded outcome, capped by the wire's `deadline_at` + ε —
+ * never a client-computed bound. Polling OBSERVES; it never settles. Past the
+ * bound, it stops and the caller renders "still unresolved" + Resolve-now.
  *
  * Unconditional hook: a no-op unless the record reads accepted + executing.
  */
@@ -1016,7 +1005,7 @@ function TickTickEditForm({
 					onChange={(event) => setDraft({ ...draft, note: event.target.value })}
 				/>
 			</EditorField>
-			{issue !== null && draft.title.trim() !== "" ? (
+			{issue !== null ? (
 				<p role="alert" className="text-sm text-destructive">
 					Fix before saving: {issue}.
 				</p>

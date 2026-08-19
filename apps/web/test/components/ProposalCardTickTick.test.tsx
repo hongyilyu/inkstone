@@ -295,9 +295,10 @@ describe("the executing card + the bounded poll", () => {
 			},
 			{ timeout: 10_000 },
 		);
+		// The poll STOPS after settling: wait slightly longer than one interval
+		// (1.5s) and assert no further read landed.
 		const readsAtSettle = reads;
-		// The poll stops after settling (observation only, bounded).
-		await new Promise((resolve) => setTimeout(resolve, 2_000));
+		await new Promise((resolve) => setTimeout(resolve, 1_800));
 		expect(reads).toBe(readsAtSettle);
 	}, 20_000);
 
@@ -384,20 +385,28 @@ describe("the edit form", () => {
 });
 
 describe("invalidation on created (and only created)", () => {
-	it("a created outcome invalidates the Tasks read; a failed one does not", async () => {
-		const created: Partial<WsClientService> = {
+	/** Render the card over a decide stub that settles `write`. */
+	function renderWithOutcome(write: {
+		state: "created" | "failed";
+		task_id?: string;
+		http_status?: number;
+	}) {
+		const overrides: Partial<WsClientService> = {
 			proposalDecide: () =>
-				Effect.succeed({
-					status: "accepted" as const,
-					ticktick_write: { state: "created" as const, task_id: "tt-1" },
-				}),
+				Effect.succeed({ status: "accepted" as const, ticktick_write: write }),
 		};
 		seedRunTurn();
 		setPendingProposal(base);
-		const { queryClient } = renderWithRouterContext(
-			<AssistantProposals runId="run-1" />,
-			{ overrides: created },
-		);
+		return renderWithRouterContext(<AssistantProposals runId="run-1" />, {
+			overrides,
+		});
+	}
+
+	it("a created outcome invalidates the Tasks read", async () => {
+		const { queryClient } = renderWithOutcome({
+			state: "created",
+			task_id: "tt-1",
+		});
 		const invalidate = vi.spyOn(queryClient, "invalidateQueries");
 		fireEvent.click(
 			screen.getByRole("button", { name: /create in ticktick/i }),
@@ -405,24 +414,14 @@ describe("invalidation on created (and only created)", () => {
 		await waitFor(() => {
 			expect(invalidate).toHaveBeenCalledWith({ queryKey: TASKS_KEY_PREFIX });
 		});
-		cleanup();
-		resetChatStore();
-		resetBridge();
+	});
 
-		const failed: Partial<WsClientService> = {
-			proposalDecide: () =>
-				Effect.succeed({
-					status: "accepted" as const,
-					ticktick_write: { state: "failed" as const, http_status: 401 },
-				}),
-		};
-		seedRunTurn();
-		setPendingProposal(base);
-		const { queryClient: queryClient2 } = renderWithRouterContext(
-			<AssistantProposals runId="run-1" />,
-			{ overrides: failed },
-		);
-		const invalidate2 = vi.spyOn(queryClient2, "invalidateQueries");
+	it("a failed outcome does NOT invalidate the Tasks read", async () => {
+		const { queryClient } = renderWithOutcome({
+			state: "failed",
+			http_status: 401,
+		});
+		const invalidate = vi.spyOn(queryClient, "invalidateQueries");
 		fireEvent.click(
 			screen.getByRole("button", { name: /create in ticktick/i }),
 		);
@@ -431,7 +430,7 @@ describe("invalidation on created (and only created)", () => {
 				document.querySelector('[data-ticktick-write="failed"]'),
 			).not.toBeNull();
 		});
-		expect(invalidate2).not.toHaveBeenCalledWith({
+		expect(invalidate).not.toHaveBeenCalledWith({
 			queryKey: TASKS_KEY_PREFIX,
 		});
 	});

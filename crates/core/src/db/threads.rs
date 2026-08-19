@@ -322,7 +322,11 @@ fn user_segments(
 /// - `tool_call` step without a `proposals` row → a `ToolCall` segment, skipping a
 ///   `pending` call (an in-flight call at reload time is owned by the live tail,
 ///   ADR-0043) and any Proposal-named tool that somehow lacks its `proposals` row
-///   (defensive: a Proposal renders as a card, never a tool-activity row).
+///   (defensive: a Proposal renders as a card, never a tool-activity row) —
+///   EXCEPT an `errored` one, which is a REFUSED propose (ticktick-writes W-A2:
+///   a not-connected / scope-short `propose_ticktick_task` resolves as a normal
+///   tool error and never parks). That has no card to render, so it rides the
+///   tool-activity row and survives reload instead of vanishing.
 ///
 /// `message` steps are scoped to `assistant_message_id` (the Run's user-Message
 /// text step belongs to the user `MessageRow`, not this turn — see
@@ -414,7 +418,9 @@ async fn segment_rows_for_run(
                             ticktick_write,
                         });
                     }
-                } else if !crate::tools::is_proposal(&name) {
+                } else if !crate::tools::is_proposal(&name)
+                    || tc_status.as_deref() == Some("errored")
+                {
                     // A non-Proposal tool call → a tool-activity row (ADR-0043).
                     // Map the persisted status to the wire spelling (never leaking
                     // a non-vocabulary value). thread/get (`include_pending=false`)
@@ -2038,6 +2044,115 @@ mod tests {
             ),
             other => panic!("expected a proposal segment, got {other:?}"),
         }
+    }
+
+    /// A REFUSED propose (ticktick-writes W-A2: a not-connected or scope-short
+    /// `propose_ticktick_task` resolves as a NORMAL tool error and never parks)
+    /// has no Proposal row and therefore no card — so it must rehydrate as a
+    /// tool-activity ERROR row rather than vanishing on reload, while a
+    /// `pending` proposal-named call still emits nothing (its card is live).
+    #[tokio::test]
+    async fn refused_proposal_tool_call_rehydrates_as_an_error_row() {
+        let pool = memory_pool().await;
+        let thread_id = Uuid::now_v7();
+        let run_id = Uuid::now_v7();
+        let assistant_id = Uuid::now_v7();
+
+        let mut tx = pool.begin().await.expect("begin");
+        queries::insert_thread(&mut *tx, thread_id, "T", 1)
+            .await
+            .expect("thread");
+        sqlx::query(
+            "INSERT INTO runs \
+             (id, thread_id, workflow_name, workflow_version, provider, model, \
+              thinking_level, user_message_id, status, started_at) \
+             VALUES (?, ?, 'w', '1', 'p', 'm', 'off', ?, 'completed', 1)",
+        )
+        .bind(run_id.to_string())
+        .bind(thread_id.to_string())
+        .bind(assistant_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .expect("run");
+        queries::insert_message(
+            &mut *tx,
+            assistant_id,
+            thread_id,
+            run_id,
+            "assistant",
+            "completed",
+            1,
+        )
+        .await
+        .expect("assistant message");
+        tx.commit().await.expect("commit seed");
+
+        // The refusal: a persisted propose call resolved `errored`, NO proposal row.
+        crate::db::persist_tool_call(
+            &pool,
+            run_id,
+            "tc-refused",
+            "propose_ticktick_task",
+            r#"{"payload":{"title":"buy milk"}}"#,
+            2,
+        )
+        .await
+        .expect("persist refused call");
+        crate::db::resolve_tool_call(
+            &pool,
+            "tc-refused",
+            "errored",
+            r#"{"code":"ticktick_not_connected","message":"TickTick is not connected"}"#,
+            3,
+        )
+        .await
+        .expect("resolve refused call");
+
+        let segments = run_live_segments(&pool, run_id, false).await.expect("read");
+        match segments
+            .iter()
+            .find(|s| matches!(s, MessageSegment::ToolCall { .. }))
+            .expect("the refused propose rehydrates as a tool row")
+        {
+            MessageSegment::ToolCall {
+                tool_call_id,
+                name,
+                status,
+                ..
+            } => {
+                assert_eq!(tool_call_id, "tc-refused");
+                assert_eq!(name, "propose_ticktick_task");
+                assert_eq!(status, "error");
+            }
+            other => panic!("expected a tool_call segment, got {other:?}"),
+        }
+        assert!(
+            !segments
+                .iter()
+                .any(|s| matches!(s, MessageSegment::Proposal { .. })),
+            "a refused propose has no Proposal row, so no card segment"
+        );
+
+        // A PENDING proposal-named call still emits nothing (its card is live).
+        crate::db::persist_tool_call(
+            &pool,
+            run_id,
+            "tc-pending",
+            "propose_ticktick_task",
+            r#"{"payload":{"title":"buy eggs"}}"#,
+            4,
+        )
+        .await
+        .expect("persist pending call");
+        let segments = run_live_segments(&pool, run_id, false).await.expect("read");
+        assert_eq!(
+            segments
+                .iter()
+                .filter(|s| matches!(s, MessageSegment::ToolCall { .. }))
+                .count(),
+            1,
+            "the pending propose emits no row"
+        );
     }
 
     /// The TickTick write family's segment carries its durable write state

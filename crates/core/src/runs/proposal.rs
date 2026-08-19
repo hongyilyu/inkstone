@@ -6,6 +6,9 @@
 //! parked Run. The decide transaction lives in [`crate::decide`]; this handler
 //! is the thin JSON-RPC shell (decode → `decide::apply` → map error → notify).
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use sqlx::SqlitePool;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -62,14 +65,9 @@ pub(super) async fn handle_get(
 /// `worker::resume` as the resume closure), map the typed `DecideError` here,
 /// then frame the result + push `proposal/changed`.
 ///
-/// The TickTick write family DETACHES (ticktick-writes W-A3): Core's
-/// per-connection loop awaits each dispatch inline and owns outbound sends in
-/// the same `select!`, so an inline A→C decide would freeze the connection
-/// both directions for up to the A7 timeout — other Runs' tails would stall
-/// and a same-socket `run/cancel` could never arrive during phase B. The
-/// family handler therefore runs as its own spawned task, replying by request
-/// id on the connection's `out_tx`; the caller's contract is unchanged (one
-/// request, one response carrying the outcome).
+/// The TickTick write family runs DETACHED (ticktick-writes W-A3): an inline
+/// A→C decide would freeze this connection — both directions — for the whole
+/// remote call, so a same-socket `run/cancel` could never arrive during it.
 pub(super) async fn handle_decide(
     pool: &SqlitePool,
     hubs: &Hubs,
@@ -77,9 +75,8 @@ pub(super) async fn handle_decide(
     params: ProposalDecideParams,
     out_tx: &UnboundedSender<String>,
 ) {
-    // Family pre-read (one cheap SELECT): route the write family to its
-    // detached handler. Everything else — including an unknown proposal id,
-    // which `decide::apply` answers canonically — stays inline.
+    // Family pre-read (one cheap SELECT). An unknown id stays inline, where
+    // `decide::apply` answers it canonically.
     let is_ticktick_write =
         match db::load_proposal_for_decide(pool, &params.proposal_id.to_string()).await {
             Ok(Some(p)) => p.mutation_kind == crate::ticktick_write::MUTATION_KIND,
@@ -94,20 +91,20 @@ pub(super) async fn handle_decide(
         let hubs = hubs.clone();
         let out_tx = out_tx.clone();
         tokio::spawn(async move {
-            // The inner spawn's JoinHandle converts a panic into a JoinError,
-            // so the caller's one-request-one-response contract survives a
-            // panicking decide task: the request is answered `internal` here
-            // instead of hanging forever. Settlement itself never depends on
-            // this task — the deadline watchdog owns it (W-A3).
+            // The JoinHandle turns a panic into a JoinError, and `responded`
+            // makes the recovery frame conditional — so one request still gets
+            // exactly one response, even if the body dies after framing it.
+            let responded = Arc::new(AtomicBool::new(false));
             let inner = tokio::spawn(handle_decide_ticktick_write(
                 pool,
                 hubs,
                 id.clone(),
                 params,
                 out_tx.clone(),
+                responded.clone(),
             ));
-            if let Err(join_error) = inner.await {
-                tracing::error!(event = "ticktick_write.decide_task_died", error = ?join_error);
+            if inner.await.is_err() && !responded.load(Ordering::SeqCst) {
+                tracing::error!(event = "ticktick_write.decide_task_died");
                 handler::frame_error(
                     &out_tx,
                     id,
@@ -152,6 +149,7 @@ async fn handle_decide_ticktick_write(
     id: serde_json::Value,
     params: ProposalDecideParams,
     out_tx: UnboundedSender<String>,
+    responded: Arc<AtomicBool>,
 ) {
     use crate::ticktick_write::{WriteDecide, WriteDecideError, WriteDeps};
 
@@ -210,6 +208,7 @@ async fn handle_decide_ticktick_write(
     .await
     {
         Ok(WriteDecide::Accepted { run_id, write }) => {
+            responded.store(true, Ordering::SeqCst);
             send_decide_result(&out_tx, id, "accepted", None, Some(write.clone()));
             super::reply::send_proposal_changed_with_write(
                 &out_tx,
@@ -220,19 +219,23 @@ async fn handle_decide_ticktick_write(
             );
         }
         Ok(WriteDecide::Rejected { run_id }) => {
+            responded.store(true, Ordering::SeqCst);
             send_decide_result(&out_tx, id, "rejected", None, None);
             send_proposal_changed(&out_tx, run_id, &proposal_id, "rejected");
         }
-        Err(e) => handler::frame_error(
-            &out_tx,
-            id,
-            match e {
-                WriteDecideError::StaleConnection => HandlerError::StaleConnection,
-                WriteDecideError::NotDecidable(m) => HandlerError::ProposalNotPending(m),
-                WriteDecideError::Invalid(m) => HandlerError::InvalidParams(m),
-                WriteDecideError::Internal(e) => HandlerError::Internal(e),
-            },
-        ),
+        Err(e) => {
+            responded.store(true, Ordering::SeqCst);
+            handler::frame_error(
+                &out_tx,
+                id,
+                match e {
+                    WriteDecideError::StaleConnection => HandlerError::StaleConnection,
+                    WriteDecideError::NotDecidable(m) => HandlerError::ProposalNotPending(m),
+                    WriteDecideError::Invalid(m) => HandlerError::InvalidParams(m),
+                    WriteDecideError::Internal(e) => HandlerError::Internal(e),
+                },
+            );
+        }
     }
 }
 

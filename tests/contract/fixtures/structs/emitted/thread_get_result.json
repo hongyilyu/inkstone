@@ -57,6 +57,12 @@
           "kind": "proposal",
           "mutation_kind": "apply_intent_graph",
           "proposal_id": "0190d3c1-0000-7000-8000-000000000001",
+          "status": "accepted"
+        },
+        {
+          "kind": "proposal",
+          "mutation_kind": "create_ticktick_task",
+          "proposal_id": "0190d3c1-0000-7000-8000-000000000002",
           "status": "accepted",
           "ticktick_write": {
             "state": "created",

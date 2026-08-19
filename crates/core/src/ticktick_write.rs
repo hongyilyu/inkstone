@@ -143,12 +143,14 @@ fn validate_due(due: &serde_json::Value) -> Result<TaskDue, String> {
 /// normalizes; a naive datetime is silently UTC, so it is rejected here).
 fn validate_due_date(date: &str) -> Result<(), String> {
     const SHAPE: &str = "due.date must be YYYY-MM-DDTHH:MM:SS(.mmm)?(Z|±HH:MM|±HHMM)";
-    let bytes = date.as_bytes();
-    if bytes.len() < 20 {
-        return Err(SHAPE.to_string());
-    }
-    crate::localtime::parse_local_datetime(&date[..19], "due.date")?;
-    let mut rest = &date[19..];
+    // Non-panicking slicing: a multi-byte char straddling index 19 makes the
+    // byte-index slices invalid, and this input comes from model params and
+    // user edits — a panic here would replace a clean `Invalid` rejection.
+    let (head, mut rest) = match (date.get(..19), date.get(19..)) {
+        (Some(head), Some(rest)) if !rest.is_empty() => (head, rest),
+        _ => return Err(SHAPE.to_string()),
+    };
+    crate::localtime::parse_local_datetime(head, "due.date")?;
     // Optional fractional seconds: `.` + 1..=3 digits.
     if rest.starts_with('.') {
         let digits = rest[1..]
@@ -584,6 +586,22 @@ async fn settle_and_resume(
     outcome: &WriteOutcome,
     content: &str,
 ) -> anyhow::Result<(TickTickWriteState, bool)> {
+    let (state, won) = settle_write(deps, proposal_id, tool_call_id, outcome, content).await?;
+    resume_if_awaiting(deps, run_id, tool_call_id).await?;
+    Ok((state, won))
+}
+
+/// The guarded settle ALONE (no resume): the flip + the tool-call resolve in
+/// one tx, returning the durable state and whether this caller won the flip.
+/// Split out so a caller can distinguish "the outcome committed" from "the
+/// follow-up resume failed" — the boot sweep counts the former.
+async fn settle_write(
+    deps: &WriteDeps,
+    proposal_id: &str,
+    tool_call_id: &str,
+    outcome: &WriteOutcome,
+    content: &str,
+) -> anyhow::Result<(TickTickWriteState, bool)> {
     let (outcome_str, http_status, remote_task_id) = match outcome {
         WriteOutcome::Created { task_id } => ("created", None, Some(task_id.as_str())),
         WriteOutcome::Failed { http_status } => ("failed", *http_status, None),
@@ -620,10 +638,21 @@ async fn settle_and_resume(
             (wire_state_from_row(&row), false)
         }
     };
+    Ok((state, won))
+}
+
+/// Re-drive resume iff the Run is parked awaiting THIS write's tool call — the
+/// waitpoint-identity guard: an old write's residue must never resume a Run
+/// that has since re-parked on a different Proposal.
+async fn resume_if_awaiting(
+    deps: &WriteDeps,
+    run_id: Uuid,
+    tool_call_id: &str,
+) -> anyhow::Result<()> {
     if db::ticktick_writes::run_parked_awaiting(&deps.pool, run_id, tool_call_id).await? {
         (deps.resume)(run_id).await?;
     }
-    Ok((state, won))
+    Ok(())
 }
 
 // ─── the deadline watchdog (settlement's independent owner) ─────────────
@@ -718,9 +747,10 @@ pub(crate) async fn sweep(pool: &SqlitePool, resume: ResumeFn) -> anyhow::Result
         let Ok(run_id) = Uuid::parse_str(&run_id) else {
             continue;
         };
-        match settle_and_resume(
+        // Count the COMMITTED settle, then resume: a resume failure must not
+        // hide (or under-report) work that is already durable.
+        match settle_write(
             &deps,
-            run_id,
             &proposal_id,
             &tool_call_id,
             &WriteOutcome::Unknown { http_status: None },
@@ -735,7 +765,15 @@ pub(crate) async fn sweep(pool: &SqlitePool, resume: ResumeFn) -> anyhow::Result
                     proposal_id = %proposal_id,
                     error = ?error
                 );
+                continue;
             }
+        }
+        if let Err(error) = resume_if_awaiting(&deps, run_id, &tool_call_id).await {
+            tracing::error!(
+                event = "ticktick_write.sweep_resume_failed",
+                %run_id,
+                error = ?error
+            );
         }
     }
 
@@ -786,22 +824,15 @@ async fn run_is_parked_plain(pool: &SqlitePool, run_id: Uuid) -> anyhow::Result<
         .is_some_and(RunStatus::is_parked))
 }
 
-/// Re-drive resume iff the Run is parked awaiting THIS write's tool call —
-/// the waitpoint-identity guard (see [`settle_and_resume`]).
+/// The decide path's typed wrapper over [`resume_if_awaiting`].
 async fn resume_if_parked_awaiting(
     deps: &WriteDeps,
     run_id: Uuid,
     tool_call_id: &str,
 ) -> Result<(), WriteDecideError> {
-    let awaiting = db::ticktick_writes::run_parked_awaiting(&deps.pool, run_id, tool_call_id)
+    resume_if_awaiting(deps, run_id, tool_call_id)
         .await
-        .map_err(|e| WriteDecideError::Internal(e.into()))?;
-    if awaiting {
-        (deps.resume)(run_id)
-            .await
-            .map_err(WriteDecideError::Internal)?;
-    }
-    Ok(())
+        .map_err(WriteDecideError::Internal)
 }
 
 fn apply_error(e: db::ApplyError) -> WriteDecideError {
@@ -1891,9 +1922,10 @@ mod tests {
         let (settled, resumed) = sweep(&pool, failing_resume)
             .await
             .expect("the sweep returns Ok despite the resume failure");
-        // The settle itself failed only at the resume step: the row settled.
-        assert_eq!(settled, 0, "the failed row is not counted as swept");
-        assert_eq!(resumed, 0);
+        // The settle COMMITTED, so it is counted — the boot log must not
+        // under-report durable work just because the resume failed.
+        assert_eq!(settled, 1, "the committed settle is counted");
+        assert_eq!(resumed, 0, "the failed resume is not counted");
         let row = write_row(&pool, proposal_id).await;
         assert_eq!(
             row.state, "settled",
@@ -2139,5 +2171,35 @@ mod tests {
             "due": { "date": "2026-09-01T00:00:00-0700", "is_all_day": true }
         }))
         .expect("an all-day due without a zone validates");
+    }
+
+    /// A MULTI-BYTE due date must REJECT, never panic: the shape check slices
+    /// by byte index, and this string comes from model params and user edits,
+    /// so a char-boundary panic would replace a clean `Invalid` (it would also
+    /// abort the Worker run loop pre-park, or the detached decide task).
+    #[test]
+    fn validate_due_date_rejects_multibyte_input_without_panicking() {
+        for date in [
+            // A multi-byte char straddling byte index 19.
+            "2026-09-01T17:30:0é00Z",
+            // Multi-byte before index 19 (shifts every boundary).
+            "2026-09-01T17:30é:00Z",
+            // Emoji (4-byte) inside the datetime head.
+            "2026-09-01T17:30:0🙂0Z",
+            // Long enough in bytes, far too short in chars.
+            "éééééééééé",
+            // Exactly-19-byte and shorter inputs (no offset at all).
+            "2026-09-01T17:30:00",
+            "",
+        ] {
+            let result = validate_task_payload(&serde_json::json!({
+                "title": "x",
+                "due": { "date": date, "time_zone": "America/Los_Angeles" }
+            }));
+            assert!(
+                result.is_err(),
+                "{date:?} must be rejected (not panic), got {result:?}"
+            );
+        }
     }
 }

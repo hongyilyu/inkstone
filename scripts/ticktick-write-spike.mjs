@@ -25,10 +25,25 @@ if (!token) {
 	process.exit(1);
 }
 
-/** Staged `{projectId, taskId}` pairs, deleted in the cleanup pass. */
+/** Staged `{projectId, taskId}` pairs, deleted in the cleanup pass. A create
+ * that answered 2xx but lacked `projectId` still records the task id with the
+ * Inbox fallback below, so an unexpected response shape cannot leak a row. */
 const staged = [];
 /** Latency samples (ms) for successful creates. */
 const latencies = [];
+/** Gate conditions that FAILED. Non-empty ⇒ nonzero exit (the spike is the
+ * go/no-go gate, so a wrong status or a broken round-trip must not report
+ * success). Names only — never response bodies. */
+const gateFailures = [];
+
+function gate(name, ok) {
+	if (!ok) gateFailures.push(name);
+	return ok;
+}
+
+/** The Inbox project id, learned from the first create that reports one — the
+ * delete endpoint needs a project id, and every v1 create lands in Inbox. */
+let inboxProjectId;
 
 /** One bounded request. Returns `{status, headers, bodyText, ms}` — never
  * throws on HTTP status (the spike CLASSIFIES statuses); throws only on
@@ -81,7 +96,11 @@ async function create(label, payload) {
 		typeof decoded?.projectId === "string" ? decoded.projectId : null;
 	if (r.status >= 200 && r.status < 300) {
 		latencies.push(r.ms);
-		if (id && projectId) staged.push({ projectId, taskId: id });
+		if (projectId && !inboxProjectId) inboxProjectId = projectId;
+		// Record EVERY created id: the response shape is under test, so cleanup
+		// must not depend on it. A missing projectId falls back to the learned
+		// Inbox id (resolved again in the cleanup pass if it arrives later).
+		if (id) staged.push({ projectId: projectId ?? undefined, taskId: id });
 	}
 	console.log(
 		`create[${label}]: status=${r.status} decodable=${decoded !== null} ` +
@@ -133,14 +152,17 @@ async function main() {
 	const p1 = await create("minimal-titled", {
 		title: `inkstone-${RUN_NONCE}-p1`,
 	});
+	gate("create-2xx", p1.status >= 200 && p1.status < 300);
+	gate("create-returns-task-id", Boolean(p1.id));
+	gate("create-returns-project-id", Boolean(p1.projectId));
 
 	// ── P2: duplicate double-POST (same exact payload twice) ─────────────────
 	const dupPayload = { title: `inkstone-${RUN_NONCE}-dup` };
 	const d1 = await create("dup-first", dupPayload);
 	const d2 = await create("dup-second", dupPayload);
-	console.log(
-		`duplicate: distinct_ids=${!!d1.id && !!d2.id && d1.id !== d2.id}`,
-	);
+	const distinctIds = Boolean(d1.id) && Boolean(d2.id) && d1.id !== d2.id;
+	console.log(`duplicate: distinct_ids=${distinctIds}`);
+	gate("duplicate-creates-two-tasks", distinctIds);
 
 	// ── P3: due tuples (all-day + timed + timezone) ───────────────────────────
 	// Shapes mirror what the filter read returns (wire.rs contract cases).
@@ -175,8 +197,13 @@ async function main() {
 	console.log(
 		`readback[p1]: found=${!!p1Row} projectId_inbox=${p1Row?.projectId?.startsWith("inbox") ?? false}`,
 	);
+	gate(
+		"create-without-projectid-lands-in-inbox",
+		Boolean(p1Row?.projectId?.startsWith("inbox")),
+	);
 	const dupRows = rows.filter((row) => row.title === dupPayload.title);
 	console.log(`readback[dup]: rows_with_dup_title=${dupRows.length}`);
+	gate("duplicate-readback-shows-two", dupRows.length === 2);
 
 	const allDayRow = allDay.id ? byId(allDay.id) : undefined;
 	console.log(
@@ -185,11 +212,23 @@ async function main() {
 			`isAllDay=${allDayRow?.isAllDay} timeZone_match=${allDayRow?.timeZone === "America/Los_Angeles"} ` +
 			`startDate_equals_due=${allDayRow?.startDate === allDayRow?.dueDate}`,
 	);
+	gate(
+		"all-day-due-round-trips",
+		allDayRow?.dueDate === "2026-09-01T07:00:00.000+0000" &&
+			allDayRow?.isAllDay === true &&
+			allDayRow?.timeZone === "America/Los_Angeles",
+	);
 	const timedRow = timed.id ? byId(timed.id) : undefined;
 	console.log(
 		`readback[timed]: found=${!!timedRow} ` +
 			`dueDate_match=${timedRow?.dueDate === "2026-09-01T17:30:00.000+0000"} ` +
 			`isAllDay=${timedRow?.isAllDay} timeZone_match=${timedRow?.timeZone === "America/Los_Angeles"}`,
+	);
+	gate(
+		"timed-due-round-trips",
+		timedRow?.dueDate === "2026-09-01T17:30:00.000+0000" &&
+			timedRow?.isAllDay === false &&
+			timedRow?.timeZone === "America/Los_Angeles",
 	);
 
 	const contentRow = noteContent.id ? byId(noteContent.id) : undefined;
@@ -198,6 +237,10 @@ async function main() {
 		`readback[note]: content_roundtrips=${contentRow?.content === `note-body-${RUN_NONCE}`} ` +
 			`desc_roundtrips_as_desc=${descRow?.desc === `desc-body-${RUN_NONCE}`} ` +
 			`desc_surfaces_as_content=${descRow?.content === `desc-body-${RUN_NONCE}`}`,
+	);
+	gate(
+		"note-round-trips-via-content",
+		contentRow?.content === `note-body-${RUN_NONCE}`,
 	);
 
 	// ── P5: the outcome-classification table, per inducible status ───────────
@@ -244,31 +287,73 @@ async function main() {
 		`latency(create, ms): n=${sorted.length} min=${sorted[0]} ` +
 			`median=${sorted[Math.floor(sorted.length / 2)]} max=${sorted[sorted.length - 1]}`,
 	);
+}
 
-	// ── Cleanup: delete every staged row via the API ──────────────────────────
+/** Delete every staged row via the API (tooling-only capability — the product
+ * never deletes). Runs from a `finally`, so a thrown probe still cleans up;
+ * a task whose create response omitted `projectId` is resolved from the read
+ * (else the learned Inbox id), so an unexpected shape cannot leak a row. */
+async function cleanup() {
+	let rowsById = new Map();
+	try {
+		rowsById = new Map(filterRows(await filterTasks()));
+	} catch {
+		// A failed read just means less metadata to resolve from.
+	}
 	let deleted = 0;
 	for (const { projectId, taskId } of staged) {
+		const resolved =
+			projectId ?? rowsById.get(taskId)?.projectId ?? inboxProjectId;
+		if (!resolved) {
+			console.log("cleanup: no projectId resolvable for a staged task");
+			continue;
+		}
 		const r = await request(
 			"DELETE",
-			`/open/v1/project/${projectId}/task/${taskId}`,
+			`/open/v1/project/${resolved}/task/${taskId}`,
 		);
 		if (r.status >= 200 && r.status < 300) deleted += 1;
 		else console.log(`cleanup: delete status=${r.status}`);
 	}
-	const after = await filterTasks();
-	const leaked = after.filter((row) =>
-		row.title?.startsWith(`inkstone-${RUN_NONCE}`),
-	).length;
+	let leaked = 0;
+	try {
+		leaked = (await filterTasks()).filter((row) =>
+			row.title?.startsWith(`inkstone-${RUN_NONCE}`),
+		).length;
+	} catch {
+		console.log("cleanup: post-delete read failed; leak count unknown");
+		leaked = -1;
+	}
 	console.log(
 		`cleanup: staged=${staged.length} deleted=${deleted} leaked_after_delete=${leaked}`,
 	);
-	if (leaked > 0) process.exitCode = 1;
+	if (leaked !== 0) gateFailures.push("cleanup-left-rows");
 }
 
+/** `[taskId, row]` pairs for the cleanup metadata lookup. */
+function filterRows(rows) {
+	return rows.map((row) => [row.id, row]);
+}
+
+let failed = false;
 try {
 	await main();
-	console.log("write spike: DONE");
 } catch (error) {
+	// Status-only messages (never a response body).
 	console.error(`write spike: FAIL — ${error.message}`);
+	failed = true;
+} finally {
+	await cleanup().catch((error) => {
+		console.error(`cleanup: FAIL — ${error.message}`);
+		gateFailures.push("cleanup-threw");
+	});
+}
+
+if (failed || gateFailures.length > 0) {
+	console.error(
+		`write spike: GATE FAILED — ${gateFailures.join(", ") || "probe threw"}`,
+	);
 	process.exitCode = 1;
+} else {
+	console.log("write spike: DONE — all gate conditions met");
 }

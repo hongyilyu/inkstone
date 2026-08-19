@@ -1,7 +1,6 @@
 import type { JsonValue, ProposalReviewContext } from "@inkstone/protocol";
 import type { ReactNode } from "react";
 import { PROJECT_STATUS_LABEL } from "@/lib/libraryItems";
-import { dueLabel, readDue } from "@/lib/ticktickWrite";
 import {
 	asObject,
 	asString,
@@ -9,6 +8,7 @@ import {
 	readString,
 	readStringArray,
 } from "@/lib/readPayload";
+import { dueLabel, readDue } from "@/lib/ticktickWrite";
 
 /**
  * Inputs a row's `renderBody` strategy reads to draw the card's detail body — the
@@ -230,11 +230,9 @@ export function renderProjectBody({
 	);
 }
 
-/** The TickTick task body (ticktick-writes W3): title-as-summary is the
- * card's bold line, so the detail body carries the due (localized from the
- * one due tuple — all-day vs timed), the note, and the fixed "→ Inbox"
- * affordance (the v1 payload has no list/tags/priority: every agent create
- * lands in Inbox). */
+/** The TickTick task body: the due (localized from the one due tuple), the
+ * note, and the fixed "→ Inbox" affordance — the v1 payload carries no list,
+ * tags, or priority, so every agent create lands in Inbox. */
 export function renderTickTickTaskBody({
 	payload,
 }: ProposalBodyArgs): ReactNode {

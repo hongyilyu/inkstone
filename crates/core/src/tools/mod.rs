@@ -320,8 +320,9 @@ mod tests {
     /// `execute` fails at compile time — neither can slip through to a silent
     /// runtime miss the way the old parallel match tables allowed when one
     /// omitted a tool the others listed. Each entry's descriptor self-reports
-    /// its own `name`, every name is non-empty and unique, and exactly one entry
-    /// is the `Proposal` — `propose_workspace_mutation`.
+    /// its own `name`, every name is non-empty and unique, and exactly two
+    /// entries are `Proposal` — `propose_workspace_mutation` and
+    /// `propose_ticktick_task`.
     #[test]
     fn registry_is_complete_and_consistent() {
         let mut seen = std::collections::HashSet::new();

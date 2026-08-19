@@ -14,8 +14,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use tokio_tungstenite::tungstenite::protocol::Message;
-
 mod common;
 use common::{
     Workspace, await_completed, await_parked, next_text, proposal_id_for, read_response_with_id,
@@ -47,10 +45,32 @@ async fn rpc_skipping_notifications(
 /// serves `budget` requests (then exits, joinable), counts them, optionally
 /// delaying each response. Non-POST/unknown paths get a 200 `[]` (the filter
 /// read, unused here). Returns `(base_url, post_count, join_handle)`.
+/// A joinable fake server: `stop()` unblocks a thread still waiting in
+/// `accept()` (a test that expects ZERO requests would otherwise leak the
+/// thread + listener on every run) and then joins it.
+struct FakeServer {
+    handle: std::thread::JoinHandle<()>,
+    addr: std::net::SocketAddr,
+}
+
+impl FakeServer {
+    fn stop(self) {
+        // Spend the server's remaining budget with throwaway connections so a
+        // blocked `accept()` returns, then join.
+        while !self.handle.is_finished() {
+            if std::net::TcpStream::connect(self.addr).is_err() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        self.handle.join().expect("fake server thread joins");
+    }
+}
+
 fn start_fake_ticktick_write(
     budget: usize,
     delay: Duration,
-) -> (String, Arc<AtomicUsize>, std::thread::JoinHandle<()>) {
+) -> (String, Arc<AtomicUsize>, FakeServer) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake ticktick");
     let addr = listener.local_addr().expect("addr");
     let posts = Arc::new(AtomicUsize::new(0));
@@ -85,7 +105,7 @@ fn start_fake_ticktick_write(
             let _ = stream.flush();
         }
     });
-    (format!("http://{addr}"), posts, handle)
+    (format!("http://{addr}"), posts, FakeServer { handle, addr })
 }
 
 /// Write the boot-read TickTick credential (0600) into `creds_dir`.
@@ -256,7 +276,7 @@ fn accept_posts_once_and_resumes_with_created_content() {
     });
 
     drop(core);
-    server.join().expect("fake server exits");
+    server.stop();
 }
 
 /// THE SOCKET STAYS LIVE DURING PHASE B (W-A3's detached decide): with the
@@ -395,7 +415,7 @@ fn socket_stays_live_and_stop_mid_b_is_refused() {
     });
 
     drop(core);
-    server.join().expect("fake server exits");
+    server.stop();
 }
 
 /// ACCOUNT HONESTY across REAL restarts, both directions (the plan's demo
@@ -497,7 +517,9 @@ fn credential_swap_across_restart_refuses_typed_and_same_credential_accepts() {
         await_completed(&core, &run_id).await;
     });
     core.kill();
-    drop(server); // 0 requests served; the thread parks in accept() — detach it.
+    // Zero requests were served, so the thread is still in `accept()`: stop()
+    // unblocks and joins it rather than leaking the listener.
+    server.stop();
 
     // Boot 3 (fresh workspace half): the SAME-credential restart accepts —
     // the overnight flow. New park, kill, restart with the file untouched.
@@ -556,5 +578,5 @@ fn credential_swap_across_restart_refuses_typed_and_same_credential_accepts() {
         await_completed(&core, &run_id).await;
     });
     drop(core);
-    server.join().expect("fake server exits");
+    server.stop();
 }

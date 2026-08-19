@@ -30,12 +30,17 @@ export function readDue(payload: JsonValue): ProposedDue | null {
 	};
 }
 
+/** Parse a wire due instant: TickTick spells the offset without a colon
+ * (`+0000`), which `Date.parse` needs. */
+function parseWireInstant(value: string): Date {
+	return new Date(value.replace(/([+-]\d{2})(\d{2})$/, "$1:$2"));
+}
+
 /** Render the one due tuple localized (all-day date vs timed instant), BOTH in
  * `time_zone` — an all-day instant rendered in UTC would show the previous
  * day west of Greenwich (mirrors TasksView's DueLabel). */
 export function dueLabel(due: ProposedDue): string {
-	// TickTick's `+0000` offset spelling needs a colon for `Date.parse`.
-	const date = new Date(due.date.replace(/([+-]\d{2})(\d{2})$/, "$1:$2"));
+	const date = parseWireInstant(due.date);
 	if (Number.isNaN(date.getTime())) {
 		return due.date;
 	}
@@ -71,7 +76,7 @@ export function seedTickTickDraft(payload: JsonValue): TickTickEditDraft {
 	let date = "";
 	let time = "";
 	if (due !== null) {
-		const instant = new Date(due.date.replace(/([+-]\d{2})(\d{2})$/, "$1:$2"));
+		const instant = parseWireInstant(due.date);
 		if (!Number.isNaN(instant.getTime())) {
 			const parts = wallParts(instant.getTime(), timeZone);
 			date = `${parts.year}-${parts.month}-${parts.day}`;

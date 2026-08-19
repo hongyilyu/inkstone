@@ -3,7 +3,7 @@
 // state carry, and the bounded observe-poll's one tick.
 
 import type { ProposalNotification } from "@inkstone/ui-sdk";
-import { StaleConnectionError } from "@inkstone/ui-sdk";
+import { StaleConnectionError, WsRequestError } from "@inkstone/ui-sdk";
 import { Effect, Queue } from "effect";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -213,13 +213,44 @@ describe("pollTickTickWriteOnce — the bounded observe-poll's tick", () => {
 		await runtime.dispose();
 	});
 
-	it("answers gone for a cleared record and survives a transient read failure", async () => {
+	it("answers gone for a cleared record", async () => {
 		const proposalQueue = Effect.runSync(
 			Queue.unbounded<ProposalNotification>(),
 		);
 		const runtime = makeStubRuntime({ proposalQueue });
 		await expect(pollTickTickWriteOnce(runtime, "run-none")).resolves.toBe(
 			"gone",
+		);
+		await runtime.dispose();
+	});
+
+	it("keeps observing after a transient read failure", async () => {
+		const proposalQueue = Effect.runSync(
+			Queue.unbounded<ProposalNotification>(),
+		);
+		const runtime = makeStubRuntime({
+			proposalQueue,
+			threadGet: () =>
+				Effect.fail(new WsRequestError({ reason: "connection_lost" })),
+		});
+		seedRunTurn();
+		rehydrateDecidedProposal({
+			...TICKTICK_PROPOSAL,
+			payload: null,
+			status: "accepted",
+			ticktick_write: {
+				state: "executing",
+				deadline_at: Date.now() + 60_000,
+			},
+		});
+
+		// A failed read must not settle or clear anything — the poll keeps
+		// observing until the deadline cap.
+		await expect(pollTickTickWriteOnce(runtime, "run-1")).resolves.toBe(
+			"executing",
+		);
+		expect(getChatState().proposals["run-1"]?.ticktick_write?.state).toBe(
+			"executing",
 		);
 		await runtime.dispose();
 	});

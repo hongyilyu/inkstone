@@ -751,9 +751,16 @@ mod parity_fixtures {
                                     // (ADR-0044 entity_id amendment) — the decided card
                                     // names + deep-links it. Omitted when absent (S.optional).
                                     entity_id: Some(UUID_B.to_string()),
-                                    // Shape coverage for the write family's segment field
-                                    // (ticktick-writes W-A4); semantically it belongs to
-                                    // create_ticktick_task proposals.
+                                    ticktick_write: None,
+                                },
+                                // The write family's segment (ticktick-writes W-A4):
+                                // `ticktick_write` is defined only for this kind, and it
+                                // mints no Entity, so `entity_id` is absent.
+                                Segment::Proposal {
+                                    proposal_id: UUID_B.to_string(),
+                                    mutation_kind: "create_ticktick_task".to_string(),
+                                    status: "accepted".to_string(),
+                                    entity_id: None,
                                     ticktick_write: Some(TickTickWriteState::Created {
                                         task_id: Some("6899f2b3c1a4de0000000001".to_string()),
                                     }),

@@ -249,11 +249,9 @@ export const PROPOSAL_VIEWS = {
 		renderBody: renderNoBody,
 	},
 	create_ticktick_task: {
-		// The remote write (ticktick-writes W3): one task, created in TickTick's
-		// Inbox on accept. Wears the Tasks Topic's mark (ListTodo), not an
-		// entity glyph — nothing lands in the Library. The decided states
-		// (executing/created/failed/unknown) render through the card's write-
-		// state branch; acceptedCopy is its fallback when no write state loaded.
+		// The remote write: wears the Tasks Topic's mark, not an entity glyph —
+		// nothing lands in the Library. Its decided states render through the
+		// card's write-state branch; `acceptedCopy` is only the fallback.
 		glyph: ListTodo,
 		acceptGlyph: ListTodo,
 		summary: (payload) => readString(payload, "title") || "New task",

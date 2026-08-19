@@ -12,16 +12,9 @@ export function AssistantProposals({ runId }: { runId: string }) {
 	const runtime = useRuntime();
 	const queryClient = useQueryClient();
 	const proposal = useProposalForRun(runId);
-	// A CREATED TickTick write (and only `created` — a failed/unknown write
-	// changed nothing worth refetching) invalidates the Tasks read, so the
-	// next Tasks render refetches under the current connection (ticktick-writes
-	// W-A5). An EFFECT on the record's state transition, not a decide callback:
-	// the created outcome can also arrive via the bounded observe-poll or the
-	// settle notification (a replay that answered "executing" first), which no
-	// callback sees. Once per created TRANSITION — the ref resets when the
-	// state leaves `created`, so a re-parked run's SECOND write invalidates
-	// again; invalidation is idempotent, so a remount over an already-created
-	// record merely refetches fresh data.
+	// Only a `created` write invalidates the Tasks read (ticktick-writes W-A5).
+	// An effect on the state TRANSITION, not a decide callback: `created` can
+	// also arrive via the observe-poll or the settle notification.
 	const invalidatedCreated = useRef(false);
 	const writeState = proposal?.ticktick_write?.state;
 	useEffect(() => {
