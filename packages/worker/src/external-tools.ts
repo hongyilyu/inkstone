@@ -8,11 +8,20 @@ import type {
 import type {
 	ExternalToolFinished,
 	ExternalToolStarted,
+	JsonObject,
+	JsonValue,
 	WorkerManifest,
 } from "@inkstone/protocol";
-import { EXTERNAL_TOOL_PREFIX, isExternalToolName } from "@inkstone/protocol";
+import {
+	asArray,
+	asObject,
+	decodeJson,
+	EXTERNAL_TOOL_PREFIX,
+	isExternalToolName,
+} from "@inkstone/protocol";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { Option } from "effect";
 
 // External (Worker-executed MCP) tools — external-task-views A3/A4. The Worker
 // connects DIRECTLY to TickTick's official MCP service (manifest-passed
@@ -53,31 +62,23 @@ interface McpTextBlock {
  * leak through unstringified. The ONE text-block narrowing both `adaptMcpResult`
  * and `externalFrameFor` use — previously the finished-frame mapping re-did it
  * inline with a weaker (unchecked) guard (review M3). */
-function narrowTextBlocks(content: unknown): McpTextBlock[] {
-	const blocks = Array.isArray(content) ? content : [];
-	return blocks
-		.filter(
-			(block): block is { type: "text"; text: unknown } =>
-				typeof block === "object" &&
-				block !== null &&
-				(block as { type?: unknown }).type === "text",
-		)
-		.map((block): McpTextBlock => ({ type: "text", text: String(block.text) }));
+function narrowTextBlocks(content: JsonValue | undefined): McpTextBlock[] {
+	return asArray(content).flatMap((block): McpTextBlock[] => {
+		const record = asObject(block);
+		return record?.type === "text"
+			? [{ type: "text", text: String(record.text) }]
+			: [];
+	});
 }
 
 /** Adapt an MCP `tools/call` result to the model-visible content: copy the text
  * blocks of `result.content` verbatim; DROP the duplicate `structuredContent`
  * sidecar and every transport detail. Exported for the adapter unit tests. */
-export function adaptMcpResult(result: unknown): {
-	content: McpTextBlock[];
-	isError: boolean;
-} {
-	const record = (
-		typeof result === "object" && result !== null ? result : {}
-	) as { content?: unknown; isError?: unknown };
+export function adaptMcpResult(result: JsonValue) {
+	const record = asObject(result);
 	return {
-		content: narrowTextBlocks(record.content),
-		isError: record.isError === true,
+		content: narrowTextBlocks(record?.content),
+		isError: record?.isError === true,
 	};
 }
 
@@ -110,9 +111,7 @@ export function externalFrameFor(
 			kind: "external_tool_finished",
 			tool_call_id: event.toolCallId,
 			result: {
-				content: narrowTextBlocks(
-					(event.result as { content?: unknown })?.content,
-				),
+				content: narrowTextBlocks(event.result?.content),
 				is_error: event.isError,
 			},
 		};
@@ -128,26 +127,34 @@ export async function liftExternalIsError(
 	ctx: AfterToolCallContext,
 ): Promise<AfterToolCallResult | undefined> {
 	return isExternalToolName(ctx.toolCall.name) &&
-		(ctx.result.details as ExternalCallDetails | undefined)
-			?.external_is_error === true
+		asObject(ctx.result.details)?.external_is_error === true
 		? { isError: true }
 		: undefined;
 }
 
 /** The slice of the MCP client the executor needs — a seam so the gate +
  * adapter are testable against a fake without a live connection. The result is
- * `unknown` because the SDK's return union spans protocol revisions; the
- * adapter narrows it. */
+ * the wire truth (JSON), NOT a protocol-revision-specific result type; the
+ * adapter narrows the content blocks it forwards. */
 export interface ExternalCaller {
 	callTool(
 		params: {
 			name: string;
-			arguments: Record<string, unknown>;
+			arguments: JsonObject;
 		},
 		resultSchema?: undefined,
 		options?: { timeout?: number },
-	): Promise<unknown>;
+	): Promise<JsonValue>;
 }
+
+/** The MCP `Client` behind the {@link ExternalCaller} seam: its result crosses as
+ * decoded JSON, which `adaptMcpResult` then narrows. */
+const mcpCaller = (client: Client): ExternalCaller => ({
+	callTool: async (params, _resultSchema, options) =>
+		Option.getOrNull(
+			decodeJson(await client.callTool(params, undefined, options)),
+		),
+});
 
 interface DiscoveredExternalTool {
 	readonly name: string;
@@ -178,7 +185,7 @@ const EXTERNAL_DISCOVERY_PAGE_LIMIT = 100;
 export async function callExternalTool(
 	caller: ExternalCaller,
 	serverName: string,
-	params: unknown,
+	params: JsonValue,
 	timeoutMs: number,
 ): Promise<AgentToolResult<ExternalCallDetails>> {
 	if (!EXTERNAL_READ_ALLOWLIST.includes(serverName)) {
@@ -187,7 +194,7 @@ export async function callExternalTool(
 	const result = await caller.callTool(
 		{
 			name: serverName,
-			arguments: (params ?? {}) as Record<string, unknown>,
+			arguments: asObject(params) ?? {},
 		},
 		undefined,
 		{ timeout: timeoutMs },
@@ -250,9 +257,17 @@ export function buildExternalTools(
 				name: `${EXTERNAL_TOOL_PREFIX}${serverName}`,
 				description: tool.description ?? "",
 				label: `TickTick ${serverName.replaceAll("_", " ")}`,
+				// SAFETY: the MCP server advertises `inputSchema` as an untyped JSON
+				// Schema object, which is what pi's `parameters` slot consumes — no
+				// shared type spans the two SDKs.
 				parameters: tool.inputSchema as AgentTool["parameters"],
 				execute: (_toolCallId, params) =>
-					callExternalTool(caller, serverName, params, timeoutMs),
+					callExternalTool(
+						caller,
+						serverName,
+						Option.getOrNull(decodeJson(params)),
+						timeoutMs,
+					),
 			};
 		});
 }
@@ -283,7 +298,11 @@ export async function connectExternalTools(
 		if (new Set(names).size !== names.length) {
 			throw new Error("MCP discovery returned duplicate tool names");
 		}
-		const tools = buildExternalTools(client, discovered, config.timeout_ms);
+		const tools = buildExternalTools(
+			mcpCaller(client),
+			discovered,
+			config.timeout_ms,
+		);
 		if (tools.length !== EXTERNAL_READ_ALLOWLIST.length) {
 			const offered = new Set(names);
 			const missing = EXTERNAL_READ_ALLOWLIST.filter(

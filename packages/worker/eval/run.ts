@@ -15,10 +15,11 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import type {
-	CoreToolDescriptor,
+	JsonValue,
 	WorkerManifest,
 	WorkerRunEvent,
 } from "@inkstone/protocol";
+import { asNumber, asObject, asString } from "@inkstone/protocol";
 import { Effect, Layer } from "effect";
 import { type InterpreterDeps, runInterpreter } from "../src/interpreter.js";
 import type { ToolCallResponse } from "../src/tool-proxy.js";
@@ -110,7 +111,7 @@ export function loadSystemPrompt(): string {
 // premise denies). Until the transport can serve real thread state, the manifest
 // exposes only the two tools it can faithfully answer; the rescan fixture is marked
 // `holdout` (a known-v1-gap) so it's out of the default scored run.
-const TOOL_DESCRIPTORS: Record<string, CoreToolDescriptor> = {
+const TOOL_DESCRIPTORS = {
 	search_entities: {
 		name: "search_entities",
 		description:
@@ -159,19 +160,19 @@ const SYNTHETIC_RUN_ID = "01900000-0000-7000-8000-000000000abc";
 
 /** A `search_entities` result row, in Core's real wire shape (`search_entities`
  * returns `{ "results": [{ id, type, label, aliases? }] }` as a JSON string). */
-interface SearchResultRow {
+type SearchResultRow = {
 	id: string;
 	type: string;
 	label: string;
 	aliases?: string[];
-}
+};
 
 /** Wrap a JSON payload in the `ok` Tool Result shape Core returns: one text
  * content node carrying the stringified payload (mirrors `AgentToolResult`).
  * Returns the `ok` arm specifically (not the full outcome union) so callers can
  * read `.ok` without narrowing — the fixture transport only ever answers success. */
 function okResult(
-	payload: unknown,
+	payload: JsonValue,
 ): Extract<ToolCallResponse, { ok: unknown }> {
 	return {
 		ok: { content: [{ type: "text", text: JSON.stringify(payload) }] },
@@ -184,18 +185,17 @@ function okResult(
  * empty `results` array. */
 function searchWorld(
 	world: ExistingEntity[],
-	params: unknown,
+	params: JsonValue,
 ): ToolCallResponse {
-	const { type, query, limit } =
-		typeof params === "object" && params !== null
-			? (params as { type?: unknown; query?: unknown; limit?: unknown })
-			: {};
 	// `query`/`limit` are model-supplied (untrusted): a non-string `query` would
-	// throw at `.toLowerCase()`, and a negative/NaN `limit` would mis-slice. Coerce
+	// throw at `.toLowerCase()`, and a negative/NaN `limit` would mis-slice. Decode
 	// before use so the fixture transport matches the advertised schema.
-	const needle = typeof query === "string" ? query.toLowerCase() : "";
+	const request = asObject(params);
+	const type = asString(request?.type);
+	const needle = asString(request?.query)?.toLowerCase() ?? "";
+	const limit = asNumber(request?.limit);
 	const cap =
-		typeof limit === "number" && Number.isFinite(limit)
+		limit !== undefined && Number.isFinite(limit)
 			? Math.max(0, Math.floor(limit))
 			: undefined;
 	const results: SearchResultRow[] = world
@@ -217,10 +217,15 @@ function searchWorld(
  * tool_call_ids at runtime, so we cannot pre-key by id like InMemoryTransport).
  * It records the captured propose call into `capture.current`, and Run Events
  * into `events`. The eval workflow ships no external tools. */
+/** The first-wins capture cell the eval transport writes the model's proposal into. */
+interface ProposalCapture {
+	current: PredictedProposal | null;
+}
+
 function evalTransport(
 	fixture: Fixture,
 	events: WorkerRunEvent[],
-	capture: { current: PredictedProposal | null },
+	capture: ProposalCapture,
 ): Layer.Layer<WorkerTransport> {
 	return Layer.succeed(WorkerTransport, {
 		readManifest: Effect.succeed(null),
@@ -234,18 +239,15 @@ function evalTransport(
 					// CAPTURE the proposal, then return a synthetic accepted result so
 					// the model's turn completes without error (a Decision is normally
 					// the Tool Result; here we always "accept").
-					const obj =
-						typeof params === "object" && params !== null
-							? (params as { mutation_kind?: unknown; payload?: unknown })
-							: {};
+					const proposal = asObject(params);
 					// First-wins, intrinsic to the handler (not dependent on `terminate`
 					// timing): if a model emits two propose calls in ONE assistant turn,
 					// both execute before the loop checks termination — guarding the
 					// assignment keeps the FIRST captured payload rather than last-wins.
 					if (capture.current === null) {
 						capture.current = {
-							mutation_kind: String(obj.mutation_kind ?? ""),
-							payload: obj.payload,
+							mutation_kind: String(proposal?.mutation_kind ?? ""),
+							payload: proposal?.payload ?? null,
 						};
 					}
 					// `terminate: true` ends pi's agent loop after this tool result
@@ -274,7 +276,7 @@ function evalTransport(
  * as a fresh prompt, and the env access token. */
 function buildManifest(fixture: Fixture): WorkerManifest {
 	const accessToken = process.env[CODEX_ACCESS_TOKEN_ENV];
-	return {
+	const manifest: WorkerManifest = {
 		run_id: SYNTHETIC_RUN_ID,
 		workflow: {
 			name: "default",
@@ -288,8 +290,10 @@ function buildManifest(fixture: Fixture): WorkerManifest {
 		prompt: fixture.message,
 		messages: [],
 		mode: "fresh",
-		...(accessToken !== undefined ? { access_token: accessToken } : {}),
 	};
+	return accessToken === undefined
+		? manifest
+		: { ...manifest, access_token: accessToken };
 }
 
 /** The real-provider deps: the openai-codex `MODEL` from the built-in catalog +
@@ -340,7 +344,7 @@ export async function runFixture(
 
 	const manifest = buildManifest(fixture);
 	const events: WorkerRunEvent[] = [];
-	const capture: { current: PredictedProposal | null } = { current: null };
+	const capture: ProposalCapture = { current: null };
 
 	await Effect.runPromise(
 		runInterpreter(manifest, resolved).pipe(

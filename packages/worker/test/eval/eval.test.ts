@@ -6,6 +6,7 @@
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { JsonObject } from "@inkstone/protocol";
 import { describe, expect, it } from "vitest";
 import {
 	aggregate,
@@ -213,7 +214,7 @@ describe("create_* fixtures align with a correct prediction (no false zero)", ()
 		message: string;
 		mutation_kind: "create_project" | "create_person";
 		// The predicted payload a good model emits; project/person fields are flat.
-		payload: Record<string, unknown>;
+		payload: JsonObject;
 	}> = [
 		{
 			file: "project-lisbon-trip.json",

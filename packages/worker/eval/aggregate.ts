@@ -32,7 +32,12 @@ export function loadFixtures(dir: string = CASES_DIR): EvalFixture[] {
 	return readdirSync(dir)
 		.filter((f) => f.endsWith(".json"))
 		.sort()
-		.map((f) => JSON.parse(readFileSync(join(dir, f), "utf8")) as EvalFixture);
+		.map(
+			(f) =>
+				// SAFETY: the fixtures are repo-owned JSON; `eval.test.ts` pins every
+				// field this type claims across the whole `cases/` directory.
+				JSON.parse(readFileSync(join(dir, f), "utf8")) as EvalFixture,
+		);
 }
 
 /** The aggregate metrics across a run: mean entity/obs/field F1, the

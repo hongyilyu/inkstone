@@ -183,7 +183,7 @@ const entityRefPlaceholder = S.Struct({
  * the single-variant (`create`) body emits bare `text_node` items while Rust
  * emits `oneOf:[text_node]`. normalize.ts reconciles this by renaming `anyOf →
  * oneOf` then unwrapping a single-element `oneOf` symmetrically on both sides. */
-const journalBody = (...variants: readonly S.Schema.Any[]) =>
+const journalBody = (...variants: readonly S.Schema.AnyNoContext[]) =>
 	S.Array(S.Union(...variants)).pipe(S.minItems(1, { description: undefined }));
 
 /** `create_journal_entry` (`BodyPolicy::TextOnly`): required `occurred_at`,

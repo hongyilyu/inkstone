@@ -1,4 +1,5 @@
 import { appendFileSync } from "node:fs";
+import type { JsonObject } from "@inkstone/protocol";
 
 // Env-gated worker.jsonl Diagnostic Log sink — the sibling to Core's core.jsonl
 // an agent joins by run_id (ADR-0038). Models tool-proxy.ts's captureToolCall
@@ -17,7 +18,7 @@ import { appendFileSync } from "node:fs";
 export function logWorkerFault(
 	event: string,
 	runId: string,
-	fields?: Record<string, unknown>,
+	fields?: JsonObject,
 ): void {
 	const path = process.env.INKSTONE_WORKER_LOG_PATH;
 	if (path === undefined || path.length === 0) return;
