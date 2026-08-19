@@ -98,7 +98,9 @@ describe("useObservationUpdate", () => {
 		await waitFor(() => expect(result.current.isError).toBe(true));
 		const error = result.current.error;
 		expect(error).toBeInstanceOf(WsRequestError);
-		expect((error as WsRequestError).reason).toBe("boom");
-		expect((error as Error).message).not.toBe("An error has occurred");
+		expect(error).toMatchObject({ reason: "boom" });
+		expect(error).not.toMatchObject({
+			message: "An error has occurred",
+		});
 	});
 });

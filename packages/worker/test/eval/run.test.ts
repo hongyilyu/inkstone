@@ -8,7 +8,6 @@ import { runFixture } from "../../eval/run.js";
 import type { Fixture } from "../../eval/types.js";
 import { CODEX_ACCESS_TOKEN_ENV } from "../../eval/types.js";
 import { fauxInterpreterDeps } from "../../src/faux/faux-deps.js";
-import type { InterpreterDeps } from "../../src/interpreter.js";
 
 // The runner drives the REAL model, so it needs a real provider credential
 // (openai-codex OAuth access token, ADR-0023). But the token alone is NOT enough
@@ -40,10 +39,7 @@ describe.skipIf(!LIVE)("eval runner (real model)", () => {
 // we inject the shared `fauxInterpreterDeps` wiring (faux model + a `Models`
 // collection's `streamSimple`).
 describe("eval runner (faux provider, keyless)", () => {
-	function fauxDeps(): {
-		faux: ReturnType<typeof fauxProvider>;
-		deps: InterpreterDeps;
-	} {
+	function fauxDeps() {
 		// The runner pins provider "openai-codex"; build the faux under that name
 		// for fidelity, though tests inject `resolveModel` directly so the model
 		// comes straight from the faux provider.

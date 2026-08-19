@@ -45,7 +45,8 @@ test("dropped socket: an in-flight send shows the connection-specific copy", asy
 		}
 		const server = ws.connectToServer();
 		ws.onMessage((message) => {
-			const text = typeof message === "string" ? message : message.toString();
+			// `String` is identity for a string frame and `toString` for a Buffer one.
+			const text = String(message);
 			if (text.includes('"method":"thread/create"')) {
 				// The request is now in flight; drop the link so it fails connection_lost
 				// and latch the drop so reconnects keep failing.

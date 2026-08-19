@@ -61,37 +61,41 @@ function makeStubRuntime(opts: {
 	// subscribe SEGMENT (test modeling of the wire, not production plumbing;
 	// see docs/design/web-store-tests.md).
 	let subscribeIdx = 0;
-	return makeCoreRuntime({
-		overrides: {
-			subscribeRun: () => {
-				opts.onSubscribe?.();
-				if (opts.runQueues) {
-					const q = opts.runQueues[subscribeIdx];
-					subscribeIdx += 1;
-					return q ? Stream.fromQueue(q) : Stream.empty;
-				}
-				return opts.runQueue ? Stream.fromQueue(opts.runQueue) : Stream.empty;
-			},
-			proposalGet:
-				opts.proposalGet ??
-				((runId: RunId) =>
-					Effect.succeed({
-						proposal_id: "prop-1",
-						run_id: runId,
-						mutation_kind: "create_journal_entry",
-						payload: JOURNAL_ENTRY,
-						rationale: "the user asked to remember this",
-						status: "pending",
-					})),
-			proposalDecide:
-				opts.onDecide ??
-				((params) =>
-					Effect.succeed({
-						status: params.decision === "accept" ? "accepted" : "rejected",
-					} as const)),
-			proposalNotifications: () => Stream.fromQueue(opts.proposalQueue),
-			...(opts.threadGet !== undefined ? { threadGet: opts.threadGet } : {}),
+	const overrides = {
+		subscribeRun: () => {
+			opts.onSubscribe?.();
+			if (opts.runQueues) {
+				const q = opts.runQueues[subscribeIdx];
+				subscribeIdx += 1;
+				return q ? Stream.fromQueue(q) : Stream.empty;
+			}
+			return opts.runQueue ? Stream.fromQueue(opts.runQueue) : Stream.empty;
 		},
+		proposalGet:
+			opts.proposalGet ??
+			((runId: RunId) =>
+				Effect.succeed({
+					proposal_id: "prop-1",
+					run_id: runId,
+					mutation_kind: "create_journal_entry",
+					payload: JOURNAL_ENTRY,
+					rationale: "the user asked to remember this",
+					status: "pending",
+				})),
+		proposalDecide:
+			opts.onDecide ??
+			((params) =>
+				Effect.succeed({
+					status: params.decision === "accept" ? "accepted" : "rejected",
+				} as const)),
+		proposalNotifications: () => Stream.fromQueue(opts.proposalQueue),
+	};
+	// `threadGet` rides only when the test drives hydration.
+	return makeCoreRuntime({
+		overrides:
+			opts.threadGet === undefined
+				? overrides
+				: { ...overrides, threadGet: opts.threadGet },
 	});
 }
 

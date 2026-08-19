@@ -165,7 +165,7 @@ describe("resetMessageForRetry — flips an errored bubble back to streaming", (
 
 describe("retryRun bridge — re-drives the SAME Run, no seeded turn", () => {
 	it("onRetry_re_drives_same_run_without_seeding_a_turn", async () => {
-		const runId = "run-err" as RunId;
+		const runId = "run-err";
 		seedErroredTurn(runId);
 
 		const queue = Effect.runSync(Queue.unbounded<RunEventValue>());
@@ -207,7 +207,7 @@ describe("retryRun bridge — re-drives the SAME Run, no seeded turn", () => {
 	});
 
 	it("a not_errored outcome is a benign no-op (no re-subscribe, bubble unchanged)", async () => {
-		const runId = "run-cancelled" as RunId;
+		const runId = "run-cancelled";
 		seedErroredTurn(runId);
 
 		const queue = Effect.runSync(Queue.unbounded<RunEventValue>());
@@ -229,7 +229,7 @@ describe("retryRun bridge — re-drives the SAME Run, no seeded turn", () => {
 	});
 
 	it("an unknown_run outcome is a benign no-op (bubble unchanged, no re-subscribe)", async () => {
-		const runId = "run-gone" as RunId;
+		const runId = "run-gone";
 		seedErroredTurn(runId);
 
 		const queue = Effect.runSync(Queue.unbounded<RunEventValue>());
@@ -255,7 +255,7 @@ describe("retryRun bridge — re-drives the SAME Run, no seeded turn", () => {
 		// A transport/decode failure of run/retry itself (NOT a not_errored/unknown_run
 		// outcome) must surface to the caller — else the retry button is a silent no-op
 		// (CodeRabbit #244). The bubble is left as-is; the caller renders the failure.
-		const runId = "run-down" as RunId;
+		const runId = "run-down";
 		seedErroredTurn(runId);
 
 		const runtime = makeCoreRuntime({
@@ -270,8 +270,8 @@ describe("retryRun bridge — re-drives the SAME Run, no seeded turn", () => {
 		// The request failed → { ok: false } carrying the real WsError (its `reason`
 		// drives ChatColumn's connection-specific copy, mirroring a failed send).
 		expect(result.ok).toBe(false);
-		if (!result.ok) {
-			expect((result.error as WsRequestError).reason).toBe("connection_lost");
+		if (!result.ok && result.error?._tag === "WsRequestError") {
+			expect(result.error.reason).toBe("connection_lost");
 		}
 		// Nothing was re-driven: no run record armed, no fiber, bubble unchanged.
 		expect(getRun(runId)).toBeUndefined();
@@ -304,7 +304,7 @@ function makePerCallStubRuntime(queues: Queue.Queue<RunEventValue>[]) {
 
 describe("retryRun bridge — a re-retry interrupts the prior stream fiber (M2)", () => {
 	it("a second retry interrupts the first fiber so only the second drives the bubble", async () => {
-		const runId = "run-err" as RunId;
+		const runId = "run-err";
 		seedErroredTurn(runId);
 
 		// Two queues: queue[0] feeds the first retry's fiber, queue[1] the second's.

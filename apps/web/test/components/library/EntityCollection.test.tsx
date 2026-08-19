@@ -376,11 +376,9 @@ describe("EntityCollection", () => {
 		expect(screen.getByText("Findable active")).toBeInTheDocument();
 		expect(screen.getByText("Other completed")).toBeInTheDocument();
 		expect(
-			(
-				screen.getByRole("textbox", {
-					name: /search projects/i,
-				}) as HTMLInputElement
-			).value,
+			screen.getByRole<HTMLInputElement>("textbox", {
+				name: /search projects/i,
+			}).value,
 		).toBe("");
 	});
 

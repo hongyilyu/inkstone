@@ -1,5 +1,5 @@
 import type { RunHistoryItem, RunHistoryResult } from "@inkstone/protocol";
-import type { WsError } from "@inkstone/ui-sdk";
+import { type WsError, WsRequestError } from "@inkstone/ui-sdk";
 import { renderWithCore } from "@test/test-utils/renderWithCore";
 import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -91,7 +91,7 @@ describe("RunFeed", () => {
 		const sectionFor = (label: string): HTMLElement => {
 			const section = screen.getByText(label).closest("section");
 			if (section === null) throw new Error(`no <section> for "${label}"`);
-			return section as HTMLElement;
+			return section;
 		};
 		const todaySection = sectionFor("Today");
 		const olderSection = sectionFor("Older");
@@ -152,10 +152,7 @@ describe("RunFeed", () => {
 			attempts += 1;
 			// First read fails; the retry (attempt 2) succeeds with one run.
 			return attempts === 1
-				? Effect.fail({
-						_tag: "WsRequestError",
-						reason: "connection_lost",
-					} as WsError)
+				? Effect.fail(new WsRequestError({ reason: "connection_lost" }))
 				: Effect.succeed({
 						runs: [item({ run_id: "r1", title: "Recovered run" })],
 					});

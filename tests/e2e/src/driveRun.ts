@@ -1,3 +1,4 @@
+import type { JsonValue } from "@inkstone/protocol";
 import type { Page } from "@playwright/test";
 
 /** Drive one chat Run to completion from inside the page: open the Core
@@ -37,7 +38,7 @@ export async function driveEchoRun(
 					reject(new Error("timed out before the Run reached done"));
 				}, 15_000);
 
-				const send = (id: number, method: string, params: unknown) => {
+				const send = (id: number, method: string, params: JsonValue) => {
 					ws.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }));
 				};
 
@@ -54,6 +55,8 @@ export async function driveEchoRun(
 
 				ws.addEventListener("message", (message) => {
 					try {
+						// SAFETY: the frame is this harness's own JSON-RPC traffic with the
+						// Core it spawned; the branches below read only these fields.
 						const frame = JSON.parse(String(message.data)) as Frame;
 
 						if (frame.id === 1) {

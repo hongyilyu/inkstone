@@ -1,3 +1,5 @@
+import type { AddressInfo } from "node:net";
+import type { JsonObject } from "@inkstone/protocol";
 import { ThreadTitledNotification } from "@inkstone/protocol";
 import { Effect, Either, Fiber, Layer, Stream } from "effect";
 import { describe, expect, it } from "vitest";
@@ -16,15 +18,21 @@ import {
 type WireRequest = {
 	id?: number;
 	method?: string;
-	params?: { [k: string]: unknown };
+	params?: JsonObject;
 };
+
+/** The port a just-listening WebSocket server bound.
+ * SAFETY: these servers listen on a TCP port, so `address()` is an `AddressInfo`
+ * (it is a string only for a UNIX pipe) and non-null once `listening` fired. */
+const boundPort = (wss: WebSocketServer): number =>
+	(wss.address() as AddressInfo).port;
 
 const makeServer = async (
 	onMessage: (ws: WsConn, req: WireRequest) => void,
 ): Promise<{ url: string; close: () => Promise<void> }> => {
 	const wss = new WebSocketServer({ port: 0, host: "127.0.0.1" });
 	await new Promise<void>((resolve) => wss.once("listening", () => resolve()));
-	const { port } = wss.address() as { port: number };
+	const port = boundPort(wss);
 	wss.on("connection", (ws) => {
 		ws.on("message", (data) => onMessage(ws, JSON.parse(data.toString())));
 	});
@@ -157,9 +165,7 @@ describe("WsClient", () => {
 			expect(Either.isLeft(result)).toBe(true);
 			if (Either.isLeft(result)) {
 				expect(result.left._tag).toBe("WsRequestError");
-				expect((result.left as { reason?: string }).reason).toBe(
-					"decode_failed",
-				);
+				expect(result.left).toMatchObject({ reason: "decode_failed" });
 			}
 		} finally {
 			await server.close();
@@ -928,7 +934,7 @@ describe("WsClient", () => {
 		await new Promise<void>((resolve) =>
 			wss.once("listening", () => resolve()),
 		);
-		const { port } = wss.address() as { port: number };
+		const port = boundPort(wss);
 		let opened = 0;
 		wss.on("connection", (ws) => {
 			opened += 1;
@@ -938,6 +944,8 @@ describe("WsClient", () => {
 				return;
 			}
 			ws.on("message", (data) => {
+				// SAFETY: `data` is the JSON-RPC frame this fake server just received
+				// from the SDK under test; the branch below reads only these fields.
 				const req = JSON.parse(data.toString()) as WireRequest;
 				if (req.method === "thread/list") {
 					ws.send(
@@ -977,7 +985,7 @@ describe("WsClient", () => {
 		await new Promise<void>((resolve) =>
 			wss.once("listening", () => resolve()),
 		);
-		const { port } = wss.address() as { port: number };
+		const port = boundPort(wss);
 		return {
 			url: `ws://127.0.0.1:${port}/ws`,
 			down: () =>
@@ -1203,12 +1211,12 @@ describe("WsClient", () => {
 type CannedCase = {
 	readonly args: readonly unknown[];
 	readonly method: string;
-	readonly params: Record<string, unknown>;
+	readonly params: JsonObject;
 	readonly response: unknown;
 	readonly expected?: unknown;
 };
 
-const cannedCases: Record<keyof typeof requestDescriptors, CannedCase> = {
+const cannedCases = {
 	threadCreate: {
 		args: ["hi", ["m-1"]],
 		method: "thread/create",
@@ -1450,7 +1458,9 @@ const cannedCases: Record<keyof typeof requestDescriptors, CannedCase> = {
 		params: { proposal_id: "p-1", decision: "accept" },
 		response: { status: "accepted", entity_id: "e-1" },
 	},
-};
+} satisfies Record<keyof typeof requestDescriptors, CannedCase>;
+
+type CannedCases = typeof cannedCases;
 
 describe("requestDescriptors round-trip", () => {
 	it("covers every table row", () => {
@@ -1459,10 +1469,11 @@ describe("requestDescriptors round-trip", () => {
 		);
 	});
 
-	for (const key of Object.keys(
-		requestDescriptors,
-	) as (keyof typeof requestDescriptors)[]) {
-		const c = cannedCases[key];
+	// SAFETY: `cannedCases` is keyed by the same table (the row-coverage test above
+	// pins the two key sets equal); only `Object.keys` erases the key union.
+	const keys = Object.keys(requestDescriptors) as (keyof CannedCases)[];
+	for (const key of keys) {
+		const c: CannedCase = cannedCases[key];
 
 		it(`${key} sends ${c.method} with the expected params and decodes the canned result`, async () => {
 			let observed: WireRequest | undefined;
@@ -1475,8 +1486,11 @@ describe("requestDescriptors round-trip", () => {
 
 			const program = Effect.gen(function* () {
 				const client = yield* WsClient;
+				// SAFETY: every table row's verb takes the args its canned case carries;
+				// the mapped `RequestVerbs` types are per-row and can't be indexed by a
+				// loop variable.
 				const verb = client[key] as (
-					...args: unknown[]
+					...args: readonly unknown[]
 				) => Effect.Effect<unknown, WsError>;
 				return yield* verb(...c.args);
 			});

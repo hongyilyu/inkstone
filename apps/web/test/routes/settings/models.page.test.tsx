@@ -17,7 +17,7 @@ import {
 } from "@test/test-utils/renderWithCore";
 import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Effect, Queue, Stream } from "effect";
+import { Effect, Queue, type Schema as S, Stream } from "effect";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { routeTree } from "@/routeTree.gen";
 
@@ -1141,14 +1141,10 @@ describe("Models settings page — provider/connected live push (ADR-0049)", () 
 	// so `push()` offers a decoded frame exactly as the live PubSub would deliver
 	// one. Unbounded → offering before the mount subscribe still delivers (no
 	// race). Returns the overrides to spread + a `push` fn to fire after mount.
-	function makeConnectedPush(base: Partial<WsClientService>): {
-		overrides: Partial<WsClientService>;
-		push: () => void;
-		/** The schema the page subscribed `provider/connected` with (asserted in tests). */
-		subscribedSchema: () => unknown;
-	} {
+	function makeConnectedPush(base: Partial<WsClientService>) {
 		const queue = Effect.runSync(Queue.unbounded<unknown>());
-		let providerConnectedSchema: unknown;
+		/** The schema the page subscribed `provider/connected` with (asserted below). */
+		let providerConnectedSchema: S.Schema.Any | undefined;
 		return {
 			overrides: {
 				...base,
@@ -1160,7 +1156,9 @@ describe("Models settings page — provider/connected live push (ADR-0049)", () 
 				// broadcast. Other methods get an empty stream. The schema is captured so
 				// a test can assert the page wires the RIGHT schema (else a wrong
 				// production schema would decode-drop real frames yet pass here).
-				notifications: ((method: string, schema: unknown) => {
+				// SAFETY: the stub answers ONE method with an already-decoded value, so
+				// it cannot honor the generic `<A>` the real member decodes into.
+				notifications: ((method: string, schema: S.Schema.Any) => {
 					if (method !== "provider/connected") return Stream.empty;
 					providerConnectedSchema = schema;
 					return Stream.fromQueue(queue);

@@ -22,13 +22,16 @@ function baseProps() {
 		models: MODELS,
 		selectedId: null,
 		onSelect: vi.fn(),
-		enabledIds: [] as readonly string[],
+		enabledIds: NO_ENABLED_IDS,
 		onToggleEnabled: vi.fn(),
 		onBack: vi.fn(),
 		canTest: true,
 		connected: true,
 	};
 }
+
+/** An empty enabled-model set, typed so the seed matches the wire contract. */
+const NO_ENABLED_IDS: readonly string[] = [];
 
 describe("ProviderModelsDetail liveness", () => {
 	it("does not paint a stale verdict when the provider switches mid-probe", async () => {

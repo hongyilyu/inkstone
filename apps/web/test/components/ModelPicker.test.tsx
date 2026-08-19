@@ -85,6 +85,9 @@ function makeOverrides(
 	};
 }
 
+/** An empty enabled-model set, typed so the seed matches the wire contract. */
+const NO_ENABLED_MODELS: readonly string[] = [];
+
 describe("ModelPicker", () => {
 	it("lists only models in enabled_models when it is a strict subset", async () => {
 		const user = userEvent.setup();
@@ -153,7 +156,7 @@ describe("ModelPicker", () => {
 			provider: "openai-codex",
 			model: null,
 			effort: "off",
-			enabled_models: [] as readonly string[],
+			enabled_models: NO_ENABLED_MODELS,
 		};
 		const overrides: Partial<WsClientService> = {
 			providerStatus: () =>

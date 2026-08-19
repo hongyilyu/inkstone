@@ -9,12 +9,12 @@ import {
 	type WsError,
 	WsRequestError,
 } from "@inkstone/ui-sdk";
-import { renderWithCore } from "@test/test-utils/renderWithCore";
+import { renderWithRouterContext } from "@test/test-utils/renderWithCore";
 import { journalEntryRow } from "@test/test-utils/rows";
 import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Effect } from "effect";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { EntityDetail } from "@/components/library/EntityDetail";
 import {
 	formatDateTime,
@@ -25,8 +25,6 @@ import {
 	type Project,
 } from "@/lib/libraryItems";
 
-const { navigate } = vi.hoisted(() => ({ navigate: vi.fn() }));
-
 // Match a humanized date badge locale-independently: the label is literal, the
 // date is derived from the SAME `formatDay` the component uses (so an en-US or a
 // fr-FR ICU runner both pass). Escapes the formatter's output (it can contain
@@ -36,19 +34,7 @@ function dayBadge(label: string, iso: string): RegExp {
 	return new RegExp(`${label}${day}`);
 }
 
-vi.mock("@tanstack/react-router", async (importOriginal) => {
-	const actual =
-		await importOriginal<typeof import("@tanstack/react-router")>();
-	return {
-		...actual,
-		useNavigate: () => navigate,
-	};
-});
-
-afterEach(() => {
-	cleanup();
-	navigate.mockReset();
-});
+afterEach(cleanup);
 
 // Stub verbs for the Core harness: `entityMutate` and `getBacklinks` run the
 // supplied handlers; other un-stubbed request verbs die, while the harness
@@ -105,12 +91,28 @@ function jeBacklinkRow(
 	);
 }
 
-/** Render EntityDetail inside the runtime + QueryClient its edit/delete writes need. */
+/** The value cell rendered beside `label` in the inspector's field list. */
+function fieldValue(label: string): HTMLElement {
+	const cell = screen.getByText(label).nextElementSibling;
+	if (!(cell instanceof HTMLElement)) {
+		throw new Error(`no value cell beside "${label}"`);
+	}
+	return cell;
+}
+
+/** Render EntityDetail inside the runtime + QueryClient its edit/delete writes need,
+ * plus the REAL route tree in context — so a navigation is asserted as the router's
+ * resulting location rather than as a mocked `useNavigate` spy. Starts at the
+ * Library People collection with a selection, the location the inspector renders
+ * from, so a "clear the selection" navigate is observable. */
 function renderDetail(
 	ui: React.ReactElement,
 	overrides: Partial<WsClientService> = makeOverrides(),
 ) {
-	return renderWithCore(ui, { overrides });
+	return renderWithRouterContext(ui, {
+		overrides,
+		path: "/library/people?id=selected",
+	});
 }
 
 const ada: Person = {
@@ -139,8 +141,7 @@ describe("EntityDetail Journal Entry body", () => {
 		entry.occurredAt = "2026-06-19T14:30:00";
 		renderDetail(<EntityDetail entity={entry} allEntities={[]} />);
 
-		const occurred = screen.getByText("Occurred at")
-			.nextElementSibling as HTMLElement;
+		const occurred = fieldValue("Occurred at");
 		expect(occurred).not.toHaveTextContent("2026-06-19T14:30:00");
 		expect(occurred.textContent).not.toContain("T");
 		expect(occurred.textContent).not.toMatch(/:\d{2}:\d{2}/);
@@ -180,7 +181,7 @@ describe("EntityDetail Journal Entry body", () => {
 			/>,
 		);
 
-		const body = screen.getByText("Body").nextElementSibling as HTMLElement;
+		const body = fieldValue("Body");
 		expect(body).toHaveTextContent("Met Ada Lovelace at school.");
 		expect(
 			within(body).getByRole("button", {
@@ -214,7 +215,7 @@ describe("EntityDetail Journal Entry body", () => {
 
 	it("opens a resolvable ref in the Library detail rail", async () => {
 		const user = userEvent.setup();
-		renderDetail(
+		const { router } = renderDetail(
 			<EntityDetail
 				entity={journal([
 					{ type: "text", text: "Met " },
@@ -233,11 +234,10 @@ describe("EntityDetail Journal Entry body", () => {
 
 		await user.click(screen.getByRole("button", { name: "Ada Lovelace" }));
 
-		expect(navigate).toHaveBeenCalledWith({
-			to: "/library/$kind",
-			params: { kind: "people" },
-			search: { id: "person_ada" },
-		});
+		await waitFor(() =>
+			expect(router.state.location.searchStr).toBe("?id=person_ada"),
+		);
+		expect(router.state.location.pathname).toBe("/library/people");
 	});
 });
 
@@ -426,7 +426,7 @@ describe("EntityDetail Person delete", () => {
 		const user = userEvent.setup();
 		const seen: EntityMutateParams[] = [];
 		const alice = person("p_del", "Alice");
-		renderDetail(
+		const { router } = renderDetail(
 			<EntityDetail entity={alice} allEntities={[alice]} />,
 			makeOverrides((params) => {
 				seen.push(params);
@@ -443,9 +443,9 @@ describe("EntityDetail Person delete", () => {
 				{ mutation_kind: "delete_person", payload: { entity_id: alice.id } },
 			]),
 		);
-		await waitFor(() =>
-			expect(navigate).toHaveBeenCalledWith({ to: ".", search: {} }),
-		);
+		// The delete clears the selection: same collection, no `?id=`.
+		await waitFor(() => expect(router.state.location.searchStr).toBe(""));
+		expect(router.state.location.pathname).toBe("/library/people");
 	});
 
 	it("can cancel the delete confirm without writing", async () => {
@@ -473,7 +473,7 @@ describe("EntityDetail Project delete", () => {
 		const user = userEvent.setup();
 		const seen: EntityMutateParams[] = [];
 		const proj = project("pr_del", "Daycare move");
-		renderDetail(
+		const { router } = renderDetail(
 			<EntityDetail entity={proj} allEntities={[proj]} />,
 			makeOverrides((params) => {
 				seen.push(params);
@@ -490,12 +490,9 @@ describe("EntityDetail Project delete", () => {
 				{ mutation_kind: "delete_project", payload: { entity_id: proj.id } },
 			]),
 		);
-		await waitFor(() =>
-			expect(navigate).toHaveBeenCalledWith({
-				to: ".",
-				search: {},
-			}),
-		);
+		// The delete clears the selection: same collection, no `?id=`.
+		await waitFor(() => expect(router.state.location.searchStr).toBe(""));
+		expect(router.state.location.pathname).toBe("/library/people");
 	});
 
 	it("can cancel the delete confirm without writing", async () => {
@@ -525,7 +522,7 @@ describe("EntityDetail Journal Entry delete", () => {
 		const user = userEvent.setup();
 		const seen: EntityMutateParams[] = [];
 		const entry = journal([{ type: "text", text: "Stale note." }]);
-		renderDetail(
+		const { router } = renderDetail(
 			<EntityDetail entity={entry} allEntities={[entry]} />,
 			makeOverrides((params) => {
 				seen.push(params);
@@ -550,9 +547,9 @@ describe("EntityDetail Journal Entry delete", () => {
 				},
 			]),
 		);
-		await waitFor(() =>
-			expect(navigate).toHaveBeenCalledWith({ to: ".", search: {} }),
-		);
+		// The delete clears the selection: same collection, no `?id=`.
+		await waitFor(() => expect(router.state.location.searchStr).toBe(""));
+		expect(router.state.location.pathname).toBe("/library/people");
 	});
 });
 
@@ -581,7 +578,7 @@ describe("EntityDetail Journal Entry rescan", () => {
 		const user = userEvent.setup();
 		const seen: string[] = [];
 		const entry = journal([{ type: "text", text: "Met Alice about daycare." }]);
-		renderDetail(
+		const { router } = renderDetail(
 			<EntityDetail entity={entry} allEntities={[entry]} />,
 			makeOverrides(undefined, undefined, (jeId) => {
 				seen.push(jeId);
@@ -598,10 +595,7 @@ describe("EntityDetail Journal Entry rescan", () => {
 		// On success the user is taken to the origin Thread to watch the run +
 		// see the proposal card (ADR-0042).
 		await waitFor(() =>
-			expect(navigate).toHaveBeenCalledWith({
-				to: "/thread/$threadId",
-				params: { threadId: "thr_rescan_1" },
-			}),
+			expect(router.state.location.pathname).toBe("/thread/thr_rescan_1"),
 		);
 	});
 });
@@ -618,7 +612,9 @@ describe("EntityDetail Captured from", () => {
 				threadTitle: "Morning brain dump",
 			},
 		});
-		renderDetail(<EntityDetail entity={subject} allEntities={[subject]} />);
+		const { router } = renderDetail(
+			<EntityDetail entity={subject} allEntities={[subject]} />,
+		);
 
 		await user.click(
 			screen.getByRole("button", { name: /Morning brain dump/ }),
@@ -626,17 +622,13 @@ describe("EntityDetail Captured from", () => {
 
 		// No capturing message id → plain thread-open, no anchor (empty search omits
 		// the optional focusedMessageId param, #184).
-		expect(navigate).toHaveBeenCalledWith({
-			to: "/thread/$threadId",
-			params: { threadId: "thr_1" },
-			search: {},
-		});
-		// `toHaveBeenCalledWith({ search: {} })` can't tell `{}` from
-		// `{ focusedMessageId: undefined }` (vitest deep-equality), so assert the key
-		// is genuinely ABSENT — this is what reds a regression to an always-set
-		// `search: { focusedMessageId }` that emits `undefined` when there's no id.
-		const noAnchorArg = navigate.mock.calls[0][0] as { search: object };
-		expect(noAnchorArg.search).not.toHaveProperty("focusedMessageId");
+		await waitFor(() =>
+			expect(router.state.location.pathname).toBe("/thread/thr_1"),
+		);
+		// No capturing message id → an EMPTY query string. Asserting the raw
+		// `searchStr` is what reds a regression to an always-set
+		// `search: { focusedMessageId }`, which would emit `?focusedMessageId=` here.
+		expect(router.state.location.searchStr).toBe("");
 	});
 
 	it("deep-links to the capturing message when the source carries one (#184)", async () => {
@@ -649,7 +641,9 @@ describe("EntityDetail Captured from", () => {
 				messageId: "msg_1",
 			},
 		});
-		renderDetail(<EntityDetail entity={subject} allEntities={[subject]} />);
+		const { router } = renderDetail(
+			<EntityDetail entity={subject} allEntities={[subject]} />,
+		);
 
 		await user.click(
 			screen.getByRole("button", { name: /Morning brain dump/ }),
@@ -657,11 +651,10 @@ describe("EntityDetail Captured from", () => {
 
 		// Carries the capturing message id → land on that exact message via the
 		// existing scroll/highlight/strip machinery (ADR-0042, #138/#169).
-		expect(navigate).toHaveBeenCalledWith({
-			to: "/thread/$threadId",
-			params: { threadId: "thr_1" },
-			search: { focusedMessageId: "msg_1" },
-		});
+		await waitFor(() =>
+			expect(router.state.location.pathname).toBe("/thread/thr_1"),
+		);
+		expect(router.state.location.searchStr).toBe("?focusedMessageId=msg_1");
 	});
 
 	it("renders no footer for a Journal-Entry-sourced Entity (its origin surfaces under 'Mentioned in', ADR-0050)", () => {

@@ -1,3 +1,4 @@
+import type { JsonValue } from "@inkstone/protocol";
 import { expect, test } from "./fixtures.js";
 // FAUX_WORKER_CMD drives the parked-interpreter angle only (the describe block
 // below); the wire test uses the default echo worker (which reaches `done`).
@@ -61,7 +62,7 @@ test("run/get_history returns driven Runs newest-first over the WebSocket", asyn
 				() => fail(new Error("timed out driving run history")),
 				25_000,
 			);
-			const send = (id: number, method: string, params: unknown) =>
+			const send = (id: number, method: string, params: JsonValue) =>
 				ws.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }));
 
 			// Track which run each subscribe id is draining and whether it's done.
@@ -75,6 +76,8 @@ test("run/get_history returns driven Runs newest-first over the WebSocket", asyn
 			ws.addEventListener("message", (m) => {
 				let frame: Frame;
 				try {
+					// SAFETY: the frame is this harness's own JSON-RPC traffic with the Core it
+					// spawned; the branches below read only these fields.
 					frame = JSON.parse(String(m.data)) as Frame;
 				} catch {
 					return;

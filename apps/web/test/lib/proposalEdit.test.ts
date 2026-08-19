@@ -81,7 +81,7 @@ describe("proposalEdit — create_person", () => {
 				name: "Alice",
 				note: "",
 				aliases: " Ali ,, AC , Allie ",
-			}) as Record<string, unknown>;
+			});
 			expect(edited.aliases).toEqual(["Ali", "AC", "Allie"]);
 		});
 
@@ -90,7 +90,7 @@ describe("proposalEdit — create_person", () => {
 				name: "Alice",
 				note: "Met at the conference.",
 				aliases: "   ",
-			}) as Record<string, unknown>;
+			});
 			expect("aliases" in edited).toBe(false);
 		});
 
@@ -99,7 +99,7 @@ describe("proposalEdit — create_person", () => {
 				name: "Alice",
 				note: "",
 				aliases: "Ali, AC",
-			}) as Record<string, unknown>;
+			});
 			expect("note" in edited).toBe(false);
 		});
 
@@ -133,7 +133,7 @@ describe("proposalEdit — create_person", () => {
 					name: "Alice",
 					note: "",
 					aliases: "   ",
-				}) as Record<string, unknown>;
+				});
 				expect("note" in edited).toBe(false);
 				expect("aliases" in edited).toBe(false);
 				expect(edited.entity_id).toBe("person-7");
@@ -214,7 +214,7 @@ describe("proposalEdit — create_project", () => {
 				const edited = overlayCreateProject(proposed, {
 					...draft,
 					status: "completed",
-				}) as Record<string, unknown>;
+				});
 				expect(edited.status).toBe("completed");
 				expect(edited.completed_at).toMatch(LOCAL_DATETIME_RE);
 				expect("dropped_at" in edited).toBe(false);
@@ -225,7 +225,7 @@ describe("proposalEdit — create_project", () => {
 				const edited = overlayCreateProject(proposed, {
 					...draft,
 					status: "dropped",
-				}) as Record<string, unknown>;
+				});
 				expect(edited.status).toBe("dropped");
 				expect(edited.dropped_at).toMatch(LOCAL_DATETIME_RE);
 				expect("completed_at" in edited).toBe(false);
@@ -241,7 +241,7 @@ describe("proposalEdit — create_project", () => {
 				const edited = overlayCreateProject(completedProposed, {
 					...draft,
 					status: "on_hold",
-				}) as Record<string, unknown>;
+				});
 				expect(edited.status).toBe("on_hold");
 				expect("completed_at" in edited).toBe(false);
 				expect("dropped_at" in edited).toBe(false);
@@ -257,7 +257,7 @@ describe("proposalEdit — create_project", () => {
 				const edited = overlayCreateProject(droppedProposed, {
 					...draft,
 					status: "active",
-				}) as Record<string, unknown>;
+				});
 				expect(edited.status).toBe("active");
 				expect("completed_at" in edited).toBe(false);
 				expect("dropped_at" in edited).toBe(false);
@@ -273,7 +273,7 @@ describe("proposalEdit — create_project", () => {
 				const edited = overlayCreateProject(completedProposed, {
 					...draft,
 					name: "Done project edited",
-				}) as Record<string, unknown>;
+				});
 				expect(edited.completed_at).toBe("2026-06-01T09:00:00");
 			});
 		});
@@ -284,7 +284,7 @@ describe("proposalEdit — create_project", () => {
 				...draft,
 				outcome: "",
 				note: "",
-			}) as Record<string, unknown>;
+			});
 			expect("outcome" in edited).toBe(false);
 			expect("note" in edited).toBe(false);
 		});
@@ -341,7 +341,7 @@ describe("proposalEdit — create_project", () => {
 				const edited = overlayCreateProject(completedProposed, {
 					...draft,
 					status: "on_hold",
-				}) as Record<string, unknown>;
+				});
 				expect(edited.status).toBe("on_hold");
 				expect("completed_at" in edited).toBe(false);
 				expect(edited.entity_id).toBe("project-9");

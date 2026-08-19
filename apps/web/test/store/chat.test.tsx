@@ -146,7 +146,7 @@ describe("chat store + stream bridge", () => {
 		// live Stop button. The bridge's catchAll must synthesize a terminal error.
 		const runtime = makeCoreRuntime({
 			overrides: {
-				postMessage: () => Effect.succeed("run-drop" as RunId),
+				postMessage: () => Effect.succeed("run-drop"),
 				// Emit one delta, then FAIL the stream like a dropped socket would.
 				subscribeRun: (): Stream.Stream<RunEventValue, WsError> =>
 					Stream.fromIterable<RunEventValue>([
@@ -160,7 +160,7 @@ describe("chat store + stream bridge", () => {
 		});
 
 		await send(runtime, "threadA", "hi");
-		await awaitRun(runtime, "run-drop" as RunId);
+		await awaitRun(runtime, "run-drop");
 
 		const threadA = getChatState().threads.threadA;
 		const assistant = threadA?.messages[1];

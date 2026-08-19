@@ -6,7 +6,7 @@ import { ManifestParseError, WorkerTransport } from "../src/transport.js";
 import { makeStdioTransport } from "../src/transport-stdio.js";
 
 // A Writable that records everything written, so the test can assert the exact NDJSON frames the transport emitted.
-function capturingWritable(): { output: Writable; written: () => string } {
+function capturingWritable() {
 	const chunks: string[] = [];
 	const output = new Writable({
 		write(chunk, _enc, cb) {
@@ -133,10 +133,7 @@ describe("StdioTransportLive (over injected streams)", () => {
 				return yield* Effect.promise(() =>
 					finished.then(
 						() => ({ rejected: false, message: "" }),
-						(error: unknown) => ({
-							rejected: true,
-							message: error instanceof Error ? error.message : String(error),
-						}),
+						(error: Error) => ({ rejected: true, message: error.message }),
 					),
 				);
 			}).pipe(Effect.provide(makeStdioTransport(input, output))),
@@ -299,7 +296,7 @@ describe("StdioTransportLive (over injected streams)", () => {
 		expect(result._tag).toBe("Left");
 		if (result._tag === "Left") {
 			expect(result.left).toBeInstanceOf(ManifestParseError);
-			expect((result.left as ManifestParseError).runId).toBe(runId);
+			expect(result.left.runId).toBe(runId);
 		}
 	});
 
@@ -317,7 +314,7 @@ describe("StdioTransportLive (over injected streams)", () => {
 
 		expect(result._tag).toBe("Left");
 		if (result._tag === "Left") {
-			expect((result.left as ManifestParseError).runId).toBeUndefined();
+			expect(result.left.runId).toBeUndefined();
 		}
 	});
 });

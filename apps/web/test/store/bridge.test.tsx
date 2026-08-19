@@ -15,7 +15,7 @@ import {
 	makeCoreRuntime,
 	makeQueryClient,
 } from "@test/test-utils/renderWithCore";
-import { Deferred, Effect, Queue, Stream } from "effect";
+import { Deferred, Effect, Queue, type Schema as S, Stream } from "effect";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { WsRuntime } from "@/runtime.js";
 import {
@@ -93,7 +93,7 @@ describe("send path with image attachments (upload-then-post, ADR-0058)", () => 
 				_threadId: string,
 				_prompt: string,
 				_attachmentIds?: readonly string[],
-			) => Effect.succeed("r-1" as RunId),
+			) => Effect.succeed("r-1"),
 		);
 		const threadCreate = vi.fn(
 			(_prompt: string, _attachmentIds?: readonly string[]) =>
@@ -154,7 +154,7 @@ describe("send path with image attachments (upload-then-post, ADR-0058)", () => 
 		const mediaUpload = vi.fn(() =>
 			Effect.fail(new WsRequestError({ reason: "too_large", code: -32602 })),
 		);
-		const postMessage = vi.fn(() => Effect.succeed("r-1" as RunId));
+		const postMessage = vi.fn(() => Effect.succeed("r-1"));
 		const runtime = makeCoreRuntime({
 			overrides: { mediaUpload, postMessage },
 		});
@@ -236,7 +236,7 @@ describe("onRunSettled (terminal seam → recent-Runs refresh)", () => {
 			{ kind: "text_delta", delta: "hi" },
 			{ kind: "done" },
 		]);
-		const runId = "run-term" as RunId;
+		const runId = "run-term";
 		seed(runId);
 		startRunStream(runtime, "t1", runId);
 
@@ -263,7 +263,7 @@ describe("onRunSettled (terminal seam → recent-Runs refresh)", () => {
 					),
 			},
 		});
-		const runId = "run-drop" as RunId;
+		const runId = "run-drop";
 		seed(runId);
 		startRunStream(runtime, "t1", runId);
 
@@ -283,7 +283,7 @@ describe("onRunSettled (terminal seam → recent-Runs refresh)", () => {
 					Stream.fromQueue(Effect.runSync(Queue.unbounded<RunEventValue>())),
 			},
 		});
-		const runId = "run-interrupt" as RunId;
+		const runId = "run-interrupt";
 		seed(runId);
 		startRunStream(runtime, "t1", runId);
 		await new Promise((r) => setTimeout(r, 0));
@@ -315,7 +315,7 @@ describe("decideProposal resume fiber tracking (M2)", () => {
 		});
 
 		// Seed a parked run + its original (parked) subscribe fiber + a proposal.
-		const runId = "run-resume" as RunId;
+		const runId = "run-resume";
 		appendMessage("t1", {
 			id: "u1",
 			role: "user",
@@ -403,7 +403,7 @@ describe("cancelRun (ADR-0014)", () => {
 
 	it("on accepted: settles the bubble incomplete, interrupts the fiber, and clears any proposal", async () => {
 		const { runtime, cancelRun } = makeCancelRuntime({ outcome: "accepted" });
-		const runId = "run-cancel" as RunId;
+		const runId = "run-cancel";
 		seedActiveRun(runId, runtime);
 		setPendingProposal({
 			proposal_id: "p1",
@@ -460,7 +460,7 @@ describe("cancelRun (ADR-0014)", () => {
 				Stream.fromQueue(queue),
 		);
 		const runtime = makeCoreRuntime({ overrides: { subscribeRun, cancelRun } });
-		const runId = "run-cancel-external" as RunId;
+		const runId = "run-cancel-external";
 		seedActiveRun(runId, runtime);
 		// The external call is in flight (a running row from the started event).
 		applyEvent("t1", runId, {
@@ -505,7 +505,7 @@ describe("cancelRun (ADR-0014)", () => {
 			outcome: "accepted",
 			live_tail: false,
 		});
-		const runId = "run-cancel-no-tail" as RunId;
+		const runId = "run-cancel-no-tail";
 		seedActiveRun(runId, runtime);
 
 		await cancelRunBridge(runtime, runId);
@@ -523,7 +523,7 @@ describe("cancelRun (ADR-0014)", () => {
 		const { runtime, cancelRun } = makeCancelRuntime({
 			outcome: "already_terminal",
 		});
-		const runId = "run-late" as RunId;
+		const runId = "run-late";
 		seedActiveRun(runId, runtime);
 
 		await cancelRunBridge(runtime, runId);
@@ -545,7 +545,7 @@ describe("cancelRun (ADR-0014)", () => {
 		const { runtime, cancelRun } = makeCancelRuntime({
 			outcome: "already_terminal",
 		});
-		const runId = "run-parked" as RunId;
+		const runId = "run-parked";
 		seedActiveRun(runId, runtime);
 		// Parked awaiting a decision: no live resume stream will deliver a terminal
 		// event, so a non-accepted cancel must still settle the bubble + activeRunId.
@@ -576,7 +576,7 @@ describe("cancelRun (ADR-0014)", () => {
 		const { runtime, cancelRun } = makeCancelRuntime({
 			outcome: "unknown_run",
 		});
-		const runId = "run-unknown" as RunId;
+		const runId = "run-unknown";
 		seedActiveRun(runId, runtime);
 
 		await cancelRunBridge(runtime, runId);
@@ -606,7 +606,7 @@ describe("cancelRun (ADR-0014)", () => {
 				retryRun: () => Effect.fail(new WsRequestError({ reason: "boom" })),
 			},
 		});
-		const runId = "run-fail" as RunId;
+		const runId = "run-fail";
 		seedActiveRun(runId, runtime);
 
 		await cancelRunBridge(runtime, runId);
@@ -647,7 +647,7 @@ describe("cancelRun (ADR-0014)", () => {
 					),
 			},
 		});
-		const runId = "run-race" as RunId;
+		const runId = "run-race";
 		seedActiveRun(runId, runtime);
 		setPendingProposal({
 			proposal_id: "p1",
@@ -682,7 +682,7 @@ describe("cancelRun (ADR-0014)", () => {
 
 	it("on already_terminal while a proposal is DECIDING: still settles (no resume stream exists yet)", async () => {
 		const { runtime } = makeCancelRuntime({ outcome: "already_terminal" });
-		const runId = "run-deciding" as RunId;
+		const runId = "run-deciding";
 		seedActiveRun(runId, runtime);
 		// decideProposal sets `deciding` BEFORE re-forking the resume stream, so the
 		// Run is still parked with no live tail — a non-accepted cancel must settle.
@@ -779,13 +779,14 @@ describe("thread/titled handler (ADR-0047 — patch the threads cache in place)"
 		);
 		// Capture the (method, schema) the bridge subscribes with, so wrong wiring
 		// (subscribing the wrong method, or dropping the schema) fails this test rather
-		// than passing on a method-blind stub. The stub bypasses the SDK's schema
-		// decode — the test offers an already-decoded value — hence the cast.
+		// than passing on a method-blind stub.
 		let subscribedMethod: string | undefined;
-		let subscribedSchema: unknown;
+		let subscribedSchema: S.Schema.Any | undefined;
 		const runtime = makeCoreRuntime({
 			overrides: {
-				notifications: ((method: string, schema: unknown) => {
+				// SAFETY: the stub answers ONE method with an ALREADY-decoded value, so
+				// it cannot honor the generic `<A>` the real member decodes into.
+				notifications: ((method: string, schema: S.Schema.Any) => {
 					subscribedMethod = method;
 					subscribedSchema = schema;
 					return Stream.fromQueue(titled);
@@ -824,6 +825,7 @@ describe("thread/titled handler (ADR-0047 — patch the threads cache in place)"
 		const tornDown = Effect.runSync(Deferred.make<void>());
 		const runtime = makeCoreRuntime({
 			overrides: {
+				// SAFETY: as above — a one-method stub over an already-decoded value.
 				notifications: (() =>
 					Stream.fromQueue(titled).pipe(
 						Stream.ensuring(Deferred.succeed(tornDown, undefined)),
@@ -870,6 +872,7 @@ describe("thread/titled handler (ADR-0047 — patch the threads cache in place)"
 		);
 		const runtime = makeCoreRuntime({
 			overrides: {
+				// SAFETY: a one-method stub over an already-decoded value, as above.
 				notifications: (() =>
 					Stream.fromQueue(titled)) as WsClientService["notifications"],
 			},

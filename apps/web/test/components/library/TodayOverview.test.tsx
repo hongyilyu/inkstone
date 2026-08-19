@@ -22,7 +22,7 @@ function renderToday(projects: Rows = []) {
 		history: createMemoryHistory({ initialEntries: ["/"] }),
 	});
 	return renderWithCore(
-		// biome-ignore lint/suspicious/noExplicitAny: the ad-hoc single-route router type doesn't match the app RegisteredRouter; only runtime rendering matters here.
+		// biome-ignore lint/suspicious/noExplicitAny: SAFETY: the ad-hoc single-route router type doesn't match the app RegisteredRouter; only runtime rendering matters here.
 		<RouterProvider router={router as any} />,
 		{ entities: { project: projects } },
 	);

@@ -2,10 +2,12 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type {
+	JsonValue,
 	ManifestMessage,
 	WorkerManifest,
 	WorkerRunEvent,
 } from "@inkstone/protocol";
+import { asObject, asString } from "@inkstone/protocol";
 import { Effect } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 import { fauxDepsFor } from "../../src/faux/faux-worker.js";
@@ -248,7 +250,7 @@ const decisionResult = (
 // AgentToolResult envelope. Fixtures match that production shape.
 const resumeToolResult = (
 	tool_call_id: string,
-	inner: unknown,
+	inner: JsonValue,
 ): ManifestMessage => ({
 	role: "tool_result",
 	tool_call_id,
@@ -270,7 +272,7 @@ const okText = (text: string): ToolCallResponse => ({
 	ok: { content: [{ type: "text", text }] },
 });
 
-const okJson = (payload: unknown): ToolCallResponse =>
+const okJson = (payload: JsonValue): ToolCallResponse =>
 	okText(JSON.stringify(payload));
 
 // A live search_entities tool result: the bare inner `{results}` JSON.
@@ -348,11 +350,11 @@ function proposalsIn(requests: CapturedToolRequest[]) {
 	return requests
 		.filter((r) => r.name === "propose_workspace_mutation")
 		.map((r) => {
-			const params = r.params as {
-				mutation_kind: string;
-				payload: unknown;
+			const params = asObject(r.params);
+			return {
+				mutation_kind: asString(params?.mutation_kind) ?? "",
+				payload: params?.payload,
 			};
-			return { mutation_kind: params.mutation_kind, payload: params.payload };
 		});
 }
 

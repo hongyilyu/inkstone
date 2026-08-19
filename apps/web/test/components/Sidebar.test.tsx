@@ -1,4 +1,5 @@
-import type { RunEventValue, WsClientService, WsError } from "@inkstone/ui-sdk";
+import type { RunEventValue, WsClientService } from "@inkstone/ui-sdk";
+import { WsRequestError } from "@inkstone/ui-sdk";
 import { renderWithCore } from "@test/test-utils/renderWithCore";
 import { cleanup, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -66,10 +67,7 @@ function makeFailingRenameOverrides(): Partial<WsClientService> {
 				],
 			}),
 		threadRename: () =>
-			Effect.fail({
-				_tag: "WsRequestError",
-				reason: "connection_lost",
-			} as WsError),
+			Effect.fail(new WsRequestError({ reason: "connection_lost" })),
 	};
 }
 

@@ -105,10 +105,10 @@ describe("generic interpreter (faux provider)", () => {
 						Array.isArray(m.content) &&
 						m.content.some((c) => "type" in c && c.type === "toolCall"),
 				);
-				if (trIdx >= 0) {
-					const resultId = (msgs[trIdx] as { toolCallId?: string }).toolCallId;
+				const toolResult = msgs[trIdx];
+				if (toolResult?.role === "toolResult") {
+					const resultId = toolResult.toolCallId;
 					pairedToPrecedingToolCall =
-						typeof resultId === "string" &&
 						resultId.length > 0 &&
 						msgs
 							.slice(0, trIdx)
@@ -117,10 +117,7 @@ describe("generic interpreter (faux provider)", () => {
 									m.role === "assistant" &&
 									Array.isArray(m.content) &&
 									m.content.some(
-										(c) =>
-											"type" in c &&
-											c.type === "toolCall" &&
-											(c as { id?: string }).id === resultId,
+										(c) => c.type === "toolCall" && c.id === resultId,
 									),
 							);
 				}
@@ -224,9 +221,9 @@ describe("generic interpreter (faux provider)", () => {
 				seenUserTexts = context.messages
 					.filter((m) => m.role === "user")
 					.map((m) =>
-						typeof m.content === "string"
-							? m.content
-							: m.content.map((c) => ("text" in c ? c.text : "")).join(""),
+						Array.isArray(m.content)
+							? m.content.map((c) => ("text" in c ? c.text : "")).join("")
+							: m.content,
 					);
 				return fauxAssistantMessage("ack");
 			},
@@ -323,9 +320,9 @@ describe("generic interpreter (faux provider)", () => {
 			{ type: "text", text: "what is in this image?" },
 			{ type: "image", data: "aGVsbG8=", mimeType: "image/png" },
 		]);
-		// RAW base64, never a data: URL — providers build their own prefix.
-		const image = (currentTurnContent as { data: string }[])[1];
-		expect(image.data.startsWith("data:")).toBe(false);
+		// RAW base64, never a data: URL — providers build their own prefix. The
+		// deep-equality above already pins the exact block, so assert the absence.
+		expect(JSON.stringify(currentTurnContent)).not.toContain("data:");
 	});
 
 	it("keeps plain-string content when the manifest has no attachments", async () => {

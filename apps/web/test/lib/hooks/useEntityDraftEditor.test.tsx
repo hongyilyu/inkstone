@@ -50,9 +50,7 @@ describe("useEntityDraftEditor", () => {
 		const seen: EntityMutateParams[] = [];
 		const entityMutate = (params: EntityMutateParams) => {
 			seen.push(params);
-			return Effect.succeed({
-				entity_id: "new-id-99",
-			} as EntityMutateResult);
+			return Effect.succeed({ entity_id: "new-id-99" });
 		};
 		const onDone = vi.fn();
 		const { result } = renderHook(
@@ -81,9 +79,7 @@ describe("useEntityDraftEditor", () => {
 
 	it("(c) a failing entityMutate with Error('boom') surfaces error === 'boom'; non-Error surfaces fallback", async () => {
 		const entityMutateBoom = () =>
-			Effect.fail(
-				new WsRequestError({ reason: "boom", code: -32000 }),
-			) as Effect.Effect<EntityMutateResult, WsError>;
+			Effect.fail(new WsRequestError({ reason: "boom", code: -32000 }));
 		const onDone = vi.fn();
 		const { result } = renderHook(
 			() =>
@@ -115,11 +111,7 @@ describe("useEntityDraftEditor", () => {
 	});
 
 	it("(c2) a failing entityMutate with a real Error message surfaces that message", async () => {
-		const entityMutateReal = () =>
-			Effect.die(new Error("network down")) as Effect.Effect<
-				EntityMutateResult,
-				WsError
-			>;
+		const entityMutateReal = () => Effect.die(new Error("network down"));
 		const onDone = vi.fn();
 		const { result } = renderHook(
 			() =>
@@ -151,7 +143,7 @@ describe("useEntityDraftEditor", () => {
 					new Promise((r) => {
 						resolve = r;
 					}),
-			) as Effect.Effect<EntityMutateResult, WsError>;
+			);
 		const onDone = vi.fn();
 		const { result } = renderHook(
 			() =>

@@ -40,7 +40,13 @@ describe("RuntimeProvider", () => {
 	it("exposes the runtime via useRuntime inside the provider", () => {
 		function Probe() {
 			const runtime = useRuntime();
-			return <div data-testid="probe">{typeof runtime.runFork}</div>;
+			// Render whether the provided runtime exposes a callable `runFork` — the
+			// one member every consumer forks effects through.
+			return (
+				<div data-testid="probe">
+					{runtime.runFork instanceof Function ? "function" : "missing"}
+				</div>
+			);
 		}
 
 		render(

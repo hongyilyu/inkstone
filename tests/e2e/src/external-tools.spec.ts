@@ -1,5 +1,6 @@
 import { createServer, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
+import { asNumber, type JsonObject, type JsonValue } from "@inkstone/protocol";
 import { expect, test as harness } from "./fixtures.js";
 import { FAUX_WORKER_CMD, spawnCore } from "./spawnCore.js";
 
@@ -42,12 +43,14 @@ function startFakeTickTickMcp(
 				res.writeHead(405).end();
 				return;
 			}
+			// SAFETY: `body` is the JSON-RPC request this fake server just received
+			// from the Worker's MCP client; the switch below reads only these fields.
 			const msg = JSON.parse(body) as {
 				id?: number;
 				method: string;
-				params?: { name?: string; arguments?: Record<string, unknown> };
+				params?: { name?: string; arguments?: JsonObject };
 			};
-			const respond = (res2: ServerResponse, result: unknown) => {
+			const respond = (res2: ServerResponse, result: JsonValue) => {
 				res2
 					.writeHead(200, { "content-type": "application/json" })
 					.end(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result }));
@@ -98,7 +101,8 @@ function startFakeTickTickMcp(
 							});
 							return;
 						}
-						const label = typeof args.call === "number" ? ` #${args.call}` : "";
+						const call = asNumber(args.call);
+						const label = call === undefined ? "" : ` #${call}`;
 						respond(res, {
 							content: [
 								{ type: "text", text: `1 task found${label}: S1 timed` },
@@ -121,6 +125,8 @@ function startFakeTickTickMcp(
 	});
 	return new Promise((resolve) => {
 		server.listen(0, "127.0.0.1", () => {
+			// SAFETY: this server listens on a TCP port, so `address()` is an
+			// `AddressInfo` (a string only for a UNIX pipe) inside `listen`.
 			const { port } = server.address() as AddressInfo;
 			resolve({
 				url: `http://127.0.0.1:${port}/mcp`,

@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import type { JsonValue } from "@inkstone/protocol";
 
 /**
  * Provenance seeding for full-system specs that need an Entity already accepted
@@ -22,7 +23,7 @@ interface SeedAcceptedEntity {
 	readonly id: string;
 	readonly type: SeededEntityType;
 	readonly mutationKind: string;
-	readonly payload: unknown;
+	readonly payload: JsonValue;
 }
 
 /** Insert one accepted-via-proposal Entity and its full provenance chain. */
@@ -116,7 +117,7 @@ export function seedParkedProposal(
 	dbPath: string,
 	options: {
 		mutationKind: string;
-		payload: unknown;
+		payload: JsonValue;
 		title?: string;
 		rationale?: string;
 		threadId?: string;
@@ -185,7 +186,7 @@ export function seedParkedProposal(
 
 export function seedParkedIntentGraphProposal(
 	dbPath: string,
-	options: { graph: unknown; title?: string; rationale?: string },
+	options: { graph: JsonValue; title?: string; rationale?: string },
 ): void {
 	seedParkedProposal(dbPath, {
 		mutationKind: "apply_intent_graph",
@@ -208,6 +209,6 @@ export function sqlValue(value: string): string {
 	return `'${value.replaceAll("'", "''")}'`;
 }
 
-export function jsonValue(value: unknown): string {
+export function jsonValue(value: JsonValue): string {
 	return sqlValue(JSON.stringify(value));
 }

@@ -31,23 +31,27 @@ function wrapper(opts: {
 	queryClient: QueryClient;
 }) {
 	const connectionStatus = opts.connectionStatus;
+	const reads = {
+		tickTickStatus:
+			opts.statusRead ??
+			(() => Effect.succeed(opts.status ?? { state: "not_connected" })),
+		tickTickTasksList: () =>
+			Effect.suspend(() => {
+				opts.onTasksCall?.();
+				return (
+					opts.tasksRead?.() ??
+					Effect.succeed(
+						opts.tasks ?? { tasks: [], source_limit_reached: false },
+					)
+				);
+			}),
+	};
+	// The status stream rides only when the test drives reconnect edges.
 	const runtime = makeCoreRuntime({
-		overrides: {
-			tickTickStatus:
-				opts.statusRead ??
-				(() => Effect.succeed(opts.status ?? { state: "not_connected" })),
-			tickTickTasksList: () =>
-				Effect.suspend(() => {
-					opts.onTasksCall?.();
-					return (
-						opts.tasksRead?.() ??
-						Effect.succeed(
-							opts.tasks ?? { tasks: [], source_limit_reached: false },
-						)
-					);
-				}),
-			...(connectionStatus ? { connectionStatus: () => connectionStatus } : {}),
-		},
+		overrides:
+			connectionStatus === undefined
+				? reads
+				: { ...reads, connectionStatus: () => connectionStatus },
 	});
 	return ({ children }: { children: ReactNode }) => (
 		<QueryClientProvider client={opts.queryClient}>
@@ -232,10 +236,10 @@ describe("TickTickReconnectSync (app-lifetime cache purge)", () => {
 		render(<TickTickReconnectSync />, {
 			wrapper: wrapper({
 				// A real reconnect EDGE: a drop, then back to connected.
-				connectionStatus: Stream.make(
-					"reconnecting" as ConnectionStatus,
-					"connected" as ConnectionStatus,
-				),
+				connectionStatus: Stream.fromIterable<ConnectionStatus>([
+					"reconnecting",
+					"connected",
+				]),
 				queryClient,
 			}),
 		});
@@ -284,9 +288,7 @@ describe("TickTickReconnectSync (app-lifetime cache purge)", () => {
 
 		// Mount replay: a lone `connected` with NO prior non-connected state
 		// (ADR-0051 `.changes` replays current on subscribe).
-		await Effect.runPromise(
-			Queue.offer(queue, "connected" as ConnectionStatus),
-		);
+		await Effect.runPromise(Queue.offer(queue, "connected"));
 		// The replay is NOT a reconnect → the warm cache survives (review F2/F5).
 		expect(
 			queryClient.getQueryData(["ticktick", "tasks", "acct-A"]),
@@ -294,12 +296,8 @@ describe("TickTickReconnectSync (app-lifetime cache purge)", () => {
 
 		// Now a REAL edge through the same stream: the purge landing proves the
 		// observer processed the whole ordered sequence — replay included.
-		await Effect.runPromise(
-			Queue.offer(queue, "reconnecting" as ConnectionStatus),
-		);
-		await Effect.runPromise(
-			Queue.offer(queue, "connected" as ConnectionStatus),
-		);
+		await Effect.runPromise(Queue.offer(queue, "reconnecting"));
+		await Effect.runPromise(Queue.offer(queue, "connected"));
 		await waitFor(() =>
 			expect(
 				queryClient.getQueryData(["ticktick", "tasks", "acct-A"]),

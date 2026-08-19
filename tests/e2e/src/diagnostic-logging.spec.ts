@@ -1,5 +1,6 @@
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
+import { asObject, asString, type JsonObject } from "@inkstone/protocol";
 import { expect, test } from "./fixtures.js";
 import { FAUX_WORKER_CMD } from "./spawnCore.js";
 
@@ -35,20 +36,21 @@ test.use({
 
 /** Read every non-empty JSONL line of every file under `dir` (daily appender
  * date-suffixes the filename, so the exact name is not assumed). */
-function readJsonlLines(dir: string): Record<string, unknown>[] {
+function readJsonlLines(dir: string): JsonObject[] {
 	let entries: string[];
 	try {
 		entries = readdirSync(dir);
 	} catch {
 		return [];
 	}
-	const out: Record<string, unknown>[] = [];
+	const out: JsonObject[] = [];
 	for (const name of entries) {
 		const body = readFileSync(path.join(dir, name), "utf8");
 		for (const line of body.split("\n")) {
 			if (line.trim().length === 0) continue;
 			try {
-				out.push(JSON.parse(line) as Record<string, unknown>);
+				const parsed = asObject(JSON.parse(line));
+				if (parsed !== null) out.push(parsed);
 			} catch {
 				// non-JSON line (shouldn't happen for the JSONL trail) — skip.
 			}
@@ -68,13 +70,14 @@ test("a Run driven from the browser writes correlated core.jsonl + worker.jsonl"
 	let authoritativeRunId: string | undefined;
 	page.on("websocket", (ws) => {
 		ws.on("framereceived", (frame) => {
-			if (typeof frame.payload !== "string") return;
 			try {
-				const msg = JSON.parse(frame.payload) as {
-					result?: { run_id?: string };
-				};
-				const id = msg.result?.run_id;
-				if (typeof id === "string" && id.length > 0) {
+				// `String` is identity for a text frame and utf8 for a binary one; a
+				// non-JSON frame lands in the catch below either way.
+				const result = asObject(
+					asObject(JSON.parse(String(frame.payload)))?.result,
+				);
+				const id = asString(result?.run_id);
+				if (id !== undefined && id.length > 0) {
 					authoritativeRunId ??= id;
 				}
 			} catch {
@@ -103,7 +106,7 @@ test("a Run driven from the browser writes correlated core.jsonl + worker.jsonl"
 		"Core wrote at least one structured JSONL event to core.jsonl",
 	).toBeGreaterThan(0);
 	expect(
-		coreLines.some((l) => typeof l.event === "string"),
+		coreLines.some((l) => asString(l.event) !== undefined),
 		"core.jsonl events carry a stable `event` key",
 	).toBe(true);
 
@@ -117,7 +120,10 @@ test("a Run driven from the browser writes correlated core.jsonl + worker.jsonl"
 	const workerLines = workerBody
 		.split("\n")
 		.filter((l) => l.trim().length > 0)
-		.map((l) => JSON.parse(l) as Record<string, unknown>);
+		.flatMap((l) => {
+			const parsed = asObject(JSON.parse(l));
+			return parsed === null ? [] : [parsed];
+		});
 
 	const runError = workerLines.find((l) => l.event === "worker.run_error");
 	expect(
@@ -128,7 +134,7 @@ test("a Run driven from the browser writes correlated core.jsonl + worker.jsonl"
 	// We must have observed the authoritative run_id over the wire, or the join
 	// assertion below is vacuous.
 	expect(
-		typeof authoritativeRunId === "string" && authoritativeRunId.length > 0,
+		authoritativeRunId !== undefined && authoritativeRunId.length > 0,
 		"captured the authoritative run_id from the /ws thread/create response",
 	).toBe(true);
 

@@ -5,7 +5,7 @@ import {
 	fauxProvider,
 	fauxToolCall,
 } from "@earendil-works/pi-ai";
-import type { WorkerManifest } from "@inkstone/protocol";
+import type { JsonObject, JsonValue, WorkerManifest } from "@inkstone/protocol";
 import { Effect } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -19,7 +19,10 @@ import {
 import { fauxInterpreterDeps } from "../src/faux/faux-deps.js";
 import { runInterpreter } from "../src/interpreter.js";
 import type { WorkerEmit } from "../src/transport.js";
-import { InMemoryTransport } from "../src/transport-memory.js";
+import {
+	type CapturedToolRequest,
+	InMemoryTransport,
+} from "../src/transport-memory.js";
 
 // External-tool lane tests (external-task-views A3/A4): the dual read
 // allowlist, the MCP→transcript adapter, and the lifecycle frames — driven
@@ -46,21 +49,29 @@ const SERVER_TOOLS = [
 	},
 ];
 
-interface FakeCall {
+type FakeCall = {
 	name: string;
-	args: unknown;
-}
+	args: JsonValue | undefined;
+};
+
+/** A scripted `tools/call` result — JSON, exactly as the wire carries it (the
+ * adapter narrows `content` and drops `structuredContent`). */
+type FakeResult = {
+	content: readonly JsonValue[];
+	isError?: boolean;
+	structuredContent?: JsonValue;
+};
 
 /** A minimal stateless streamable-HTTP MCP server: initialize / initialized /
  * tools/list / tools/call over plain JSON POST responses. Records every call +
  * authorization header for assertions. */
-function startFakeMcp(
-	onCall: (call: FakeCall) => {
-		content: unknown[];
-		isError?: boolean;
-		structuredContent?: unknown;
-	},
-): Promise<{
+/** The port a just-listening TCP server bound.
+ * SAFETY: these servers listen on a TCP port, so `address()` is an `AddressInfo`
+ * (it is a string only for a UNIX pipe) and non-null inside the listen callback. */
+const boundPort = (server: Server): number =>
+	(server.address() as AddressInfo).port;
+
+function startFakeMcp(onCall: (call: FakeCall) => FakeResult): Promise<{
 	url: string;
 	calls: FakeCall[];
 	authorizations: string[];
@@ -80,12 +91,14 @@ function startFakeMcp(
 				res.writeHead(405).end();
 				return;
 			}
+			// SAFETY: `body` is the JSON-RPC request this fake server just received
+			// from the MCP SDK; the switch below reads only these fields.
 			const msg = JSON.parse(body) as {
 				id?: number;
 				method: string;
-				params?: { name?: string; arguments?: unknown };
+				params?: { name?: string; arguments?: JsonValue };
 			};
-			const respond = (result: unknown) => {
+			const respond = (result: JsonValue) => {
 				res
 					.writeHead(200, { "content-type": "application/json" })
 					.end(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result }));
@@ -102,7 +115,7 @@ function startFakeMcp(
 					respond({ tools: SERVER_TOOLS });
 					return;
 				case "tools/call": {
-					const call = {
+					const call: FakeCall = {
 						name: msg.params?.name ?? "",
 						args: msg.params?.arguments,
 					};
@@ -118,7 +131,7 @@ function startFakeMcp(
 	});
 	return new Promise((resolve) => {
 		server.listen(0, "127.0.0.1", () => {
-			const { port } = server.address() as AddressInfo;
+			const port = boundPort(server);
 			resolve({
 				url: `http://127.0.0.1:${port}/mcp`,
 				calls,
@@ -142,7 +155,7 @@ function startStalledMcp(): Promise<{
 	});
 	return new Promise((resolve) => {
 		server.listen(0, "127.0.0.1", () => {
-			const { port } = server.address() as AddressInfo;
+			const port = boundPort(server);
 			resolve({
 				url: `http://127.0.0.1:${port}/mcp`,
 				close: () =>
@@ -241,10 +254,7 @@ describe("dual read-allowlist", () => {
 	it("gate #2: the executor rejects a non-allowlisted tool BEFORE calling the server", async () => {
 		const calls: FakeCall[] = [];
 		const caller = {
-			callTool: (params: {
-				name: string;
-				arguments: Record<string, unknown>;
-			}) => {
+			callTool: (params: { name: string; arguments: JsonObject }) => {
 				calls.push({ name: params.name, args: params.arguments });
 				return Promise.resolve({ content: [] });
 			},
@@ -326,8 +336,7 @@ describe("interpreter with external tools (fake MCP server)", () => {
 		const faux = fauxProvider({ provider: "faux" });
 		faux.setResponses(responses);
 		const events: WorkerEmit[] = [];
-		const requests: { toolCallId: string; name: string; params: unknown }[] =
-			[];
+		const requests: CapturedToolRequest[] = [];
 		await Effect.runPromise(
 			runInterpreter(
 				externalManifest(fake.url),
@@ -427,7 +436,7 @@ describe("interpreter with external tools (fake MCP server)", () => {
 					const result = [...context.messages]
 						.reverse()
 						.find((m) => m.role === "toolResult");
-					sawIsError = (result as { isError?: boolean } | undefined)?.isError;
+					sawIsError = result?.isError;
 					return fauxAssistantMessage("noted the failure");
 				},
 			],
@@ -521,11 +530,7 @@ describe("interpreter with external tools (fake MCP server)", () => {
 			observeStart = resolve;
 		});
 		const events: WorkerEmit[] = [];
-		const requests: {
-			toolCallId: string;
-			name: string;
-			params: unknown;
-		}[] = [];
+		const requests: CapturedToolRequest[] = [];
 		const run = Effect.runPromise(
 			runInterpreter(
 				externalManifest(fake.url),

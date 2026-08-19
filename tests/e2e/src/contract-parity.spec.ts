@@ -14,7 +14,12 @@
 // assertion bites rather than passing vacuously.
 
 import path from "node:path";
-import { schemas, type WireKind } from "@inkstone/protocol";
+import {
+	asObject,
+	type JsonValue,
+	schemas,
+	type WireKind,
+} from "@inkstone/protocol";
 import { Either, Schema } from "effect";
 import { expect, test } from "./fixtures.js";
 import {
@@ -28,18 +33,21 @@ import {
  * (mirrors the ui-sdk wire — packages/ui-sdk/src/index.ts:64-65). */
 interface RpcResponse {
 	id: number;
-	result?: { mutation_kind: string; payload: unknown };
+	result?: ProposalPayload;
 	error?: { code: number; message: string };
+}
+
+/** The `proposal/get` fields this spec asserts against the locked schema. */
+interface ProposalPayload {
+	mutation_kind: string;
+	payload: JsonValue;
 }
 
 /** Read a pending proposal's live payload over the SPA's own `proposal/get`
  * wire: open a WebSocket to Core's `/ws`, issue the request, resolve on the
  * matching id. This is exactly what `apps/web` calls (ui-sdk proposalGet →
  * request("proposal/get", { run_id }, ProposalGetResult)). */
-function proposalGet(
-	coreUrl: string,
-	runId: string,
-): Promise<{ mutation_kind: string; payload: unknown }> {
+function proposalGet(coreUrl: string, runId: string): Promise<ProposalPayload> {
 	const wsUrl = `${coreUrl.replace(/^http/, "ws")}/ws`;
 	return new Promise((resolve, reject) => {
 		const ws = new WebSocket(wsUrl);
@@ -59,6 +67,8 @@ function proposalGet(
 			);
 		});
 		ws.addEventListener("message", (event) => {
+			// SAFETY: the frame is this harness's own `proposal/get` traffic with the
+			// Core it spawned; the branches below read only these fields.
 			const frame = JSON.parse(String(event.data)) as RpcResponse;
 			if (frame.id !== id) return; // ignore notifications / other ids
 			clearTimeout(timer);
@@ -102,12 +112,10 @@ test.describe("faux proposal parity", () => {
 		await expect(card).toBeVisible({ timeout: 15_000 });
 		const runId = await card.getAttribute("data-proposal");
 		expect(runId, "the ProposalCard carries its run_id").toBeTruthy();
+		if (runId === null) throw new Error("no run_id on the ProposalCard");
 
 		// Read the live payload over the SPA's own wire.
-		const { mutation_kind, payload } = await proposalGet(
-			core.url,
-			runId as string,
-		);
+		const { mutation_kind, payload } = await proposalGet(core.url, runId);
 		expect(mutation_kind, "faux propose emits a create_journal_entry").toBe(
 			"create_journal_entry",
 		);
@@ -121,6 +129,9 @@ test.describe("faux proposal parity", () => {
 		// single no-requirements existential (`Schema<unknown, unknown>`, Context =
 		// never) so `decodeUnknownEither` takes one schema rather than the conflicting
 		// union of all proposable kinds.
+		// SAFETY: `mutation_kind` was just asserted to be a key of `schemas`, whose
+		// heterogeneous union must widen to ONE no-requirements existential so
+		// `decodeUnknownEither` takes a single schema.
 		const schema = schemas[mutation_kind as WireKind] as Schema.Schema<
 			unknown,
 			unknown
@@ -140,7 +151,7 @@ test.describe("faux proposal parity", () => {
 
 		// Negative control — the decode genuinely bites: drop a required field
 		// (`body` is required on create_journal_entry) and confirm it now fails.
-		const corrupted = { ...(payload as Record<string, unknown>) };
+		const corrupted = { ...asObject(payload) };
 		delete corrupted.body;
 		expect(
 			Either.isLeft(decodeStrict(corrupted)),
@@ -148,10 +159,7 @@ test.describe("faux proposal parity", () => {
 		).toBe(true);
 		expect(
 			Either.isLeft(
-				decodeStrict({
-					...(payload as Record<string, unknown>),
-					unexpected_field: true,
-				}),
+				decodeStrict({ ...asObject(payload), unexpected_field: true }),
 			),
 			"adding an unknown top-level field must fail the strict decode",
 		).toBe(true);
@@ -179,12 +187,13 @@ test.describe("record_observations proposal parity", () => {
 		await expect(card).toBeVisible({ timeout: 15_000 });
 		const runId = await card.getAttribute("data-proposal");
 		expect(runId, "the ProposalCard carries its run_id").toBeTruthy();
+		if (runId === null) throw new Error("no run_id on the ProposalCard");
 
-		const { mutation_kind, payload } = await proposalGet(
-			core.url,
-			runId as string,
-		);
+		const { mutation_kind, payload } = await proposalGet(core.url, runId);
 		expect(mutation_kind).toBe("record_observations");
+		// SAFETY: `mutation_kind` was just asserted to be a key of `schemas`, whose
+		// heterogeneous union must widen to ONE no-requirements existential so
+		// `decodeUnknownEither` takes a single schema.
 		const schema = schemas[mutation_kind as WireKind] as Schema.Schema<
 			unknown,
 			unknown
@@ -202,7 +211,7 @@ test.describe("record_observations proposal parity", () => {
 		}
 		expect(Either.isRight(decoded)).toBe(true);
 
-		const corrupted = { ...(payload as Record<string, unknown>) };
+		const corrupted = { ...asObject(payload) };
 		delete corrupted.observations;
 		expect(
 			Either.isLeft(decodeStrict(corrupted)),
@@ -210,10 +219,7 @@ test.describe("record_observations proposal parity", () => {
 		).toBe(true);
 		expect(
 			Either.isLeft(
-				decodeStrict({
-					...(payload as Record<string, unknown>),
-					unexpected_field: true,
-				}),
+				decodeStrict({ ...asObject(payload), unexpected_field: true }),
 			),
 			"adding an unknown top-level field must fail the strict decode",
 		).toBe(true);

@@ -38,6 +38,8 @@ function source(): SourceCatalog {
 		"../../../crates/core/src/models/catalog.json",
 		import.meta.url,
 	);
+	// SAFETY: `catalog.json` is Core's committed source catalog; the drift
+	// assertions below read exactly the fields this type names.
 	return JSON.parse(readFileSync(jsonUrl, "utf8")) as SourceCatalog;
 }
 
@@ -67,7 +69,7 @@ type PiModels = Record<
 
 // Index pi-ai's public registry — the same `builtinModels()` collection the
 // interpreter resolves models from at runtime — as provider id → model id.
-function piModels(): PiModels {
+function piModels() {
 	const models = builtinModels();
 	const byProvider: PiModels = {};
 	for (const provider of models.getProviders()) {
