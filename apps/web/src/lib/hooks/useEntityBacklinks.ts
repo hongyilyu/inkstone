@@ -6,7 +6,7 @@ import {
 	parseJournalEntry,
 	parseRowsDroppingMalformed,
 } from "@/lib/entityCodec";
-import type { JournalEntry, LibraryItemKind } from "@/lib/libraryItems";
+import type { LibraryItemKind } from "@/lib/libraryItems";
 import { useRuntime } from "@/runtime";
 
 /** The Entity kinds that can be an `entity_ref` target (ADR-0050) — the only two
@@ -19,9 +19,7 @@ function targetsBacklinks(kind: LibraryItemKind): boolean {
 /** Map an `EntityBacklinksResult` into the inspector's view-model set, dropping
  * any malformed row via the shared `parseRowsDroppingMalformed` decode policy. Pure —
  * unit-testable; the hook below only supplies the wire result. */
-export function assembleBacklinks(result: EntityBacklinksResult): {
-	mentionedIn: JournalEntry[];
-} {
+export function assembleBacklinks(result: EntityBacklinksResult) {
 	return {
 		mentionedIn: parseRowsDroppingMalformed(
 			"journal_entry",

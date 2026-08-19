@@ -1,4 +1,4 @@
-import type { EntityRow } from "@inkstone/protocol";
+import type { EntityRow, JsonValue } from "@inkstone/protocol";
 
 // Wire-shape `EntityRow` builders (packages/protocol/src/entity.ts:87) for the
 // five Library entity types. Each returns the raw row a real `entity/list`
@@ -16,14 +16,14 @@ export interface RowOpts {
 }
 
 /** Stored Person `data` fields (mirrors `readPersonData`, payloads.ts:612). */
-export interface PersonData {
+export type PersonData = {
 	name: string;
 	note: string;
 	aliases: readonly string[];
-}
+};
 
 /** Stored Project `data` fields (mirrors `readProjectData`, payloads.ts:622). */
-export interface ProjectData {
+export type ProjectData = {
 	name: string;
 	outcome: string;
 	note: string;
@@ -34,25 +34,25 @@ export interface ProjectData {
 	dropped_at: string;
 	next_review_at: string;
 	last_reviewed_at: string;
-	review_every: unknown;
-}
+	review_every: JsonValue;
+};
 
 /** One Journal Entry body node: `text` or `entity_ref` (ADR-0030). */
-export interface JeBodyNode {
+export type JeBodyNode = {
 	type: string;
 	text?: string;
 	ref_id?: string;
-}
+};
 
 /** Stored Journal Entry `data` fields (mirrors `readJournalEntryData`, payloads.ts:657). */
-export interface JeData {
+export type JeData = {
 	occurred_at: string;
 	ended_at: string;
 	body: readonly JeBodyNode[];
-}
+};
 
 /** Stored Media `data` fields (mirrors `readMediaData`, payloads.ts:640). */
-export interface MediaData {
+export type MediaData = {
 	title: string;
 	medium: string;
 	state: string;
@@ -61,25 +61,27 @@ export interface MediaData {
 	url: string;
 	note: string;
 	tags: readonly string[];
-}
+};
 
 const EPOCH = 1_700_000_000_000;
 
 function baseRow(
 	id: string,
 	type: string,
-	data: unknown,
+	data: JsonValue,
 	opts: RowOpts,
 ): EntityRow {
-	return {
+	const row: EntityRow = {
 		id,
 		type,
 		data,
 		created_at: opts.created_at ?? EPOCH,
 		updated_at: opts.updated_at ?? EPOCH,
-		...(opts.refs !== undefined ? { refs: opts.refs } : {}),
-		...(opts.source !== undefined ? { source: opts.source } : {}),
 	};
+	const withRefs = opts.refs === undefined ? row : { ...row, refs: opts.refs };
+	return opts.source === undefined
+		? withRefs
+		: { ...withRefs, source: opts.source };
 }
 
 /** A wire Project row; defaults `status: "active"`. */

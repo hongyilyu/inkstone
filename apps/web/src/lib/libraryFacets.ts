@@ -28,12 +28,11 @@ export interface ActiveFacets {
 /** Each facet key and the `ActiveFacets` Set field it toggles. A `Record` over
  * the union makes the map exhaustive: a new `FacetKey` forces an entry here (and
  * a typed field name keeps the Set updates honest). */
-const MULTI_SELECT_FIELD: Record<FacetKey, "statuses" | "mediums" | "states"> =
-	{
-		status: "statuses",
-		medium: "mediums",
-		state: "states",
-	};
+const MULTI_SELECT_FIELD = {
+	status: "statuses",
+	medium: "mediums",
+	state: "states",
+} satisfies Record<FacetKey, "statuses" | "mediums" | "states">;
 
 /** A facet value the UI renders as one chip. */
 export interface FacetValue {
@@ -92,11 +91,11 @@ export function toggleFacet(
 	return { ...active, [field]: next };
 }
 
-const GROUP_LABEL: Record<FacetKey, string> = {
+const GROUP_LABEL = {
 	status: "Status",
 	medium: "Medium",
 	state: "State",
-};
+} satisfies Record<FacetKey, string>;
 
 /** Which facets a kind offers at all (before checking whether the data can
  * partition). Project has a status axis; Media has medium/state; the rest are

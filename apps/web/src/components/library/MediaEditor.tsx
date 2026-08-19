@@ -1,10 +1,8 @@
 import { useId } from "react";
+import { buildMedia, mediaDraftFromVm } from "@/lib/entityCodec.js";
 import {
-	buildMedia,
-	type MediaDraft,
-	mediaDraftFromVm,
-} from "@/lib/entityCodec.js";
-import {
+	asMediaMedium,
+	asMediaState,
 	isMediaTerminalState,
 	MEDIA_MEDIUM_OPTIONS,
 	MEDIA_STATE_OPTIONS,
@@ -91,9 +89,7 @@ export function MediaEditor({ onDone, onCancel, ...m }: Props) {
 				<EditorSelect
 					id={ids.medium}
 					value={draft.medium}
-					onChange={(e) =>
-						set("medium", e.target.value as MediaDraft["medium"])
-					}
+					onChange={(e) => set("medium", asMediaMedium(e.target.value))}
 				>
 					{MEDIA_MEDIUM_OPTIONS.map((o) => (
 						<option key={o.value} value={o.value}>
@@ -107,7 +103,7 @@ export function MediaEditor({ onDone, onCancel, ...m }: Props) {
 				<EditorSelect
 					id={ids.state}
 					value={draft.state}
-					onChange={(e) => setState(e.target.value as MediaState)}
+					onChange={(e) => setState(asMediaState(e.target.value))}
 				>
 					{MEDIA_STATE_OPTIONS.map((o) => (
 						<option key={o.value} value={o.value}>

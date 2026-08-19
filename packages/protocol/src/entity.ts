@@ -3,6 +3,8 @@
 
 import { Schema as S } from "effect";
 
+import { JsonValue } from "./json.js";
+
 // entity/* (ADR-0004): the accepted Entities the Library reads; `entity/list` is type-parameterized (one type per call).
 
 /** The closed set of Entity types, mirroring Core's `EntityType`. */
@@ -57,7 +59,7 @@ export type EntitySourceView = S.Schema.Type<typeof EntitySourceView>;
 export const EntityRow = S.Struct({
 	id: S.String,
 	type: S.String,
-	data: S.Unknown,
+	data: JsonValue,
 	created_at: S.Number,
 	updated_at: S.Number,
 	refs: S.optional(S.Array(ResolvedEntityRef)),
@@ -119,7 +121,7 @@ export type EntityMutationKind = S.Schema.Type<typeof EntityMutationKind>;
  */
 export const EntityMutateParams = S.Struct({
 	mutation_kind: EntityMutationKind,
-	payload: S.Unknown,
+	payload: JsonValue,
 });
 
 export type EntityMutateParams = S.Schema.Type<typeof EntityMutateParams>;

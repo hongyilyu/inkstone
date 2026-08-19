@@ -2,9 +2,13 @@
 // value domains, the `{value,label}` option arrays the editors render, and the
 // pure coercers (parseAliases/asProjectStatus/asMediaMedium/asMediaState). A
 // PURE LEAF — it imports nothing (no React, no lucide, no
-// libraryItems/entityCodec/components), so every consumer (codec, proposalEdit,
+// libraryItems/entityCodec/components — only the wire JSON types), so every
+// consumer (codec, proposalEdit,
 // intentGraphReview, the rail editors, the proposal card) reads ONE answer for
 // "how is a Project's status spelled, what media states exist".
+
+import type { JsonObject, JsonValue } from "@inkstone/protocol";
+import { asString } from "@/lib/readPayload";
 
 /** The Project GTD status domain (ADR-0031). */
 export const PROJECT_STATUSES = [
@@ -73,7 +77,7 @@ export type ClearMode = "undefined" | "delete";
  * dependency; callers pass `localNowString()`.
  */
 export function stampStatusTimestamps(
-	target: Record<string, unknown>,
+	target: JsonObject,
 	status: string,
 	nowString: string,
 	clearMode: ClearMode,
@@ -94,27 +98,24 @@ export function stampStatusTimestamps(
 	}
 }
 
-/** Coerce an unknown to a Project status, degrading anything unrecognized to "active". */
-export function asProjectStatus(value: unknown): ProjectStatus {
-	return value === "on_hold" || value === "completed" || value === "dropped"
-		? value
-		: "active";
+/** Coerce a stored value to a Project status, degrading anything unrecognized to "active". */
+export function asProjectStatus(value: JsonValue | undefined): ProjectStatus {
+	const status = asString(value);
+	return PROJECT_STATUSES.find((s) => s.value === status)?.value ?? "active";
 }
 
-/** Coerce an unknown to a Media medium, degrading anything unrecognized to "link"
+/** Coerce a stored value to a Media medium, degrading anything unrecognized to "link"
  * (the migration's bookmark→media default — a sparse/legacy row never crashes). */
-export function asMediaMedium(value: unknown): MediaMedium {
-	return MEDIA_MEDIUMS.some((m) => m.value === value)
-		? (value as MediaMedium)
-		: "link";
+export function asMediaMedium(value: JsonValue | undefined): MediaMedium {
+	const medium = asString(value);
+	return MEDIA_MEDIUMS.find((m) => m.value === medium)?.value ?? "link";
 }
 
-/** Coerce an unknown to a Media state, degrading anything unrecognized to "done"
+/** Coerce a stored value to a Media state, degrading anything unrecognized to "done"
  * (the migration's bookmark→media default — a sparse/legacy row never crashes). */
-export function asMediaState(value: unknown): MediaState {
-	return MEDIA_STATES.some((s) => s.value === value)
-		? (value as MediaState)
-		: "done";
+export function asMediaState(value: JsonValue | undefined): MediaState {
+	const state = asString(value);
+	return MEDIA_STATES.find((s) => s.value === state)?.value ?? "done";
 }
 
 /**

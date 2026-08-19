@@ -1,4 +1,4 @@
-import { createMedia, updateMedia } from "@inkstone/protocol";
+import { createMedia, type JsonValue, updateMedia } from "@inkstone/protocol";
 import { Schema as S } from "effect";
 import { describe, expect, it } from "vitest";
 import {
@@ -30,7 +30,10 @@ import type { JournalEntry, Media, Person, Project } from "@/lib/libraryItems";
 // and `recency === row.created_at`, not the rendered locale string.
 
 describe("entityCodec parse — journal_entry", () => {
-	const row = (data: unknown, refs?: LiveEntityRow["refs"]): LiveEntityRow => ({
+	const row = (
+		data: JsonValue,
+		refs?: LiveEntityRow["refs"],
+	): LiveEntityRow => ({
 		id: "je_1",
 		data,
 		created_at: 1000,
@@ -185,7 +188,7 @@ describe("entityCodec parse — journal_entry", () => {
 });
 
 describe("entityCodec parse — person", () => {
-	const row = (data: unknown): LiveEntityRow => ({
+	const row = (data: JsonValue): LiveEntityRow => ({
 		id: "p_1",
 		data,
 		created_at: 3000,
@@ -218,7 +221,7 @@ describe("entityCodec parse — person", () => {
 });
 
 describe("entityCodec parse — project", () => {
-	const row = (data: unknown): LiveEntityRow => ({
+	const row = (data: JsonValue): LiveEntityRow => ({
 		id: "proj_1",
 		data,
 		created_at: 4000,
@@ -332,7 +335,7 @@ describe("entityCodec parse — fail-soft decode never throws (slice-2 contract)
 });
 
 describe("entityCodec parse — media", () => {
-	const row = (data: unknown): LiveEntityRow => ({
+	const row = (data: JsonValue): LiveEntityRow => ({
 		id: "m_1",
 		data,
 		created_at: 5000,

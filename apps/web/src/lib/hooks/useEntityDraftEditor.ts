@@ -1,4 +1,5 @@
 import type { EntityMutateParams } from "@inkstone/protocol";
+import type { WsError } from "@inkstone/ui-sdk";
 import { useState } from "react";
 import { useEntityMutation } from "./useEntityMutation.js";
 
@@ -6,10 +7,9 @@ import { useEntityMutation } from "./useEntityMutation.js";
  * The canonical error derivation from a mutation: shows the Error message if it
  * has one, otherwise the generic fallback. The single place this ternary lives.
  */
-export function deriveMutationError(error: unknown): string | null {
+export function deriveMutationError(error: WsError | null): string | null {
 	if (error == null) return null;
-	if (error instanceof Error && error.message) return error.message;
-	return "Couldn't save. Try again.";
+	return error.message || "Couldn't save. Try again.";
 }
 
 type BuildCreate<D> = { mode: "create"; draft: D };
