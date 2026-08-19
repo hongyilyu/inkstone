@@ -36,24 +36,54 @@ describe("readDue", () => {
 });
 
 describe("dueLabel", () => {
-	it("renders all-day as a date and timed as a localized instant, both in the tuple's zone", () => {
-		// 07:00Z on Sep 1 = midnight PDT: the all-day label must say Sep 1 (the
-		// zone), not fall back to a UTC rendering that could drift a day.
+	// LOCALE-INDEPENDENT: `dueLabel` renders through the ambient locale (a
+	// `de-DE` runner shows `1.9.2026`), so the expectation is built from the
+	// same `Intl` call — what is asserted is the ZONE handling (which day, which
+	// wall time), not a presentation format.
+	it("renders all-day as a date and timed as an instant, both in the tuple's zone", () => {
+		const zone = "America/Los_Angeles";
+		// 07:00Z on Sep 1 = midnight PDT: the all-day label must land on Sep 1 in
+		// the zone, not drift a day via a UTC rendering.
 		const allDay = dueLabel({
 			date: "2026-09-01T07:00:00.000+0000",
 			isAllDay: true,
-			timeZone: "America/Los_Angeles",
+			timeZone: zone,
 		});
-		expect(allDay).toContain("2026");
-		expect(allDay).toMatch(/9\/1|09\/01|Sep/);
+		expect(allDay).toBe(
+			new Date("2026-09-01T07:00:00.000Z").toLocaleDateString(undefined, {
+				timeZone: zone,
+			}),
+		);
+		// The zone-correct calendar day, asserted without a format assumption.
+		expect(
+			new Intl.DateTimeFormat("en-CA", {
+				timeZone: zone,
+				year: "numeric",
+				month: "2-digit",
+				day: "2-digit",
+			}).format(new Date("2026-09-01T07:00:00.000Z")),
+		).toBe("2026-09-01");
 
+		// 00:30Z Sep 2 = 17:30 PDT Sep 1 — a timed due renders date AND time.
 		const timed = dueLabel({
 			date: "2026-09-02T00:30:00.000+0000",
 			isAllDay: false,
-			timeZone: "America/Los_Angeles",
+			timeZone: zone,
 		});
-		// 00:30Z Sep 2 = 17:30 PDT Sep 1.
-		expect(timed).toMatch(/5:30|17:30/);
+		expect(timed).toBe(
+			new Date("2026-09-02T00:30:00.000Z").toLocaleString(undefined, {
+				timeZone: zone,
+			}),
+		);
+		expect(timed).not.toBe(allDay);
+		expect(
+			new Intl.DateTimeFormat("en-GB", {
+				timeZone: zone,
+				hour: "2-digit",
+				minute: "2-digit",
+				hour12: false,
+			}).format(new Date("2026-09-02T00:30:00.000Z")),
+		).toBe("17:30");
 	});
 
 	it("degrades an unparseable date to the raw string", () => {

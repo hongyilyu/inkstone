@@ -32,7 +32,15 @@ const STATUS_KEY = ["ticktick", "status"] as const;
 export function readTasksAtSourceLimit(queryClient: QueryClient): boolean {
 	return queryClient
 		.getQueriesData<TickTickTasksListResult>({ queryKey: TASKS_KEY_PREFIX })
-		.some(([, data]) => data?.source_limit_reached === true);
+		.some(
+			// The prefix also matches the disabled observer's placeholder key, so
+			// check the property is actually there before trusting it.
+			(entry) =>
+				typeof entry[1] === "object" &&
+				entry[1] !== null &&
+				"source_limit_reached" in entry[1] &&
+				entry[1].source_limit_reached === true,
+		);
 }
 
 /** Split a failed task read into an INITIAL failure (no successful fetch yet —
