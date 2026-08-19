@@ -1,4 +1,5 @@
 import {
+	type JsonValue,
 	type NodeDecision,
 	type ThreadGetResult,
 	type ThreadListResult,
@@ -229,6 +230,7 @@ function readAsBase64(file: File): Promise<string> {
 	return new Promise((resolve, reject) => {
 		const reader = new FileReader();
 		reader.onload = () => {
+			// SAFETY: `readAsDataURL` always yields a string `result`.
 			const dataUrl = reader.result as string;
 			resolve(dataUrl.slice(dataUrl.indexOf(",") + 1));
 		};
@@ -246,7 +248,7 @@ function readAsBase64(file: File): Promise<string> {
 async function imageDimensions(
 	file: File,
 ): Promise<{ width: number; height: number } | undefined> {
-	if (typeof createImageBitmap !== "function") {
+	if (!("createImageBitmap" in globalThis)) {
 		return undefined;
 	}
 	try {
@@ -293,12 +295,16 @@ async function uploadFiles(
 		}
 		const mediaId = exit.value.media_id;
 		ids.push(mediaId);
-		segments.push({
+		const attachment = {
 			kind: "attachment",
 			mediaId,
 			mime: file.type,
-			...(dims !== undefined ? { width: dims.width, height: dims.height } : {}),
-		});
+		} satisfies Segment;
+		segments.push(
+			dims === undefined
+				? attachment
+				: { ...attachment, width: dims.width, height: dims.height },
+		);
 	}
 	return { ok: true, ids, segments };
 }
@@ -684,7 +690,7 @@ export async function decideProposal(
 	runtime: WsRuntime,
 	runId: RunId,
 	decision: "accept" | "reject" | "edit",
-	editedPayload?: unknown,
+	editedPayload?: JsonValue,
 	decisions?: readonly NodeDecision[],
 ): Promise<void> {
 	const proposal = getChatState().proposals[runId];
@@ -706,14 +712,19 @@ export async function decideProposal(
 		decisionKeys.set(proposal.proposal_id, key);
 	}
 
+	// Add only the keys this decision carries: an absent `edited_payload` /
+	// `decisions` is the wire's "not applicable" for this kind.
+	const scalar = {
+		proposal_id: proposal.proposal_id,
+		decision,
+		decision_idempotency_key: key,
+	};
+	const edited =
+		decision === "edit" ? { ...scalar, edited_payload: editedPayload } : scalar;
+	const params = decisions === undefined ? edited : { ...edited, decisions };
+
 	const program = Effect.flatMap(WsClient, (client) =>
-		client.proposalDecide({
-			proposal_id: proposal.proposal_id,
-			decision,
-			decision_idempotency_key: key,
-			...(decision === "edit" ? { edited_payload: editedPayload } : {}),
-			...(decisions !== undefined ? { decisions } : {}),
-		}),
+		client.proposalDecide(params),
 	);
 
 	const exit = await runtime.runPromiseExit(program);

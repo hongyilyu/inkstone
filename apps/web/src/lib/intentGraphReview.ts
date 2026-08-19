@@ -1,7 +1,18 @@
-import type { NodeDecision, ResolvedNode } from "@inkstone/protocol";
+import type {
+	JsonObject,
+	JsonValue,
+	NodeDecision,
+	ResolvedNode,
+} from "@inkstone/protocol";
 import { assertNever } from "@/lib/assertNever";
 import { parseAliases } from "@/lib/entityFields";
-import { readString, readStringArray } from "@/lib/readPayload";
+import {
+	asObject,
+	asString,
+	readArray,
+	readString,
+	readStringArray,
+} from "@/lib/readPayload";
 
 /**
  * Pure staging logic for the `apply_intent_graph` sequential-review card
@@ -278,18 +289,14 @@ export function nodeView(state: ReviewState, node: ResolvedNode): NodeView {
  * diff against — a node's ORIGINAL proposed fields. Degrades a malformed payload to
  * an empty map rather than throwing (the wire payload is unvalidated, ADR-0014). */
 export function parseGraphEntities(
-	payload: unknown,
-): Map<string, Record<string, unknown>> {
-	const out = new Map<string, Record<string, unknown>>();
-	if (!payload || typeof payload !== "object") return out;
-	const raw = (payload as Record<string, unknown>).entities;
-	if (!Array.isArray(raw)) return out;
-	for (const entry of raw) {
-		if (!entry || typeof entry !== "object") continue;
-		const handle = (entry as Record<string, unknown>).handle;
-		if (typeof handle === "string") {
-			out.set(handle, entry as Record<string, unknown>);
-		}
+	payload: JsonValue | undefined,
+): Map<string, JsonObject> {
+	const out = new Map<string, JsonObject>();
+	for (const entry of readArray(payload, "entities")) {
+		const entity = asObject(entry);
+		if (entity === null) continue;
+		const handle = asString(entity.handle);
+		if (handle !== undefined) out.set(handle, entity);
 	}
 	return out;
 }
@@ -301,7 +308,7 @@ export function parseGraphEntities(
  * surface only. */
 export function seedNodeDraft(
 	node: ResolvedNode,
-	entity: Record<string, unknown> | undefined,
+	entity: JsonObject | undefined,
 ): GraphNodeDraft | null {
 	if (node.disposition !== "create" || entity === undefined) return null;
 	switch (node.type) {
@@ -363,11 +370,11 @@ function diffRequired(original: string, next: string): string | undefined {
  * field is omitted. Returns `undefined` when nothing changed — the node then commits
  * as a plain accept (no `edited_fields`). Person/Project edit flat fields. */
 export function buildEditedFields(
-	original: Record<string, unknown> | undefined,
+	original: JsonObject | undefined,
 	draft: GraphNodeDraft,
-): Record<string, unknown> | undefined {
+): JsonObject | undefined {
 	const source = original ?? {};
-	const edits: Record<string, unknown> = {};
+	const edits: JsonObject = {};
 	const setOptional = (key: string, value: string | null | undefined) => {
 		if (value !== undefined) edits[key] = value;
 	};
@@ -425,7 +432,7 @@ export function buildDecisions(
 	plan: readonly ResolvedNode[],
 	buffer: StagingBuffer,
 	drafts: DraftBuffer = new Map(),
-	entities: Map<string, Record<string, unknown>> = new Map(),
+	entities: Map<string, JsonObject> = new Map(),
 	repoints: RepointBuffer = new Map(),
 ): NodeDecision[] {
 	return plan.map((node) => {
@@ -554,29 +561,20 @@ export function appendedClauses(
 
 /** Parse `journal_ref` entries from an opaque `apply_intent_graph` payload,
  * degrading malformed or unknown links rather than throwing (ADR-0014). */
-export function parseGraphLinks(payload: unknown): JournalRefLink[] {
-	if (!payload || typeof payload !== "object") return [];
-	const raw = (payload as Record<string, unknown>).links;
-	if (!Array.isArray(raw)) return [];
+export function parseGraphLinks(
+	payload: JsonValue | undefined,
+): JournalRefLink[] {
 	const out: JournalRefLink[] = [];
-	for (const entry of raw) {
-		if (!entry || typeof entry !== "object") continue;
-		const record = entry as Record<string, unknown>;
-		const kind = record.kind;
-		const from = record.from;
-		const to = record.to;
-		if (
-			kind === "journal_ref" &&
-			typeof from === "string" &&
-			typeof to === "string"
-		) {
-			const appendText = record.append_text;
-			out.push({
-				from,
-				to,
-				...(typeof appendText === "string" ? { appendText } : {}),
-			});
-		}
+	for (const entry of readArray(payload, "links")) {
+		const record = asObject(entry);
+		if (record?.kind !== "journal_ref") continue;
+		const from = asString(record.from);
+		const to = asString(record.to);
+		if (from === undefined || to === undefined) continue;
+		const appendText = asString(record.append_text);
+		out.push(
+			appendText === undefined ? { from, to } : { from, to, appendText },
+		);
 	}
 	return out;
 }

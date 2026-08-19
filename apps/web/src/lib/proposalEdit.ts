@@ -1,3 +1,4 @@
+import type { JsonObject, JsonValue } from "@inkstone/protocol";
 import {
 	asProjectStatus,
 	type ProjectStatus,
@@ -5,7 +6,7 @@ import {
 	stampStatusTimestamps,
 } from "@/lib/entityFields";
 import { localNowString } from "@/lib/libraryItems";
-import { readString, readStringArray } from "@/lib/readPayload";
+import { asObject, readString, readStringArray } from "@/lib/readPayload";
 
 // Pure overlay builders for the Proposal review card's inline Entity edit
 // (ADR-0025).
@@ -20,8 +21,8 @@ import { readString, readStringArray } from "@/lib/readPayload";
 // diff-vs-baseline (it emits sentinel-null clears against a stored entity), which
 // is structurally wrong for editing a payload the user is about to create.
 //
-// The proposed payload is `unknown` — raw model output that may be null, missing
-// fields, or wrong-typed — so every read degrades like the shared
+// The proposed payload is un-decoded `JsonValue` — raw model output that may be
+// null, missing fields, or wrong-typed — so every read degrades like the shared
 // `readString`/`readObject` helpers and never throws.
 
 /**
@@ -29,11 +30,9 @@ import { readString, readStringArray } from "@/lib/readPayload";
  * null/non-object), so the overlay can overwrite surfaced keys while every
  * unsurfaced field rides untouched and the caller's payload is never mutated.
  */
-function clonePayload(payload: unknown): Record<string, unknown> {
-	if (payload && typeof payload === "object" && !Array.isArray(payload)) {
-		return structuredClone(payload) as Record<string, unknown>;
-	}
-	return {};
+function clonePayload(payload: JsonValue | undefined): JsonObject {
+	const object = asObject(payload);
+	return object === null ? {} : structuredClone(object);
 }
 
 // ---------------------------------------------------------------------------
@@ -55,7 +54,9 @@ export interface CreatePersonDraft {
 }
 
 /** Seed a create_person draft from the proposed payload, never throwing. */
-export function seedCreatePerson(payload: unknown): CreatePersonDraft {
+export function seedCreatePerson(
+	payload: JsonValue | undefined,
+): CreatePersonDraft {
 	return {
 		name: readString(payload, "name"),
 		note: readString(payload, "note"),
@@ -72,9 +73,9 @@ export function seedCreatePerson(payload: unknown): CreatePersonDraft {
  * has no prior to clear, so "absent" is an omission, never a sentinel-null).
  */
 export function overlayCreatePerson(
-	payload: unknown,
+	payload: JsonValue | undefined,
 	draft: CreatePersonDraft,
-): Record<string, unknown> {
+): JsonObject {
 	const next = clonePayload(payload);
 
 	next.name = draft.name.trim();
@@ -113,16 +114,14 @@ export interface CreateProjectDraft {
 }
 
 /** Seed a create_project draft from the proposed payload, never throwing. */
-export function seedCreateProject(payload: unknown): CreateProjectDraft {
+export function seedCreateProject(
+	payload: JsonValue | undefined,
+): CreateProjectDraft {
 	return {
 		name: readString(payload, "name"),
 		outcome: readString(payload, "outcome"),
 		note: readString(payload, "note"),
-		status: asProjectStatus(
-			payload && typeof payload === "object"
-				? (payload as Record<string, unknown>).status
-				: undefined,
-		),
+		status: asProjectStatus(asObject(payload)?.status),
 	};
 }
 
@@ -140,9 +139,9 @@ export function seedCreateProject(payload: unknown): CreateProjectDraft {
  * Omit-empty (ADR-0033): a blank `outcome` or `note` deletes the key.
  */
 export function overlayCreateProject(
-	payload: unknown,
+	payload: JsonValue | undefined,
 	draft: CreateProjectDraft,
-): Record<string, unknown> {
+): JsonObject {
 	const next = clonePayload(payload);
 
 	const prevStatus = asProjectStatus(next.status);

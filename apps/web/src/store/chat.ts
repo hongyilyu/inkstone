@@ -1,4 +1,8 @@
-import type { ProposalReviewContext, ResolvedNode } from "@inkstone/protocol";
+import type {
+	JsonValue,
+	ProposalReviewContext,
+	ResolvedNode,
+} from "@inkstone/protocol";
 import type { RunEventValue } from "@inkstone/ui-sdk";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
@@ -6,7 +10,6 @@ import {
 	appendProposalSegment,
 	appendReasoningSegment,
 	appendTextSegment,
-	concatText,
 	type Segment,
 	sealOpenReasoning,
 	settleRunningToolSegments,
@@ -112,7 +115,7 @@ export interface PendingProposal {
 	readonly proposal_id: string;
 	readonly run_id: string;
 	readonly mutation_kind: string;
-	readonly payload: unknown;
+	readonly payload: JsonValue;
 	readonly rationale: string | null;
 	readonly review_context?: ProposalReviewContext;
 	/** The per-node create/reuse/ambiguous plan for an `apply_intent_graph`
@@ -257,14 +260,16 @@ export function setProposalStatus(
 		}
 		const { error_message: _oldErrorMessage, ...withoutErrorMessage } =
 			existing;
-		const next: PendingProposal = {
-			...(status === "error" ? existing : withoutErrorMessage),
-			status,
-			...(entityId === undefined ? {} : { entity_id: entityId }),
-			...(status === "error" && errorMessage
-				? { error_message: errorMessage }
-				: {}),
-		};
+		// Only an `error` status keeps a prior error_message; any other status drops it.
+		const base = status === "error" ? existing : withoutErrorMessage;
+		const decided: PendingProposal =
+			entityId === undefined
+				? { ...base, status }
+				: { ...base, status, entity_id: entityId };
+		const next: PendingProposal =
+			status === "error" && errorMessage
+				? { ...decided, error_message: errorMessage }
+				: decided;
 		return {
 			...s,
 			proposals: { ...s.proposals, [runId]: next },

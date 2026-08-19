@@ -1,7 +1,13 @@
-import type { ProposalReviewContext } from "@inkstone/protocol";
+import type { JsonValue, ProposalReviewContext } from "@inkstone/protocol";
 import type { ReactNode } from "react";
 import { PROJECT_STATUS_LABEL } from "@/lib/libraryItems";
-import { readArray, readString } from "@/lib/readPayload";
+import {
+	asObject,
+	asString,
+	readArray,
+	readString,
+	readStringArray,
+} from "@/lib/readPayload";
 
 /**
  * Inputs a row's `renderBody` strategy reads to draw the card's detail body — the
@@ -10,7 +16,7 @@ import { readArray, readString } from "@/lib/readPayload";
  * defensive helpers, never a typed decode (ADR-0009/0014).
  */
 export interface ProposalBodyArgs {
-	payload: unknown;
+	payload: JsonValue;
 	reviewContext: ProposalReviewContext | undefined;
 	/** Resolve an entity id to its display name via the warm library cache (the
 	 * same cache the decided-card link reads). Returns null when the id isn't in
@@ -24,32 +30,24 @@ export interface ProposalBodyArgs {
  * `[entity_ref]` marker (the woven chip has no inline text here). Reads the opaque
  * payload defensively (ADR-0009/0014); an empty/malformed body degrades to "".
  */
-export function journalBody(payload: unknown): string {
-	if (!payload || typeof payload !== "object") return "";
-	const body = (payload as Record<string, unknown>).body;
-	if (!Array.isArray(body)) return "";
-	return body
+export function journalBody(payload: JsonValue | undefined): string {
+	return readArray(payload, "body")
 		.map((node) => {
-			if (!node || typeof node !== "object") return "";
-			const record = node as Record<string, unknown>;
-			if (record.type === "entity_ref") return "[entity_ref]";
-			return record.type === "text" && typeof record.text === "string"
-				? record.text
-				: "";
+			const record = asObject(node);
+			if (record?.type === "entity_ref") return "[entity_ref]";
+			return record?.type === "text" ? (asString(record.text) ?? "") : "";
 		})
 		.join("");
 }
 
 /** Whether a Journal Entry body carries any `entity_ref` node (gates the inline
  * Edit affordance — a woven body is not re-editable as plain prose). */
-export function journalBodyHasEntityRef(payload: unknown): boolean {
-	if (!payload || typeof payload !== "object") return false;
-	const body = (payload as Record<string, unknown>).body;
-	if (!Array.isArray(body)) return false;
-	return body.some((node) => {
-		if (!node || typeof node !== "object") return false;
-		return (node as Record<string, unknown>).type === "entity_ref";
-	});
+export function journalBodyHasEntityRef(
+	payload: JsonValue | undefined,
+): boolean {
+	return readArray(payload, "body").some(
+		(node) => asObject(node)?.type === "entity_ref",
+	);
 }
 
 // The shared label + `<dl>` shell every detail-body section wears (entry, person,
@@ -158,11 +156,9 @@ export function renderJournalBody(
 // opaque body (a proposed payload OR the current entity from review_context). The
 // update card stacks two of these (Current + Proposed) so a field present in the
 // current body but omitted from the full-document replace stays visible (ADR-0016).
-function personSection(title: string, body: unknown): ReactNode {
+function personSection(title: string, body: JsonValue | undefined): ReactNode {
 	const note = readString(body, "note");
-	const aliases = readArray(body, "aliases").filter(
-		(a): a is string => typeof a === "string",
-	);
+	const aliases = readStringArray(body, "aliases");
 	return (
 		<Section title={title}>
 			<Field label="Name" value={readString(body, "name") || "Unknown"} />
@@ -194,7 +190,7 @@ export function renderPersonBody({
 }
 
 // One labelled `<section>` of Project `<Field>` rows (sibling of personSection).
-function projectSection(title: string, body: unknown): ReactNode {
+function projectSection(title: string, body: JsonValue | undefined): ReactNode {
 	const outcome = readString(body, "outcome");
 	const status = readString(body, "status");
 	const note = readString(body, "note");

@@ -1,10 +1,11 @@
 import {
+	type JsonValue,
 	ObservationRecordParams,
 	type ObservationRecordParams as ObservationRecordPayload,
 } from "@inkstone/protocol";
 import { Either, Schema as S } from "effect";
 import { type ReactNode, useId, useMemo, useState } from "react";
-import { readArray, readObject, readString } from "@/lib/readPayload";
+import { asObject, readArray, readObject, readString } from "@/lib/readPayload";
 import {
 	EditFormFooter,
 	EditorField,
@@ -16,19 +17,14 @@ const decodeObservationRecordParams = S.decodeUnknownEither(
 	{ onExcessProperty: "error" },
 );
 
-function unknownField(payload: unknown, key: string): unknown {
-	if (payload && typeof payload === "object" && key in payload) {
-		return (payload as Record<string, unknown>)[key];
-	}
-	return undefined;
-}
-
-export function observationValueText(value: unknown): string {
+export function observationValueText(value: JsonValue | undefined): string {
 	if (value === undefined) return "Unknown";
 	return JSON.stringify(value) ?? "Unknown";
 }
 
-export function observationBatchSummary(payload: unknown): string {
+export function observationBatchSummary(
+	payload: JsonValue | undefined,
+): string {
 	const observations = readArray(payload, "observations");
 	if (observations.length === 0) return "Observations";
 	if (observations.length === 1) {
@@ -37,7 +33,7 @@ export function observationBatchSummary(payload: unknown): string {
 	return `${observations.length} observations`;
 }
 
-function observationEvidenceText(payload: unknown): string {
+function observationEvidenceText(payload: JsonValue | undefined): string {
 	const evidence = readObject(payload, "evidence");
 	const journalEntryId = readString(evidence, "journal_entry_id");
 	if (journalEntryId) return `Journal Entry: ${journalEntryId}`;
@@ -66,7 +62,7 @@ export function ObservationField({
 export function renderObservationBody({
 	payload,
 }: {
-	payload: unknown;
+	payload: JsonValue;
 }): ReactNode {
 	const observations = readArray(payload, "observations");
 	const evidence = observationEvidenceText(payload);
@@ -86,7 +82,7 @@ export function renderObservationBody({
 							const endedAt = readString(observation, "ended_at");
 							const note = readString(observation, "note");
 							const values = observationValueText(
-								unknownField(observation, "values"),
+								asObject(observation)?.values,
 							);
 							const keySeed = `${schemaKey}:${occurredAt}:${values}`;
 							const nth = seen.get(keySeed) ?? 0;
@@ -137,7 +133,7 @@ export function renderObservationBody({
 	);
 }
 
-function prettyJson(value: unknown): string {
+function prettyJson(value: JsonValue): string {
 	return JSON.stringify(value ?? {}, null, 2) ?? "{}";
 }
 
@@ -146,13 +142,13 @@ function parseJsonObject(
 ):
 	| { value: ObservationRecordPayload; error: null }
 	| { value: null; error: string } {
-	let parsed: unknown;
+	let parsed: JsonValue;
 	try {
 		parsed = JSON.parse(text);
 	} catch {
 		return { value: null, error: "payload must be valid JSON" };
 	}
-	if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+	if (asObject(parsed) === null) {
 		return { value: null, error: "payload must be a JSON object" };
 	}
 	const decoded = decodeObservationRecordParams(parsed);
@@ -182,7 +178,7 @@ export function ObservationEditForm({
 	onSave,
 	onCancel,
 }: {
-	payload: unknown;
+	payload: JsonValue;
 	submitting: boolean;
 	onSave: (editedPayload: ObservationRecordPayload) => void;
 	onCancel: () => void;

@@ -3,6 +3,8 @@
 
 import { Schema as S } from "effect";
 
+import { JsonValue } from "./json.js";
+
 // proposal/* (ADR-0025): a Proposal is a Tool Request awaiting a human Decision — see docs/design/protocol.md
 
 /** `proposal/get` params: the parked Run whose pending Proposal to fetch. */
@@ -124,7 +126,7 @@ export const ProposalGetResult = S.Struct({
 	proposal_id: S.String,
 	run_id: S.String,
 	mutation_kind: S.String,
-	payload: S.Unknown,
+	payload: JsonValue,
 	rationale: S.NullOr(S.String),
 	review_context: S.optional(ProposalReviewContext),
 	resolved_plan: S.optional(S.Array(ResolvedNode)),
@@ -141,7 +143,7 @@ export const NodeDecision = S.Struct({
 	handle: S.String,
 	decision: S.Literal("accept", "reject"),
 	entity_id: S.optional(S.String),
-	edited_fields: S.optional(S.Unknown),
+	edited_fields: S.optional(JsonValue),
 });
 
 export type NodeDecision = S.Schema.Type<typeof NodeDecision>;
@@ -153,7 +155,7 @@ export type NodeDecision = S.Schema.Type<typeof NodeDecision>;
 export const ProposalDecideParams = S.Struct({
 	proposal_id: S.String,
 	decision: S.Literal("accept", "reject", "edit"),
-	edited_payload: S.optional(S.Unknown),
+	edited_payload: S.optional(JsonValue),
 	decisions: S.optional(S.Array(NodeDecision)),
 	decision_idempotency_key: S.optional(S.String),
 });
