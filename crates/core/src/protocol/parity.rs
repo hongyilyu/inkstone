@@ -51,6 +51,17 @@ mod parity_fixtures {
         /// One REAL-renderer sample per `(verb, kind)` the faux matchers
         /// branch on, rendered from fixed payloads so the bytes are stable.
         accepted_examples: Vec<AcceptedExample>,
+        /// The TickTick write family's three model-facing outcome texts
+        /// (ticktick-writes W-A3), rendered by the REAL renderer. The faux
+        /// worker's `tickTickWriteOutcome` matcher branches on these, so this
+        /// is the cross-language lock that keeps its substrings honest.
+        ticktick_write_outcomes: Vec<TickTickWriteOutcomeSample>,
+    }
+
+    #[derive(Serialize)]
+    struct TickTickWriteOutcomeSample {
+        outcome: &'static str,
+        sample: String,
     }
 
     #[derive(Serialize)]
@@ -145,6 +156,33 @@ mod parity_fixtures {
                             updated_at: 1_700_000_000_000,
                         },
                     ]),
+                },
+            ],
+            ticktick_write_outcomes: vec![
+                TickTickWriteOutcomeSample {
+                    outcome: "created",
+                    sample: crate::ticktick_write::decision_content_for_contract(
+                        &crate::ticktick::client::WriteOutcome::Created {
+                            task_id: "6899f2b3c1a4de0000000001".to_string(),
+                        },
+                        "buy milk",
+                    ),
+                },
+                TickTickWriteOutcomeSample {
+                    outcome: "failed",
+                    sample: crate::ticktick_write::decision_content_for_contract(
+                        &crate::ticktick::client::WriteOutcome::Failed {
+                            http_status: Some(401),
+                        },
+                        "buy milk",
+                    ),
+                },
+                TickTickWriteOutcomeSample {
+                    outcome: "unknown",
+                    sample: crate::ticktick_write::decision_content_for_contract(
+                        &crate::ticktick::client::WriteOutcome::Unknown { http_status: None },
+                        "buy milk",
+                    ),
                 },
             ],
         }

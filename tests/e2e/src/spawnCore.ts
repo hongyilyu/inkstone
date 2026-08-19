@@ -177,7 +177,7 @@ export interface SpawnCoreOptions {
 	readonly faux?: "propose" | "extract" | "capture";
 	/** Direct propose-worker fixture knob. Emits params loaded from this JSON file. */
 	readonly proposalParamsFile?: string;
-	/** Faux propose scenario (`INKSTONE_FAUX_PROPOSE_PARAMS`): `{ turns: [{ action: create|update|delete, body?, occurred_at? }] }`
+	/** Faux propose scenario (`INKSTONE_FAUX_PROPOSE_PARAMS`): `{ turns: [{ action: create|update|delete|ticktick_task, body?, occurred_at?, title?, note?, due? }] }`
 	 * JSON file the faux `propose` mode plays back by manifest position — the
 	 * prompt's prose never routes the action. NOT the neighboring
 	 * `proposalParamsFile`/`INKSTONE_PROPOSE_PARAMS_FILE`, which is the UNRELATED
@@ -504,7 +504,10 @@ export async function spawnCore(
 		const tools = opts.fauxToolCall
 			? '["read_thread"]'
 			: opts.faux === "propose"
-				? '["read_thread","read_current_thread_journal_entries","propose_workspace_mutation"]'
+				? // `propose_ticktick_task` rides along so a scenario's
+					// `ticktick_task` turn can park the write family's card
+					// (ticktick-writes W4).
+					'["read_thread","read_current_thread_journal_entries","propose_workspace_mutation","propose_ticktick_task"]'
 				: opts.faux === "extract" || opts.faux === "capture"
 					? '["read_thread","read_current_thread_journal_entries","search_entities","propose_workspace_mutation"]'
 					: "[]";

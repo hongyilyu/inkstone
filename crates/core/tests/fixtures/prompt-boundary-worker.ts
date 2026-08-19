@@ -52,11 +52,16 @@ const BAD_REMINDER_PROPOSAL = {
 };
 
 // Keep these exact phrases in sync with the shipped prompt. The fixture should
-// fail if the model-visible boundary is softened by wording drift. The boundary
-// now keeps reminders/tasks OUT of Journal Entries AND redirects them to TickTick
-// with NO Workspace mutation (ADR-0064: tasks no longer live in Inkstone) — so
-// the guard requires both the exclusion AND the TickTick redirect, not the old
-// "drop it silently" or "propose a create_todo" wording.
+// fail if the model-visible boundary is softened by wording drift.
+//
+// The boundary MOVED at the ticktick-writes cutover (ADR-0065 amending
+// ADR-0064): a reminder/task still never becomes a Journal Entry, but it is no
+// longer a dead-end redirect — it becomes exactly ONE `propose_ticktick_task`
+// Proposal, and no OTHER Workspace mutation. The guard therefore requires (a)
+// the Journal-Entry exclusion, (b) the named write tool, (c) the never-another-
+// mutation clause, and (d) that the model still cannot complete/edit/delete a
+// task. It deliberately REJECTS both the retired "add it in TickTick yourself"
+// dead-end and any softened wording that drops the tool name.
 export function hasReminderBoundary(systemPrompt: string): boolean {
 	const lower = systemPrompt.toLowerCase();
 	return (
@@ -64,8 +69,12 @@ export function hasReminderBoundary(systemPrompt: string): boolean {
 		lower.includes("reminders") &&
 		lower.includes("tasks") &&
 		lower.includes("ticktick is the user's task system") &&
-		lower.includes("add it in ticktick") &&
-		lower.includes("do not propose any workspace mutation for it")
+		lower.includes("propose_ticktick_task") &&
+		lower.includes("never a journal entry") &&
+		lower.includes("cannot complete, edit, or delete") &&
+		// The retired dead-end must be GONE: "tell them to add it in TickTick"
+		// with no proposal is exactly the capability ADR-0065 restores.
+		!lower.includes("add it in ticktick — do not propose")
 	);
 }
 
@@ -116,16 +125,32 @@ const main = async (): Promise<void> => {
 
 	const prompt = manifest.prompt ?? "";
 	const systemPrompt = manifest.workflow?.system_prompt ?? "";
-	if (
-		/remember\b.*\bmilk\b/i.test(prompt) &&
-		!hasReminderBoundary(systemPrompt)
-	) {
+	if (/remember\b.*\bmilk\b/i.test(prompt)) {
+		// A boundary-less prompt makes the fixture do the WRONG thing (park a
+		// Journal Entry), which is what the e2e guard detects.
+		if (!hasReminderBoundary(systemPrompt)) {
+			emit({
+				kind: "tool_request",
+				run_id: "",
+				tool_call_id: `tc_${process.pid}`,
+				name: "propose_workspace_mutation",
+				params: BAD_REMINDER_PROPOSAL,
+			});
+			await new Promise<void>(() => {});
+			return;
+		}
+		// With the boundary in force, a reminder is a TickTick task Proposal —
+		// never a Journal Entry (ADR-0065). Core parks on this call and tears
+		// the fixture down, so it must not emit `done`.
 		emit({
 			kind: "tool_request",
 			run_id: "",
 			tool_call_id: `tc_${process.pid}`,
-			name: "propose_workspace_mutation",
-			params: BAD_REMINDER_PROPOSAL,
+			name: "propose_ticktick_task",
+			params: {
+				payload: { title: "buy milk" },
+				rationale: "the user asked to be reminded",
+			},
 		});
 		await new Promise<void>(() => {});
 		return;

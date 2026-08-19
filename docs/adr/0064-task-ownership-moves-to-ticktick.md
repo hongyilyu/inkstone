@@ -2,6 +2,14 @@
 
 Status: Accepted
 
+> **Amended in part by [ADR-0065](./0065-ticktick-task-creation-through-the-proposal-gate.md).**
+> "No task writes" held only until the write feature landed: Inkstone now
+> **creates** a task through the Proposal gate (create only — no complete,
+> update, delete, or user-direct write), so the prompt no longer redirects a
+> reminder to "add it in TickTick yourself". Everything else here stands:
+> TickTick is the sole task authority, the two read lanes are unchanged, and
+> Core still stores no task row.
+
 / supersedes in part [ADR-0031](./0031-gtd-todo-person-project-model.md), [ADR-0032](./0032-gtd-relations-on-entity-list.md), [ADR-0033](./0033-user-initiated-entity-crud-writes-directly.md), [ADR-0042](./0042-intent-graph-journal-extraction.md), [ADR-0050](./0050-entity-backlinks-read-seam.md), [ADR-0055](./0055-gtd-ownership-and-relation-model.md)
 / supersedes [ADR-0037](./0037-todo-recurrence-rule.md), [ADR-0039](./0039-recurring-todo-occurrence-generation.md)
 / builds on [ADR-0018](./0018-workflow-and-tools-definition.md), [ADR-0023](./0023-provider-oauth-core-owned-credentials.md), [ADR-0025](./0025-proposal-park-and-resume.md)
@@ -53,7 +61,10 @@ whole.
 **No task writes.** Chat task capture dies at cutover: "remind me to buy milk"
 produces no tracked task anywhere. The agent's honest move is to tell the user to
 add it in TickTick. The default Workflow prompt says exactly that and proposes no
-mutation for a reminder/task.
+mutation for a reminder/task. *(Amended by ADR-0065: a reminder now becomes one
+`propose_ticktick_task` Proposal, and the prompt says THAT. The rest of this
+decision — no complete/update/delete, no user-direct writes, no task rows —
+stands.)*
 
 ## Consequences
 
@@ -61,7 +72,9 @@ mutation for a reminder/task.
   user checks. Inkstone reads tasks; it never competes to own them.
 - **A capability is deliberately removed.** Until a future write feature, Inkstone
   cannot create or edit a task. This is the agreed cost — an honest redirect beats
-  a task that lands in a system the user has abandoned.
+  a task that lands in a system the user has abandoned. *(That future feature is
+  ADR-0065: create returned through the Proposal gate; edit/complete/delete did
+  not.)*
 - **Person and Project stay first-class.** Extraction still proposes them; Project
   Review still runs. Only the task half of the GTD model retired.
 - **Schema churn, not migration.** Pre-release (AGENTS.md §5), so `todo_person_refs`

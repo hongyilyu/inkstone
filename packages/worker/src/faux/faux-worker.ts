@@ -19,6 +19,7 @@ import {
 	acceptedReference,
 	acceptedVerb,
 	decisionOutcome,
+	tickTickWriteOutcome,
 } from "./faux-decisions.js";
 import { fauxInterpreterDeps } from "./faux-deps.js";
 
@@ -103,6 +104,18 @@ function journalConfirmation(text: string): string {
 	if (decisionOutcome(text) === "declined") {
 		return "Done — dismissed it.";
 	}
+	// The TickTick write's three outcomes (ticktick-writes W-A3): the model
+	// RELAYS the outcome — a failed/unknown write is never reported as done.
+	const write = tickTickWriteOutcome(text);
+	if (write === "created") {
+		return "Done — it's in TickTick.";
+	}
+	if (write === "failed") {
+		return "TickTick didn't take it — the task was not created.";
+	}
+	if (write === "unknown") {
+		return "I'm not sure that reached TickTick — check it before re-asking.";
+	}
 	if (acceptedVerb(text, "Deleted", "Journal Entry")) {
 		return "Done — deleted it.";
 	}
@@ -179,7 +192,16 @@ function deleteJournalEntryProposal(entry: JournalEntrySnapshot) {
 type ProposeTurn =
 	| { action: "create"; body: string; occurred_at: string }
 	| { action: "update"; body?: string; occurred_at?: string }
-	| { action: "delete" };
+	| { action: "delete" }
+	// The TickTick write family (ticktick-writes W4): one task Proposal, the
+	// ONE remote write. `title` required; `due`/`note` optional, passed
+	// through verbatim so a scenario can exercise the card's due rendering.
+	| {
+			action: "ticktick_task";
+			title: string;
+			note?: string;
+			due?: { date: string; is_all_day?: boolean; time_zone?: string };
+	  };
 
 interface ProposeScenario {
 	turns: ProposeTurn[];
@@ -195,7 +217,12 @@ function readProposeScenario(): ProposeScenario {
 	// Read+parse failures (missing file, malformed JSON) must name the seam and
 	// the path — a bare ENOENT/SyntaxError through catchAllDefect names neither.
 	let parsed: {
-		turns?: Array<{ action?: unknown; body?: string; occurred_at?: string }>;
+		turns?: Array<{
+			action?: unknown;
+			body?: string;
+			occurred_at?: string;
+			title?: string;
+		}>;
 	};
 	try {
 		parsed = JSON.parse(readFileSync(file, "utf8"));
@@ -216,10 +243,19 @@ function readProposeScenario(): ProposeScenario {
 		if (
 			turn.action !== "create" &&
 			turn.action !== "update" &&
-			turn.action !== "delete"
+			turn.action !== "delete" &&
+			turn.action !== "ticktick_task"
 		) {
 			throw new Error(
-				`INKSTONE_FAUX_PROPOSE_PARAMS turn ${index}: unknown action ${JSON.stringify(turn.action)} (expected create|update|delete)`,
+				`INKSTONE_FAUX_PROPOSE_PARAMS turn ${index}: unknown action ${JSON.stringify(turn.action)} (expected create|update|delete|ticktick_task)`,
+			);
+		}
+		if (
+			turn.action === "ticktick_task" &&
+			(turn.title === undefined || turn.title === "")
+		) {
+			throw new Error(
+				`INKSTONE_FAUX_PROPOSE_PARAMS turn ${index}: ticktick_task requires "title"`,
 			);
 		}
 		if (turn.action === "create") {
@@ -266,6 +302,37 @@ function setProposePlaybackResponses(
 				`tc_create_${position}`,
 			),
 			textTurn("Done — added it."),
+		]);
+		return;
+	}
+
+	// The TickTick write: its OWN proposal tool, no mutation_kind (the stored
+	// kind derives from the tool name). One task per proposal.
+	if (turn.action === "ticktick_task") {
+		// The `propose_ticktick_task` wire payload (ticktick-writes W-A2:
+		// `{title, note?, due?}` — Inbox-only, no list/tags/priority). Built by
+		// statement so an omitted field is absent, not `undefined`.
+		const payload: JsonObject = { title: turn.title };
+		if (turn.note !== undefined) {
+			payload.note = turn.note;
+		}
+		if (turn.due !== undefined) {
+			const due: JsonObject = { date: turn.due.date };
+			if (turn.due.is_all_day !== undefined) {
+				due.is_all_day = turn.due.is_all_day;
+			}
+			if (turn.due.time_zone !== undefined) {
+				due.time_zone = turn.due.time_zone;
+			}
+			payload.due = due;
+		}
+		faux.setResponses([
+			toolCallTurn(
+				"propose_ticktick_task",
+				{ payload, rationale: "the user asked to be reminded" },
+				`tc_ticktick_${position}`,
+			),
+			textTurn("Done — it's in TickTick."),
 		]);
 		return;
 	}
