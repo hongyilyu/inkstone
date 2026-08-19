@@ -76,7 +76,7 @@ test("run/get_history returns driven Runs newest-first over the WebSocket", asyn
 			ws.addEventListener("message", (m) => {
 				let frame: Frame;
 				try {
-					// SAFETY: the frame is this harness's own JSON-RPC traffic with the Core it
+					// the frame is this harness's own JSON-RPC traffic with the Core it
 					// spawned; the branches below read only these fields.
 					frame = JSON.parse(String(m.data)) as Frame;
 				} catch {

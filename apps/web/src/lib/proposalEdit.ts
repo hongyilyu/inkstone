@@ -166,7 +166,7 @@ export function overlayCreateProject(
 	// Re-stamp the coupled timestamp only on a status CHANGE; an unchanged status
 	// leaves any stored completed_at/dropped_at intact.
 	if (draft.status !== prevStatus) {
-		stampStatusTimestamps(next, draft.status, localNowString(), "delete");
+		stampStatusTimestamps(next, draft.status, localNowString());
 	}
 
 	return next;

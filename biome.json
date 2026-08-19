@@ -12,7 +12,6 @@
 			"!**/.agents",
 			"!.claude",
 			"!**/.impeccable",
-			"!tools/oxlint/anti-slop",
 			"!**/*.gen.ts",
 			"!skills-lock.json",
 			"!tests/contract/fixtures"

@@ -38,7 +38,7 @@ function source(): SourceCatalog {
 		"../../../crates/core/src/models/catalog.json",
 		import.meta.url,
 	);
-	// SAFETY: `catalog.json` is Core's committed source catalog; the drift
+	// `catalog.json` is Core's committed source catalog; the drift
 	// assertions below read exactly the fields this type names.
 	return JSON.parse(readFileSync(jsonUrl, "utf8")) as SourceCatalog;
 }

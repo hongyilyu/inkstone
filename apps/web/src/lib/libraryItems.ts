@@ -271,7 +271,7 @@ export function mediaHref(url: string | undefined): string | null {
 function labelsOf<V extends string>(
 	options: readonly { readonly value: V; readonly label: string }[],
 ): Record<V, string> {
-	// SAFETY: `options` covers every member of `V` by construction, so the derived
+	// `options` covers every member of `V` by construction, so the derived
 	// map is total — `Object.fromEntries` cannot express that.
 	return Object.fromEntries(options.map((o) => [o.value, o.label])) as Record<
 		V,

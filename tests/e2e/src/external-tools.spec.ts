@@ -43,7 +43,7 @@ function startFakeTickTickMcp(
 				res.writeHead(405).end();
 				return;
 			}
-			// SAFETY: `body` is the JSON-RPC request this fake server just received
+			// `body` is the JSON-RPC request this fake server just received
 			// from the Worker's MCP client; the switch below reads only these fields.
 			const msg = JSON.parse(body) as {
 				id?: number;
@@ -125,7 +125,7 @@ function startFakeTickTickMcp(
 	});
 	return new Promise((resolve) => {
 		server.listen(0, "127.0.0.1", () => {
-			// SAFETY: this server listens on a TCP port, so `address()` is an
+			// this server listens on a TCP port, so `address()` is an
 			// `AddressInfo` (a string only for a UNIX pipe) inside `listen`.
 			const { port } = server.address() as AddressInfo;
 			resolve({

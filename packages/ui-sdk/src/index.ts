@@ -215,7 +215,10 @@ export const requestDescriptors = {
 	// text-send frame byte-identical to before.
 	threadCreate: {
 		method: "thread/create",
-		toParams: (prompt: string, attachmentIds?: readonly string[]) =>
+		toParams: (
+			prompt: string,
+			attachmentIds?: readonly string[],
+		): JsonObject =>
 			attachmentIds?.length
 				? { prompt, attachment_ids: attachmentIds }
 				: { prompt },
@@ -227,7 +230,7 @@ export const requestDescriptors = {
 			threadId: string,
 			prompt: string,
 			attachmentIds?: readonly string[],
-		) =>
+		): JsonObject =>
 			attachmentIds?.length
 				? { thread_id: threadId, prompt, attachment_ids: attachmentIds }
 				: { thread_id: threadId, prompt },
@@ -276,10 +279,11 @@ export const requestDescriptors = {
 	},
 	// run/get_history (ADR-0028 as-built): the recent-Runs feed, newest-first.
 	// A `limit` is sent only when given; omitting it lets Core apply its
-	// default (an undefined field serializes away to `{}`).
+	// default (`{}` on the wire).
 	getRunHistory: {
 		method: "run/get_history",
-		toParams: (limit?: number) => (limit === undefined ? {} : { limit }),
+		toParams: (limit?: number): JsonObject =>
+			limit === undefined ? {} : { limit },
 		result: RunHistoryResult,
 	},
 	threadGet: {
@@ -525,20 +529,11 @@ export type WsClientService = Context.Tag.Service<typeof WsClient>;
 export function stubWsClient(
 	overrides: Partial<WsClientService> = {},
 ): WsClientService {
-	// Typed as the WIDEST verb signature (any args in, an opaque value out) so the
-	// derived record below is comparable to `RequestVerbs` in one step.
 	const die =
 		(method: string) =>
 		(..._args: never[]): Effect.Effect<unknown, WsError> =>
 			Effect.die(`WsClient.${method} not stubbed`);
-	// Derived from the descriptor table. The cast crosses fromEntries' index
-	// signature; the compiler-check property survives structurally: the tag's
-	// request half IS `RequestVerbs` (derived from the same table these keys
-	// come from), and `WsClient.of` below still demands every stream member —
-	// so a new table row is auto-stubbed and a new hand member still reds here.
-	// SAFETY: the keys come from `requestDescriptors`, the same table
-	// `RequestVerbs` is derived from, so the object has exactly its members;
-	// `Object.fromEntries` can only type them as an index signature.
+	// Object.fromEntries erases keys; RequestVerbs derives from this same table.
 	const verbs = Object.fromEntries(
 		Object.keys(requestDescriptors).map((k) => [k, die(k)]),
 	) as RequestVerbs;
@@ -760,7 +755,7 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 			const connection = socket
 				.runRaw(
 					(data) =>
-						onFrame(data instanceof Uint8Array ? decoder.decode(data) : data),
+						onFrame(typeof data === "string" ? data : decoder.decode(data)),
 					{ onOpen },
 				)
 				.pipe(Effect.zipRight(Effect.fail("dropped" as const)));
@@ -851,28 +846,17 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 					);
 				});
 
-			// Every request/response verb derives from `requestDescriptors`: send
-			// `d.method` with `d.toParams(...args)`, decode with `d.result`, apply
-			// `d.map` when present.
-			// SAFETY: the keys come from the same table `RequestVerbs` is derived
-			// from, so the object has exactly its members and only
-			// `Object.fromEntries` erases that. The round-trip test exercises every
-			// row against a live socket, so a misbehaving closure fails there.
+			// Object.entries erases row correlations; round-trip tests cover every descriptor.
 			const verbs = Object.fromEntries(
 				Object.entries(requestDescriptors).map(([k, d]) => [
 					k,
 					(...args: never[]) => {
-						// SAFETY: `d` is one row of the union, so its `toParams` and
-						// `result` are concrete; only the erased-to-the-union view here
-						// makes them uncallable/uninferable.
 						const sent = request(
 							d.method,
 							(d.toParams as (...a: never[]) => JsonObject)(...args),
 							d.result as S.Schema<unknown>,
 						);
 						if (!("map" in d)) return sent;
-						// SAFETY: `map`'s input IS the row's own decoded result, which
-						// `sent` resolves to — its opaque type is the erasure above.
 						const decoded = sent as Effect.Effect<
 							Parameters<typeof d.map>[0],
 							WsError

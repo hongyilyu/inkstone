@@ -34,7 +34,7 @@ export function loadFixtures(dir: string = CASES_DIR): EvalFixture[] {
 		.sort()
 		.map(
 			(f) =>
-				// SAFETY: the fixtures are repo-owned JSON; `eval.test.ts` pins every
+				// the fixtures are repo-owned JSON; `eval.test.ts` pins every
 				// field this type claims across the whole `cases/` directory.
 				JSON.parse(readFileSync(join(dir, f), "utf8")) as EvalFixture,
 		);

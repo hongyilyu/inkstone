@@ -8,7 +8,7 @@ interface EntityWireDomains {
 	readonly entity_mutation_kinds: readonly string[];
 }
 
-// SAFETY: the fixture is Core's committed domains dump; the assertions below read
+// the fixture is Core's committed domains dump; the assertions below read
 // exactly the two arrays this type names, and a missing one fails them.
 const fixture = JSON.parse(
 	readFileSync(

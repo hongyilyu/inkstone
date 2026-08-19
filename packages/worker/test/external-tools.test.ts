@@ -66,7 +66,7 @@ type FakeResult = {
  * tools/list / tools/call over plain JSON POST responses. Records every call +
  * authorization header for assertions. */
 /** The port a just-listening TCP server bound.
- * SAFETY: these servers listen on a TCP port, so `address()` is an `AddressInfo`
+ * these servers listen on a TCP port, so `address()` is an `AddressInfo`
  * (it is a string only for a UNIX pipe) and non-null inside the listen callback. */
 const boundPort = (server: Server): number =>
 	(server.address() as AddressInfo).port;
@@ -91,7 +91,7 @@ function startFakeMcp(onCall: (call: FakeCall) => FakeResult): Promise<{
 				res.writeHead(405).end();
 				return;
 			}
-			// SAFETY: `body` is the JSON-RPC request this fake server just received
+			// `body` is the JSON-RPC request this fake server just received
 			// from the MCP SDK; the switch below reads only these fields.
 			const msg = JSON.parse(body) as {
 				id?: number;

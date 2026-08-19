@@ -54,7 +54,7 @@ const walk = (value: JsonValue, inSchemaMap = false): JsonValue => {
 	if (inSchemaMap) {
 		const mapped: JsonObject = {};
 		for (const [key, child] of Object.entries(object)) {
-			mapped[key] = child === undefined ? undefined : walk(child);
+			mapped[key] = walk(child);
 		}
 		return sortKeys(mapped);
 	}
@@ -85,8 +85,7 @@ const walk = (value: JsonValue, inSchemaMap = false): JsonValue => {
 
 	const out: JsonObject = {};
 	for (const [key, child] of Object.entries(node)) {
-		out[key] =
-			child === undefined ? undefined : walk(child, SCHEMA_MAP_KEYS.has(key));
+		out[key] = walk(child, SCHEMA_MAP_KEYS.has(key));
 	}
 	return sortKeys(out);
 };

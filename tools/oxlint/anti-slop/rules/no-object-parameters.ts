@@ -1,6 +1,5 @@
-import { defineRule } from "@oxlint/plugins";
-
 import type { ESTree, SourceCode } from "@oxlint/plugins";
+import { defineRule } from "@oxlint/plugins";
 
 import { lexicalTypeParameterNames } from "../shared/lexical-type-parameters.ts";
 
@@ -14,7 +13,9 @@ type ParameterOwner =
 	| ESTree.TSFunctionType
 	| ESTree.TSMethodSignature;
 
-function parameterAnnotation(parameter: Parameter): ESTree.TSTypeAnnotation | null | undefined {
+function parameterAnnotation(
+	parameter: Parameter,
+): ESTree.TSTypeAnnotation | null | undefined {
 	if (parameter.type === "TSParameterProperty") {
 		return parameterAnnotation(parameter.parameter);
 	}
@@ -88,7 +89,8 @@ export const noObjectParametersRule = defineRule({
 			for (const parameter of node.params) {
 				const annotation = parameterAnnotation(parameter);
 				if (annotation === null || annotation === undefined) continue;
-				if (!resolvesToObject(annotation.typeAnnotation, shadowedAliases)) continue;
+				if (!resolvesToObject(annotation.typeAnnotation, shadowedAliases))
+					continue;
 				context.report({
 					node: annotation.typeAnnotation,
 					messageId: "objectParameter",
@@ -102,10 +104,13 @@ export const noObjectParametersRule = defineRule({
 				aliases.clear();
 				for (const statement of node.body) {
 					const declaration =
-						statement.type === "ExportNamedDeclaration" ? statement.declaration : statement;
+						statement.type === "ExportNamedDeclaration"
+							? statement.declaration
+							: statement;
 					if (
 						declaration?.type === "TSTypeAliasDeclaration" &&
-						(declaration.typeParameters === null || declaration.typeParameters === undefined)
+						(declaration.typeParameters === null ||
+							declaration.typeParameters === undefined)
 					) {
 						aliases.set(declaration.id.name, declaration.typeAnnotation);
 					}

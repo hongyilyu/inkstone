@@ -269,7 +269,7 @@ describe("ungated media schemas (NOT in the proposable registry)", () => {
 	});
 
 	it("keeps the media kinds OUT of `schemas` (the ungated boundary)", () => {
-		// SAFETY: `WireKind` IS `keyof typeof schemas`; only `Object.keys` erases that.
+		// `WireKind` IS `keyof typeof schemas`; only `Object.keys` erases that.
 		const keys = Object.keys(schemas) as WireKind[];
 		expect(keys).not.toContain("create_media");
 		expect(keys).not.toContain("update_media");

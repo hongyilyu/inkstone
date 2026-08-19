@@ -55,23 +55,11 @@ export function parseAliases(raw: string): string[] {
 }
 
 /**
- * How a write site clears the terminal timestamp that a status change invalidated.
- * Load-bearing wire semantics (ADR-0033), NOT interchangeable:
- * - `"undefined"` — set the key to `undefined` (a full-replace document builder;
- *   the later omit-empty pass drops undefined keys, so an absent key = no value).
- * - `"delete"` — remove the key outright (an overlay onto a proposed payload that
- *   has no stored prior to clear, so the key simply should not be present).
- */
-export type ClearMode = "undefined" | "delete";
-
-/**
  * The single owner of the GTD status↔terminal-timestamp coupling on a WRITE target
  * (ADR-0031/0033), shared by the Project update builder (entityCodec) and the
  * create-overlays (proposalEdit). Mutates `target` IN PLACE: `→completed` stamps
  * `completed_at` = `nowString` and clears `dropped_at`; `→dropped` mirrors;
- * `→active`/`→on_hold` clears both. `clearMode` selects HOW a now-invalid timestamp
- * is cleared — the two modes are distinct wire directives (see [`ClearMode`]), so
- * the caller MUST pass the one its write path requires.
+ * `→active`/`→on_hold` clears both.
  *
  * `nowString` is injected (not read here) so this stays a pure leaf with no clock
  * dependency; callers pass `localNowString()`.
@@ -80,11 +68,9 @@ export function stampStatusTimestamps(
 	target: JsonObject,
 	status: string,
 	nowString: string,
-	clearMode: ClearMode,
 ): void {
 	const clear = (key: "completed_at" | "dropped_at") => {
-		if (clearMode === "undefined") target[key] = undefined;
-		else delete target[key];
+		delete target[key];
 	};
 	if (status === "completed") {
 		target.completed_at = nowString;

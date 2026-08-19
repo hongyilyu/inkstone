@@ -29,7 +29,7 @@ const readFixture = (kind: WireKind): JsonValue =>
 
 /** Every kind in the registry is asserted — derived, never hand-listed, so a
  * newly-registered kind cannot slip through unasserted.
- * SAFETY: `WireKind` IS `keyof typeof schemas`; only `Object.keys` erases that. */
+ * `WireKind` IS `keyof typeof schemas`; only `Object.keys` erases that. */
 const COVERED = Object.keys(schemas) as WireKind[];
 
 describe("schema parity (Rust PayloadSpec ≡ TS Effect Schema)", () => {

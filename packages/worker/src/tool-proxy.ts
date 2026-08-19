@@ -50,7 +50,7 @@ export function makeProxyTools(
 			name: desc.name,
 			description: desc.description,
 			label: desc.label,
-			// SAFETY: Core advertises `json_schema` as an untyped JSON Schema
+			// Core advertises `json_schema` as an untyped JSON Schema
 			// object, which is what pi's `parameters` slot consumes — no shared
 			// type spans the two.
 			parameters: desc.json_schema as AgentTool["parameters"],

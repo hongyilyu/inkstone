@@ -52,7 +52,7 @@ async function main(): Promise<void> {
 		emit({ kind: "error", message: "fail once" });
 		return;
 	}
-	// SAFETY: Core writes the manifest line; this fixture reads only these fields.
+	// Core writes the manifest line; this fixture reads only these fields.
 	const manifest = JSON.parse(line) as {
 		workflow?: { model?: string; thinking_level?: string; provider?: string };
 		attachments?: Array<{ mime?: string; data_base64?: string }>;

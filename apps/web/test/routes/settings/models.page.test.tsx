@@ -1156,7 +1156,7 @@ describe("Models settings page — provider/connected live push (ADR-0049)", () 
 				// broadcast. Other methods get an empty stream. The schema is captured so
 				// a test can assert the page wires the RIGHT schema (else a wrong
 				// production schema would decode-drop real frames yet pass here).
-				// SAFETY: the stub answers ONE method with an already-decoded value, so
+				// the stub answers ONE method with an already-decoded value, so
 				// it cannot honor the generic `<A>` the real member decodes into.
 				notifications: ((method: string, schema: S.Schema.Any) => {
 					if (method !== "provider/connected") return Stream.empty;

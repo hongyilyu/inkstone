@@ -4,6 +4,7 @@ import {
 	asObject,
 	asString,
 	type ExternalToolAck,
+	type JsonObject,
 	type JsonValue,
 	WorkerInbound,
 	WorkerManifest,
@@ -163,11 +164,12 @@ const makeStdioService = (
 				pendingExternal.delete(key);
 				pending.reject(new Error(EXTERNAL_ACK_INVALID));
 			}
-			logWorkerFault("worker.external_ack_undecodable", runId, {
+			const fields: JsonObject = {
 				tool_call_id: toolCallId,
-				phase: raw.phase,
 				preview: line.slice(0, 200),
-			});
+			};
+			if (raw.phase !== undefined) fields.phase = raw.phase;
+			logWorkerFault("worker.external_ack_undecodable", runId, fields);
 			return;
 		}
 
@@ -202,10 +204,11 @@ const makeStdioService = (
 		// waiting call. If that contract ever broke (a non-string id on a line whose
 		// real target is pending), that call would not be settled here — hence the
 		// salvaged id is logged when present, to make such a case diagnosable.
-		logWorkerFault("worker.tool_result_undecodable", runId, {
-			tool_call_id: toolCallId,
+		const fields: JsonObject = {
 			preview: line.slice(0, 200),
-		});
+		};
+		if (toolCallId !== undefined) fields.tool_call_id = toolCallId;
+		logWorkerFault("worker.tool_result_undecodable", runId, fields);
 	});
 	rl.on("close", () => {
 		if (!gotManifest) {

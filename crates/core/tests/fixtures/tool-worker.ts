@@ -85,7 +85,7 @@ const main = async (): Promise<void> => {
 
 	const manifestLine = await lines.next();
 	if (manifestLine === null) return;
-	// SAFETY: Core writes the manifest line; this fixture reads only these fields.
+	// Core writes the manifest line; this fixture reads only these fields.
 	const manifest = JSON.parse(manifestLine) as Manifest;
 
 	// Prove Core shipped the requested tool's descriptor in the manifest. For
@@ -158,7 +158,7 @@ const main = async (): Promise<void> => {
 	// Block for the tool_result Core writes back on stdin.
 	const resultLine = await lines.next();
 	if (resultLine === null) return;
-	// SAFETY: Core writes the tool_result line in the Tool Protocol shape.
+	// Core writes the tool_result line in the Tool Protocol shape.
 	const result = JSON.parse(resultLine) as ToolResultLine;
 
 	let outcome: string;

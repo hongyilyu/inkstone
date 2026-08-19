@@ -18,7 +18,7 @@ import { createInterface } from "node:readline";
 /** One JSON value, and a JSON object keyed by wire field name. A LOCAL copy of
  * @inkstone/protocol's `JsonValue`/`JsonObject` on purpose: the fixtures import
  * node builtins only (see the header) so each one still runs standalone. */
-export type JsonObject = { [key: string]: JsonValue | undefined };
+export type JsonObject = { [key: string]: JsonValue };
 
 export type JsonValue =
 	| string

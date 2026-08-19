@@ -257,7 +257,7 @@ export function buildExternalTools(
 				name: `${EXTERNAL_TOOL_PREFIX}${serverName}`,
 				description: tool.description ?? "",
 				label: `TickTick ${serverName.replaceAll("_", " ")}`,
-				// SAFETY: the MCP server advertises `inputSchema` as an untyped JSON
+				// the MCP server advertises `inputSchema` as an untyped JSON
 				// Schema object, which is what pi's `parameters` slot consumes — no
 				// shared type spans the two SDKs.
 				parameters: tool.inputSchema as AgentTool["parameters"],

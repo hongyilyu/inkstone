@@ -45,10 +45,10 @@ jobs:
       # lint gates in one pass. Honors biome.json includes/excludes + vcs ignore.
       - name: Biome (format + lint + organizeImports)
         run: pnpm exec biome ci .
-      # The vendored anti-slop plugin (tools/oxlint/anti-slop, all 15 rules at
-      # `error` in .oxlintrc.json): bans the escape hatches — unparsed `unknown`
-      # inputs, unjustified type assertions, `typeof` narrowing, dictionaries with
-      # no value contract, module mocking. Same command as `pnpm lint:anti-slop`.
+      # The vendored anti-slop plugin (tools/oxlint/anti-slop, all rules at
+      # `error` in .oxlintrc.json): bans broad input/dictionary contracts,
+      # assertion chains, module mocking, and related evidence-losing patterns.
+      # Same command as `pnpm lint:anti-slop`.
       - name: Oxlint (anti-slop)
         run: pnpm exec oxlint
 

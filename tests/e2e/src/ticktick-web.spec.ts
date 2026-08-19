@@ -54,7 +54,7 @@ function taskResponse(): string {
 }
 
 /** The port a just-listening TCP server bound.
- * SAFETY: these servers listen on a TCP port, so `address()` is an `AddressInfo`
+ * these servers listen on a TCP port, so `address()` is an `AddressInfo`
  * (it is a string only for a UNIX pipe) and non-null inside `listen`. */
 const boundPort = (server: Server | NetServer): number =>
 	(server.address() as AddressInfo).port;

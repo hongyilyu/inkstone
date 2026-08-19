@@ -1,9 +1,10 @@
 import {
+	decodeJson,
+	type JsonObject,
 	type JsonValue,
 	ObservationRecordParams,
-	type ObservationRecordParams as ObservationRecordPayload,
 } from "@inkstone/protocol";
-import { Either, Schema as S } from "effect";
+import { Either, Option, Schema as S } from "effect";
 import { type ReactNode, useId, useMemo, useState } from "react";
 import { asObject, readArray, readObject, readString } from "@/lib/readPayload";
 import {
@@ -139,19 +140,18 @@ function prettyJson(value: JsonValue): string {
 
 function parseJsonObject(
 	text: string,
-):
-	| { value: ObservationRecordPayload; error: null }
-	| { value: null; error: string } {
-	let parsed: JsonValue;
+): { value: JsonObject; error: null } | { value: null; error: string } {
+	let parsed: JsonValue | undefined;
 	try {
-		parsed = JSON.parse(text);
+		parsed = Option.getOrUndefined(decodeJson(JSON.parse(text)));
 	} catch {
 		return { value: null, error: "payload must be valid JSON" };
 	}
-	if (asObject(parsed) === null) {
+	const payload = asObject(parsed);
+	if (payload === null) {
 		return { value: null, error: "payload must be a JSON object" };
 	}
-	const decoded = decodeObservationRecordParams(parsed);
+	const decoded = decodeObservationRecordParams(payload);
 	if (Either.isLeft(decoded)) {
 		return {
 			value: null,
@@ -169,7 +169,7 @@ function parseJsonObject(
 			};
 		}
 	}
-	return { value: decoded.right, error: null };
+	return { value: payload, error: null };
 }
 
 export function ObservationEditForm({
@@ -180,7 +180,7 @@ export function ObservationEditForm({
 }: {
 	payload: JsonValue;
 	submitting: boolean;
-	onSave: (editedPayload: ObservationRecordPayload) => void;
+	onSave: (editedPayload: JsonObject) => void;
 	onCancel: () => void;
 }): ReactNode {
 	const payloadInputId = useId();

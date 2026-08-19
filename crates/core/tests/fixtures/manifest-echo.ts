@@ -35,7 +35,7 @@ const emit = (event: JsonValue): void => {
 async function main(): Promise<void> {
 	const line = await readFirstLine();
 	if (line === null) return;
-	// SAFETY: Core writes the manifest line; this fixture reads only these fields.
+	// Core writes the manifest line; this fixture reads only these fields.
 	const manifest = JSON.parse(line) as { access_token?: string };
 	const token = manifest.access_token ?? "<none>";
 	emit({ kind: "text_delta", delta: token });

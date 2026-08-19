@@ -6,7 +6,7 @@ export function useTheme() {
 		// A non-DOM environment (SSR, a bare test) has no `document`; otherwise the
 		// dataset carries whatever the boot script already applied.
 		const applied =
-			"document" in globalThis
+			typeof document !== "undefined"
 				? document.documentElement.dataset.theme
 				: undefined;
 		return applied === "dark" ? "dark" : "light";

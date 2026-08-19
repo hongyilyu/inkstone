@@ -76,7 +76,7 @@ function currentThreadEntriesFromToolResult(
 	text: string,
 ): JournalEntrySnapshot[] {
 	try {
-		// SAFETY: `text` is the JSON result of the
+		// `text` is the JSON result of the
 		// `read_current_thread_journal_entries` tool this harness scripts; `entries`
 		// is re-checked for an array below.
 		const payload = JSON.parse(text) as { entries?: JournalEntrySnapshot[] };
@@ -237,7 +237,7 @@ function readProposeScenario(): ProposeScenario {
 			}
 		}
 	}
-	// SAFETY: every field the harness reads is checked above.
+	// every field the harness reads is checked above.
 	return parsed as ProposeScenario;
 }
 
@@ -346,7 +346,7 @@ function readExtractScenario(): ExtractScenario {
 			"INKSTONE_FAUX_EXTRACT=1 requires INKSTONE_FAUX_EXTRACT_PARAMS to point at a scenario JSON file",
 		);
 	}
-	// SAFETY: the file is the scenario the e2e spec wrote for this run.
+	// the file is the scenario the e2e spec wrote for this run.
 	const parsed = JSON.parse(readFileSync(file, "utf8")) as ExtractScenario;
 	return {
 		journal_text: parsed.journal_text,
@@ -365,7 +365,7 @@ interface SearchResultRow {
 /** Parse `results[]` out of a `search_entities` tool result JSON string. */
 function searchResultsFromToolResult(text: string): SearchResultRow[] {
 	try {
-		// SAFETY: `text` is the JSON result of the `search_entities` tool this
+		// `text` is the JSON result of the `search_entities` tool this
 		// harness scripts; `results` is re-checked for an array below.
 		const payload = JSON.parse(text) as { results?: SearchResultRow[] };
 		return Array.isArray(payload.results) ? payload.results : [];
@@ -510,7 +510,10 @@ const KIND_LABEL = {
 	project: "Project",
 } satisfies Record<ExtractTarget["kind"], string>;
 
-function createEntityProposal(target: ExtractTarget, journalEntryId: string) {
+function createEntityProposal(
+	target: ExtractTarget,
+	journalEntryId: string,
+): JsonObject {
 	return {
 		mutation_kind:
 			target.kind === "project" ? "create_project" : "create_person",
@@ -526,7 +529,7 @@ function referenceEntityProposal(
 	target: ExtractTarget,
 	journalEntryId: string,
 	entityId: string,
-) {
+): JsonObject {
 	return {
 		mutation_kind: "reference_existing_entity_from_journal_entry",
 		payload: {
@@ -563,7 +566,7 @@ function readCaptureScenario(): CaptureScenario {
 			"INKSTONE_FAUX_CAPTURE=1 requires INKSTONE_FAUX_CAPTURE_PARAMS to point at a scenario JSON file",
 		);
 	}
-	// SAFETY: the file is the scenario the e2e spec wrote for this run.
+	// the file is the scenario the e2e spec wrote for this run.
 	return JSON.parse(readFileSync(file, "utf8")) as CaptureScenario;
 }
 

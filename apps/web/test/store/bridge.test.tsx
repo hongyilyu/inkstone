@@ -784,7 +784,7 @@ describe("thread/titled handler (ADR-0047 — patch the threads cache in place)"
 		let subscribedSchema: S.Schema.Any | undefined;
 		const runtime = makeCoreRuntime({
 			overrides: {
-				// SAFETY: the stub answers ONE method with an ALREADY-decoded value, so
+				// the stub answers ONE method with an ALREADY-decoded value, so
 				// it cannot honor the generic `<A>` the real member decodes into.
 				notifications: ((method: string, schema: S.Schema.Any) => {
 					subscribedMethod = method;
@@ -825,7 +825,7 @@ describe("thread/titled handler (ADR-0047 — patch the threads cache in place)"
 		const tornDown = Effect.runSync(Deferred.make<void>());
 		const runtime = makeCoreRuntime({
 			overrides: {
-				// SAFETY: as above — a one-method stub over an already-decoded value.
+				// as above — a one-method stub over an already-decoded value.
 				notifications: (() =>
 					Stream.fromQueue(titled).pipe(
 						Stream.ensuring(Deferred.succeed(tornDown, undefined)),
@@ -872,7 +872,7 @@ describe("thread/titled handler (ADR-0047 — patch the threads cache in place)"
 		);
 		const runtime = makeCoreRuntime({
 			overrides: {
-				// SAFETY: a one-method stub over an already-decoded value, as above.
+				// a one-method stub over an already-decoded value, as above.
 				notifications: (() =>
 					Stream.fromQueue(titled)) as WsClientService["notifications"],
 			},

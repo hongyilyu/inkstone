@@ -1062,7 +1062,7 @@ describe("ChatColumn", () => {
 	/** Remove this suite's prototype `scrollHeight` stub (jsdom has no layout, so
 	 * the scroll tests install one per test and drop it in `finally`). */
 	const restoreScrollHeight = (): void => {
-		// SAFETY: the stub is the own property installed just above;
+		// the stub is the own property installed just above;
 		// `Element.scrollHeight` is declared readonly, which `delete` rejects.
 		delete (HTMLElement.prototype as { scrollHeight?: number }).scrollHeight;
 	};

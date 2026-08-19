@@ -17,16 +17,17 @@ function collectInferTypeParameterNames(
 	names: Set<string>,
 ): void {
 	if (node.type === "TSInferType") names.add(node.typeParameter.name.name);
-	const record = node as unknown as Readonly<Record<string, unknown>>;
-	for (const key of visitorKeys[node.type] ?? []) {
-		const value = record[key];
+	const childKeys = visitorKeys[node.type] ?? [];
+	for (const [key, value] of Object.entries(node)) {
+		if (!childKeys.includes(key)) continue;
 		if (isNode(value)) {
 			collectInferTypeParameterNames(value, visitorKeys, names);
 			continue;
 		}
 		if (!Array.isArray(value)) continue;
 		for (const child of value) {
-			if (isNode(child)) collectInferTypeParameterNames(child, visitorKeys, names);
+			if (isNode(child))
+				collectInferTypeParameterNames(child, visitorKeys, names);
 		}
 	}
 }
@@ -51,7 +52,10 @@ export function lexicalTypeParameterNames(
 		) {
 			names.add(current.key.name);
 		}
-		if (current.type === "TSConditionalType" && descendant === current.trueType) {
+		if (
+			current.type === "TSConditionalType" &&
+			descendant === current.trueType
+		) {
 			collectInferTypeParameterNames(current.extendsType, visitorKeys, names);
 		}
 		descendant = current;

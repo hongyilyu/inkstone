@@ -22,7 +22,7 @@ type WireRequest = {
 };
 
 /** The port a just-listening WebSocket server bound.
- * SAFETY: these servers listen on a TCP port, so `address()` is an `AddressInfo`
+ * these servers listen on a TCP port, so `address()` is an `AddressInfo`
  * (it is a string only for a UNIX pipe) and non-null once `listening` fired. */
 const boundPort = (wss: WebSocketServer): number =>
 	(wss.address() as AddressInfo).port;
@@ -944,7 +944,7 @@ describe("WsClient", () => {
 				return;
 			}
 			ws.on("message", (data) => {
-				// SAFETY: `data` is the JSON-RPC frame this fake server just received
+				// `data` is the JSON-RPC frame this fake server just received
 				// from the SDK under test; the branch below reads only these fields.
 				const req = JSON.parse(data.toString()) as WireRequest;
 				if (req.method === "thread/list") {
@@ -1469,7 +1469,7 @@ describe("requestDescriptors round-trip", () => {
 		);
 	});
 
-	// SAFETY: `cannedCases` is keyed by the same table (the row-coverage test above
+	// `cannedCases` is keyed by the same table (the row-coverage test above
 	// pins the two key sets equal); only `Object.keys` erases the key union.
 	const keys = Object.keys(requestDescriptors) as (keyof CannedCases)[];
 	for (const key of keys) {
@@ -1486,7 +1486,7 @@ describe("requestDescriptors round-trip", () => {
 
 			const program = Effect.gen(function* () {
 				const client = yield* WsClient;
-				// SAFETY: every table row's verb takes the args its canned case carries;
+				// every table row's verb takes the args its canned case carries;
 				// the mapped `RequestVerbs` types are per-row and can't be indexed by a
 				// loop variable.
 				const verb = client[key] as (

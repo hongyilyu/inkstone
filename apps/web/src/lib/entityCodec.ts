@@ -560,15 +560,19 @@ function buildProjectUpdate(
 	delete doc.entity_id;
 
 	doc.name = next.name.trim();
-	doc.outcome = next.outcome.trim() || undefined;
-	doc.note = next.note.trim() || undefined;
+	const outcome = next.outcome.trim();
+	if (outcome) doc.outcome = outcome;
+	else delete doc.outcome;
+	const note = next.note.trim();
+	if (note) doc.note = note;
+	else delete doc.note;
 	doc.status = next.status;
 	// Only (re)stamp the terminal timestamp(s) on a status CHANGE. When status is
 	// unchanged, leave the stored `completed_at`/`dropped_at` (cloned from
 	// `project.data`) intact — re-stamping every edit would silently overwrite the
 	// original completion/drop date (ADR-0033).
 	if (next.status !== prev.status) {
-		stampStatusTimestamps(doc, next.status, localNowString(), "undefined");
+		stampStatusTimestamps(doc, next.status, localNowString());
 	}
 
 	// Drop cleared optionals: under full-replace, an absent key carries no value
@@ -576,7 +580,7 @@ function buildProjectUpdate(
 	const payload: JsonObject = {};
 	payload.entity_id = project.id;
 	for (const [key, value] of Object.entries(doc)) {
-		if (value !== undefined && value !== null) payload[key] = value;
+		if (value !== null) payload[key] = value;
 	}
 	return { mutation_kind: "update_project", payload };
 }
@@ -625,6 +629,8 @@ export type DraftEntityRefNode = {
 	/** For a NEW chip: the picked Entity's id (the reference target). */
 	newTargetId?: string;
 };
+
+type StagedEntityRefNode = DraftEntityRefNode & { newTargetId: string };
 
 export type DraftBodyNode = { type: "text"; text: string } | DraftEntityRefNode;
 
@@ -748,9 +754,9 @@ function buildJournalEntry(
 }
 
 /** The single staged new chip (the one bare placeholder), or undefined. */
-function stagedNewChip(body: DraftBodyNode[]): DraftEntityRefNode | undefined {
+function stagedNewChip(body: DraftBodyNode[]): StagedEntityRefNode | undefined {
 	return body.find(
-		(node): node is DraftEntityRefNode =>
+		(node): node is StagedEntityRefNode =>
 			node.type === "entity_ref" && node.newTargetId !== undefined,
 	);
 }
@@ -801,7 +807,7 @@ function buildReferenceBody(
 function buildJournalReference(
 	entry: JournalEntry,
 	d: JournalDraft,
-	chip: DraftEntityRefNode,
+	chip: StagedEntityRefNode,
 ): EntityMutateParams {
 	const payload: JsonObject = {};
 	payload.source_entity_id = entry.id;

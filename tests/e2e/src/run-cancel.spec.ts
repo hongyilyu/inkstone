@@ -74,7 +74,7 @@ test("browser WebSocket sees running cancel accepted then cancelled", async ({
 
 			ws.addEventListener("message", (message) => {
 				try {
-					// SAFETY: the frame is this harness's own JSON-RPC traffic with the Core it
+					// the frame is this harness's own JSON-RPC traffic with the Core it
 					// spawned; the branches below read only these fields.
 					const frame = JSON.parse(String(message.data)) as Frame;
 					frames.push(frame);

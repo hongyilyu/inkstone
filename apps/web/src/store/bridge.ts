@@ -229,8 +229,11 @@ function readAsBase64(file: File): Promise<string> {
 	return new Promise((resolve, reject) => {
 		const reader = new FileReader();
 		reader.onload = () => {
-			// SAFETY: `readAsDataURL` always yields a string `result`.
-			const dataUrl = reader.result as string;
+			const dataUrl = reader.result;
+			if (typeof dataUrl !== "string") {
+				reject(new TypeError("FileReader did not return a data URL"));
+				return;
+			}
 			resolve(dataUrl.slice(dataUrl.indexOf(",") + 1));
 		};
 		reader.onerror = () => reject(reader.error);
@@ -247,7 +250,7 @@ function readAsBase64(file: File): Promise<string> {
 async function imageDimensions(
 	file: File,
 ): Promise<{ width: number; height: number } | undefined> {
-	if (!("createImageBitmap" in globalThis)) {
+	if (typeof createImageBitmap !== "function") {
 		return undefined;
 	}
 	try {

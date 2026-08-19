@@ -33,7 +33,7 @@ const main = async (): Promise<void> => {
 	while (line === "") line = await lines.next();
 	if (line === null) return;
 
-	// SAFETY: Core writes the manifest line, which always carries `prompt`.
+	// Core writes the manifest line, which always carries `prompt`.
 	const inbound = JSON.parse(line) as { prompt: string };
 
 	// A real frame + terminal done so the Run completes normally and Core

@@ -188,7 +188,7 @@ export async function renderWithCore(
 	// Resolve the initial match before render so the route's component is mounted
 	// synchronously — otherwise the first paint is empty and `getBy*` would race.
 	await router.load();
-	// SAFETY: the ad-hoc memory router below carries the two chat routes only, so its
+	// the ad-hoc memory router below carries the two chat routes only, so its
 	// generics can't match the app's registered router; only runtime rendering matters.
 	const result = render(
 		<QueryClientProvider client={queryClient}>

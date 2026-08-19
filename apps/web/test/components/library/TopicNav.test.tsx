@@ -26,7 +26,7 @@ function renderTopicNav(projects: Rows = [], failing = false) {
 	});
 	const seeds = { entities: { project: projects } };
 	return renderWithCore(
-		// biome-ignore lint/suspicious/noExplicitAny: SAFETY: the ad-hoc single-route router type doesn't match the app RegisteredRouter; only runtime rendering matters here.
+		// biome-ignore lint/suspicious/noExplicitAny: the ad-hoc single-route router type doesn't match the app RegisteredRouter; only runtime rendering matters here.
 		<RouterProvider router={router as any} />,
 		failing
 			? {

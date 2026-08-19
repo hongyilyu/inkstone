@@ -55,7 +55,7 @@ export async function driveEchoRun(
 
 				ws.addEventListener("message", (message) => {
 					try {
-						// SAFETY: the frame is this harness's own JSON-RPC traffic with the
+						// the frame is this harness's own JSON-RPC traffic with the
 						// Core it spawned; the branches below read only these fields.
 						const frame = JSON.parse(String(message.data)) as Frame;
 

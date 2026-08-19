@@ -67,7 +67,7 @@ function proposalGet(coreUrl: string, runId: string): Promise<ProposalPayload> {
 			);
 		});
 		ws.addEventListener("message", (event) => {
-			// SAFETY: the frame is this harness's own `proposal/get` traffic with the
+			// the frame is this harness's own `proposal/get` traffic with the
 			// Core it spawned; the branches below read only these fields.
 			const frame = JSON.parse(String(event.data)) as RpcResponse;
 			if (frame.id !== id) return; // ignore notifications / other ids
@@ -129,7 +129,7 @@ test.describe("faux proposal parity", () => {
 		// single no-requirements existential (`Schema<unknown, unknown>`, Context =
 		// never) so `decodeUnknownEither` takes one schema rather than the conflicting
 		// union of all proposable kinds.
-		// SAFETY: `mutation_kind` was just asserted to be a key of `schemas`, whose
+		// `mutation_kind` was just asserted to be a key of `schemas`, whose
 		// heterogeneous union must widen to ONE no-requirements existential so
 		// `decodeUnknownEither` takes a single schema.
 		const schema = schemas[mutation_kind as WireKind] as Schema.Schema<
@@ -191,7 +191,7 @@ test.describe("record_observations proposal parity", () => {
 
 		const { mutation_kind, payload } = await proposalGet(core.url, runId);
 		expect(mutation_kind).toBe("record_observations");
-		// SAFETY: `mutation_kind` was just asserted to be a key of `schemas`, whose
+		// `mutation_kind` was just asserted to be a key of `schemas`, whose
 		// heterogeneous union must widen to ONE no-requirements existential so
 		// `decodeUnknownEither` takes a single schema.
 		const schema = schemas[mutation_kind as WireKind] as Schema.Schema<

@@ -1,20 +1,12 @@
-import type {
-	ProposalDecideParams,
-	ProposalDecideResult,
-	ProposalGetResult,
-	ThreadGetResult,
-} from "@inkstone/protocol";
+import type { ProposalDecideParams, ThreadGetResult } from "@inkstone/protocol";
 import {
 	InvalidParamsError,
 	type ProposalNotification,
 	ProposalNotPendingError,
 	type RunEventValue,
-	type RunId,
-	type WsError,
 	WsRequestError,
 } from "@inkstone/ui-sdk";
-import { makeCoreRuntime } from "@test/test-utils/renderWithCore";
-import { Effect, Queue, Stream } from "effect";
+import { Effect, Queue } from "effect";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	decideProposal,
@@ -31,73 +23,11 @@ import {
 	nextMessageId,
 	resetChatStore,
 } from "@/store/chat.js";
-
-const JOURNAL_ENTRY = {
-	occurred_at: "2026-06-10T10:30:00",
-	body: [{ type: "text", text: "Bought milk after daycare pickup." }],
-};
-
-const JOURNAL_ENTRY_REVIEW_CONTEXT = {
-	current_journal_entry: {
-		entity_id: "entry-123",
-		occurred_at: "2026-06-10T10:15:00",
-		body: [{ type: "text", text: "Bought milk before daycare pickup." }],
-	},
-} satisfies NonNullable<ProposalGetResult["review_context"]>;
-
-/** Stub WsClient driven by in-memory queues so proposal flows run offline. */
-function makeStubRuntime(opts: {
-	proposalQueue: Queue.Queue<ProposalNotification>;
-	proposalGet?: (runId: RunId) => Effect.Effect<ProposalGetResult, WsError>;
-	runQueue?: Queue.Queue<RunEventValue>;
-	runQueues?: Queue.Queue<RunEventValue>[];
-	onDecide?: (
-		params: ProposalDecideParams,
-	) => Effect.Effect<ProposalDecideResult, WsError>;
-	onSubscribe?: () => void;
-	threadGet?: (threadId: string) => Effect.Effect<ThreadGetResult, WsError>;
-}) {
-	// Each subscribeRun gets the next queue in runQueues — one stub queue per
-	// subscribe SEGMENT (test modeling of the wire, not production plumbing;
-	// see docs/design/web-store-tests.md).
-	let subscribeIdx = 0;
-	const overrides = {
-		subscribeRun: () => {
-			opts.onSubscribe?.();
-			if (opts.runQueues) {
-				const q = opts.runQueues[subscribeIdx];
-				subscribeIdx += 1;
-				return q ? Stream.fromQueue(q) : Stream.empty;
-			}
-			return opts.runQueue ? Stream.fromQueue(opts.runQueue) : Stream.empty;
-		},
-		proposalGet:
-			opts.proposalGet ??
-			((runId: RunId) =>
-				Effect.succeed({
-					proposal_id: "prop-1",
-					run_id: runId,
-					mutation_kind: "create_journal_entry",
-					payload: JOURNAL_ENTRY,
-					rationale: "the user asked to remember this",
-					status: "pending",
-				})),
-		proposalDecide:
-			opts.onDecide ??
-			((params) =>
-				Effect.succeed({
-					status: params.decision === "accept" ? "accepted" : "rejected",
-				} as const)),
-		proposalNotifications: () => Stream.fromQueue(opts.proposalQueue),
-	};
-	// `threadGet` rides only when the test drives hydration.
-	return makeCoreRuntime({
-		overrides:
-			opts.threadGet === undefined
-				? overrides
-				: { ...overrides, threadGet: opts.threadGet },
-	});
-}
+import {
+	JOURNAL_ENTRY,
+	JOURNAL_ENTRY_REVIEW_CONTEXT,
+	makeStubRuntime,
+} from "./proposal.test-support.js";
 
 beforeEach(() => {
 	resetChatStore();
