@@ -94,7 +94,26 @@ pub(super) async fn handle_decide(
         let hubs = hubs.clone();
         let out_tx = out_tx.clone();
         tokio::spawn(async move {
-            handle_decide_ticktick_write(pool, hubs, id, params, out_tx).await;
+            // The inner spawn's JoinHandle converts a panic into a JoinError,
+            // so the caller's one-request-one-response contract survives a
+            // panicking decide task: the request is answered `internal` here
+            // instead of hanging forever. Settlement itself never depends on
+            // this task — the deadline watchdog owns it (W-A3).
+            let inner = tokio::spawn(handle_decide_ticktick_write(
+                pool,
+                hubs,
+                id.clone(),
+                params,
+                out_tx.clone(),
+            ));
+            if let Err(join_error) = inner.await {
+                tracing::error!(event = "ticktick_write.decide_task_died", error = ?join_error);
+                handler::frame_error(
+                    &out_tx,
+                    id,
+                    HandlerError::Internal(anyhow::anyhow!("ticktick write decide task died")),
+                );
+            }
         });
         return;
     }

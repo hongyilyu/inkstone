@@ -411,7 +411,7 @@ pub(crate) async fn decide(
         )
         .await
         .map_err(apply_error)?;
-        resume_if_parked(deps, proposal.run_id).await?;
+        resume_if_parked_awaiting(deps, proposal.run_id, &proposal.tool_call_id).await?;
         return Ok(WriteDecide::Rejected {
             run_id: proposal.run_id,
         });
@@ -486,7 +486,7 @@ pub(crate) async fn decide(
     let outcome = (deps.post)(create_task_body(&task)).await;
 
     // Phase C: the ONE guarded settle, then resume.
-    let write = settle_and_resume(
+    let (write, _won) = settle_and_resume(
         deps,
         proposal.run_id,
         &proposal_id,
@@ -519,7 +519,7 @@ async fn recorded_outcome(
 ) -> Result<WriteDecide, WriteDecideError> {
     match proposal.status.as_str() {
         "rejected" => {
-            resume_if_parked(deps, proposal.run_id).await?;
+            resume_if_parked_awaiting(deps, proposal.run_id, &proposal.tool_call_id).await?;
             Ok(WriteDecide::Rejected {
                 run_id: proposal.run_id,
             })
@@ -530,7 +530,7 @@ async fn recorded_outcome(
                 if db::now_ms() >= deadline_at {
                     // Past-bound belt: a decide is already a write, so it may
                     // legitimately settle. `unknown` — the POST's fate is lost.
-                    let write = settle_and_resume(
+                    let (write, _won) = settle_and_resume(
                         deps,
                         proposal.run_id,
                         &row.proposal_id,
@@ -551,7 +551,7 @@ async fn recorded_outcome(
                 })
             }
             "settled" => {
-                resume_if_parked(deps, proposal.run_id).await?;
+                resume_if_parked_awaiting(deps, proposal.run_id, &proposal.tool_call_id).await?;
                 Ok(WriteDecide::Accepted {
                     run_id: proposal.run_id,
                     write: wire_state_from_row(row),
@@ -569,10 +569,13 @@ async fn recorded_outcome(
     }
 }
 
-/// Settle (guarded) + re-drive resume + return the durable wire state. Losing
-/// the flip means someone else settled — the recorded outcome is returned;
-/// resume is re-driven either way (self-guarded; covers the settled-but-
-/// parked window).
+/// Settle (guarded) + re-drive resume + return the durable wire state and
+/// whether THIS caller won the flip (losing means someone else settled — the
+/// recorded outcome is returned). Resume is re-driven either way, but ONLY
+/// while the Run is parked awaiting THIS write's tool call: the waitpoint-
+/// identity guard keeps an old write's watchdog/sweep/belt from resuming a
+/// Run that has since re-parked on a different Proposal (which would orphan
+/// the pending card and feed the model a synthesized "not executed").
 async fn settle_and_resume(
     deps: &WriteDeps,
     run_id: Uuid,
@@ -580,7 +583,7 @@ async fn settle_and_resume(
     tool_call_id: &str,
     outcome: &WriteOutcome,
     content: &str,
-) -> anyhow::Result<TickTickWriteState> {
+) -> anyhow::Result<(TickTickWriteState, bool)> {
     let (outcome_str, http_status, remote_task_id) = match outcome {
         WriteOutcome::Created { task_id } => ("created", None, Some(task_id.as_str())),
         WriteOutcome::Failed { http_status } => ("failed", *http_status, None),
@@ -597,27 +600,30 @@ async fn settle_and_resume(
         db::now_ms(),
     )
     .await?;
-    let state = match settle {
-        db::ticktick_writes::Settle::Won => match outcome {
-            WriteOutcome::Created { task_id } => TickTickWriteState::Created {
-                task_id: Some(task_id.clone()),
+    let (state, won) = match settle {
+        db::ticktick_writes::Settle::Won => (
+            match outcome {
+                WriteOutcome::Created { task_id } => TickTickWriteState::Created {
+                    task_id: Some(task_id.clone()),
+                },
+                WriteOutcome::Failed { http_status } => TickTickWriteState::Failed {
+                    http_status: *http_status,
+                },
+                WriteOutcome::Unknown { .. } => TickTickWriteState::Unknown,
             },
-            WriteOutcome::Failed { http_status } => TickTickWriteState::Failed {
-                http_status: *http_status,
-            },
-            WriteOutcome::Unknown { .. } => TickTickWriteState::Unknown,
-        },
+            true,
+        ),
         db::ticktick_writes::Settle::AlreadySettled(row) => {
             let row = row.ok_or_else(|| {
                 anyhow::anyhow!("ticktick write row vanished for proposal {proposal_id}")
             })?;
-            wire_state_from_row(&row)
+            (wire_state_from_row(&row), false)
         }
     };
-    if run_is_parked_plain(&deps.pool, run_id).await? {
+    if db::ticktick_writes::run_parked_awaiting(&deps.pool, run_id, tool_call_id).await? {
         (deps.resume)(run_id).await?;
     }
-    Ok(state)
+    Ok((state, won))
 }
 
 // ─── the deadline watchdog (settlement's independent owner) ─────────────
@@ -664,10 +670,14 @@ pub(crate) fn arm_watchdog(ctx: WatchdogCtx) -> tokio::task::JoinHandle<()> {
         )
         .await;
         match settled {
-            Ok(state) => {
-                // Push the settle notification for the deciding tab (its own
-                // decide response died with the decide task, if it did).
-                (ctx.notify)(ctx.run_id, "accepted", &state);
+            Ok((state, won)) => {
+                // Push the settle notification ONLY when this watchdog's flip
+                // won (the deciding task died mid-B). A lost flip means phase C
+                // already settled and notified — the contract is actual
+                // transitions only, never a redundant late re-emission.
+                if won {
+                    (ctx.notify)(ctx.run_id, "accepted", &state);
+                }
             }
             Err(error) => {
                 tracing::error!(
@@ -697,6 +707,10 @@ pub(crate) async fn sweep(pool: &SqlitePool, resume: ResumeFn) -> anyhow::Result
         resume: resume.clone(),
         notify: Arc::new(|_run_id, _status, _state| {}),
     };
+    // Per-row failures are logged, never propagated: a recovery sweep that
+    // aborts boot over one bad row (say, a resume whose PROVIDER credential
+    // expired) would brick Core until an unrelated credential is fixed — and
+    // strand every later row behind it.
     let mut settled = 0u64;
     for (proposal_id, tool_call_id, run_id) in
         db::ticktick_writes::executing_ticktick_writes(pool).await?
@@ -704,7 +718,7 @@ pub(crate) async fn sweep(pool: &SqlitePool, resume: ResumeFn) -> anyhow::Result
         let Ok(run_id) = Uuid::parse_str(&run_id) else {
             continue;
         };
-        settle_and_resume(
+        match settle_and_resume(
             &deps,
             run_id,
             &proposal_id,
@@ -712,8 +726,17 @@ pub(crate) async fn sweep(pool: &SqlitePool, resume: ResumeFn) -> anyhow::Result
             &WriteOutcome::Unknown { http_status: None },
             UNKNOWN_DECISION_CONTENT,
         )
-        .await?;
-        settled += 1;
+        .await
+        {
+            Ok(_) => settled += 1,
+            Err(error) => {
+                tracing::error!(
+                    event = "ticktick_write.sweep_settle_failed",
+                    proposal_id = %proposal_id,
+                    error = ?error
+                );
+            }
+        }
     }
 
     let mut resumed = 0u64;
@@ -721,9 +744,15 @@ pub(crate) async fn sweep(pool: &SqlitePool, resume: ResumeFn) -> anyhow::Result
         let Ok(run_id) = Uuid::parse_str(&run_id) else {
             continue;
         };
-        if run_is_parked_plain(pool, run_id).await? {
-            resume(run_id).await?;
-            resumed += 1;
+        match resume(run_id).await {
+            Ok(()) => resumed += 1,
+            Err(error) => {
+                tracing::error!(
+                    event = "ticktick_write.sweep_resume_failed",
+                    %run_id,
+                    error = ?error
+                );
+            }
         }
     }
     Ok((settled, resumed))
@@ -757,8 +786,17 @@ async fn run_is_parked_plain(pool: &SqlitePool, run_id: Uuid) -> anyhow::Result<
         .is_some_and(RunStatus::is_parked))
 }
 
-async fn resume_if_parked(deps: &WriteDeps, run_id: Uuid) -> Result<(), WriteDecideError> {
-    if run_is_parked(&deps.pool, run_id).await? {
+/// Re-drive resume iff the Run is parked awaiting THIS write's tool call —
+/// the waitpoint-identity guard (see [`settle_and_resume`]).
+async fn resume_if_parked_awaiting(
+    deps: &WriteDeps,
+    run_id: Uuid,
+    tool_call_id: &str,
+) -> Result<(), WriteDecideError> {
+    let awaiting = db::ticktick_writes::run_parked_awaiting(&deps.pool, run_id, tool_call_id)
+        .await
+        .map_err(|e| WriteDecideError::Internal(e.into()))?;
+    if awaiting {
         (deps.resume)(run_id)
             .await
             .map_err(WriteDecideError::Internal)?;
@@ -881,20 +919,24 @@ mod tests {
                 let outcome = outcome.clone();
                 Box::pin(async move {
                     // ENVELOPE ORDERING (W-A3): by the time the POST fires,
-                    // phase A has COMMITTED — the proposal reads accepted and
-                    // the write row reads executing on a fresh connection.
-                    let status: String =
-                        sqlx::query_scalar("SELECT status FROM proposals LIMIT 1")
-                            .fetch_one(&pool)
-                            .await
-                            .expect("proposal status");
-                    assert_eq!(status, "accepted", "phase A committed before the POST");
-                    let state: String =
-                        sqlx::query_scalar("SELECT state FROM ticktick_writes LIMIT 1")
-                            .fetch_one(&pool)
-                            .await
-                            .expect("write state");
-                    assert_eq!(state, "executing", "the write row reads executing mid-POST");
+                    // phase A has COMMITTED — an accepted proposal and an
+                    // executing write row are visible on a fresh connection.
+                    // (Counts, not LIMIT 1: a multi-park test holds settled
+                    // siblings beside the in-flight row.)
+                    let accepted: i64 = sqlx::query_scalar(
+                        "SELECT COUNT(*) FROM proposals WHERE status = 'accepted'",
+                    )
+                    .fetch_one(&pool)
+                    .await
+                    .expect("proposal count");
+                    assert!(accepted >= 1, "phase A committed before the POST");
+                    let executing: i64 = sqlx::query_scalar(
+                        "SELECT COUNT(*) FROM ticktick_writes WHERE state = 'executing'",
+                    )
+                    .fetch_one(&pool)
+                    .await
+                    .expect("write state count");
+                    assert!(executing >= 1, "the write row reads executing mid-POST");
                     posts.fetch_add(1, Ordering::SeqCst);
                     outcome
                 })
@@ -1716,6 +1758,165 @@ mod tests {
         assert_eq!(row.remote_task_id.as_deref(), Some("tt-fast"));
         let (_, payload_after) = tool_call_result(&pool, &tool_call_id).await;
         assert_eq!(payload_before, payload_after, "the tool result stands");
+        assert_eq!(run_status_str(&pool, run_id).await, "running");
+    }
+
+    /// WAITPOINT IDENTITY (review blocker): an old write's residue — its
+    /// watchdog firing late, a stale settle belt, or the boot sweep — must
+    /// NEVER resume a Run that has since re-parked on a DIFFERENT Proposal.
+    /// The resumed transcript would synthesize "not executed" for the pending
+    /// call and orphan its card (undecidable forever). The guard is
+    /// `parked AND awaiting_tool_call_id = <this write's tool call>`.
+    #[tokio::test]
+    async fn old_write_residue_never_resumes_a_run_reparked_on_a_new_proposal() {
+        let pool = memory_pool().await;
+        let _conn = token_override::install(Some(test_connection(TOKEN, "conn-1")));
+        let (run_id, proposal_id, tool_call_id) = seed_parked_write(&pool, &fp()).await;
+
+        // Write #1 runs to completion: accept → settle created → resume.
+        let t = test_deps(
+            &pool,
+            WriteOutcome::Created {
+                task_id: "tt-first".to_string(),
+            },
+        );
+        decide(&t.deps, proposal_id, "accept", None, Some("k1".to_string()))
+            .await
+            .expect("first write settles");
+        assert_eq!(run_status_str(&pool, run_id).await, "running");
+
+        // The resumed model parks AGAIN on a SECOND write proposal.
+        let second_proposal = Uuid::now_v7().to_string();
+        let second_tool_call = format!("tc2-{run_id}");
+        let parked = db::park_on_proposal(
+            &pool,
+            run_id,
+            &second_proposal,
+            &second_tool_call,
+            crate::tools::propose_ticktick_task::NAME,
+            r#"{"payload":{"title":"buy eggs"}}"#,
+            MUTATION_KIND,
+            Some(&fp()),
+            db::now_ms(),
+        )
+        .await
+        .expect("second park");
+        assert!(parked.won());
+
+        // (a) The FIRST write's watchdog fires late (its settle loses): the
+        // Run must stay parked on proposal #2 — no resume, no notification.
+        let resumes_before = t.resumes.load(Ordering::SeqCst);
+        let handle = arm_watchdog(WatchdogCtx {
+            pool: pool.clone(),
+            resume: t.deps.resume.clone(),
+            notify: t.deps.notify.clone(),
+            run_id,
+            proposal_id: proposal_id.to_string(),
+            tool_call_id: tool_call_id.clone(),
+            deadline_at: db::now_ms(), // already due
+        });
+        handle.await.expect("watchdog runs");
+        assert_eq!(
+            run_status_str(&pool, run_id).await,
+            "parked",
+            "the old write's watchdog must not resume a re-parked Run"
+        );
+        assert_eq!(
+            t.resumes.load(Ordering::SeqCst),
+            resumes_before,
+            "no resume fired"
+        );
+        let late_notifications: usize = t
+            .notifications
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, state)| matches!(state, TickTickWriteState::Unknown))
+            .count();
+        assert_eq!(
+            late_notifications, 0,
+            "a lost watchdog settle pushes no notification"
+        );
+
+        // (b) The boot sweep's settled-but-parked branch skips it too: the
+        // settled row belongs to tool call #1, but the Run awaits #2.
+        let (settled, resumed) = sweep(&pool, t.deps.resume.clone()).await.expect("sweep");
+        assert_eq!(settled, 0);
+        assert_eq!(
+            resumed, 0,
+            "the sweep must not resume a Run parked on a different waitpoint"
+        );
+        assert_eq!(run_status_str(&pool, run_id).await, "parked");
+
+        // Proposal #2 is still decidable: the fresh accept works end-to-end.
+        let outcome = decide(
+            &t.deps,
+            Uuid::parse_str(&second_proposal).unwrap(),
+            "accept",
+            None,
+            Some("k2".to_string()),
+        )
+        .await
+        .expect("the second proposal is still decidable");
+        assert!(matches!(
+            outcome,
+            WriteDecide::Accepted {
+                write: TickTickWriteState::Created { .. },
+                ..
+            }
+        ));
+    }
+
+    /// The boot sweep NEVER bricks boot on a per-run failure (review major):
+    /// a resume that fails (say, an expired provider credential) is logged
+    /// and skipped; later rows still sweep; the sweep returns Ok.
+    #[tokio::test]
+    async fn sweep_survives_per_run_resume_failures() {
+        let pool = memory_pool().await;
+        let _conn = token_override::install(Some(test_connection(TOKEN, "conn-1")));
+        let (run_id, proposal_id, _tc) = seed_parked_write(&pool, &fp()).await;
+        db::ticktick_writes::accept_ticktick_write(
+            &pool,
+            run_id,
+            &proposal_id.to_string(),
+            None,
+            Some("k-fail"),
+            db::now_ms(),
+        )
+        .await
+        .expect("phase A then crash");
+
+        let failing_resume: ResumeFn =
+            Arc::new(|_run_id| Box::pin(async move { anyhow::bail!("provider token expired") }));
+        let (settled, resumed) = sweep(&pool, failing_resume)
+            .await
+            .expect("the sweep returns Ok despite the resume failure");
+        // The settle itself failed only at the resume step: the row settled.
+        assert_eq!(settled, 0, "the failed row is not counted as swept");
+        assert_eq!(resumed, 0);
+        let row = write_row(&pool, proposal_id).await;
+        assert_eq!(
+            row.state, "settled",
+            "the unknown settle committed even though resume failed"
+        );
+        // The next boot's branch 2 retries the resume; a now-working resume
+        // recovers the Run.
+        let resumes = Arc::new(AtomicUsize::new(0));
+        let working_resume: ResumeFn = {
+            let resumes = resumes.clone();
+            let pool = pool.clone();
+            Arc::new(move |run_id| {
+                let resumes = resumes.clone();
+                let pool = pool.clone();
+                Box::pin(async move {
+                    resumes.fetch_add(1, Ordering::SeqCst);
+                    db::mark_run_running(&pool, run_id).await?;
+                    Ok(())
+                })
+            })
+        };
+        let (_, resumed) = sweep(&pool, working_resume).await.expect("second sweep");
+        assert_eq!(resumed, 1, "the next boot recovers the run");
         assert_eq!(run_status_str(&pool, run_id).await, "running");
     }
 

@@ -273,27 +273,31 @@ function SingleEntityProposalCard({
 		onDecide("edit", editedPayload);
 	};
 
+	// A write-family Proposal with a live/settled write state renders its
+	// DURABLE outcome row — executing (with the bounded poll driving it to the
+	// recorded outcome), created, failed, unknown, or the past-deadline "still
+	// unresolved" with the Resolve-now re-decide — never a generic accepted
+	// pill over a write whose outcome is its own value (ticktick-writes W-A4).
+	// `deciding` is included so a Resolve-now re-decide (and the mid-decide
+	// accept notification) keeps the calm outcome row instead of flashing the
+	// full review card over a payload-less hydrated record.
+	if (
+		(status === "accepted" || status === "deciding") &&
+		ticktickWrite !== undefined &&
+		ticktickWrite.state !== "proposed"
+	) {
+		return (
+			<TickTickWriteOutcome
+				proposal={proposal}
+				write={ticktickWrite}
+				unresolved={writeUnresolved}
+				onResolveNow={() => onDecide("accept")}
+			/>
+		);
+	}
+
 	if (status === "accepted" || status === "rejected") {
 		const accepted = status === "accepted";
-		// A write-family accept renders its DURABLE write state — executing
-		// (with the bounded poll driving it to the recorded outcome), created,
-		// failed, unknown, or the past-deadline "still unresolved" with the
-		// Resolve-now re-decide — never a generic accepted pill over a write
-		// whose outcome is its own value (ticktick-writes W-A4).
-		if (
-			accepted &&
-			ticktickWrite !== undefined &&
-			ticktickWrite.state !== "proposed"
-		) {
-			return (
-				<TickTickWriteOutcome
-					proposal={proposal}
-					write={ticktickWrite}
-					unresolved={writeUnresolved}
-					onResolveNow={() => onDecide("accept")}
-				/>
-			);
-		}
 		// Settled inline in the turn timeline next to tool rows, so it wears the
 		// ToolCallRow pill chrome (ADR-0045) rather than the bordered Card.
 		return (
@@ -458,13 +462,14 @@ function SingleEntityProposalCard({
 								variant="primary"
 								size="row"
 								className="gap-1.5 px-3.5 py-2"
-								// Gate retry on what it will re-send: reject always allowed; a stored edit on its payload; a plain accept on `canApply`. See docs/design/web-chat-ui.md.
+								// Gate retry on what it will re-send: reject always allowed; a stored edit on its payload; a plain accept on `canApply` AND a fresh (non-stale) connection — a remounted card must not default-retry an accept the stale gate disabled. See docs/design/web-chat-ui.md.
 								disabled={
 									lastAttempt.current?.decision === "reject"
 										? false
 										: lastAttempt.current?.decision === "edit"
-											? lastAttempt.current.editedPayload === undefined
-											: !canApply
+											? lastAttempt.current.editedPayload === undefined ||
+												staleConnection
+											: !canApply || staleConnection
 								}
 								onClick={retry}
 							>

@@ -2844,8 +2844,11 @@ where
     .await
 }
 
-/// Every `settled` write whose Run still reads `parked` — the boot sweep's
-/// second branch (crash after phase C's commit but before resume).
+/// Every `settled` write whose Run still reads `parked` AWAITING THIS WRITE'S
+/// tool call — the boot sweep's second branch (crash after phase C's commit
+/// but before resume). The waitpoint join is load-bearing: a run that resumed
+/// and re-parked on a LATER proposal must not be resumed by an old write's
+/// residue (that would orphan the pending Proposal).
 pub(super) async fn settled_ticktick_writes_still_parked<'e, E>(
     executor: E,
 ) -> sqlx::Result<Vec<String>>
@@ -2858,10 +2861,34 @@ where
          JOIN proposals p ON p.id = tw.proposal_id \
          JOIN tool_calls tc ON tc.id = p.tool_call_id \
          JOIN runs r ON r.id = tc.run_id \
-         WHERE tw.state = 'settled' AND r.status = 'parked'",
+         WHERE tw.state = 'settled' AND r.status = 'parked' \
+           AND r.awaiting_tool_call_id = p.tool_call_id",
     )
     .fetch_all(executor)
     .await
+}
+
+/// Whether `run_id` is `parked` awaiting exactly `tool_call_id` — the
+/// waitpoint-identity guard every family resume decision uses (a plain
+/// "parked" check would let an old write's watchdog/sweep/replay resume a run
+/// re-parked on a DIFFERENT proposal, orphaning it).
+pub(super) async fn run_parked_awaiting<'e, E>(
+    executor: E,
+    run_id: Uuid,
+    tool_call_id: &str,
+) -> sqlx::Result<bool>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM runs \
+         WHERE id = ? AND status = 'parked' AND awaiting_tool_call_id = ?",
+    )
+    .bind(run_id.to_string())
+    .bind(tool_call_id)
+    .fetch_one(executor)
+    .await
+    .map(|count| count > 0)
 }
 
 /// The write state hanging off a parked Run's waitpoint Proposal, or `None`

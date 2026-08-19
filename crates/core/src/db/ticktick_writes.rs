@@ -153,6 +153,19 @@ pub(crate) async fn ticktick_write_state_for_parked_run(
     queries::ticktick_write_state_for_parked_run(pool, run_id).await
 }
 
+/// Whether `run_id` is `parked` awaiting exactly `tool_call_id` — the
+/// waitpoint-identity guard behind every family resume decision. A plain
+/// "parked" check would let an old write's watchdog/sweep/replay resume a Run
+/// that has since re-parked on a DIFFERENT Proposal, orphaning it (the
+/// resumed transcript would synthesize "not executed" for the pending call).
+pub(crate) async fn run_parked_awaiting(
+    pool: &SqlitePool,
+    run_id: Uuid,
+    tool_call_id: &str,
+) -> sqlx::Result<bool> {
+    queries::run_parked_awaiting(pool, run_id, tool_call_id).await
+}
+
 /// The settled-window cancel arm (W-A3 matrix): a REAL `parked → cancelled`
 /// CAS with NO pending-proposal requirement (the write family's Proposal is
 /// already accepted), racing resume's self-guarded `parked → running`. Cancel

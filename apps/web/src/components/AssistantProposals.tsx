@@ -1,4 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
+import { useEffect, useRef } from "react";
 import { invalidateEntityReads } from "@/lib/entityReads";
 import { TASKS_KEY_PREFIX } from "@/lib/hooks/useTickTick";
 import { useRuntime } from "@/runtime";
@@ -11,6 +12,22 @@ export function AssistantProposals({ runId }: { runId: string }) {
 	const runtime = useRuntime();
 	const queryClient = useQueryClient();
 	const proposal = useProposalForRun(runId);
+	// A CREATED TickTick write (and only `created` — a failed/unknown write
+	// changed nothing worth refetching) invalidates the Tasks read, so the
+	// next Tasks render refetches under the current connection (ticktick-writes
+	// W-A5). An EFFECT on the record's state transition, not a decide callback:
+	// the created outcome can also arrive via the bounded observe-poll or the
+	// settle notification (a replay that answered "executing" first), which no
+	// callback sees. Once per mount (the ref) — invalidation is idempotent, so
+	// a remount over an already-created record merely refetches fresh data.
+	const invalidatedCreated = useRef(false);
+	const writeState = proposal?.ticktick_write?.state;
+	useEffect(() => {
+		if (writeState === "created" && !invalidatedCreated.current) {
+			invalidatedCreated.current = true;
+			void queryClient.invalidateQueries({ queryKey: TASKS_KEY_PREFIX });
+		}
+	}, [writeState, queryClient]);
 	if (proposal === null) {
 		return null;
 	}
@@ -42,15 +59,6 @@ export function AssistantProposals({ runId }: { runId: string }) {
 							: settled.status === "accepted"
 					) {
 						await invalidateEntityReads(queryClient);
-					}
-					// A CREATED TickTick write (and only `created` — a failed/unknown
-					// write changed nothing worth refetching) invalidates the Tasks
-					// read, so the next Tasks render refetches under the current
-					// connection (ticktick-writes W-A5).
-					if (settled?.ticktick_write?.state === "created") {
-						await queryClient.invalidateQueries({
-							queryKey: TASKS_KEY_PREFIX,
-						});
 					}
 					// Every decision advances the parked Run (it resumes and runs to a
 					// new milestone), so the recent-Runs feed is now stale regardless of
