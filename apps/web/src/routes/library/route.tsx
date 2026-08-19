@@ -35,9 +35,8 @@ function LibraryLayout() {
 	const { data } = useLibraryItems();
 
 	const pathname = useRouterState({ select: (s) => s.location.pathname });
-	const slug = typeof params.kind === "string" ? params.kind : undefined;
-	const id =
-		"id" in search && typeof search.id === "string" ? search.id : undefined;
+	const slug = params.kind;
+	const id = search.id;
 	const creating = "new" in search && search.new === true;
 	// The Media topic is a STATIC route (`/library/media`), not `$kind`, so it
 	// carries no `params.kind`. Its slug ("media") collides with the `$kind` route,

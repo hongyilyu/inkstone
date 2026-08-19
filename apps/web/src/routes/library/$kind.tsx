@@ -1,3 +1,4 @@
+import type { JsonObject } from "@inkstone/protocol";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { Search } from "lucide-react";
 import { EntityCollection } from "@/components/library/EntityCollection";
@@ -5,6 +6,7 @@ import { ProjectReviewView } from "@/components/library/ProjectReviewView";
 import { Button } from "@/components/ui/button.js";
 import { EmptyState } from "@/components/ui/empty-state";
 import { CREATABLE_KINDS, libraryItemKindForSlug } from "@/lib/libraryItems";
+import { asString } from "@/lib/readPayload";
 
 interface KindSearch {
 	id?: string;
@@ -86,8 +88,8 @@ function KindRoute() {
 }
 
 export const Route = createFileRoute("/library/$kind")({
-	validateSearch: (search: Record<string, unknown>): KindSearch => ({
-		id: typeof search.id === "string" ? search.id : undefined,
+	validateSearch: (search: JsonObject): KindSearch => ({
+		id: asString(search.id),
 		new: search.new === true || search.new === "true" ? true : undefined,
 		review:
 			search.review === true || search.review === "true" ? true : undefined,

@@ -1,5 +1,7 @@
+import type { JsonObject } from "@inkstone/protocol";
 import { createFileRoute } from "@tanstack/react-router";
 import { ChatColumn } from "@/components/ChatColumn.js";
+import { asString } from "@/lib/readPayload";
 
 /** Optional within-thread scroll anchor (issue #138, ADR-0061): a ⌘K message hit
  *  deep-links to `/thread/<id>?focusedMessageId=<id>`; ChatColumn scrolls to it,
@@ -10,11 +12,8 @@ interface ThreadSearch {
 
 /** `/thread/$threadId` — the chat surface focused on one Thread (ADR-0061). `ChatColumn` reads the id from the route via `useParams`. */
 export const Route = createFileRoute("/_chat/thread/$threadId")({
-	validateSearch: (search: Record<string, unknown>): ThreadSearch => ({
-		focusedMessageId:
-			typeof search.focusedMessageId === "string"
-				? search.focusedMessageId
-				: undefined,
+	validateSearch: (search: JsonObject): ThreadSearch => ({
+		focusedMessageId: asString(search.focusedMessageId),
 	}),
 	component: ChatColumn,
 });

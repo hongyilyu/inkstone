@@ -1,9 +1,11 @@
+import type { JsonObject } from "@inkstone/protocol";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import {
 	type HealthFilter,
 	HealthView,
 	KNOWN_SCHEMAS,
 } from "@/components/library/HealthView";
+import { asString } from "@/lib/readPayload";
 
 interface HealthSearch {
 	/** The active schema filter. Omitted from the URL = All (the default). */
@@ -29,11 +31,9 @@ function HealthRoute() {
 }
 
 export const Route = createFileRoute("/library/health")({
-	validateSearch: (search: Record<string, unknown>): HealthSearch => ({
+	validateSearch: (search: JsonObject): HealthSearch => ({
 		// Tolerate an absent or garbage `?schema=` → undefined (= All).
-		schema: KNOWN_SCHEMAS.includes(search.schema as NonNullable<HealthFilter>)
-			? (search.schema as NonNullable<HealthFilter>)
-			: undefined,
+		schema: KNOWN_SCHEMAS.find((known) => known === asString(search.schema)),
 	}),
 	component: HealthRoute,
 });

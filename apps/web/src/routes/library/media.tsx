@@ -1,5 +1,7 @@
+import type { JsonObject } from "@inkstone/protocol";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { EntityCollection } from "@/components/library/EntityCollection";
+import { asString } from "@/lib/readPayload";
 
 interface MediaSearch {
 	/** Selected Media item → the shared rail renders its detail. */
@@ -32,8 +34,8 @@ function MediaRoute() {
 }
 
 export const Route = createFileRoute("/library/media")({
-	validateSearch: (search: Record<string, unknown>): MediaSearch => ({
-		id: typeof search.id === "string" && search.id ? search.id : undefined,
+	validateSearch: (search: JsonObject): MediaSearch => ({
+		id: asString(search.id) || undefined,
 		new: search.new === true || search.new === "true" ? true : undefined,
 	}),
 	component: MediaRoute,
