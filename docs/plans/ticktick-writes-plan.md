@@ -1,14 +1,15 @@
 # TickTick Writes — task capture returns, through the Proposal gate
 
-Date: 2026-08-19 · rev 5 · Status: CONVERGED — design settled over five
+Date: 2026-08-19 · rev 6 · Status: CONVERGED — design settled over five
 premortem revisions (22 review threads, all resolved); **W1, the
-write-contract spike, is the implementation go/no-go gate**
+write-contract spike, ran 2026-08-19 — verdict GO** (every gate item matched
+the plan's assumption; findings in the ledger's "Resolved by W1" section)
 
 THIS file (`docs/plans/`) is the converged copy of record. The review trail is
-`premortem.hongy.io/p/inkstone/ticktick-writes@1`–`@5` — each immutable @N
+`premortem.hongy.io/p/inkstone/ticktick-writes@1`–`@7` — each immutable @N
 embeds the then-current full plan text as an appendix, so the design history
 stays auditable independent of any working copy. A future revision edits this
-file and republishes as @6+ under the same embedded-appendix contract.
+file and republishes as @8+ under the same embedded-appendix contract.
 
 Reopens, deliberately, the capability ADR-0064 removed: *"Until a future write
 feature, Inkstone cannot create or edit a task."* This is that feature. The
@@ -71,8 +72,8 @@ that sentence so the invariant is not anchored to a mostly-lost artifact.
   park (the tool's params carry no `mutation_kind` field — see W-A2 mechanics).
 - **v1 payload is `{title, note?, due?}` — no projectId, no tags, no
   priority.** Every agent create lands in **Inbox** (capture → Inbox → the user
-  organizes in TickTick is the GTD-honest flow). W1 gates it:
-  create-without-projectId must land in Inbox.
+  organizes in TickTick is the GTD-honest flow). W1 gated it and confirmed:
+  create-without-projectId lands in Inbox.
 - **W-A3: the write is a first-class state machine** —
   `proposed → executing → settled(created|failed|unknown)` in a
   `ticktick_writes` row created at PARK (with a credential-fingerprint
@@ -116,8 +117,8 @@ that sentence so the invariant is not anchored to a mostly-lost artifact.
   `runs/reply.rs`). The deciding tab renders from its own decide response; any
   other tab converges on its next `thread/get`. Multi-tab live Proposal sync
   stays explicitly deferred; this plan does not claim it.
-- **Outcome classification is an exhaustive match, not a boolean** (provisional
-  table below; W1 refines): an exhaustive match over (status,
+- **Outcome classification is an exhaustive match, not a boolean** (table
+  below; confirmed by W1 as designed): an exhaustive match over (status,
   transport-predicate) whose DEFAULT arm is `unknown` — a novel transport error
   can never classify `failed`. `failed` ⊆ deterministic 4xx ∪ pre-send connect
   failure (reqwest `is_connect` only — nothing was sent); `created` requires a
@@ -171,27 +172,61 @@ that sentence so the invariant is not anchored to a mostly-lost artifact.
   texts in W-A3).
 - The demo proofs (below).
 
-**To be resolved by W1 — the spike / go-no-go gate:**
+**Resolved by W1 — the spike ran 2026-08-19 against the disposable smoke
+account (`scripts/ticktick-write-spike.mjs`, manual dispatch, non-capturing,
+self-cleaning: 10 staged rows created, 10 deleted, 0 leaked). Verdict: GO on
+every gate item:**
 
-- `POST /open/v1/task` create: exact accepted fields, required-ness, response
-  shape (does it return the created task, with `id` and `projectId`?).
-- Duplicate-create behavior: two identical POSTs → two tasks? (Expected yes —
-  confirms never-auto-refire is load-bearing, not paranoia.)
-- Create WITHOUT `projectId` → lands in Inbox? (Gates the Inbox-only payload
-  cut. Read-back must show the `^inbox` sentinel projectId.)
-- Due tuple on create: `dueDate` + `isAllDay` + `timeZone` round-trip through
-  the filter read for all-day AND timed cases (S1a proved start/due collapse on
-  the read side — the write payload carries ONE due tuple, no start field, by
-  design).
-- The note field: `content` vs `desc` — which round-trips for a plain task.
-- **The outcome-classification table, confirmed per status:** 400 / 401 / 403 /
-  404 / 413 / 422 / 429 bodies-and-semantics (rejected before creation?); 408
-  and 5xx ambiguity; rate-limit headers on 429; **and the 2xx shape family:**
-  does the create response ALWAYS carry a non-empty task id, and can TickTick
-  answer 2xx with an error-shaped body that still DECODES? (`created` requires
-  a decoded non-empty id — a decodable error envelope must classify `unknown`,
-  not slip through as created.)
-- Latency envelope (informs the blocking-decide UX and the A7-timeout fit).
+- **Create happy path: GO.** `POST /open/v1/task {"title"}` → **200** (not
+  201) with a decodable body that is the created task: non-empty `id`,
+  `projectId`, plus `title/status/kind/priority/tags/isAllDay/timeZone/
+  sortOrder/etag/createdTime/modifiedTime` (+ `dueDate`/`startDate` when a due
+  was sent, + the note field when sent).
+- **Duplicate double-POST: two tasks, distinct ids** — both visible in the
+  filter read. Create is NOT idempotent; never-auto-refire is load-bearing,
+  confirmed.
+- **Create WITHOUT `projectId` → Inbox: GO.** The create response's
+  `projectId` is `inbox`-prefixed and the filter read-back shows the same
+  `^inbox` sentinel row. The Inbox-only v1 payload stands.
+- **Due tuple: GO, byte-exact round-trip.** All-day
+  (`dueDate:"2026-09-01T07:00:00.000+0000", isAllDay:true, timeZone:
+  "America/Los_Angeles"`) and timed (`…17:30:00.000+0000, isAllDay:false`)
+  both came back through the filter read with `dueDate`/`isAllDay`/`timeZone`
+  equal to what was sent; the server sets `startDate == dueDate` (the S1a
+  collapse confirmed from the write side — one due tuple, no start field).
+- **Note field: `content`.** A `content` create round-trips as `content`; a
+  `desc` create round-trips as `desc` and does NOT surface as `content`
+  (`desc` is the checklist-description field). v1 maps note → `content`.
+- **The classification table, as observed** (the W-A3 table is CONFIRMED as
+  designed; one upstream surprise recorded):
+  - 401 (bad bearer) → 401 with a decodable OAuth envelope
+    (`error/error_description/errors`). `failed`, per the 4xx family. ✓
+  - **TickTick answers deterministic VALIDATION rejections as 500**, with a
+    decodable `{data, errorCode, errorId, errorMessage}` envelope: empty
+    payload, empty/whitespace title, a 1 MiB title, and — notably — a
+    **scope-short (`tasks:read`) token** all came back 500, nothing created.
+    Under the table these classify `unknown` (a 500 is indistinguishable from
+    a transient gateway fault), which is the accepted-conservative outcome;
+    Core's pre-park validation (trimmed non-empty title, well-formed due,
+    boot-parsed scope) keeps every *predictable* member of this class from
+    ever reaching phase B. No 4xx-shaped validation rejection was observed.
+  - **A 2xx with an UNDECODABLE body exists in the wild** (a GET probe of a
+    bogus task id answered 200 with a non-JSON body) → `created`-requires-a-
+    decoded-non-empty-id is load-bearing, confirmed. No DECODABLE 2xx error
+    envelope was observed (the STOP condition did not fire); the classifier
+    defends against both shapes regardless.
+  - Lenient coercions observed (recorded, not gate items): `title: 12345`,
+    a malformed `dueDate` string, and a bogus `projectId` each answered 200
+    and created a task. v1 sends only Core-validated
+    `{title, content?, due-tuple?}`, so none of these shapes is reachable.
+  - 429: not induced (hammering the live service to force one would be
+    abusive); **no rate-limit headers appear on normal responses**. The
+    deterministic-4xx → `failed` classification stands as designed.
+  - 408 / transient 5xx / mid-flight cuts: not inducible live; the
+    default-`unknown` arms stand as designed (the fake-server tests own them).
+- **Latency envelope:** n=7 creates — min 73 ms, median 75 ms, max 314 ms
+  (first call pays connection setup). The A7 30s timeout is comfortable; the
+  card's "Creating in TickTick…" resolves sub-second in the normal case.
 
 **Unresolved** (owned by a slice or an explicitly future feature):
 
@@ -403,7 +438,8 @@ sources.
   goes through this function; losing the guarded flip means someone else
   settled, so the loser reads and returns the recorded outcome.
 - **Outcome classification — an EXHAUSTIVE match whose default arm is
-  `unknown`** (provisional table; W1 confirms per status). The classifier is a
+  `unknown`** (confirmed by W1; per-status observations in the ledger's
+  "Resolved by W1" section). The classifier is a
   match over (HTTP status, reqwest error predicate); a response or transport
   error that fits no explicit arm classifies `unknown` — a novel failure mode
   can never classify `failed`:
@@ -411,10 +447,10 @@ sources.
   | response | outcome |
   |---|---|
   | 2xx, body decodes to a NON-EMPTY task id | `created` (+ task id) |
-  | 2xx, body undecodable, id-less, or a decodable error envelope | `unknown` (cannot confirm creation — W1 probes whether TickTick ever 2xx-wraps errors) |
-  | 4xx except 408 (400/401/403/404/413/422/429…) | `failed` — deterministic rejection, nothing created |
+  | 2xx, body undecodable, id-less, or a decodable error envelope | `unknown` (cannot confirm creation — W1 observed an undecodable 2xx in the wild; no decodable 2xx error envelope was seen) |
+  | 4xx except 408 (400/401/403/404/413/422/429…) | `failed` — deterministic rejection, nothing created (W1: 401 confirmed; TickTick wears VALIDATION rejections as 500, so this arm mostly means auth/protocol-level rejections) |
   | 408 | `unknown` |
-  | any 5xx | `unknown` — a gateway error can follow an upstream commit |
+  | any 5xx | `unknown` — a gateway error can follow an upstream commit (and W1 shows a 500 can ALSO be a deterministic validation rejection — indistinguishable, so `unknown` stands) |
   | connect/TLS failure BEFORE anything was sent (reqwest `is_connect`) | `failed` |
   | send/read timeout, mid-flight reset, response-read failure | `unknown` |
   | anything else (the default arm) | `unknown` |
@@ -671,17 +707,18 @@ After cutover the complete write surface is:
 
 **W-A7 — Idempotency and retry.**
 
-- Treat create as NOT idempotent until W1 proves otherwise (the
-  duplicate-create probe). The structure already assumes the worst: the
+- Create is NOT idempotent — W1's duplicate probe made two tasks with
+  distinct ids from two identical POSTs. The structure already assumes the worst: the
   guarded `executing → settled` flip is the once-guard; keyed replay returns
   the recorded outcome (or "executing"); the boot sweep and the stale
   reconciliation settle — never re-send; ambiguity classifies as `unknown`,
   not `failed`.
 - The user's retry is a NEW proposal (re-ask the agent). After an `unknown`,
   the model is instructed to have the user check TickTick first.
-- Rate limits: W1 probes 429/headers for the record (429 classifies `failed` —
-  rejected before processing); v1 ships no throttling machinery — one write per
-  human accept means the human is the rate limiter.
+- Rate limits: W1 probed for the record — a 429 is not safely inducible and no
+  rate-limit headers appear on normal responses; the 4xx table row stands
+  (429 → `failed` — rejected before processing); v1 ships no throttling
+  machinery — one write per human accept means the human is the rate limiter.
 
 **W-A8 — Config and vocabulary.**
 
@@ -732,7 +769,7 @@ full list, or it lands red:
 
 | # | Slice | Contents | Verify |
 |---|-------|----------|--------|
-| W1 | **Write-contract spike (go/no-go gate)** | Probe scripts against the disposable smoke account, live-smoke privacy posture (status-only errors, never a body, no real content, nothing captured to the repo; **manual dispatch only — never scheduled**): create happy-path + response shape (id? projectId?); duplicate double-POST; create WITHOUT projectId → Inbox?; due-tuple round-trip on create (all-day + timed + timezone) via the filter read; note field (`content` vs `desc`); **the outcome-classification table confirmed per status (4xx family, 408, 429 + headers, 5xx, 2xx-with-error-envelope?)**; latency sample; spike cleans up its staged rows via the API (tooling-only capability, never product) | Ledger's "resolved by W1" section filled incl. the confirmed classification table; go/no-go verdict recorded; no captures or fixtures with real content committed; `scripts/ticktick-live-smoke.mjs` (read smoke) untouched; a write-smoke script may land beside it, manual-dispatch only |
+| W1 | **Write-contract spike (go/no-go gate) — COMPLETE (2026-08-19, GO)** | Probe scripts against the disposable smoke account, live-smoke privacy posture (status-only errors, never a body, no real content, nothing captured to the repo; **manual dispatch only — never scheduled**): create happy-path + response shape (id? projectId?); duplicate double-POST; create WITHOUT projectId → Inbox?; due-tuple round-trip on create (all-day + timed + timezone) via the filter read; note field (`content` vs `desc`); **the outcome-classification table confirmed per status (4xx family, 408, 429 + headers, 5xx, 2xx-with-error-envelope?)**; latency sample; spike cleans up its staged rows via the API (tooling-only capability, never product) | Ledger's "resolved by W1" section filled incl. the confirmed classification table; go/no-go verdict recorded; no captures or fixtures with real content committed; `scripts/ticktick-live-smoke.mjs` (read smoke) untouched; a write-smoke script may land beside it, manual-dispatch only |
 | W2 | **Core write family (hidden)** | `propose_ticktick_task` tool (second `Dispatch::Proposal`); `validate_proposal_request` arm (title/due-tuple/connected/writable); park path: kind derived from tool name (`create_ticktick_task`; today's `unwrap_or_default` would store "") + `ticktick_writes` `proposed` row w/ credential-fingerprint snapshot inside the park tx; token boot-read parses optional `scope` → `Connection.writable` + computes the internal fingerprint; `create_ticktick_task` family in decide (`StoredMutation` third variant — never the entity path); **the DETACHED decide handler** (spawned task, reply by request id — the socket keeps reading/writing during phase B); phase A (fingerprint re-check → typed `stale_connection` error on mismatch + accepted flip + `proposed→executing` + **arms the deadline watchdog — its OWN spawned task keyed by the write row, independent of the decide task**); phase B `client::create_task` (A7 timeout, loopback-guarded override); **the ONE guarded settle fn with exactly three triggers** (phase C, the watchdog, the boot sweep; past-bound decide replay as belt — reads never settle); family-aware replay/recovery (executing → "executing", no resume, no POST); boot sweep BOTH branches (executing→unknown; settled-but-parked→resume only); the cancel state matrix (proposed→existing path; executing→`write_in_flight`; settled+parked→real `parked→cancelled` CAS racing resume); the **exhaustive default-arm-unknown classifier** (`created` requires a decoded non-empty task id; `failed` ⊆ deterministic 4xx ∪ `is_connect`); **effective-payload validation on the fresh apply path** (same validator as pre-park; positioned AFTER replay/recovery — the ADR-0025 ordering lesson); the second schema CHECK (`proposed ⇔ requested_at IS NULL`); wire: `ProposalDecideResult.ticktick_write`, `proposal/changed` ×2 (deciding connection), `Segment.proposal.ticktick_write` INCLUDING the derived `{state:"proposed", stale_connection}` pending variant (also served by `proposal/get`) AND `{state:"executing", deadline_at}` (Core-computed `requested_at` + A7 + grace — the client never computes the bound), the `stale_connection` decide error, the `write_in_flight` cancel outcome; the three Decision-result texts; the tool is in NO workflow's `tools` list (model-unreachable) | Envelope ordering: the fake write server observes the proposal row already `accepted`+committed when the POST arrives; classifier unit tests over the full table INCLUDING the default arm (a novel transport error → `unknown`) and created-requires-id (a decodable id-less/error-envelope 2xx → `unknown`); **crash-point tests: after phase A, during the POST, after phase C before resume** — sweep settles/resumes correctly, ZERO extra POSTs (fake client counts); **watchdog fault test: phase-C persistence failure → one immediate same-key retry answers "executing" → NO further input → the watchdog settles `unknown`, resolves the tool call, resumes the Run** (and never POSTs); **watchdog independence fault test: panic/abort the decide task mid-POST → the independently-spawned watchdog STILL settles `unknown` + resolves + resumes without a restart** (a combinator-in-the-decide-task implementation fails this test by construction); **same-credential restart → accept SUCCEEDS (the overnight flow)**; **swapped-credential restart → typed `stale_connection`, zero POSTs, reject still works**; scope-short token → propose rejected pre-park; not-connected propose → tool error, no park; **fresh malformed edit (empty title / bad due) → `invalid_params`, nothing flips, no POST; same-key malformed edit RETRY while executing → answers "executing", never `invalid_params`**; reject leaves the `proposed` row inert, no call; parked-cancel during executing → `write_in_flight`, nothing changes; **post-phase-C-commit cancel/resume race (two connections, paused before resume): both orderings converge, the response matches durable state**; **the socket stays live during phase B** (a subscribed Run keeps streaming while a decide executes); registry: exactly two proposal tools + prefix reservation; fake-HTTP e2e: propose → park → accept → POST → resume transcript carries the `created` content; gate green |
 | W3 | **Card + read-back (dormant)** | `proposalViews.tsx` row for `create_ticktick_task` (pending / executing / created / failed / unknown / rejected / **stale-connection**); the TickTick edit form (title, due + all-day, note → full-payload `edited_payload`); "→ Inbox" affordance; decide-response handling ("Creating in TickTick…" from the caller's own pending response); **the stale-connection card: DERIVED from the pending read shape's `stale_connection`, so the warning + disabled accept + enabled reject render on FIRST render in any tab after any reload** (the typed decide error covers only the pre-restart-card race; neither path funnels into the generic `proposal_not_pending` refetch); **the bounded executing poll: an `executing` entered from hydration/replay polls `thread/get` (short interval) capped by the wire's `deadline_at` + ε — never a client-computed bound — until the recorded outcome renders (observation only, never settlement); past the deadline with the read still executing, the poll stops and the card renders "still unresolved — check TickTick" with a Resolve-now re-decide (the past-bound belt, a write)**; `write_in_flight` cancel handling (keep card + subscription, honest copy — never a local "cancelled" over a live write); cancel-response handling for the settled-window CAS (settle only on Core's answer); hydration maps `Segment.proposal.ticktick_write` (a second tab converges on its next `thread/get` — no live cross-tab claim); `TASKS_KEY_PREFIX` invalidation on `created` only; created-at-cap inline caveat | Component tests for every card state incl. executing + unknown + stale-connection (accept disabled, reject works); **credential mismatch → reload → accept STILL disabled, message still rendered, reject works, zero POSTs** (the derived state survives reload/second tab); **reload-mid-B test: F5 during a held POST → the fresh tab hydrates "creating…" and reaches the recorded outcome with NO user action** (bounded poll observed to stop after settle); **deadline-residue test: suppress settlement past `deadline_at` → the poll stops, the card renders "still unresolved" (not eternal creating…), and Resolve-now settles `unknown` and re-renders it**; **live == reload pinned for all states** (reload during phase B renders "creating…", settled failed/unknown never rehydrate success-shaped); edit round-trip emits the full edited payload; **accept → held-POST → Stop race in BOTH shapes — same-socket (reaches Core mid-B thanks to the detached decide) and second-connection — cancel answers `write_in_flight`, card survives, outcome lands**; invalidation fires on `created` and only then; existing proposal-card tests untouched; states differ by glyph + label, never color alone |
 | W4 | **Cutover: expose + prompt + ADR** | `default.toml` `tools` += `propose_ticktick_task` + ALL THREE prompt sites rewritten (~L26–31, ~L42, ~L98); `hasReminderBoundary` fixture rewritten to the new boundary + both consumers (Core prompt test, `tests/e2e/src/prompt-boundary-worker.spec.ts`); ADR-0065 (amends 0064, restates mcp-A14); CONTEXT.md sentence; demo proofs | Gate green; **read-lane tests UNCHANGED and green** (dual allowlist byte-identical); the rewritten boundary predicate still REJECTS softened variants (asserted both consumers); e2e: "remind me to buy milk" parks a `create_ticktick_task` proposal (and no Journal Entry); accept → task in fake TickTick → Tasks view shows it post-invalidation; reject → no task, conversational continue; extraction e2e still proposes no Todos and no tasks-as-Projects |
