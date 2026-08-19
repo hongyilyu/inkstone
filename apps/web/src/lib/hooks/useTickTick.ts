@@ -21,8 +21,28 @@ import { useRuntime } from "@/runtime";
 const tasksKey = (connectionId: string) =>
 	["ticktick", "tasks", connectionId] as const;
 
-const TASKS_KEY_PREFIX = ["ticktick", "tasks"] as const;
+export const TASKS_KEY_PREFIX = ["ticktick", "tasks"] as const;
 const STATUS_KEY = ["ticktick", "status"] as const;
+
+/** Whether the CURRENT cached Tasks read is at TickTick's 200-item source
+ * limit (ticktick-writes W-A5): the created card's inline caveat reads the
+ * cache only — a display hint, never a fetch. `false` when no task query has
+ * resolved. */
+export function readTasksAtSourceLimit(queryClient: {
+	getQueriesData: (filters: {
+		queryKey: readonly unknown[];
+	}) => Array<[unknown, unknown]>;
+}): boolean {
+	return queryClient
+		.getQueriesData({ queryKey: TASKS_KEY_PREFIX })
+		.some(([, data]) => {
+			return (
+				typeof data === "object" &&
+				data !== null &&
+				(data as TickTickTasksListResult).source_limit_reached === true
+			);
+		});
+}
 
 /** Split a failed task read into an INITIAL failure (no successful fetch yet —
  * `data` is `undefined`) vs. a STALE-refetch failure (a prior fetch's data,

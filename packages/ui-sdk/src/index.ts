@@ -36,6 +36,7 @@ import {
 	ThreadMutateResult,
 	TickTickStatusResult,
 	TickTickTasksListResult,
+	type TickTickWriteState,
 } from "@inkstone/protocol";
 import {
 	Cause,
@@ -122,12 +123,24 @@ export class ProviderLoginFailedError extends Data.TaggedError(
 	message: string;
 }> {}
 
+/** `-32005` (ticktick-writes W-A3): a `create_ticktick_task` accept found the
+ * TickTick credential changed (or gone/read-only) since the Proposal parked.
+ * DEDICATED — never folded into `ProposalNotPendingError`, whose consumer
+ * treats it as "another tab decided" and refetches. The Proposal stays
+ * pending: reject remains available; no write fired. */
+export class StaleConnectionError extends Data.TaggedError(
+	"StaleConnectionError",
+)<{
+	message: string;
+}> {}
+
 export type WsError =
 	| WsRequestError
 	| UnknownThreadError
 	| InvalidParamsError
 	| ProposalNotPendingError
-	| ProviderLoginFailedError;
+	| ProviderLoginFailedError
+	| StaleConnectionError;
 
 // Wire frame: response-with-result | response-with-error | notification.
 const WireError = S.Struct({ code: S.Number, message: S.String });
@@ -165,6 +178,10 @@ export type ProposalNotification =
 			readonly run_id: string;
 			readonly proposal_id: string;
 			readonly status: "accepted" | "rejected";
+			/** The TickTick write family's durable state (ticktick-writes W-A4):
+			 * present on the family's TWO deciding-connection pushes — accept
+			 * (executing) and settle (the terminal state). */
+			readonly ticktick_write?: TickTickWriteState;
 	  };
 
 // run/subscribe acknowledgement is not a pinned protocol shape; accept {} or {run_id}.
@@ -182,6 +199,9 @@ const mapWireError = (error: {
 	}
 	if (error.code === -32003) {
 		return new ProviderLoginFailedError({ message: error.message });
+	}
+	if (error.code === -32005) {
+		return new StaleConnectionError({ message: error.message });
 	}
 	if (error.code === -32602) {
 		return new InvalidParamsError({ message: error.message });
@@ -677,6 +697,7 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 							run_id: n.right.run_id,
 							proposal_id: n.right.proposal_id,
 							status: n.right.status,
+							ticktick_write: n.right.ticktick_write,
 						});
 					}
 					return;

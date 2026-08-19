@@ -1,6 +1,7 @@
 import type { JsonValue, ProposalReviewContext } from "@inkstone/protocol";
 import type { ReactNode } from "react";
 import { PROJECT_STATUS_LABEL } from "@/lib/libraryItems";
+import { dueLabel, readDue } from "@/lib/ticktickWrite";
 import {
 	asObject,
 	asString,
@@ -225,6 +226,32 @@ export function renderProjectBody({
 			) : (
 				projectSection("Project", payload)
 			)}
+		</div>
+	);
+}
+
+/** The TickTick task body (ticktick-writes W3): title-as-summary is the
+ * card's bold line, so the detail body carries the due (localized from the
+ * one due tuple — all-day vs timed), the note, and the fixed "→ Inbox"
+ * affordance (the v1 payload has no list/tags/priority: every agent create
+ * lands in Inbox). */
+export function renderTickTickTaskBody({
+	payload,
+}: ProposalBodyArgs): ReactNode {
+	const note = readString(payload, "note");
+	const due = readDue(payload);
+	return (
+		<div className="flex flex-col gap-3 border-border border-t pt-3">
+			<Section title="Task">
+				{due ? (
+					<Field
+						label="Due"
+						value={`${dueLabel(due)}${due.isAllDay ? " (all day)" : ""}`}
+					/>
+				) : null}
+				{note ? <Field label="Note" value={note} /> : null}
+				<Field label="List" value="→ Inbox" />
+			</Section>
 		</div>
 	);
 }

@@ -1,5 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { invalidateEntityReads } from "@/lib/entityReads";
+import { TASKS_KEY_PREFIX } from "@/lib/hooks/useTickTick";
 import { useRuntime } from "@/runtime";
 import { decideProposal } from "@/store/bridge";
 import { getChatState, useProposalForRun } from "@/store/chat";
@@ -41,6 +42,15 @@ export function AssistantProposals({ runId }: { runId: string }) {
 							: settled.status === "accepted"
 					) {
 						await invalidateEntityReads(queryClient);
+					}
+					// A CREATED TickTick write (and only `created` — a failed/unknown
+					// write changed nothing worth refetching) invalidates the Tasks
+					// read, so the next Tasks render refetches under the current
+					// connection (ticktick-writes W-A5).
+					if (settled?.ticktick_write?.state === "created") {
+						await queryClient.invalidateQueries({
+							queryKey: TASKS_KEY_PREFIX,
+						});
 					}
 					// Every decision advances the parked Run (it resumes and runs to a
 					// new milestone), so the recent-Runs feed is now stale regardless of

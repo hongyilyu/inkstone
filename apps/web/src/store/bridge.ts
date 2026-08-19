@@ -4,6 +4,7 @@ import {
 	type ThreadGetResult,
 	type ThreadListResult,
 	ThreadTitledNotification,
+	type TickTickWriteState,
 } from "@inkstone/protocol";
 import {
 	onNotification,
@@ -511,6 +512,68 @@ export async function cancelRun(
 	settleCancelledLocally(runtime, threadId, runId);
 }
 
+/**
+ * One tick of the bounded observe-poll (ticktick-writes W-A4): re-read the
+ * thread's durable truth and, if this Run's write settled, apply the recorded
+ * outcome + re-subscribe the resumed Run's tail. Pure OBSERVATION — a read
+ * can never settle server-side; the deadline watchdog owns settlement. The
+ * card's `useTickTickWritePoll` drives the interval and the `deadline_at` cap.
+ */
+export async function pollTickTickWriteOnce(
+	runtime: WsRuntime,
+	runId: RunId,
+): Promise<"settled" | "executing" | "gone"> {
+	const proposal = getChatState().proposals[runId];
+	if (proposal === undefined) {
+		return "gone";
+	}
+	const threadId = getRunThreadId(runId);
+	if (threadId === undefined) {
+		return "gone";
+	}
+	const program = Effect.flatMap(WsClient, (client) =>
+		client.threadGet(threadId),
+	);
+	const exit = await runtime.runPromiseExit(program);
+	if (Exit.isFailure(exit)) {
+		// A transient read failure: keep observing until the deadline cap.
+		return "executing";
+	}
+	// Currency guard: the record may have settled (the decide response landed)
+	// or been cleared while the read was in flight.
+	const current = getChatState().proposals[runId];
+	if (current?.proposal_id !== proposal.proposal_id) {
+		return "gone";
+	}
+	if (current.ticktick_write?.state !== "executing") {
+		return "settled";
+	}
+	const seg = decidedProposalSegment(
+		exit.value.messages,
+		runId,
+		proposal.proposal_id,
+	);
+	if (
+		seg === undefined ||
+		seg.ticktick_write === undefined ||
+		seg.ticktick_write.state === "executing"
+	) {
+		return "executing";
+	}
+	setProposalStatus(
+		runId,
+		seg.status,
+		seg.entity_id,
+		undefined,
+		seg.ticktick_write,
+	);
+	// The write settled server-side, so the Run resumed: mirror the decided
+	// path — interrupt the parked fiber, re-subscribe the resume tail.
+	interruptRun(runtime, runId);
+	startRunStream(runtime, threadId, runId);
+	return "settled";
+}
+
 /** The synthetic cancel settle: interrupt the fiber (so its takeUntil can't
  * race), apply a local `cancelled`, drop any Proposal, and refresh the
  * recent-Runs feed from this authoritative settle point (the interrupted
@@ -600,6 +663,10 @@ export function startProposalStream(runtime: WsRuntime): void {
 						rationale: p.rationale,
 						review_context: p.review_context,
 						resolved_plan: p.resolved_plan,
+						// The write family's pending read (ticktick-writes W-A4):
+						// `proposed` + the read-derived stale_connection, so a stale
+						// card warns on first render.
+						ticktick_write: p.ticktick_write,
 						status: "pending",
 					});
 					// Parking is a Run milestone the feed reflects (Running → Waiting).
@@ -608,7 +675,13 @@ export function startProposalStream(runtime: WsRuntime): void {
 					// any milestone the feed shows, not only terminals).
 					onRunSettled?.();
 				} else {
-					setProposalStatus(n.run_id, n.status);
+					setProposalStatus(
+						n.run_id,
+						n.status,
+						undefined,
+						undefined,
+						n.ticktick_write,
+					);
 				}
 				// A `proposal/get` failure must not tear down the whole stream.
 			}).pipe(Effect.catchAll(() => Effect.void)),
@@ -633,7 +706,13 @@ function decidedProposalSegment(
 	views: ThreadGetResult["messages"],
 	runId: string,
 	proposalId: string,
-): { status: "accepted" | "rejected"; entity_id?: string } | undefined {
+):
+	| {
+			status: "accepted" | "rejected";
+			entity_id?: string;
+			ticktick_write?: TickTickWriteState;
+	  }
+	| undefined {
 	for (const view of views) {
 		if (view.run_id !== runId) {
 			continue;
@@ -646,7 +725,11 @@ function decidedProposalSegment(
 			if (status !== "accepted" && status !== "rejected") {
 				continue;
 			}
-			return { status, entity_id: seg.entity_id };
+			return {
+				status,
+				entity_id: seg.entity_id,
+				ticktick_write: seg.ticktick_write,
+			};
 		}
 	}
 	return undefined;
@@ -692,7 +775,13 @@ async function settleDecidedProposal(
 		fallback();
 		return;
 	}
-	setProposalStatus(runId, seg.status, seg.entity_id);
+	setProposalStatus(
+		runId,
+		seg.status,
+		seg.entity_id,
+		undefined,
+		seg.ticktick_write,
+	);
 	// Mirror the success path: interrupt the parked fiber, re-subscribe the
 	// resume tail (startRunStream re-arms the snapshot bit — M2/M1 discipline).
 	interruptRun(runtime, runId);
@@ -762,6 +851,19 @@ export async function decideProposal(
 			await settleDecidedProposal(runtime, runId, proposal.proposal_id);
 			return;
 		}
+		if (error?._tag === "StaleConnectionError") {
+			// -32005 (ticktick-writes W-A3): the TickTick credential changed since
+			// this parked — the pre-restart-card race. The Proposal stays pending
+			// with NO write fired; flip the record to what a fresh read would
+			// derive ({state:"proposed", stale_connection:true}), so the card
+			// renders the stale warning with accept disabled and reject enabled —
+			// never the generic proposal_not_pending refetch, never a retry loop.
+			setProposalStatus(runId, "pending", undefined, undefined, {
+				state: "proposed",
+				stale_connection: true,
+			});
+			return;
+		}
 		setProposalStatus(
 			runId,
 			"error",
@@ -780,8 +882,15 @@ export async function decideProposal(
 		return;
 	}
 	// Persist the created/updated `entity_id` (ADR-0044 amendment) so the decided
-	// card can name + deep-link it; absent on a reject.
-	setProposalStatus(runId, result.status, result.entity_id);
+	// card can name + deep-link it; absent on a reject. The write family's
+	// outcome (`ticktick_write`) rides the same settle (ticktick-writes W-A4).
+	setProposalStatus(
+		runId,
+		result.status,
+		result.entity_id,
+		undefined,
+		result.ticktick_write,
+	);
 	const threadId = getRunThreadId(runId);
 	if (threadId !== undefined) {
 		// Stale-fiber guard (M2): interrupt the parked fiber, then re-subscribe.

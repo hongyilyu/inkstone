@@ -331,8 +331,7 @@ fn socket_stays_live_and_stop_mid_b_is_refused() {
         // frozen by phase B — and the Stop is refused write_in_flight.
         let mut order = Vec::new();
         let mut cancel_outcome = None;
-        let mut decide_result = None;
-        while decide_result.is_none() {
+        while cancel_outcome.is_none() {
             let body = next_text(&mut ws).await;
             let frame: serde_json::Value = serde_json::from_str(&body).expect("frame is JSON");
             match frame["id"].as_i64() {
@@ -341,16 +340,13 @@ fn socket_stays_live_and_stop_mid_b_is_refused() {
                     order.push(12);
                     cancel_outcome = Some(frame["result"]["outcome"].clone());
                 }
-                Some(10) => {
-                    order.push(10);
-                    decide_result = Some(frame["result"].clone());
-                }
+                Some(10) => order.push(10),
                 _ => {}
             }
         }
         assert_eq!(
             order,
-            vec![11, 12, 10],
+            vec![11, 12],
             "status and Stop answered while the decide held the POST"
         );
         assert_eq!(
@@ -358,6 +354,34 @@ fn socket_stays_live_and_stop_mid_b_is_refused() {
             serde_json::json!("write_in_flight"),
             "Stop mid-B is refused honestly"
         );
+
+        // The SECOND-CONNECTION Stop shape (the other half of the W-A4 race):
+        // with the write CONFIRMED mid-B (the refusal above), a fresh socket's
+        // cancel is refused the same way while the POST is still held. (A Stop
+        // that instead beats phase A legitimately cancels a still-pending
+        // proposal — that is the matrix's `proposed` arm, not this test.)
+        let second_cancel = rpc(
+            &core,
+            13,
+            "run/cancel",
+            serde_json::json!({ "run_id": run_id }),
+        )
+        .await;
+        assert_eq!(
+            second_cancel["result"]["outcome"],
+            serde_json::json!("write_in_flight"),
+            "a second connection's Stop mid-B is refused honestly — body: {second_cancel}"
+        );
+
+        // The real outcome still lands on the deciding socket.
+        let mut decide_result = None;
+        while decide_result.is_none() {
+            let body = next_text(&mut ws).await;
+            let frame: serde_json::Value = serde_json::from_str(&body).expect("frame is JSON");
+            if frame["id"] == serde_json::json!(10) {
+                decide_result = Some(frame["result"].clone());
+            }
+        }
         let decide_result = decide_result.unwrap();
         assert_eq!(
             decide_result["ticktick_write"]["state"],

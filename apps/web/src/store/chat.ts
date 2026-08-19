@@ -2,6 +2,7 @@ import type {
 	JsonValue,
 	ProposalReviewContext,
 	ResolvedNode,
+	TickTickWriteState,
 } from "@inkstone/protocol";
 import type { RunEventValue } from "@inkstone/ui-sdk";
 import { useStore } from "zustand";
@@ -126,6 +127,12 @@ export interface PendingProposal {
 	 * (live) or the `proposal` SEGMENT's `entity_id` (rehydration); absent for a
 	 * pending or rejected Proposal, or when no Entity resolves. */
 	readonly entity_id?: string;
+	/** The TickTick write family's durable execution state (ticktick-writes
+	 * W-A4): `proposed` (+ the read-derived `stale_connection`) while pending,
+	 * `executing` (+ Core-computed `deadline_at`) mid-write, then the settled
+	 * `created`/`failed`/`unknown`. Absent for every other kind. Live and
+	 * reload set it from the same wire shape, so both render identically. */
+	readonly ticktick_write?: TickTickWriteState;
 	readonly error_message?: string;
 	readonly status: "pending" | "deciding" | "accepted" | "rejected" | "error";
 }
@@ -252,6 +259,7 @@ export function setProposalStatus(
 	status: PendingProposal["status"],
 	entityId?: string,
 	errorMessage?: string,
+	ticktickWrite?: TickTickWriteState,
 ): void {
 	store.setState((s) => {
 		const existing = s.proposals[runId];
@@ -266,10 +274,14 @@ export function setProposalStatus(
 			entityId === undefined
 				? { ...base, status }
 				: { ...base, status, entity_id: entityId };
+		const withWrite: PendingProposal =
+			ticktickWrite === undefined
+				? decided
+				: { ...decided, ticktick_write: ticktickWrite };
 		const next: PendingProposal =
 			status === "error" && errorMessage
-				? { ...decided, error_message: errorMessage }
-				: decided;
+				? { ...withWrite, error_message: errorMessage }
+				: withWrite;
 		return {
 			...s,
 			proposals: { ...s.proposals, [runId]: next },
