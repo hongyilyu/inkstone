@@ -3,11 +3,13 @@ import { THEME_STORAGE_KEY, type Theme } from "@/lib/theme";
 
 export function useTheme() {
 	const [theme, setTheme] = useState<Theme>(() => {
-		const initial =
-			typeof document !== "undefined"
-				? (document.documentElement.dataset.theme as Theme | undefined)
+		// A non-DOM environment (SSR, a bare test) has no `document`; otherwise the
+		// dataset carries whatever the boot script already applied.
+		const applied =
+			"document" in globalThis
+				? document.documentElement.dataset.theme
 				: undefined;
-		return initial === "dark" ? "dark" : "light";
+		return applied === "dark" ? "dark" : "light";
 	});
 
 	const toggle = () => {

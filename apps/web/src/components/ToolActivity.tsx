@@ -22,25 +22,32 @@ type ToolPresentation = {
 	access?: "read";
 };
 
-const TOOL_PRESENTATION: Record<string, ToolPresentation> = {
-	read_thread: {
-		active: "Reading this thread",
-		done: "Read this thread",
-		Icon: BookOpen,
-		access: "read",
-	},
-	search_entities: {
-		active: "Searching entities",
-		done: "Searched entities",
-		Icon: Search,
-		access: "read",
-	},
-	load_skill: {
-		active: "Loading skill",
-		done: "Loaded skill",
-		Icon: Sparkles,
-	},
-};
+// Keyed by MAP: the tool name is an unvalidated wire string, so a name equal to an
+// `Object.prototype` member can never resolve to an inherited member.
+const TOOL_PRESENTATION = new Map<string, ToolPresentation>([
+	[
+		"read_thread",
+		{
+			active: "Reading this thread",
+			done: "Read this thread",
+			Icon: BookOpen,
+			access: "read",
+		},
+	],
+	[
+		"search_entities",
+		{
+			active: "Searching entities",
+			done: "Searched entities",
+			Icon: Search,
+			access: "read",
+		},
+	],
+	[
+		"load_skill",
+		{ active: "Loading skill", done: "Loaded skill", Icon: Sparkles },
+	],
+]);
 
 function humanize(name: string): string {
 	const spaced = name.replace(/[_-]+/g, " ").trim();
@@ -49,7 +56,7 @@ function humanize(name: string): string {
 }
 
 function presentation(name: string): ToolPresentation {
-	const known = TOOL_PRESENTATION[name];
+	const known = TOOL_PRESENTATION.get(name);
 	if (known) return known;
 	if (isExternalToolName(name)) {
 		// An external (Worker-executed MCP) tool: label it by its TickTick verb

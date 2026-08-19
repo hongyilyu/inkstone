@@ -4,17 +4,8 @@ import { useCallback, useEffect, useState } from "react";
 import { useOptimisticSetting } from "@/lib/hooks/useOptimisticSetting";
 import { useRuntime } from "@/runtime";
 import { fetchSettings, saveSettings } from "@/store/settings";
-import { EffortControl, type EffortLevel } from "./EffortControl.js";
+import { EffortControl, effortLabel } from "./EffortControl.js";
 import { Button } from "./ui/button.js";
-
-const LABELS: Record<EffortLevel, string> = {
-	off: "Off",
-	minimal: "Minimal",
-	low: "Low",
-	medium: "Medium",
-	high: "High",
-	xhigh: "Max",
-};
 
 /** Composer reasoning-effort control. Reflects the global `effort` (`settings/get`) and persists changes via `settings/set` (ADR-0024); popover reuses {@link EffortControl}. */
 export function EffortPicker() {
@@ -54,7 +45,7 @@ export function EffortPicker() {
 				render={
 					<Button variant="chip" size="pill" aria-label="Reasoning effort">
 						<Gauge className="h-4 w-4" aria-hidden />
-						<span>{LABELS[effort.value as EffortLevel] ?? "Effort"}</span>
+						<span>{effortLabel(effort.value ?? "") ?? "Effort"}</span>
 						<ChevronDown className="h-4 w-4" aria-hidden />
 					</Button>
 				}

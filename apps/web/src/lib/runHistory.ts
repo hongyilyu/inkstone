@@ -24,28 +24,27 @@ export type RunHistoryView = {
 /** The kind → presentation table. `proposal_decided` is a *resumed-still-working*
  * Run (ADR-0028: `resume` writes no Run Log row), so it reads as live, not done;
  * `proposal_pending`/`parked` are both "Waiting" (awaiting a decision). */
-export const RUN_HISTORY_VIEWS: Record<RunHistoryItem["kind"], RunHistoryView> =
-	{
-		running: { label: "Running", icon: LoaderCircle, tone: "active" },
-		proposal_decided: {
-			label: "Running, resumed",
-			icon: LoaderCircle,
-			tone: "active",
-		},
-		proposal_pending: { label: "Waiting", icon: Clock, tone: "active" },
-		parked: { label: "Waiting", icon: Clock, tone: "active" },
-		done: { label: "Done", icon: Check, tone: "neutral" },
-		cancelled: { label: "Cancelled", icon: Ban, tone: "neutral" },
-		error: { label: "Failed", icon: TriangleAlert, tone: "alert" },
-	};
+export const RUN_HISTORY_VIEWS = {
+	running: { label: "Running", icon: LoaderCircle, tone: "active" },
+	proposal_decided: {
+		label: "Running, resumed",
+		icon: LoaderCircle,
+		tone: "active",
+	},
+	proposal_pending: { label: "Waiting", icon: Clock, tone: "active" },
+	parked: { label: "Waiting", icon: Clock, tone: "active" },
+	done: { label: "Done", icon: Check, tone: "neutral" },
+	cancelled: { label: "Cancelled", icon: Ban, tone: "neutral" },
+	error: { label: "Failed", icon: TriangleAlert, tone: "alert" },
+} satisfies Record<RunHistoryItem["kind"], RunHistoryView>;
 
 /** Tailwind text-color class per tone — magenta for active, warm-muted for
  * terminal, crimson alert for failure (the One-Ink rule, rationed). */
-export const RUN_HISTORY_TONE_CLASS: Record<RunHistoryView["tone"], string> = {
+export const RUN_HISTORY_TONE_CLASS = {
 	active: "text-primary",
 	neutral: "text-muted-foreground",
 	alert: "text-destructive",
-};
+} satisfies Record<RunHistoryView["tone"], string>;
 
 /** Recency bucket label for an ms-epoch timestamp, on local-calendar-day
  * boundaries. Mirrors the Sidebar's thread grouping so the two rails read the
@@ -81,10 +80,11 @@ export function formatRunTime(at: number, now: number = Date.now()): string {
 			minute: "2-digit",
 		});
 	}
-	return d.toLocaleDateString(undefined, {
+	const options: Intl.DateTimeFormatOptions = {
 		month: "short",
 		day: "numeric",
-		// Disambiguate a prior-year Run; omit the year for the common same-year case.
-		...(d.getFullYear() !== nowDate.getFullYear() ? { year: "numeric" } : {}),
-	});
+	};
+	// Disambiguate a prior-year Run; omit the year for the common same-year case.
+	if (d.getFullYear() !== nowDate.getFullYear()) options.year = "numeric";
+	return d.toLocaleDateString(undefined, options);
 }

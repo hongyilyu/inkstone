@@ -85,9 +85,7 @@ export function ChatColumn() {
 	// pending jump (ADR-0061); `highlightId` is the transient visual that lingers
 	// ~1.6s then fades. `strict: false` so the / (welcome) route — which has no
 	// search schema — reads `undefined` rather than throwing.
-	const { focusedMessageId } = useSearch({ strict: false }) as {
-		focusedMessageId?: string;
-	};
+	const { focusedMessageId } = useSearch({ strict: false });
 	const [highlightId, setHighlightId] = useState<string | null>(null);
 
 	// No thread focused → fresh chat. Focused + empty: the reactive hydration status (issue #108) decides —

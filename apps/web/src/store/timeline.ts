@@ -192,10 +192,17 @@ function setCumulativeText(
  * of "did a fresh block start here" — `applyEvent` uses it to (re)stamp the block's
  * open-time, rather than re-deriving the trailing-segment check separately.
  */
+export interface ReasoningAppend {
+	segments: readonly Segment[];
+	/** Whether this delta OPENED a fresh reasoning segment (the caller stamps its
+	 * open time), rather than extending the trailing one. */
+	opened: boolean;
+}
+
 export function appendReasoningSegment(
 	segments: readonly Segment[],
 	delta: string,
-): { segments: readonly Segment[]; opened: boolean } {
+): ReasoningAppend {
 	const last = segments[segments.length - 1];
 	if (last?.kind === "reasoning") {
 		return {
@@ -248,18 +255,16 @@ export function upsertToolSegment(
 	if (!found) {
 		return [...segments, { kind: "tool_call", call }];
 	}
-	return segments.map((seg) =>
-		seg.kind === "tool_call" && seg.call.id === call.id
-			? {
-					kind: "tool_call",
-					call: {
-						...seg.call,
-						status: call.status,
-						...(call.result === undefined ? {} : { result: call.result }),
-					},
-				}
-			: seg,
-	);
+	return segments.map((seg) => {
+		if (seg.kind !== "tool_call" || seg.call.id !== call.id) return seg;
+		// A terminal event without a `result` must leave any prior one intact, so the
+		// key rides only when the event carries it.
+		const updated: ToolCall =
+			call.result === undefined
+				? { ...seg.call, status: call.status }
+				: { ...seg.call, status: call.status, result: call.result };
+		return { kind: "tool_call", call: updated };
+	});
 }
 
 /** Settle any `running` tool_call SEGMENT to `terminal` when its Run ends (the

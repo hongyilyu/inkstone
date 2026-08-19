@@ -1,3 +1,5 @@
+import type { WsError } from "@inkstone/ui-sdk";
+
 /**
  * Per-send copy for a failed message, chosen from the send's OWN error (ADR-0051).
  *
@@ -33,23 +35,18 @@ const PROVIDER_NOT_CONNECTED_CODE = -32004;
  *     mid-flight drop — or `"send_failed"` — a write on a dead socket);
  *   - a provider-not-connected rejection (Core `-32004`, carried on `code`).
  *
- * Read the fields DEFENSIVELY: the value is `unknown` (the bridge's `Cause.squash`
- * output), so duck-type rather than `instanceof` — a leaked `FiberFailure`, a plain
- * `Error`, `undefined`, or a `WsRequestError` with any other `reason`/`code` all
- * fall through to `null`. The raw `reason`/message token is never surfaced as copy.
+ * The error arrives as the send's typed `WsError` (the bridge reads it off the
+ * failure channel, not a squashed cause), so this branches on the tagged union: any
+ * other tag, a `WsRequestError` with a different `reason`/`code`, and `null` (a
+ * defect, which carries no wire failure) all fall through. The raw `reason`/message
+ * token is never surfaced as copy.
  */
-export function connectionFailureCopy(error: unknown): string | null {
-	if (typeof error !== "object" || error === null) return null;
-	const { _tag, reason, code } = error as {
-		_tag?: unknown;
-		reason?: unknown;
-		code?: unknown;
-	};
-	if (_tag !== "WsRequestError") return null;
-	if (code === PROVIDER_NOT_CONNECTED_CODE) {
+export function connectionFailureCopy(error: WsError | null): string | null {
+	if (error === null || error._tag !== "WsRequestError") return null;
+	if (error.code === PROVIDER_NOT_CONNECTED_CODE) {
 		return PROVIDER_NOT_CONNECTED_SEND_FAILURE;
 	}
-	return reason === "connection_lost" || reason === "send_failed"
+	return error.reason === "connection_lost" || error.reason === "send_failed"
 		? CONNECTION_SEND_FAILURE
 		: null;
 }

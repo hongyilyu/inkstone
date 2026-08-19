@@ -56,7 +56,7 @@ export function WorkspaceShell({
 			if (svg) svg.style.clipPath = clip;
 		};
 		update();
-		if (typeof ResizeObserver === "undefined") return;
+		if (!("ResizeObserver" in globalThis)) return;
 		const ro = new ResizeObserver(update);
 		ro.observe(el);
 		return () => ro.disconnect();

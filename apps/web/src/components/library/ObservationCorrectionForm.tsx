@@ -1,4 +1,5 @@
 import {
+	type JsonValue,
 	ObservationUpdateParams,
 	type ObservationUpdateParams as ObservationUpdatePayload,
 } from "@inkstone/protocol";
@@ -13,7 +14,7 @@ const decodeObservationUpdateParams = S.decodeUnknownEither(
 );
 
 /** Pretty-print the row's current `values` to seed the JSON textarea. */
-function prettyValues(values: unknown): string {
+function prettyValues(values: JsonValue): string {
 	return JSON.stringify(values ?? {}, null, 2) ?? "{}";
 }
 
@@ -30,7 +31,7 @@ function buildDraft(fields: {
 }):
 	| { value: ObservationUpdatePayload; error: null }
 	| { value: null; error: string } {
-	let parsedValues: unknown;
+	let parsedValues: JsonValue;
 	try {
 		parsedValues = JSON.parse(fields.valuesText);
 	} catch {
@@ -39,14 +40,14 @@ function buildDraft(fields: {
 
 	const endedAt = fields.endedAt.trim();
 	const note = fields.note.trim();
+	// Add a cleared optional's key only when it has a value: under full-replace an
+	// absent key IS the clear (ADR-0033 omit-not-empty-string).
+	const base = { occurred_at: fields.occurredAt.trim(), values: parsedValues };
+	const withEnded = endedAt ? { ...base, ended_at: endedAt } : base;
+	const draft = note ? { ...withEnded, note } : withEnded;
 	const candidate = {
 		observation_id: fields.observationId,
-		observation: {
-			occurred_at: fields.occurredAt.trim(),
-			...(endedAt ? { ended_at: endedAt } : {}),
-			values: parsedValues,
-			...(note ? { note } : {}),
-		},
+		observation: draft,
 	};
 
 	const decoded = decodeObservationUpdateParams(candidate);
