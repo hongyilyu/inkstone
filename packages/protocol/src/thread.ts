@@ -3,6 +3,7 @@
 
 import { Schema as S } from "effect";
 
+import { TickTickWriteState } from "./ticktick.js";
 import { TranscriptToolResult } from "./transcript.js";
 
 /** `thread/create` params: the opening `prompt`, plus optional `attachment_ids`
@@ -106,6 +107,10 @@ export const Segment = S.Union(
 		 * name + deep-link it. Omitted (not null) for a rejected Proposal (nothing
 		 * created) or when no Entity resolves. */
 		entity_id: S.optional(S.String),
+		/** The TickTick write family's durable execution state (ticktick-writes
+		 * W-A4), served from the `ticktick_writes` row so reload renders exactly
+		 * what live rendered. Omitted for every other kind. */
+		ticktick_write: S.optional(TickTickWriteState),
 	}),
 	// The model's thinking trace (ADR-0045 reasoning amendment, #202): `text` is the
 	// streamed reasoning, `duration_ms` how long the model thought (Core-computed at

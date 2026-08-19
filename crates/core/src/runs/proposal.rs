@@ -36,6 +36,12 @@ pub(super) async fn handle_get(
             })?;
         let review_context = review_context_for_proposal(pool, run_id, &p).await?;
         let resolved_plan = resolved_plan_for_proposal(pool, &p).await?;
+        // The TickTick write family's pending read (ticktick-writes W-A4):
+        // the `proposed` variant with the READ-DERIVED `stale_connection`, so
+        // a stale card warns with accept disabled on FIRST render in any tab.
+        let ticktick_write = crate::ticktick_write::wire_state_for_proposal(pool, &p.proposal_id)
+            .await
+            .map_err(|e| HandlerError::Internal(e.into()))?;
 
         Ok(ProposalGetResult {
             proposal_id: p.proposal_id,
@@ -45,6 +51,7 @@ pub(super) async fn handle_get(
             rationale: p.rationale,
             review_context,
             resolved_plan,
+            ticktick_write,
             status: p.status,
         })
     })
@@ -54,6 +61,15 @@ pub(super) async fn handle_get(
 /// `proposal/decide`: apply via [`crate::decide::apply`] (injecting
 /// `worker::resume` as the resume closure), map the typed `DecideError` here,
 /// then frame the result + push `proposal/changed`.
+///
+/// The TickTick write family DETACHES (ticktick-writes W-A3): Core's
+/// per-connection loop awaits each dispatch inline and owns outbound sends in
+/// the same `select!`, so an inline A→C decide would freeze the connection
+/// both directions for up to the A7 timeout — other Runs' tails would stall
+/// and a same-socket `run/cancel` could never arrive during phase B. The
+/// family handler therefore runs as its own spawned task, replying by request
+/// id on the connection's `out_tx`; the caller's contract is unchanged (one
+/// request, one response carrying the outcome).
 pub(super) async fn handle_decide(
     pool: &SqlitePool,
     hubs: &Hubs,
@@ -61,6 +77,28 @@ pub(super) async fn handle_decide(
     params: ProposalDecideParams,
     out_tx: &UnboundedSender<String>,
 ) {
+    // Family pre-read (one cheap SELECT): route the write family to its
+    // detached handler. Everything else — including an unknown proposal id,
+    // which `decide::apply` answers canonically — stays inline.
+    let is_ticktick_write =
+        match db::load_proposal_for_decide(pool, &params.proposal_id.to_string()).await {
+            Ok(Some(p)) => p.mutation_kind == crate::ticktick_write::MUTATION_KIND,
+            Ok(None) => false,
+            Err(e) => {
+                handler::frame_error(out_tx, id, HandlerError::Internal(e.into()));
+                return;
+            }
+        };
+    if is_ticktick_write {
+        let pool = pool.clone();
+        let hubs = hubs.clone();
+        let out_tx = out_tx.clone();
+        tokio::spawn(async move {
+            handle_decide_ticktick_write(pool, hubs, id, params, out_tx).await;
+        });
+        return;
+    }
+
     match crate::decide::apply(
         pool,
         params.proposal_id,
@@ -73,14 +111,109 @@ pub(super) async fn handle_decide(
     .await
     {
         Ok(DecideOutcome::Accepted { run_id, entity_id }) => {
-            send_decide_result(out_tx, id, "accepted", entity_id);
+            send_decide_result(out_tx, id, "accepted", entity_id, None);
             send_proposal_changed(out_tx, run_id, &params.proposal_id.to_string(), "accepted");
         }
         Ok(DecideOutcome::Rejected { run_id }) => {
-            send_decide_result(out_tx, id, "rejected", None);
+            send_decide_result(out_tx, id, "rejected", None, None);
             send_proposal_changed(out_tx, run_id, &params.proposal_id.to_string(), "rejected");
         }
         Err(e) => handler::frame_error(out_tx, id, map_decide_error(e)),
+    }
+}
+
+/// The write family's decide (ticktick-writes W-A3), running detached. Wires
+/// the production collaborators into [`crate::ticktick_write::decide`]: the
+/// real `client::create_task` POST, `worker::resume`, and the
+/// `proposal/changed` push on this connection — then frames the response by
+/// the captured request id.
+async fn handle_decide_ticktick_write(
+    pool: SqlitePool,
+    hubs: Hubs,
+    id: serde_json::Value,
+    params: ProposalDecideParams,
+    out_tx: UnboundedSender<String>,
+) {
+    use crate::ticktick_write::{WriteDecide, WriteDecideError, WriteDeps};
+
+    let proposal_id = params.proposal_id.to_string();
+    let post: crate::ticktick_write::PostFn = std::sync::Arc::new(|body| {
+        Box::pin(async move {
+            match crate::ticktick::connection() {
+                Some(conn) => {
+                    crate::ticktick::client::create_task(&conn.access_token, &body).await
+                }
+                // Unreachable: phase A verified the boot-static connection
+                // moments ago. Refuse without sending rather than panic.
+                None => {
+                    tracing::error!(event = "ticktick_write.post_without_connection");
+                    crate::ticktick::client::WriteOutcome::Failed { http_status: None }
+                }
+            }
+        })
+    });
+    let resume: crate::ticktick_write::ResumeFn = {
+        let pool = pool.clone();
+        let hubs = hubs.clone();
+        std::sync::Arc::new(move |run_id| {
+            let pool = pool.clone();
+            let hubs = hubs.clone();
+            Box::pin(async move { crate::worker::resume(run_id, &pool, &hubs).await })
+        })
+    };
+    let notify: crate::ticktick_write::NotifyFn = {
+        let out_tx = out_tx.clone();
+        let proposal_id = proposal_id.clone();
+        std::sync::Arc::new(move |run_id, status, write| {
+            super::reply::send_proposal_changed_with_write(
+                &out_tx,
+                run_id,
+                &proposal_id,
+                status,
+                Some(write.clone()),
+            );
+        })
+    };
+    let deps = WriteDeps {
+        pool,
+        post,
+        resume,
+        notify,
+    };
+
+    match crate::ticktick_write::decide(
+        &deps,
+        params.proposal_id,
+        &params.decision,
+        params.edited_payload,
+        params.decision_idempotency_key,
+    )
+    .await
+    {
+        Ok(WriteDecide::Accepted { run_id, write }) => {
+            send_decide_result(&out_tx, id, "accepted", None, Some(write.clone()));
+            super::reply::send_proposal_changed_with_write(
+                &out_tx,
+                run_id,
+                &proposal_id,
+                "accepted",
+                Some(write),
+            );
+        }
+        Ok(WriteDecide::Rejected { run_id }) => {
+            send_decide_result(&out_tx, id, "rejected", None, None);
+            send_proposal_changed(&out_tx, run_id, &proposal_id, "rejected");
+        }
+        Err(e) => handler::frame_error(
+            &out_tx,
+            id,
+            match e {
+                WriteDecideError::StaleConnection => HandlerError::StaleConnection,
+                WriteDecideError::NotDecidable(m) => HandlerError::ProposalNotPending(m),
+                WriteDecideError::Invalid(m) => HandlerError::InvalidParams(m),
+                WriteDecideError::Internal(e) => HandlerError::Internal(e),
+            },
+        ),
     }
 }
 
@@ -103,6 +236,7 @@ fn send_decide_result(
     id: serde_json::Value,
     status: &str,
     entity_id: Option<String>,
+    ticktick_write: Option<crate::protocol::TickTickWriteState>,
 ) {
     send_response(
         out_tx,
@@ -110,6 +244,7 @@ fn send_decide_result(
         serde_json::to_value(ProposalDecideResult {
             status: status.to_string(),
             entity_id,
+            ticktick_write,
         })
         .expect("ProposalDecideResult serializes"),
     );

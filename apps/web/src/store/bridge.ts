@@ -452,7 +452,11 @@ export async function cancelRun(
 ): Promise<void> {
 	const program = Effect.flatMap(WsClient, (client) => client.cancelRun(runId));
 
-	let outcome: "accepted" | "already_terminal" | "unknown_run";
+	let outcome:
+		| "accepted"
+		| "already_terminal"
+		| "unknown_run"
+		| "write_in_flight";
 	let liveTail: boolean;
 	try {
 		const result = await runtime.runPromise(program);
@@ -460,6 +464,16 @@ export async function cancelRun(
 		liveTail = result.live_tail;
 	} catch {
 		// Cancel is best-effort; a failed request leaves the Run as-is.
+		return;
+	}
+
+	// `write_in_flight` (ticktick-writes W-A3): the Run is parked on an accepted
+	// TickTick write whose POST is in flight. The cancel was REFUSED and nothing
+	// changed — keep the card and the subscription; the real outcome lands via
+	// the decide response / the settle notification. NEVER settle locally: a
+	// synthetic "cancelled" here would render "stopped" over a write that may
+	// commit.
+	if (outcome === "write_in_flight") {
 		return;
 	}
 

@@ -2721,6 +2721,171 @@ where
     .await
 }
 
+// ─── ticktick_writes (ticktick-writes W-A3) ────────────────────────────
+
+/// Insert the write family's state row at park: `proposed`, with the
+/// credential-fingerprint snapshot the review will happen under.
+pub(super) async fn insert_ticktick_write<'e, E>(
+    executor: E,
+    proposal_id: &str,
+    credential_fp: &str,
+) -> sqlx::Result<()>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query(
+        "INSERT INTO ticktick_writes (proposal_id, credential_fp, state) \
+         VALUES (?, ?, 'proposed')",
+    )
+    .bind(proposal_id)
+    .bind(credential_fp)
+    .execute(executor)
+    .await
+    .map(|_| ())
+}
+
+/// One `ticktick_writes` row, whole.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub(crate) struct TickTickWriteRow {
+    pub proposal_id: String,
+    pub credential_fp: String,
+    pub state: String,
+    pub outcome: Option<String>,
+    pub http_status: Option<i64>,
+    pub remote_task_id: Option<String>,
+    pub requested_at: Option<i64>,
+    #[allow(dead_code)] // read for completeness; no consumer yet
+    pub settled_at: Option<i64>,
+}
+
+pub(super) async fn ticktick_write_by_proposal<'e, E>(
+    executor: E,
+    proposal_id: &str,
+) -> sqlx::Result<Option<TickTickWriteRow>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_as(
+        "SELECT proposal_id, credential_fp, state, outcome, http_status, \
+                remote_task_id, requested_at, settled_at \
+         FROM ticktick_writes WHERE proposal_id = ?",
+    )
+    .bind(proposal_id)
+    .fetch_optional(executor)
+    .await
+}
+
+/// The guarded `proposed → executing` flip (phase A), stamping the POST
+/// intent. Guarded on `state = 'proposed'` — the flip is the once-guard.
+pub(super) async fn mark_ticktick_write_executing<'e, E>(
+    executor: E,
+    proposal_id: &str,
+    now_ms: i64,
+) -> sqlx::Result<u64>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query(
+        "UPDATE ticktick_writes SET state = 'executing', requested_at = ? \
+         WHERE proposal_id = ? AND state = 'proposed'",
+    )
+    .bind(now_ms)
+    .bind(proposal_id)
+    .execute(executor)
+    .await
+    .map(|r| r.rows_affected())
+}
+
+/// The guarded `executing → settled` flip (the ONE settle choke): outcome +
+/// provenance land only when this row was still executing; a lost flip means
+/// someone else settled first.
+pub(super) async fn mark_ticktick_write_settled<'e, E>(
+    executor: E,
+    proposal_id: &str,
+    outcome: &str,
+    http_status: Option<i64>,
+    remote_task_id: Option<&str>,
+    now_ms: i64,
+) -> sqlx::Result<u64>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query(
+        "UPDATE ticktick_writes SET state = 'settled', outcome = ?, http_status = ?, \
+                remote_task_id = ?, settled_at = ? \
+         WHERE proposal_id = ? AND state = 'executing'",
+    )
+    .bind(outcome)
+    .bind(http_status)
+    .bind(remote_task_id)
+    .bind(now_ms)
+    .bind(proposal_id)
+    .execute(executor)
+    .await
+    .map(|r| r.rows_affected())
+}
+
+/// Every `executing` write with its decide coordinates — the boot sweep's
+/// first branch (crash mid-write → settle `unknown`).
+pub(super) async fn executing_ticktick_writes<'e, E>(
+    executor: E,
+) -> sqlx::Result<Vec<(String, String, String)>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_as(
+        "SELECT tw.proposal_id, p.tool_call_id, tc.run_id \
+         FROM ticktick_writes tw \
+         JOIN proposals p ON p.id = tw.proposal_id \
+         JOIN tool_calls tc ON tc.id = p.tool_call_id \
+         WHERE tw.state = 'executing'",
+    )
+    .fetch_all(executor)
+    .await
+}
+
+/// Every `settled` write whose Run still reads `parked` — the boot sweep's
+/// second branch (crash after phase C's commit but before resume).
+pub(super) async fn settled_ticktick_writes_still_parked<'e, E>(
+    executor: E,
+) -> sqlx::Result<Vec<String>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_scalar(
+        "SELECT tc.run_id \
+         FROM ticktick_writes tw \
+         JOIN proposals p ON p.id = tw.proposal_id \
+         JOIN tool_calls tc ON tc.id = p.tool_call_id \
+         JOIN runs r ON r.id = tc.run_id \
+         WHERE tw.state = 'settled' AND r.status = 'parked'",
+    )
+    .fetch_all(executor)
+    .await
+}
+
+/// The write state hanging off a parked Run's waitpoint Proposal, or `None`
+/// when the awaited Proposal is not the write family — the cancel matrix's
+/// dispatch read (W-A3).
+pub(super) async fn ticktick_write_state_for_parked_run<'e, E>(
+    executor: E,
+    run_id: Uuid,
+) -> sqlx::Result<Option<String>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_scalar(
+        "SELECT tw.state \
+         FROM runs r \
+         JOIN proposals p ON p.tool_call_id = r.awaiting_tool_call_id \
+         JOIN ticktick_writes tw ON tw.proposal_id = p.id \
+         WHERE r.id = ?",
+    )
+    .bind(run_id.to_string())
+    .fetch_optional(executor)
+    .await
+}
+
 // ─── run_log ──────────────────────────────────────────────────────────
 
 pub(super) async fn next_run_seq<'e, E>(executor: E, run_id: Uuid) -> sqlx::Result<i64>

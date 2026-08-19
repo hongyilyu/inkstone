@@ -118,6 +118,12 @@ pub struct ProposalGetResult {
     pub review_context: Option<ProposalReviewContext>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resolved_plan: Option<Vec<ResolvedNode>>,
+    /// The write state for a `create_ticktick_task` Proposal (ticktick-writes
+    /// W-A4): while pending this is the `proposed` variant carrying the
+    /// READ-DERIVED `stale_connection`, so a stale card warns on first render.
+    /// Omitted for every other kind.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ticktick_write: Option<crate::protocol::TickTickWriteState>,
     pub status: String,
 }
 
@@ -168,6 +174,12 @@ pub struct ProposalDecideResult {
     pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub entity_id: Option<String>,
+    /// The write outcome for a `create_ticktick_task` Proposal (ticktick-writes
+    /// W-A4): `created`/`failed`/`unknown` after the two-phase accept settles,
+    /// or `executing` (+ `deadline_at`) for a replay while the write is still
+    /// in flight. Omitted for every other kind.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ticktick_write: Option<crate::protocol::TickTickWriteState>,
 }
 
 /// `proposal/pending` Notification (ADR-0025): pushed to a Run's subscribers the
@@ -180,12 +192,16 @@ pub struct ProposalPendingNotification {
 }
 
 /// `proposal/changed` Notification (ADR-0025): pushed when a pending Proposal is
-/// decided; `status` is `accepted`|`rejected`.
+/// decided; `status` is `accepted`|`rejected`. For the TickTick write family it
+/// fires TWICE on the deciding connection — at accept (`ticktick_write` =
+/// `executing`) and at settle (the terminal write state).
 #[derive(Debug, Serialize)]
 pub struct ProposalChangedNotification {
     pub run_id: String,
     pub proposal_id: String,
     pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ticktick_write: Option<crate::protocol::TickTickWriteState>,
 }
 
 /// Mirror tests: lock the Rust serde shapes to the canonical snake_case wire
@@ -222,6 +238,7 @@ mod mirror_tests {
             rationale: Some("because".to_string()),
             review_context: None,
             resolved_plan: None,
+            ticktick_write: None,
             status: "pending".to_string(),
         };
         assert_eq!(
@@ -250,6 +267,7 @@ mod mirror_tests {
             rationale: None,
             review_context: None,
             resolved_plan: None,
+            ticktick_write: None,
             status: "pending".to_string(),
         };
         let v = serde_json::to_value(&r).unwrap();
@@ -291,6 +309,7 @@ mod mirror_tests {
                 current_project: None,
             }),
             resolved_plan: None,
+            ticktick_write: None,
             status: "pending".to_string(),
         };
         assert_eq!(
@@ -347,6 +366,7 @@ mod mirror_tests {
                 current_project: None,
             }),
             resolved_plan: None,
+            ticktick_write: None,
             status: "pending".to_string(),
         };
         assert_eq!(
@@ -403,6 +423,7 @@ mod mirror_tests {
             payload: json!({}),
             rationale: None,
             review_context: None,
+            ticktick_write: None,
             resolved_plan: Some(vec![
                 ResolvedNode {
                     handle: "@rodeo".to_string(),
@@ -563,6 +584,7 @@ mod mirror_tests {
         let r = ProposalDecideResult {
             status: "accepted".to_string(),
             entity_id: Some(UUID_A.to_string()),
+            ticktick_write: None,
         };
         assert_eq!(
             serde_json::to_value(&r).unwrap(),
@@ -575,10 +597,31 @@ mod mirror_tests {
         let r = ProposalDecideResult {
             status: "rejected".to_string(),
             entity_id: None,
+            ticktick_write: None,
         };
         let v = serde_json::to_value(&r).unwrap();
         assert_eq!(v, json!({ "status": "rejected" }));
         assert!(v.get("entity_id").is_none());
+    }
+
+    /// The TickTick write family's decide result (W-A4): `ticktick_write`
+    /// rides beside `status`, entity-less (the family mints no Entity).
+    #[test]
+    fn proposal_decide_result_encodes_ticktick_write() {
+        let r = ProposalDecideResult {
+            status: "accepted".to_string(),
+            entity_id: None,
+            ticktick_write: Some(crate::protocol::TickTickWriteState::Created {
+                task_id: Some("tt-task-1".to_string()),
+            }),
+        };
+        assert_eq!(
+            serde_json::to_value(&r).unwrap(),
+            json!({
+                "status": "accepted",
+                "ticktick_write": { "state": "created", "task_id": "tt-task-1" }
+            }),
+        );
     }
 
     #[test]
@@ -600,11 +643,35 @@ mod mirror_tests {
                 run_id: UUID_A.to_string(),
                 proposal_id: UUID_B.to_string(),
                 status: status.to_string(),
+                ticktick_write: None,
             };
             assert_eq!(
                 serde_json::to_value(&n).unwrap(),
                 json!({ "run_id": UUID_A, "proposal_id": UUID_B, "status": status }),
             );
         }
+    }
+
+    /// The write family's `proposal/changed` carries the write state (fired
+    /// twice on the deciding connection: accept → executing, settle → terminal).
+    #[test]
+    fn proposal_changed_notification_encodes_ticktick_write() {
+        let n = ProposalChangedNotification {
+            run_id: UUID_A.to_string(),
+            proposal_id: UUID_B.to_string(),
+            status: "accepted".to_string(),
+            ticktick_write: Some(crate::protocol::TickTickWriteState::Executing {
+                deadline_at: 1_755_600_000_000,
+            }),
+        };
+        assert_eq!(
+            serde_json::to_value(&n).unwrap(),
+            json!({
+                "run_id": UUID_A,
+                "proposal_id": UUID_B,
+                "status": "accepted",
+                "ticktick_write": { "state": "executing", "deadline_at": 1_755_600_000_000_i64 }
+            }),
+        );
     }
 }

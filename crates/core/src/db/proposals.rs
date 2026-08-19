@@ -18,6 +18,11 @@ use super::{Moved, RunStatus};
 /// the waitpoint and lifecycle events (`parked`, `proposal_pending`), all in one
 /// transaction. If the Run is no longer `running` the guarded park loses and the
 /// transaction rolls back.
+///
+/// `ticktick_write_fp` is the write family's park-time extension
+/// (ticktick-writes W-A2/W-A3): `Some(credential_fp)` inserts the
+/// `ticktick_writes` row in state `proposed` with the fingerprint snapshot,
+/// inside this same transaction; `None` for every other family.
 #[allow(clippy::too_many_arguments)]
 pub async fn park_on_proposal(
     pool: &SqlitePool,
@@ -27,12 +32,16 @@ pub async fn park_on_proposal(
     name: &str,
     request_payload: &str,
     mutation_kind: &str,
+    ticktick_write_fp: Option<&str>,
     now_ms: i64,
 ) -> sqlx::Result<Moved> {
     let mut tx = pool.begin().await?;
 
     persist_tool_call_rows(&mut tx, run_id, tool_call_id, name, request_payload, now_ms).await?;
     queries::insert_proposal(&mut *tx, proposal_id, tool_call_id, mutation_kind).await?;
+    if let Some(credential_fp) = ticktick_write_fp {
+        queries::insert_ticktick_write(&mut *tx, proposal_id, credential_fp).await?;
+    }
 
     let moved = RunStatus::park(&mut *tx, run_id, tool_call_id, now_ms).await?;
     if !moved.won() {
@@ -441,6 +450,7 @@ mod tests {
             "propose_workspace_mutation",
             r#"{"mutation_kind":"create_journal_entry","payload":{"occurred_at":"2026-06-10T10:30:00","body":[{"type":"text","text":"Bought milk."}]}}"#,
             "create_journal_entry",
+            None,
             42,
         )
         .await
@@ -465,6 +475,7 @@ mod tests {
             "propose_workspace_mutation",
             r#"{"mutation_kind":"create_journal_entry","payload":{"occurred_at":"2026-06-10T10:31:00","body":[{"type":"text","text":"Bought eggs."}]}}"#,
             "create_journal_entry",
+            None,
             43,
         )
         .await

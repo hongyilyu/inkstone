@@ -199,6 +199,13 @@ mod parity_fixtures {
                 }
             ),
             fx!(
+                "run_cancel_result.write_in_flight.json",
+                RunCancelResult {
+                    outcome: "write_in_flight".to_string(),
+                    live_tail: false,
+                }
+            ),
+            fx!(
                 "run_retry_result.json",
                 RunRetryResult {
                     outcome: "accepted".to_string(),
@@ -234,7 +241,8 @@ mod parity_fixtures {
                         current_person: None,
                         current_project: None,
                     }),
-                    resolved_plan: Some(vec![
+                    ticktick_write: None,
+            resolved_plan: Some(vec![
                         ResolvedNode {
                             handle: "@rodeo".to_string(),
                             r#type: "project".to_string(),
@@ -284,6 +292,7 @@ mod parity_fixtures {
                     rationale: None,
                     review_context: None,
                     resolved_plan: None,
+                    ticktick_write: None,
                     status: "pending".to_string(),
                 }
             ),
@@ -292,6 +301,7 @@ mod parity_fixtures {
                 ProposalDecideResult {
                     status: "accepted".to_string(),
                     entity_id: Some(UUID_A.to_string()),
+                    ticktick_write: None,
                 }
             ),
             fx!(
@@ -299,6 +309,17 @@ mod parity_fixtures {
                 ProposalDecideResult {
                     status: "rejected".to_string(),
                     entity_id: None,
+                    ticktick_write: None,
+                }
+            ),
+            fx!(
+                "proposal_decide_result.ticktick_write.json",
+                ProposalDecideResult {
+                    status: "accepted".to_string(),
+                    entity_id: None,
+                    ticktick_write: Some(TickTickWriteState::Created {
+                        task_id: Some("6899f2b3c1a4de0000000001".to_string()),
+                    }),
                 }
             ),
             fx!(
@@ -314,6 +335,18 @@ mod parity_fixtures {
                     run_id: UUID_RUN.to_string(),
                     proposal_id: UUID_B.to_string(),
                     status: "accepted".to_string(),
+                    ticktick_write: None,
+                }
+            ),
+            fx!(
+                "proposal_changed_notification.ticktick_write.json",
+                ProposalChangedNotification {
+                    run_id: UUID_RUN.to_string(),
+                    proposal_id: UUID_B.to_string(),
+                    status: "accepted".to_string(),
+                    ticktick_write: Some(TickTickWriteState::Executing {
+                        deadline_at: 1_755_600_035_000,
+                    }),
                 }
             ),
             fx!(
@@ -718,6 +751,12 @@ mod parity_fixtures {
                                     // (ADR-0044 entity_id amendment) — the decided card
                                     // names + deep-links it. Omitted when absent (S.optional).
                                     entity_id: Some(UUID_B.to_string()),
+                                    // Shape coverage for the write family's segment field
+                                    // (ticktick-writes W-A4); semantically it belongs to
+                                    // create_ticktick_task proposals.
+                                    ticktick_write: Some(TickTickWriteState::Created {
+                                        task_id: Some("6899f2b3c1a4de0000000001".to_string()),
+                                    }),
                                 },
                                 Segment::Reasoning {
                                     text: "Checking the journal schema…".to_string(),
@@ -1165,13 +1204,16 @@ mod parity_fixtures {
         let committed: &[(&str, &str)] = committed![
             "subscribe_result.json",
             "run_cancel_result.json",
+            "run_cancel_result.write_in_flight.json",
             "run_retry_result.json",
             "proposal_get_result.json",
             "proposal_get_result.bare.json",
             "proposal_decide_result.json",
             "proposal_decide_result.bare.json",
+            "proposal_decide_result.ticktick_write.json",
             "proposal_pending_notification.json",
             "proposal_changed_notification.json",
+            "proposal_changed_notification.ticktick_write.json",
             "thread_titled_notification.json",
             "provider_connected_notification.json",
             "post_message_result.json",
@@ -1484,6 +1526,11 @@ mod parity_fixtures {
         ("CoreToolDescriptor", "worker_manifest.json"),
         ("ExternalToolsManifest", "worker_manifest.json external_tools"),
         ("TickTickDue", "ticktick_tasks_list_result.json tasks[].due"),
+        (
+            "TickTickWriteState",
+            "proposal_decide_result.ticktick_write.json / \
+             proposal_changed_notification.ticktick_write.json ticktick_write",
+        ),
         (
             "TickTickChecklistItem",
             "ticktick_tasks_list_result.json tasks[].checklist_items",

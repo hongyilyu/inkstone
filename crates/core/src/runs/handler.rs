@@ -42,6 +42,12 @@ pub(super) enum HandlerError {
     /// streaming into an opaque provider 401. Carries the provider id (the Web
     /// renders friendlier copy off the code; the id is the sanitized fallback).
     ProviderNotConnected { provider: String },
+    /// `-32005`: a `create_ticktick_task` accept found the TickTick credential
+    /// changed (or gone/read-only) since the Proposal parked (ticktick-writes
+    /// W-A3). DEDICATED — never folded into `proposal_not_pending`, which the
+    /// Web reads as "another tab decided" and answers with a doomed retry. The
+    /// Proposal stays pending: reject remains available; no POST fired.
+    StaleConnection,
     /// `-32603`: an internal fault. The full error is logged server-side; the
     /// client gets a generic message so SQL/internal detail never leaks.
     Internal(anyhow::Error),
@@ -56,6 +62,7 @@ impl HandlerError {
             HandlerError::ProposalNotPending(_) => -32002,
             HandlerError::ProviderLoginFailed(_) => -32003,
             HandlerError::ProviderNotConnected { .. } => -32004,
+            HandlerError::StaleConnection => -32005,
             HandlerError::Internal(_) => -32603,
         }
     }
@@ -73,6 +80,9 @@ impl HandlerError {
             HandlerError::ProviderNotConnected { provider } => {
                 format!("{provider} is not configured")
             }
+            HandlerError::StaleConnection => "the TickTick connection changed since this \
+                 was proposed — reject it and ask again"
+                .to_string(),
             HandlerError::Internal(_) => "internal error".to_string(),
         }
     }

@@ -43,9 +43,17 @@ export type RunCancelParams = S.Schema.Type<typeof RunCancelParams>;
  * interrupted `tool_call` events) WILL arrive on the live subscribe stream —
  * true only for a won running-cancel with a live hub. When false on an
  * `accepted` cancel, the Client settles the bubble off this response (no stream
- * event follows), instead of guessing with a timer. */
+ * event follows), instead of guessing with a timer.
+ * `write_in_flight` (ticktick-writes W-A3): the Run is parked on an accepted
+ * TickTick write whose POST is in flight — the cancel is REFUSED and nothing
+ * changed; keep the card and the subscription (never settle locally). */
 export const RunCancelResult = S.Struct({
-	outcome: S.Literal("accepted", "already_terminal", "unknown_run"),
+	outcome: S.Literal(
+		"accepted",
+		"already_terminal",
+		"unknown_run",
+		"write_in_flight",
+	),
 	live_tail: S.Boolean,
 });
 

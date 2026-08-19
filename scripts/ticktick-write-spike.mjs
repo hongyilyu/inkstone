@@ -35,15 +35,16 @@ const latencies = [];
  * transport failure. */
 async function request(method, path, body, overrideToken) {
 	const started = Date.now();
-	const response = await fetch(`${BASE}${path}`, {
+	const init = {
 		method,
 		headers: {
 			authorization: `Bearer ${overrideToken ?? token}`,
 			"content-type": "application/json",
 		},
-		body: body === undefined ? undefined : JSON.stringify(body),
 		signal: AbortSignal.timeout(30_000),
-	});
+	};
+	if (body !== undefined) init.body = JSON.stringify(body);
+	const response = await fetch(`${BASE}${path}`, init);
 	const bodyText = await response.text();
 	return {
 		status: response.status,
@@ -201,9 +202,15 @@ async function main() {
 
 	// ── P5: the outcome-classification table, per inducible status ───────────
 	// 401: a wrong bearer.
-	await probeError("401-bad-token", "POST", "/open/v1/task", {
-		title: "x",
-	}, "invalid-token");
+	await probeError(
+		"401-bad-token",
+		"POST",
+		"/open/v1/task",
+		{
+			title: "x",
+		},
+		"invalid-token",
+	);
 	// Missing title / empty payload — which 4xx does a rejected create wear?
 	await probeError("create-empty-payload", "POST", "/open/v1/task", {});
 	// Type-violating payload.

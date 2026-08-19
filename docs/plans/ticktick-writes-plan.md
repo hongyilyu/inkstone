@@ -194,6 +194,14 @@ every gate item:**
   both came back through the filter read with `dueDate`/`isAllDay`/`timeZone`
   equal to what was sent; the server sets `startDate == dueDate` (the S1a
   collapse confirmed from the write side — one due tuple, no start field).
+  **Format addendum (probed):** `dueDate` accepts `Z`, `±HHMM`, and `±HH:MM`
+  offsets, all normalized to the instant; a NAIVE datetime (no offset) is
+  parsed as UTC — `timeZone` is display-only, never consulted at parse. A
+  naive local wall time would therefore silently land at the wrong instant,
+  so the v1 due validation REQUIRES an offset-bearing datetime
+  (`YYYY-MM-DDTHH:MM:SS(.mmm)?(Z|±HH:MM|±HHMM)`); UI-created all-day tasks
+  carry local-midnight-in-zone as the instant (07:00Z for LA), which the
+  card's edit form reproduces browser-side.
 - **Note field: `content`.** A `content` create round-trips as `content`; a
   `desc` create round-trips as `desc` and does NOT surface as `content`
   (`desc` is the checklist-description field). v1 maps note → `content`.

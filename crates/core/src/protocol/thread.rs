@@ -150,6 +150,13 @@ pub enum Segment {
         status: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         entity_id: Option<String>,
+        /// The TickTick write family's durable execution state (ticktick-writes
+        /// W-A4), served from the `ticktick_writes` row so reload renders
+        /// exactly what live rendered — an accepted-but-executing write
+        /// rehydrates "creating…", a settled `failed`/`unknown` never
+        /// rehydrates success-shaped. Omitted for every other kind.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ticktick_write: Option<crate::protocol::TickTickWriteState>,
     },
     /// The model's thinking trace (ADR-0045 reasoning amendment, #202): `text` is
     /// the streamed reasoning (one `message_parts.type='reasoning'` row), and

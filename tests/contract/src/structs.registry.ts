@@ -397,6 +397,12 @@ export const fixtures: readonly FixtureEntry[] = [
 		dir: "emitted",
 	},
 	{
+		message: "RunCancelResult",
+		file: "run_cancel_result.write_in_flight.json",
+		schema: RunCancelResult,
+		dir: "emitted",
+	},
+	{
 		message: "RunRetryResult",
 		file: "run_retry_result.json",
 		schema: RunRetryResult,
@@ -429,6 +435,14 @@ export const fixtures: readonly FixtureEntry[] = [
 		schema: ProposalDecideResult,
 		dir: "emitted",
 	},
+	// The TickTick write family's decide result (ticktick-writes W-A4):
+	// covers TickTickWriteState transitively.
+	{
+		message: "ProposalDecideResult",
+		file: "proposal_decide_result.ticktick_write.json",
+		schema: ProposalDecideResult,
+		dir: "emitted",
+	},
 	{
 		message: "ProposalPendingNotification",
 		file: "proposal_pending_notification.json",
@@ -438,6 +452,12 @@ export const fixtures: readonly FixtureEntry[] = [
 	{
 		message: "ProposalChangedNotification",
 		file: "proposal_changed_notification.json",
+		schema: ProposalChangedNotification,
+		dir: "emitted",
+	},
+	{
+		message: "ProposalChangedNotification",
+		file: "proposal_changed_notification.ticktick_write.json",
 		schema: ProposalChangedNotification,
 		dir: "emitted",
 	},

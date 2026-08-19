@@ -16,6 +16,7 @@ mod queries;
 mod run_log;
 mod runs;
 mod threads;
+pub(crate) mod ticktick_writes;
 
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};

@@ -5,7 +5,7 @@
 //! private OpenAPI transport-decode shapes live in `crate::ticktick::wire`,
 //! not here — this module is only the TS-mirrored contract.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// `ticktick/status` result (A5): a `state`-tagged union, so `Connected` ALWAYS
 /// carries the opaque, boot-scoped connection ID and `NotConnected` never does
@@ -17,6 +17,37 @@ use serde::Serialize;
 pub enum TickTickStatusResult {
     Connected { connection_id: String },
     NotConnected,
+}
+
+/// The durable execution state of a TickTick write (ticktick-writes W-A4): the
+/// ONE outcome shape carried everywhere the Client can look — the
+/// `proposal/decide` response, `proposal/changed`, `proposal/get` (pending),
+/// and `Segment::Proposal` — so live and reload render identically for every
+/// state. `Proposed` carries the READ-DERIVED staleness (row fingerprint vs
+/// the current boot connection's); `Executing` carries the CORE-COMPUTED
+/// absolute deadline (`requested_at` + the A7 timeout + grace) because the
+/// client has neither `requested_at` nor the timeout knob's value.
+/// `Deserialize`/`Clone`: rides `Segment`, which round-trips through
+/// `RunEvent::Snapshot`.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum TickTickWriteState {
+    Proposed {
+        stale_connection: bool,
+    },
+    Executing {
+        /// Absolute epoch-ms deadline for the bounded client observe-poll.
+        deadline_at: i64,
+    },
+    Created {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        task_id: Option<String>,
+    },
+    Failed {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        http_status: Option<i64>,
+    },
+    Unknown,
 }
 
 /// A task's single due tuple (external-task-views S1a: start/due COLLAPSE, so
@@ -91,6 +122,53 @@ mod mirror_tests {
             serde_json::to_value(TickTickStatusResult::NotConnected).unwrap(),
             json!({ "state": "not_connected" })
         );
+    }
+
+    /// Every `TickTickWriteState` variant's wire shape, pinned (W-A4): the
+    /// tag is `state`, per-variant fields ride flat, and absent optionals are
+    /// OMITTED (never null).
+    #[test]
+    fn write_state_shapes() {
+        for (value, expected) in [
+            (
+                TickTickWriteState::Proposed {
+                    stale_connection: true,
+                },
+                json!({ "state": "proposed", "stale_connection": true }),
+            ),
+            (
+                TickTickWriteState::Executing {
+                    deadline_at: 1_755_600_000_000,
+                },
+                json!({ "state": "executing", "deadline_at": 1_755_600_000_000_i64 }),
+            ),
+            (
+                TickTickWriteState::Created {
+                    task_id: Some("tt-task-1".to_string()),
+                },
+                json!({ "state": "created", "task_id": "tt-task-1" }),
+            ),
+            (
+                TickTickWriteState::Created { task_id: None },
+                json!({ "state": "created" }),
+            ),
+            (
+                TickTickWriteState::Failed {
+                    http_status: Some(401),
+                },
+                json!({ "state": "failed", "http_status": 401 }),
+            ),
+            (
+                TickTickWriteState::Failed { http_status: None },
+                json!({ "state": "failed" }),
+            ),
+            (TickTickWriteState::Unknown, json!({ "state": "unknown" })),
+        ] {
+            assert_eq!(serde_json::to_value(&value).unwrap(), expected);
+            // Round-trips (the state rides Segment through RunEvent::Snapshot).
+            let back: TickTickWriteState = serde_json::from_value(expected).unwrap();
+            assert_eq!(back, value);
+        }
     }
 
     #[test]
