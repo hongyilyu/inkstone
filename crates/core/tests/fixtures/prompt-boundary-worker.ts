@@ -34,6 +34,12 @@ export function readShippedSystemPrompt(): string {
 	return match[1];
 }
 
+/** The manifest fields this fixture reads (Core writes the full WorkerManifest). */
+type PromptManifest = {
+	prompt?: string;
+	workflow?: { system_prompt?: string };
+};
+
 const BAD_REMINDER_PROPOSAL = {
 	mutation_kind: "create_journal_entry",
 	payload: {
@@ -101,10 +107,7 @@ const main = async (): Promise<void> => {
 	const manifestLine = await lines.next();
 	if (manifestLine === null) return;
 
-	let manifest: {
-		prompt?: string;
-		workflow?: { system_prompt?: string };
-	} = {};
+	let manifest: PromptManifest = {};
 	try {
 		manifest = JSON.parse(manifestLine);
 	} catch {

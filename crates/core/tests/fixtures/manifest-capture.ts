@@ -17,6 +17,7 @@
 // echoes normally, so a test can drive errored → run/retry deterministically.
 
 import { existsSync, writeFileSync } from "node:fs";
+import type { JsonValue } from "./transport.js";
 
 function readFirstLine(): Promise<string | null> {
 	return new Promise((resolve) => {
@@ -38,7 +39,7 @@ function readFirstLine(): Promise<string | null> {
 	});
 }
 
-const emit = (event: unknown): void => {
+const emit = (event: JsonValue): void => {
 	process.stdout.write(`${JSON.stringify(event)}\n`);
 };
 
@@ -51,6 +52,7 @@ async function main(): Promise<void> {
 		emit({ kind: "error", message: "fail once" });
 		return;
 	}
+	// SAFETY: Core writes the manifest line; this fixture reads only these fields.
 	const manifest = JSON.parse(line) as {
 		workflow?: { model?: string; thinking_level?: string; provider?: string };
 		attachments?: Array<{ mime?: string; data_base64?: string }>;

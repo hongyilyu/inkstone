@@ -6,6 +6,8 @@ import {
 	EntityMutateResult,
 	type EntityTypeName,
 	JournalEntryRescanResult,
+	type JsonObject,
+	type JsonValue,
 	MediaUploadResult,
 	MessageSearchResult,
 	ModelCatalogResult,
@@ -34,8 +36,6 @@ import {
 	ThreadMutateResult,
 	TickTickStatusResult,
 	TickTickTasksListResult,
-	type JsonObject,
-	type JsonValue,
 } from "@inkstone/protocol";
 import {
 	Cause,

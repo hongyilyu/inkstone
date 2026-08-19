@@ -1,5 +1,7 @@
 import type { OAuthCredentials } from "@earendil-works/pi-ai";
 import type { ProviderHelperLine } from "@inkstone/protocol";
+import { asObject, asString, decodeJson } from "@inkstone/protocol";
+import { Option, Schema as S } from "effect";
 
 // Provider Helper logic behind an injected deps seam (mirrors the Worker's
 // runWorkerMain): the entry (provider.ts) passes the real pi OAuth functions;
@@ -32,7 +34,12 @@ export const SUPPORTED_PROVIDERS: readonly string[] = ["openai-codex"];
 export function toCoreCredentials(
 	creds: OAuthCredentials,
 ): Extract<ProviderHelperLine, { kind: "credentials" }> {
-	const accountId = typeof creds.accountId === "string" ? creds.accountId : "";
+	// `OAuthCredentials` is index-signature-open, so `accountId` arrives
+	// un-decoded; a missing or non-string one becomes "".
+	const accountId = Option.getOrElse(
+		S.decodeUnknownOption(S.String)(creds.accountId),
+		() => "",
+	);
 	return {
 		kind: "credentials",
 		access: creds.access,
@@ -48,14 +55,14 @@ async function runRefresh(deps: HelperDeps, io: HelperIo): Promise<number> {
 		io.emit({ kind: "error", message: "refresh: no input on stdin" });
 		return 1;
 	}
-	const parsed = JSON.parse(line) as { refresh?: unknown };
 	// Guard the shape, not just the parse: {} would otherwise forward undefined
 	// into the OAuth dep and leave the failure mode up to the SDK.
-	if (typeof parsed.refresh !== "string" || parsed.refresh.length === 0) {
+	const parsed = Option.getOrNull(decodeJson(JSON.parse(line)));
+	const refresh = asString(asObject(parsed)?.refresh);
+	if (refresh === undefined || refresh.length === 0) {
 		io.emit({ kind: "error", message: "refresh: invalid input on stdin" });
 		return 1;
 	}
-	const refresh = parsed.refresh;
 	try {
 		const rotated = await deps.refresh(refresh);
 		io.emit(toCoreCredentials(rotated));

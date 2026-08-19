@@ -29,6 +29,7 @@ import { EditorField, EditorInput, EntityEditorFrame } from "./EntityEditor.js";
 const REFERENCEABLE: ReadonlySet<LibraryItemKind> = new Set(
 	REFERENCEABLE_KINDS,
 );
+
 import { EntityGlyph } from "./EntityGlyph.js";
 
 type Props = (

@@ -44,6 +44,7 @@ async function main(): Promise<void> {
 		process.exitCode = 1;
 		return;
 	}
+	// SAFETY: Core writes the refresh line, which always carries `refresh`.
 	const { refresh } = JSON.parse(line) as { refresh: string };
 
 	// Record this invocation as a unique file in the marker DIR. Counting

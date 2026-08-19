@@ -12,25 +12,36 @@
 
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { schemas, type WireKind } from "@inkstone/protocol";
-import { JSONSchema, type Schema as S } from "effect";
+import {
+	decodeJson,
+	type JsonValue,
+	schemas,
+	type WireKind,
+} from "@inkstone/protocol";
+import { JSONSchema, Option, type Schema as S } from "effect";
 import { describe, expect, it } from "vitest";
 import { normalize } from "./normalize.js";
 
 const fixturesDir = fileURLToPath(new URL("../fixtures/", import.meta.url));
 
-const readFixture = (kind: WireKind): unknown =>
+const readFixture = (kind: WireKind): JsonValue =>
 	JSON.parse(readFileSync(`${fixturesDir}${kind}.json`, "utf8"));
 
 /** Every kind in the registry is asserted — derived, never hand-listed, so a
- * newly-registered kind cannot slip through unasserted. */
+ * newly-registered kind cannot slip through unasserted.
+ * SAFETY: `WireKind` IS `keyof typeof schemas`; only `Object.keys` erases that. */
 const COVERED = Object.keys(schemas) as WireKind[];
 
 describe("schema parity (Rust PayloadSpec ≡ TS Effect Schema)", () => {
 	for (const kind of COVERED) {
 		it(`${kind}: Effect Schema deep-equals the Rust fixture`, () => {
+			// `JSONSchema.make` returns Effect's own typed schema document; decode it
+			// to the JSON the normalizer (and the Rust fixture) speak.
+			const schema: S.Schema.Any = schemas[kind];
+			// `JSONSchema.make` returns Effect's own typed schema document; decode it
+			// to the JSON the normalizer (and the Rust fixture) speak.
 			const fromEffect = normalize(
-				JSONSchema.make(schemas[kind] as S.Schema.Any),
+				Option.getOrNull(decodeJson(JSONSchema.make(schema))),
 			);
 			const fromRust = normalize(readFixture(kind));
 			expect(fromEffect).toStrictEqual(fromRust);

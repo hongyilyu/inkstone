@@ -15,13 +15,26 @@
 
 import { createInterface } from "node:readline";
 
+/** One JSON value, and a JSON object keyed by wire field name. A LOCAL copy of
+ * @inkstone/protocol's `JsonValue`/`JsonObject` on purpose: the fixtures import
+ * node builtins only (see the header) so each one still runs standalone. */
+export type JsonObject = { [key: string]: JsonValue | undefined };
+
+export type JsonValue =
+	| string
+	| number
+	| boolean
+	| null
+	| readonly JsonValue[]
+	| JsonObject;
+
 process.stdout.on("error", (error: NodeJS.ErrnoException) => {
 	if (error.code === "EPIPE") process.exit(0);
 	throw error;
 });
 
 /** Write one NDJSON frame to stdout (one event per line). */
-export const emit = (frame: unknown): void => {
+export const emit = (frame: JsonValue): void => {
 	process.stdout.write(`${JSON.stringify(frame)}\n`);
 };
 

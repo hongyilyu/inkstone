@@ -17,9 +17,16 @@
 // standalone via tsx, matching the tool-worker.ts convention.
 
 import { readFileSync } from "node:fs";
-import { emit, stdinLines } from "./transport.js";
+import { emit, type JsonValue, stdinLines } from "./transport.js";
 
-const readProposeParams = (): unknown => {
+/** The manifest fields this fixture reads (Core writes the full WorkerManifest). */
+type ProposeManifest = {
+	mode?: string;
+	messages?: Array<{ role?: string; content?: string }>;
+	workflow?: { thinking_level?: string };
+};
+
+const readProposeParams = (): JsonValue => {
 	const paramsFile = process.env.INKSTONE_PROPOSE_PARAMS_FILE;
 	if (paramsFile !== undefined && paramsFile.length > 0) {
 		return JSON.parse(readFileSync(paramsFile, "utf8"));
@@ -47,10 +54,7 @@ const main = async (): Promise<void> => {
 	// the Decision and is re-spawning us with the reconstructed transcript
 	// (ending in the Decision tool_result). DON'T propose again — emit a short
 	// completion and `done` so the Run reaches `completed`.
-	let manifest: {
-		mode?: string;
-		messages?: Array<{ role?: string; content?: string }>;
-	} = {};
+	let manifest: ProposeManifest = {};
 	try {
 		manifest = JSON.parse(manifestLine);
 	} catch {
@@ -62,8 +66,7 @@ const main = async (): Promise<void> => {
 		// a Core test can assert resume read the Run's snapshot (ADR-0024), not
 		// live settings changed between park and decide.
 		if (process.env.INKSTONE_ECHO_RESUME_EFFORT === "1") {
-			const resumed = manifest as { workflow?: { thinking_level?: string } };
-			const effort = resumed.workflow?.thinking_level ?? "<none>";
+			const effort = manifest.workflow?.thinking_level ?? "<none>";
 			emit({ kind: "text_delta", delta: `resume-effort=${effort}` });
 			emit({ kind: "done" });
 			return;

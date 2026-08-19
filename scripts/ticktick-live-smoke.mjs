@@ -96,15 +96,15 @@ async function mcpLane() {
 	const send = async (method, params, notification = false) => {
 		const headers = { "mcp-protocol-version": MCP_PROTOCOL_VERSION };
 		if (sessionId) headers["mcp-session-id"] = sessionId;
+		// A JSON-RPC notification is defined by the ABSENCE of `id`, so build the
+		// frame up rather than spreading conditionals into it.
+		const frame = { jsonrpc: "2.0", method };
+		if (!notification) frame.id = nextId++;
+		if (params !== undefined) frame.params = params;
 		const response = await request(MCP_URL, {
 			method: "POST",
 			headers,
-			body: JSON.stringify({
-				jsonrpc: "2.0",
-				...(notification ? {} : { id: nextId++ }),
-				method,
-				...(params === undefined ? {} : { params }),
-			}),
+			body: JSON.stringify(frame),
 		});
 		sessionId = response.headers.get("mcp-session-id") ?? sessionId;
 		if (notification) return null;

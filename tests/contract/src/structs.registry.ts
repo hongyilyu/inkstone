@@ -946,7 +946,7 @@ export const CANONICAL_MESSAGES: readonly string[] = [
 /** Expected fixture count per tagged-union message (grilling Q10). A union must
  * contribute exactly one fixture per wire variant; a dropped variant fixture reds
  * the completeness lock. Populated as unions are added (slices 3–4). */
-export const UNION_VARIANTS: Readonly<Record<string, number>> = {
+export const UNION_VARIANTS = {
 	// A tagged union must contribute a fixture for EVERY wire variant. The count
 	// is fixtures-per-message, so a variant carrying multiple fixtures (RunEvent's
 	// tool_call spans 3 ToolCallStatus values) raises the total. A dropped variant
@@ -971,4 +971,4 @@ export const UNION_VARIANTS: Readonly<Record<string, number>> = {
 	WorkerManifest: 2,
 	// ProviderHelperLine (3 variants): authorize_url, credentials, error = 3.
 	ProviderHelperLine: 3,
-};
+} satisfies Readonly<Record<string, number>>;

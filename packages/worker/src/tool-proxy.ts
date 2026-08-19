@@ -1,12 +1,12 @@
 import { appendFileSync } from "node:fs";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
-import { decodeJson } from "@inkstone/protocol";
-import { Option } from "effect";
 import type {
 	CoreToolDescriptor,
 	JsonValue,
 	ToolResult,
 } from "@inkstone/protocol";
+import { decodeJson } from "@inkstone/protocol";
+import { Option } from "effect";
 
 // Worker-side tool proxies: thin AgentTool wrappers round-tripping to Core over stdio — see docs/design/worker.md (ADR-0018)
 
