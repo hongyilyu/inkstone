@@ -14,10 +14,11 @@ import { join } from "node:path";
 
 // One lane per CI job. `biome ci .` (format + lint + organizeImports) is the
 // lint-format job — NOT `biome lint`/`biome format`, which miss import-ordering.
-// e2e runs 8 workers (the suite is parallel-safe per ADR-0019; --workers
-// overrides the config's default of 4).
+// `oxlint` runs the vendored anti-slop plugin (tools/oxlint/anti-slop) in the same
+// lane, mirroring the CI job's two steps. e2e runs 8 workers (the suite is
+// parallel-safe per ADR-0019; --workers overrides the config's default of 4).
 const LANES = [
-	{ name: "lint-format", cmd: "pnpm exec biome ci ." },
+	{ name: "lint-format", cmd: "pnpm exec biome ci . && pnpm exec oxlint" },
 	{ name: "ts+rust", cmd: "pnpm check" },
 	{ name: "pkg-tests", cmd: "pnpm -r test" },
 	{

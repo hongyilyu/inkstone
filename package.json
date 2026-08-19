@@ -16,7 +16,7 @@
 		"test:e2e:install": "pnpm -C tests/e2e test:e2e:install",
 		"eval": "pnpm -C packages/worker eval",
 		"format": "biome format --write .",
-		"lint": "biome lint .",
+		"lint": "biome lint . && oxlint",
 		"lint:anti-slop": "oxlint",
 		"biome:fix": "biome check --write ."
 	},
