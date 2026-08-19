@@ -18,15 +18,21 @@ export function AssistantProposals({ runId }: { runId: string }) {
 	// W-A5). An EFFECT on the record's state transition, not a decide callback:
 	// the created outcome can also arrive via the bounded observe-poll or the
 	// settle notification (a replay that answered "executing" first), which no
-	// callback sees. Once per mount (the ref) — invalidation is idempotent, so
-	// a remount over an already-created record merely refetches fresh data.
+	// callback sees. Once per created TRANSITION — the ref resets when the
+	// state leaves `created`, so a re-parked run's SECOND write invalidates
+	// again; invalidation is idempotent, so a remount over an already-created
+	// record merely refetches fresh data.
 	const invalidatedCreated = useRef(false);
 	const writeState = proposal?.ticktick_write?.state;
 	useEffect(() => {
-		if (writeState === "created" && !invalidatedCreated.current) {
-			invalidatedCreated.current = true;
-			void queryClient.invalidateQueries({ queryKey: TASKS_KEY_PREFIX });
+		if (writeState === "created") {
+			if (!invalidatedCreated.current) {
+				invalidatedCreated.current = true;
+				void queryClient.invalidateQueries({ queryKey: TASKS_KEY_PREFIX });
+			}
+			return;
 		}
+		invalidatedCreated.current = false;
 	}, [writeState, queryClient]);
 	if (proposal === null) {
 		return null;
