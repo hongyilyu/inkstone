@@ -11,7 +11,7 @@ import {
 
 const capture = (
 	firstLine: string | null = JSON.stringify({ refresh: "tok" }),
-): { lines: unknown[]; io: HelperIo } => {
+) => {
 	const lines: unknown[] = [];
 	const io: HelperIo = {
 		emit: (l) => lines.push(l),

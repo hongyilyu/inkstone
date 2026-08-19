@@ -1,4 +1,10 @@
-import { createMedia, updateMedia } from "@inkstone/protocol";
+import {
+	createMedia,
+	type EntityMutateParams,
+	type JsonObject,
+	type JsonValue,
+	updateMedia,
+} from "@inkstone/protocol";
 import { Schema as S } from "effect";
 import { describe, expect, it } from "vitest";
 import {
@@ -23,14 +29,28 @@ import {
 	projectDraftFromVm,
 	stagedNewChip,
 } from "@/lib/entityCodec.js";
-import type { JournalEntry, Media, Person, Project } from "@/lib/libraryItems";
+import {
+	type JournalEntry,
+	libraryItemTitle,
+	type Media,
+	type Person,
+	type Project,
+} from "@/lib/libraryItems";
+import { asArray, asObject } from "@/lib/readPayload";
 
 // `created_at` is pinned to fixed numbers; `createdAt`'s toLocaleDateString() is
 // timezone/locale-fragile, so the assertions below pin the structural VM fields
 // and `recency === row.created_at`, not the rendered locale string.
 
+/** The built mutation payload as a JSON object — every builder emits one. */
+const payloadOf = (params: EntityMutateParams | null): JsonObject =>
+	asObject(params?.payload) ?? {};
+
 describe("entityCodec parse — journal_entry", () => {
-	const row = (data: unknown, refs?: LiveEntityRow["refs"]): LiveEntityRow => ({
+	const row = (
+		data: JsonValue,
+		refs?: LiveEntityRow["refs"],
+	): LiveEntityRow => ({
 		id: "je_1",
 		data,
 		created_at: 1000,
@@ -185,7 +205,7 @@ describe("entityCodec parse — journal_entry", () => {
 });
 
 describe("entityCodec parse — person", () => {
-	const row = (data: unknown): LiveEntityRow => ({
+	const row = (data: JsonValue): LiveEntityRow => ({
 		id: "p_1",
 		data,
 		created_at: 3000,
@@ -218,7 +238,7 @@ describe("entityCodec parse — person", () => {
 });
 
 describe("entityCodec parse — project", () => {
-	const row = (data: unknown): LiveEntityRow => ({
+	const row = (data: JsonValue): LiveEntityRow => ({
 		id: "proj_1",
 		data,
 		created_at: 4000,
@@ -289,8 +309,8 @@ describe("entityCodec parse — decode-against-read-schema (slice-2 seam)", () =
 			created_at: 4500,
 		});
 		expect(vm.name).toBe("Legacy");
-		expect((vm.data as Record<string, unknown>).review_every).toBe("P1W");
-		expect((vm.data as Record<string, unknown>).unknown_key).toBe(true);
+		expect(vm.data?.review_every).toBe("P1W");
+		expect(vm.data?.unknown_key).toBe(true);
 	});
 });
 
@@ -323,16 +343,16 @@ describe("entityCodec parse — fail-soft decode never throws (slice-2 contract)
 				id: `${name}_badscalar`,
 				data: { title: 123, name: 123 },
 				created_at: 9100,
-			}) as unknown as Record<string, unknown>;
-			expect(typeof vm.title === "string" || typeof vm.name === "string").toBe(
-				true,
-			);
+			});
+			// The wrong-typed scalar was DEFAULTED, not thrown on: every kind still
+			// yields a display title.
+			expect(libraryItemTitle(vm)).not.toBe("");
 		});
 	}
 });
 
 describe("entityCodec parse — media", () => {
-	const row = (data: unknown): LiveEntityRow => ({
+	const row = (data: JsonValue): LiveEntityRow => ({
 		id: "m_1",
 		data,
 		created_at: 5000,
@@ -583,11 +603,9 @@ describe("entityCodec build — media create", () => {
 			}),
 		});
 		expect(params).not.toBeNull();
-		expect(
-			S.decodeUnknownSync(createMedia)(
-				(params as { payload: unknown }).payload,
-			),
-		).toEqual((params as { payload: unknown }).payload);
+		expect(S.decodeUnknownSync(createMedia)(payloadOf(params))).toEqual(
+			payloadOf(params),
+		);
 	});
 });
 
@@ -667,11 +685,9 @@ describe("entityCodec build — media update", () => {
 	it("the built update payload decodes against updateMedia", () => {
 		const params = edit(existing, { title: "Dune (Messiah)" });
 		expect(params).not.toBeNull();
-		expect(
-			S.decodeUnknownSync(updateMedia)(
-				(params as { payload: unknown }).payload,
-			),
-		).toEqual((params as { payload: unknown }).payload);
+		expect(S.decodeUnknownSync(updateMedia)(payloadOf(params))).toEqual(
+			payloadOf(params),
+		);
 	});
 });
 
@@ -715,9 +731,9 @@ describe("entityCodec build — project create", () => {
 			mode: "create",
 			draft: draft({ name: "Done", status: "completed" }),
 		});
-		const payload = (params as { payload: Record<string, unknown> }).payload;
+		const payload = payloadOf(params);
 		expect(payload.status).toBe("completed");
-		expect(typeof payload.completed_at).toBe("string");
+		expect(payload.completed_at).toEqual(expect.any(String));
 		expect(payload).not.toHaveProperty("dropped_at");
 	});
 });
@@ -769,9 +785,9 @@ describe("entityCodec build — project update", () => {
 
 	it("stamps completed_at and drops dropped_at on active→completed (status change)", () => {
 		const params = edit(existing, { status: "completed" });
-		const payload = (params as { payload: Record<string, unknown> }).payload;
+		const payload = payloadOf(params);
 		expect(payload.status).toBe("completed");
-		expect(typeof payload.completed_at).toBe("string");
+		expect(payload.completed_at).toEqual(expect.any(String));
 		expect("dropped_at" in payload).toBe(false);
 		// Review ritual survives.
 		expect(payload.review_every).toBe("P1W");
@@ -788,7 +804,7 @@ describe("entityCodec build — project update", () => {
 			},
 		};
 		const params = edit(completed, { status: "active" });
-		const payload = (params as { payload: Record<string, unknown> }).payload;
+		const payload = payloadOf(params);
 		expect(payload.status).toBe("active");
 		expect("completed_at" in payload).toBe(false);
 		expect("dropped_at" in payload).toBe(false);
@@ -808,7 +824,7 @@ describe("entityCodec build — project update", () => {
 			},
 		};
 		const params = edit(completed, { outcome: "Moved in" });
-		const payload = (params as { payload: Record<string, unknown> }).payload;
+		const payload = payloadOf(params);
 		expect(payload.status).toBe("completed");
 		expect(payload.outcome).toBe("Moved in");
 		// The original completion timestamp survives — NOT re-stamped.
@@ -822,7 +838,7 @@ describe("entityCodec build — project update", () => {
 			data: { ...existing.data, outcome: "Old goal" },
 		};
 		const params = edit(withOutcome, { outcome: "" });
-		const payload = (params as { payload: Record<string, unknown> }).payload;
+		const payload = payloadOf(params);
 		expect("outcome" in payload).toBe(false);
 		expect(payload.name).toBe("Daycare move");
 		expect(payload.review_every).toBe("P1W");
@@ -910,8 +926,10 @@ describe("entityCodec build — journal_entry update", () => {
 		// Remove the first chip (REF_A at index 1).
 		draft.body = draft.body.filter((_, i) => i !== 1);
 		const params = buildJournalEntry({ mode: "update", existing, draft });
-		const body = (params.payload as { body: Array<{ type: string }> }).body;
-		const refNodes = body.filter((n) => n.type === "entity_ref");
+		const body = asArray(payloadOf(params).body);
+		const refNodes = body.filter(
+			(node) => asObject(node)?.type === "entity_ref",
+		);
 		expect(refNodes).toEqual([{ type: "entity_ref", ref_id: REF_B }]);
 		expect(JSON.stringify(body)).not.toContain(REF_A);
 		expect(JSON.stringify(body)).not.toContain("refId");
@@ -931,7 +949,7 @@ describe("entityCodec build — journal_entry update", () => {
 			existing: withSeconds,
 			draft,
 		});
-		const payload = params.payload as Record<string, unknown>;
+		const payload = payloadOf(params);
 		expect(payload.occurred_at).toBe("2026-06-10T10:30:45");
 		expect("ended_at" in payload).toBe(false);
 	});
@@ -940,7 +958,7 @@ describe("entityCodec build — journal_entry update", () => {
 		const draft = journalDraftFromVm(existing);
 		draft.endedAt = "";
 		const params = buildJournalEntry({ mode: "update", existing, draft });
-		const payload = params.payload as Record<string, unknown>;
+		const payload = payloadOf(params);
 		expect("ended_at" in payload).toBe(false);
 		expect(payload.occurred_at).toBe("2026-06-10T10:30:00");
 	});
@@ -986,12 +1004,7 @@ describe("entityCodec build — journal_entry reference", () => {
 		expect(params.mutation_kind).toBe(
 			"reference_existing_entity_from_journal_entry",
 		);
-		const payload = params.payload as {
-			source_entity_id: string;
-			target_entity_id: string;
-			label_snapshot?: string;
-			body: Array<{ type: string }>;
-		};
+		const payload = payloadOf(params);
 		expect(payload.source_entity_id).toBe(textOnly.id);
 		expect(payload.target_entity_id).toBe("person_bob");
 		expect(payload.label_snapshot).toBe("Bob");

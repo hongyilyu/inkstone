@@ -2,9 +2,13 @@
 // value domains, the `{value,label}` option arrays the editors render, and the
 // pure coercers (parseAliases/asProjectStatus/asMediaMedium/asMediaState). A
 // PURE LEAF — it imports nothing (no React, no lucide, no
-// libraryItems/entityCodec/components), so every consumer (codec, proposalEdit,
+// libraryItems/entityCodec/components — only the wire JSON types), so every
+// consumer (codec, proposalEdit,
 // intentGraphReview, the rail editors, the proposal card) reads ONE answer for
 // "how is a Project's status spelled, what media states exist".
+
+import type { JsonObject, JsonValue } from "@inkstone/protocol";
+import { asString } from "@/lib/readPayload";
 
 /** The Project GTD status domain (ADR-0031). */
 export const PROJECT_STATUSES = [
@@ -51,36 +55,22 @@ export function parseAliases(raw: string): string[] {
 }
 
 /**
- * How a write site clears the terminal timestamp that a status change invalidated.
- * Load-bearing wire semantics (ADR-0033), NOT interchangeable:
- * - `"undefined"` — set the key to `undefined` (a full-replace document builder;
- *   the later omit-empty pass drops undefined keys, so an absent key = no value).
- * - `"delete"` — remove the key outright (an overlay onto a proposed payload that
- *   has no stored prior to clear, so the key simply should not be present).
- */
-export type ClearMode = "undefined" | "delete";
-
-/**
  * The single owner of the GTD status↔terminal-timestamp coupling on a WRITE target
  * (ADR-0031/0033), shared by the Project update builder (entityCodec) and the
  * create-overlays (proposalEdit). Mutates `target` IN PLACE: `→completed` stamps
  * `completed_at` = `nowString` and clears `dropped_at`; `→dropped` mirrors;
- * `→active`/`→on_hold` clears both. `clearMode` selects HOW a now-invalid timestamp
- * is cleared — the two modes are distinct wire directives (see [`ClearMode`]), so
- * the caller MUST pass the one its write path requires.
+ * `→active`/`→on_hold` clears both.
  *
  * `nowString` is injected (not read here) so this stays a pure leaf with no clock
  * dependency; callers pass `localNowString()`.
  */
 export function stampStatusTimestamps(
-	target: Record<string, unknown>,
+	target: JsonObject,
 	status: string,
 	nowString: string,
-	clearMode: ClearMode,
 ): void {
 	const clear = (key: "completed_at" | "dropped_at") => {
-		if (clearMode === "undefined") target[key] = undefined;
-		else delete target[key];
+		delete target[key];
 	};
 	if (status === "completed") {
 		target.completed_at = nowString;
@@ -94,27 +84,24 @@ export function stampStatusTimestamps(
 	}
 }
 
-/** Coerce an unknown to a Project status, degrading anything unrecognized to "active". */
-export function asProjectStatus(value: unknown): ProjectStatus {
-	return value === "on_hold" || value === "completed" || value === "dropped"
-		? value
-		: "active";
+/** Coerce a stored value to a Project status, degrading anything unrecognized to "active". */
+export function asProjectStatus(value: JsonValue | undefined): ProjectStatus {
+	const status = asString(value);
+	return PROJECT_STATUSES.find((s) => s.value === status)?.value ?? "active";
 }
 
-/** Coerce an unknown to a Media medium, degrading anything unrecognized to "link"
+/** Coerce a stored value to a Media medium, degrading anything unrecognized to "link"
  * (the migration's bookmark→media default — a sparse/legacy row never crashes). */
-export function asMediaMedium(value: unknown): MediaMedium {
-	return MEDIA_MEDIUMS.some((m) => m.value === value)
-		? (value as MediaMedium)
-		: "link";
+export function asMediaMedium(value: JsonValue | undefined): MediaMedium {
+	const medium = asString(value);
+	return MEDIA_MEDIUMS.find((m) => m.value === medium)?.value ?? "link";
 }
 
-/** Coerce an unknown to a Media state, degrading anything unrecognized to "done"
+/** Coerce a stored value to a Media state, degrading anything unrecognized to "done"
  * (the migration's bookmark→media default — a sparse/legacy row never crashes). */
-export function asMediaState(value: unknown): MediaState {
-	return MEDIA_STATES.some((s) => s.value === value)
-		? (value as MediaState)
-		: "done";
+export function asMediaState(value: JsonValue | undefined): MediaState {
+	const state = asString(value);
+	return MEDIA_STATES.find((s) => s.value === state)?.value ?? "done";
 }
 
 /**

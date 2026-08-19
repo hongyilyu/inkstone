@@ -1,7 +1,11 @@
 import { createInterface } from "node:readline";
 import type { Readable, Writable } from "node:stream";
 import {
+	asObject,
+	asString,
 	type ExternalToolAck,
+	type JsonObject,
+	type JsonValue,
 	WorkerInbound,
 	WorkerManifest,
 	type WorkerOutbound,
@@ -11,27 +15,21 @@ import type { ToolCallResponse } from "./tool-proxy.js";
 import { ManifestParseError, WorkerTransport } from "./transport.js";
 import { logWorkerFault } from "./worker-log.js";
 
-/** A VALUE-FREE manifest parse failure message (review R10 #1). The manifest
- * carries secrets (`external_tools.access_token`, `access_token`), and both
- * default failure texts embed input: Effect Schema's TreeFormatter prints the
- * ACTUAL value at each issue, and Node's `JSON.parse` SyntaxError quotes a
- * source snippet. This message flows into a terminal `error` Run Event and is
- * PERSISTED by Core as the run's error_message — so it is built from issue
- * PATHS + tags only, never values or input. */
-const sanitizedManifestError = (e: unknown): string => {
-	if (ParseResult.isParseError(e)) {
-		const issues = ParseResult.ArrayFormatter.formatErrorSync(e)
-			.map(
-				(issue) =>
-					`${issue.path.map(String).join(".") || "<root>"}: ${issue._tag}`,
-			)
-			.join("; ");
-		return `manifest failed WorkerManifest schema validation (${issues})`;
-	}
-	if (e instanceof SyntaxError) {
-		return "manifest line is not valid JSON";
-	}
-	return `manifest parse failed: ${e instanceof Error ? e.name : "unknown"}`;
+/** A VALUE-FREE manifest schema-failure message (review R10 #1). The manifest
+ * carries secrets (`external_tools.access_token`, `access_token`), and Effect
+ * Schema's TreeFormatter prints the ACTUAL value at each issue. This message flows
+ * into a terminal `error` Run Event and is PERSISTED by Core as the run's
+ * error_message — so it is built from issue PATHS + tags only, never values. (The
+ * sibling JSON-syntax failure is value-free by construction: Node's `JSON.parse`
+ * SyntaxError quotes a source snippet, so its text is a fixed string.) */
+const sanitizedManifestError = (error: ParseResult.ParseError): string => {
+	const issues = ParseResult.ArrayFormatter.formatErrorSync(error)
+		.map(
+			(issue) =>
+				`${issue.path.map(String).join(".") || "<root>"}: ${issue._tag}`,
+		)
+		.join("; ");
+	return `manifest failed WorkerManifest schema validation (${issues})`;
 };
 
 /** Best-effort run_id from a raw manifest line, for when schema decode fails but
@@ -39,8 +37,7 @@ const sanitizedManifestError = (e: unknown): string => {
  * core.jsonl. `undefined` on a JSON syntax error or a non-string run_id. */
 const rawRunId = (line: string): string | undefined => {
 	try {
-		const runId = (JSON.parse(line) as { run_id?: unknown }).run_id;
-		return typeof runId === "string" ? runId : undefined;
+		return asString(asObject(JSON.parse(line))?.run_id);
 	} catch {
 		return undefined;
 	}
@@ -52,16 +49,12 @@ interface RawInboundCorrelation {
 	readonly phase: string | undefined;
 }
 
-const rawInboundCorrelation = (value: unknown): RawInboundCorrelation => {
-	const record =
-		typeof value === "object" && value !== null
-			? (value as Record<string, unknown>)
-			: {};
+const rawInboundCorrelation = (value: JsonValue): RawInboundCorrelation => {
+	const record = asObject(value);
 	return {
-		kind: typeof record.kind === "string" ? record.kind : undefined,
-		toolCallId:
-			typeof record.tool_call_id === "string" ? record.tool_call_id : undefined,
-		phase: typeof record.phase === "string" ? record.phase : undefined,
+		kind: asString(record?.kind),
+		toolCallId: asString(record?.tool_call_id),
+		phase: asString(record?.phase),
 	};
 };
 
@@ -108,7 +101,7 @@ const makeStdioService = (
 			resolveManifest(line);
 			return;
 		}
-		let parsed: unknown;
+		let parsed: JsonValue;
 		try {
 			parsed = JSON.parse(line);
 		} catch {
@@ -155,13 +148,14 @@ const makeStdioService = (
 		}
 
 		const raw = rawInboundCorrelation(parsed);
-		if (raw.kind === "external_tool_ack" && raw.toolCallId !== undefined) {
+		const toolCallId = raw.toolCallId;
+		if (raw.kind === "external_tool_ack" && toolCallId !== undefined) {
 			const phases: readonly ExternalPhase[] =
 				raw.phase === "started" || raw.phase === "finished"
 					? [raw.phase]
 					: ["started", "finished"];
 			const matches = phases.flatMap((phase) => {
-				const key = externalAckKey(raw.toolCallId as string, phase);
+				const key = externalAckKey(toolCallId, phase);
 				const pending = pendingExternal.get(key);
 				return pending === undefined ? [] : [{ key, pending }];
 			});
@@ -170,11 +164,12 @@ const makeStdioService = (
 				pendingExternal.delete(key);
 				pending.reject(new Error(EXTERNAL_ACK_INVALID));
 			}
-			logWorkerFault("worker.external_ack_undecodable", runId, {
-				tool_call_id: raw.toolCallId,
-				...(raw.phase === undefined ? {} : { phase: raw.phase }),
+			const fields: JsonObject = {
+				tool_call_id: toolCallId,
 				preview: line.slice(0, 200),
-			});
+			};
+			if (raw.phase !== undefined) fields.phase = raw.phase;
+			logWorkerFault("worker.external_ack_undecodable", runId, fields);
 			return;
 		}
 
@@ -184,7 +179,6 @@ const makeStdioService = (
 		// feeds back as an error tool result, ADR-0018) instead of a truthiness guard
 		// waving junk through. The settle is what makes it fail loud — it stops the
 		// call hanging; the fault log makes it observable.
-		const toolCallId = raw.toolCallId;
 		const pending =
 			toolCallId === undefined ? undefined : pendingTools.get(toolCallId);
 		if (toolCallId !== undefined && pending) {
@@ -210,10 +204,11 @@ const makeStdioService = (
 		// waiting call. If that contract ever broke (a non-string id on a line whose
 		// real target is pending), that call would not be settled here — hence the
 		// salvaged id is logged when present, to make such a case diagnosable.
-		logWorkerFault("worker.tool_result_undecodable", runId, {
-			...(toolCallId === undefined ? {} : { tool_call_id: toolCallId }),
+		const fields: JsonObject = {
 			preview: line.slice(0, 200),
-		});
+		};
+		if (toolCallId !== undefined) fields.tool_call_id = toolCallId;
+		logWorkerFault("worker.tool_result_undecodable", runId, fields);
 	});
 	rl.on("close", () => {
 		if (!gotManifest) {
@@ -230,19 +225,27 @@ const makeStdioService = (
 		readManifest: Effect.gen(function* () {
 			const line = yield* Effect.promise(() => manifestLine);
 			if (line === null) return null;
-			const manifest = yield* Effect.try({
-				try: () => S.decodeUnknownSync(WorkerManifest)(JSON.parse(line)),
-				catch: (e) =>
+			const json = yield* Effect.try({
+				try: (): JsonValue => JSON.parse(line),
+				catch: () =>
+					new ManifestParseError({
+						message: "manifest line is not valid JSON",
+						runId: undefined,
+					}),
+			});
+			const manifest = yield* Effect.mapError(
+				S.decodeUnknown(WorkerManifest)(json),
+				(error) =>
 					new ManifestParseError({
 						// Sanitized (review R10 #1): this string reaches the terminal
 						// `error` Run Event and Core's persisted error_message — it must
 						// never embed the manifest's values (the bearer token).
-						message: sanitizedManifestError(e),
+						message: sanitizedManifestError(error),
 						// Salvage run_id from the raw JSON so a schema-skew failure (#146)
-						// still logs a joinable run_id — undefined only on a JSON syntax error.
+						// still logs a joinable run_id.
 						runId: rawRunId(line),
 					}),
-			});
+			);
 			runId = manifest.run_id;
 			return manifest;
 		}),

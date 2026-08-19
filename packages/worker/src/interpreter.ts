@@ -2,7 +2,6 @@ import type {
 	AgentEventSink,
 	AgentMessage,
 	StreamFn,
-	ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
 import {
 	runAgentLoop,
@@ -62,7 +61,7 @@ export const defaultInterpreterDeps = (): InterpreterDeps => {
 			if (model === undefined) {
 				throw new Error(`unknown model ${workflow.provider}/${workflow.model}`);
 			}
-			return model as Model<string>;
+			return model;
 		},
 		streamFn: (model, context, options) =>
 			// access_token is injected per-call by the manifest closure in runInterpreter.
@@ -122,12 +121,13 @@ export function runInterpreter(
 
 		// Inject the OAuth access token (if present) as the provider apiKey (ADR-0023).
 		const streamFn: StreamFn = (model_, context, options) =>
-			deps.streamFn(model_, context, {
-				...options,
-				...(manifest.access_token !== undefined
-					? { apiKey: manifest.access_token }
-					: {}),
-			});
+			deps.streamFn(
+				model_,
+				context,
+				manifest.access_token === undefined
+					? options
+					: { ...options, apiKey: manifest.access_token },
+			);
 
 		let errorMessage: string | undefined;
 
@@ -135,16 +135,15 @@ export function runInterpreter(
 		const reasoning =
 			manifest.workflow.thinking_level === "off"
 				? undefined
-				: (manifest.workflow.thinking_level as Exclude<ThinkingLevel, "off">);
+				: manifest.workflow.thinking_level;
 
 		const context = {
 			systemPrompt: manifest.workflow.system_prompt,
 			messages: manifestCodec.toAgentMessages(manifest),
 			tools,
 		};
-		const config = {
+		const baseConfig = {
 			model,
-			...(reasoning !== undefined ? { reasoning } : {}),
 			// v1 pins the WHOLE batch sequential (external-task-views A4): pi then
 			// finalizes each call before the next starts, so frame order equals
 			// source order by contract — pi's default is "parallel", making this
@@ -161,6 +160,8 @@ export function runInterpreter(
 						m.role === "toolResult",
 				),
 		};
+		const config =
+			reasoning === undefined ? baseConfig : { ...baseConfig, reasoning };
 		const onEvent: AgentEventSink = async (event) => {
 			// External-call lifecycle frames (external-task-views A4): sourced from
 			// pi's own tool-execution events — never hand-assembled state. The

@@ -1,4 +1,6 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { renderWithRouterContext } from "@test/test-utils/renderWithCore";
+import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
+import type { ReactElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ProposalCard } from "@/components/ProposalCard.js";
 import { PROPOSAL_VIEWS } from "@/components/proposalViews.js";
@@ -6,23 +8,16 @@ import type { LibraryItem } from "@/lib/libraryItems";
 import type { PendingProposal } from "@/store/chat";
 
 // The decided card (ADR-0044 entity_id amendment) resolves its named entity live
-// from the warm library-items cache and deep-links to it via `useNavigate`. Mock
-// both seams so the card renders without a QueryClient/RuntimeProvider or a real
-// router: the hook returns whatever items the test seeds, navigate is a spy.
-const { navigate, libraryItems } = vi.hoisted(() => ({
-	navigate: vi.fn(),
-	libraryItems: { current: [] as LibraryItem[] },
-}));
+// from the warm library-items cache and deep-links to it via `useNavigate`. Both
+// seams are REAL here: `renderWithRouterContext` provides the production providers
+// plus the real route tree in context, and `seededItems` primes the same React
+// Query cache `useLibraryItems` reads — so the deep link is asserted as a router
+// location, not as a spy call.
+let seededItems: readonly LibraryItem[] = [];
 
-vi.mock("@tanstack/react-router", async (importOriginal) => {
-	const actual =
-		await importOriginal<typeof import("@tanstack/react-router")>();
-	return { ...actual, useNavigate: () => navigate };
-});
-
-vi.mock("@/lib/hooks/useLibraryItems", () => ({
-	useLibraryItems: () => ({ data: libraryItems.current }),
-}));
+/** Render a card over the real providers with the current `seededItems` cache. */
+const render = (ui: ReactElement) =>
+	renderWithRouterContext(ui, { libraryItems: seededItems });
 
 const base: PendingProposal = {
 	proposal_id: "prop-1",
@@ -1513,7 +1508,7 @@ describe("ProposalCard", () => {
 			// (via seedTwoMorris / the fallback []); restore it after each so the m1/m2
 			// cache can't leak into sibling tests regardless of run order.
 			afterEach(() => {
-				libraryItems.current = [];
+				seededItems = [];
 			});
 
 			const ambiguousProposal: PendingProposal = {
@@ -1536,19 +1531,23 @@ describe("ProposalCard", () => {
 			// Two same-named People distinguished only by their note — the subtitle is
 			// the disambiguator (the candidate labels are identical exact-name matches).
 			const seedTwoMorris = () => {
-				libraryItems.current = [
+				seededItems = [
 					{
 						id: "m1",
 						kind: "person",
 						name: "Morris",
 						note: "from the Rodeo sync",
-					} as LibraryItem,
+						createdAt: "Today, 10:00",
+						recency: 2,
+					},
 					{
 						id: "m2",
 						kind: "person",
 						name: "Morris",
 						note: "the Lead Ads contact",
-					} as LibraryItem,
+						createdAt: "Today, 10:01",
+						recency: 1,
+					},
 				];
 			};
 
@@ -1680,7 +1679,7 @@ describe("ProposalCard", () => {
 			});
 
 			it("falls back to the label when a candidate is not in the library cache", () => {
-				libraryItems.current = []; // no enrichment available
+				seededItems = []; // no enrichment available
 				render(
 					<ProposalCard proposal={ambiguousProposal} onDecide={() => {}} />,
 				);
@@ -2106,13 +2105,12 @@ describe("ProposalCard", () => {
 		};
 
 		afterEach(() => {
-			navigate.mockReset();
-			libraryItems.current = [];
+			seededItems = [];
 		});
 
-		it("shows the entity title and a View-in-Library deep-link when accepted and resolvable", () => {
-			libraryItems.current = [priya];
-			render(
+		it("shows the entity title and a View-in-Library deep-link when accepted and resolvable", async () => {
+			seededItems = [priya];
+			const { router } = render(
 				<ProposalCard
 					proposal={{
 						...base,
@@ -2126,17 +2124,16 @@ describe("ProposalCard", () => {
 			expect(screen.getByText("Priya Nair")).toBeInTheDocument();
 			const link = screen.getByRole("button", { name: /view in library/i });
 			fireEvent.click(link);
-			expect(navigate).toHaveBeenCalledWith({
-				to: "/library/$kind",
-				params: { kind: "people" },
-				search: { id: "person_priya" },
-			});
+			await waitFor(() =>
+				expect(router.state.location.pathname).toBe("/library/people"),
+			);
+			expect(router.state.location.search).toEqual({ id: "person_priya" });
 		});
 
 		it("degrades to the generic accepted copy with no link when the entity_id is unresolvable", () => {
 			// entity_id present but absent from the warm cache (still loading / Core
 			// unreachable / since-deleted) → never worse than the generic decided card.
-			libraryItems.current = [];
+			seededItems = [];
 			render(
 				<ProposalCard
 					proposal={{
@@ -2155,9 +2152,9 @@ describe("ProposalCard", () => {
 			expect(screen.queryByText("Priya Nair")).not.toBeInTheDocument();
 		});
 
-		it("links an accepted intent-graph card to its anchor entity", () => {
-			libraryItems.current = [priya];
-			render(
+		it("links an accepted intent-graph card to its anchor entity", async () => {
+			seededItems = [priya];
+			const { router } = render(
 				<ProposalCard
 					proposal={{
 						proposal_id: "graph-prop",
@@ -2173,11 +2170,10 @@ describe("ProposalCard", () => {
 			);
 			const link = screen.getByRole("button", { name: /view in library/i });
 			fireEvent.click(link);
-			expect(navigate).toHaveBeenCalledWith({
-				to: "/library/$kind",
-				params: { kind: "people" },
-				search: { id: "person_priya" },
-			});
+			await waitFor(() =>
+				expect(router.state.location.pathname).toBe("/library/people"),
+			);
+			expect(router.state.location.search).toEqual({ id: "person_priya" });
 		});
 	});
 

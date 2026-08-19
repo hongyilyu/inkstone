@@ -3,6 +3,8 @@
 
 import { Schema as S } from "effect";
 
+import { JsonValue } from "./json.js";
+
 import { observationUpdateParams, recordObservations } from "./payloads.js";
 
 export const ObservationRecordParams = recordObservations;
@@ -61,7 +63,7 @@ export const ObservationRow = S.Struct({
 	schema_version: S.Number,
 	occurred_at: S.String,
 	ended_at: S.NullOr(S.String),
-	values: S.Unknown,
+	values: JsonValue,
 	note: S.NullOr(S.String),
 	source: S.NullOr(ObservationSourceView),
 	created_at: S.Number,
@@ -92,7 +94,7 @@ export const ObservationRevisionView = S.Struct({
 	schema_version: S.Number,
 	occurred_at: S.String,
 	ended_at: S.NullOr(S.String),
-	values: S.Unknown,
+	values: JsonValue,
 	note: S.NullOr(S.String),
 	proposal_id: S.NullOr(S.String),
 	created_at: S.Number,

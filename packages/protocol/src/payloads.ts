@@ -14,6 +14,8 @@
 
 import { Schema as S } from "effect";
 
+import { JsonObject, JsonValue } from "./json.js";
+
 // ── Leaf builders that match the Rust `field_spec.rs` dialect ──
 //
 // `JSONSchema.make` injects a `description` PER refinement (e.g. `minLength(1)`
@@ -181,7 +183,7 @@ const entityRefPlaceholder = S.Struct({
  * the single-variant (`create`) body emits bare `text_node` items while Rust
  * emits `oneOf:[text_node]`. normalize.ts reconciles this by renaming `anyOf →
  * oneOf` then unwrapping a single-element `oneOf` symmetrically on both sides. */
-const journalBody = (...variants: readonly S.Schema.Any[]) =>
+const journalBody = (...variants: readonly S.Schema.AnyNoContext[]) =>
 	S.Array(S.Union(...variants)).pipe(S.minItems(1, { description: undefined }));
 
 /** `create_journal_entry` (`BodyPolicy::TextOnly`): required `occurred_at`,
@@ -359,7 +361,7 @@ export const observationRecordDraft = S.Union(
 const observationUpdateDraft = S.Struct({
 	occurred_at: localDateTime,
 	ended_at: S.optional(localDateTime),
-	values: S.Record({ key: S.String, value: S.Unknown }),
+	values: JsonObject,
 	note: S.optional(S.String),
 });
 
@@ -461,7 +463,7 @@ export const deleteMedia = deleteByEntityId;
 // row (required non-empty `title`/`name`, `additionalProperties:false`), but the
 // read side must ACCEPT it — the codec then defaults/coerces (`asString(x) ??
 // "Untitled"`, out-of-enum status → "active", partial recurrence → dropped). So
-// every field is `S.optional(S.Unknown)`: the schema owns the field-SET (which
+// every field is `S.optional(JsonValue)`: the schema owns the field-SET (which
 // `readSchemas.test.ts` pins as a superset of the write `*_core` field-set, so a
 // Rust field-add reds the gate until the read path tracks it), while the codec's
 // imperative coercion owns the value TYPES. A tighter field type here would
@@ -474,8 +476,8 @@ export const deleteMedia = deleteByEntityId;
 // silently auto-appear. Read schemas are open (`onExcessProperty` defaults to
 // "ignore"), so an unknown/legacy stored key is tolerated, not rejected.
 
-/** A read-data field: present-or-absent, any stored value (the codec coerces). */
-const readField = S.optional(S.Unknown);
+/** A read-data field: present-or-absent, any stored JSON value (the codec coerces). */
+const readField = S.optional(JsonValue);
 
 /** Relaxed read schema for a stored Person's `data` (ADR-0031). Superset of
  * `personCore`'s field-set. */

@@ -1,3 +1,4 @@
+import type { JsonObject } from "@inkstone/protocol";
 import { expect, test } from "./fixtures.js";
 import { dbPathFor } from "./seed.js";
 import {
@@ -46,7 +47,7 @@ const PERSON_NAME = "Morris";
 const NOTE_TITLE = "Met Morris about Lead Ads and the Rodeo side";
 
 // The intent graph: JE anchor + Project + Person, the JE weaving both.
-const GRAPH = {
+const GRAPH: JsonObject = {
 	journal_entry: {
 		handle: "@je",
 		occurred_at: "2026-06-10T10:30:00",
@@ -71,7 +72,7 @@ const GRAPH = {
 // A reject-path graph: the Project is a create node NOT woven into the JE body (no
 // journal_ref), so rejecting it is unambiguous — the JE keeps referencing only the
 // Person, which stays created.
-const REJECT_GRAPH = {
+const REJECT_GRAPH: JsonObject = {
 	journal_entry: {
 		handle: "@je",
 		occurred_at: "2026-06-10T10:30:00",
@@ -267,7 +268,7 @@ const EXISTING_PROJECT_ID = "01900000-0000-7000-8000-00000000c001";
 const NEAR_MATCH_NOTE = "1600-1800 synced on Lead Ads testing";
 
 // A graph proposing a Project named "Lead Ads testing" (the near-twin).
-const NEAR_MATCH_GRAPH = {
+const NEAR_MATCH_GRAPH: JsonObject = {
 	journal_entry: {
 		handle: "@je",
 		occurred_at: "2026-06-10T16:00:00",
@@ -402,7 +403,7 @@ const AMBIGUOUS_NOTE = "Synced with Morris on the Rodeo side";
 
 // A graph: a Project create node alongside the ambiguous @morris person node, so
 // the only plan nodes are the Project (create) and Morris (ambiguous).
-const AMBIGUOUS_GRAPH = {
+const AMBIGUOUS_GRAPH: JsonObject = {
 	journal_entry: {
 		handle: "@je",
 		occurred_at: "2026-06-10T17:00:00",

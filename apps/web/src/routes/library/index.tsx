@@ -1,5 +1,7 @@
+import type { JsonObject } from "@inkstone/protocol";
 import { createFileRoute } from "@tanstack/react-router";
 import { TodayOverview } from "@/components/library/TodayOverview";
+import { asString } from "@/lib/readPayload";
 
 interface TodaySearch {
 	id?: string;
@@ -8,8 +10,8 @@ interface TodaySearch {
 export const Route = createFileRoute("/library/")({
 	// Today can select an entity in place (the shell rail shows its detail without
 	// leaving the overview), so it carries the same `?id` as a collection.
-	validateSearch: (search: Record<string, unknown>): TodaySearch => ({
-		id: typeof search.id === "string" ? search.id : undefined,
+	validateSearch: (search: JsonObject): TodaySearch => ({
+		id: asString(search.id),
 	}),
 	component: TodayOverview,
 });

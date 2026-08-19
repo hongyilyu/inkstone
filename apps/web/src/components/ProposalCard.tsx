@@ -1,3 +1,4 @@
+import type { JsonValue } from "@inkstone/protocol";
 import { Check, Loader2, Pencil, RotateCcw } from "lucide-react";
 import {
 	type ReactNode,
@@ -7,7 +8,7 @@ import {
 	useRef,
 	useState,
 } from "react";
-import { PROJECT_STATUS_OPTIONS, type ProjectStatus } from "@/lib/entityFields";
+import { asProjectStatus, PROJECT_STATUS_OPTIONS } from "@/lib/entityFields";
 import { useLibraryItems } from "@/lib/hooks/useLibraryItems";
 import { libraryItemTitle } from "@/lib/libraryItems";
 import {
@@ -57,11 +58,13 @@ function journalPayload(
 	bodyText: string,
 	endedAt: string,
 ): JournalEntryPayload {
-	return {
+	const payload: JournalEntryPayload = {
 		occurred_at: occurredAt.trim(),
-		...(endedAt.trim() ? { ended_at: endedAt.trim() } : {}),
 		body: [{ type: "text", text: bodyText.trim() }],
 	};
+	const ended = endedAt.trim();
+	if (ended) payload.ended_at = ended;
+	return payload;
 }
 
 function isLocalDateTime(value: string): boolean {
@@ -235,7 +238,7 @@ function SingleEntityProposalCard({
 	};
 	// Structured edit forms hand back the finished wire payload. Commit it through
 	// the SAME inFlight/lastAttempt/retry plumbing as the journal saveEdit.
-	const saveStructuredEdit = (editedPayload: Record<string, unknown>) => {
+	const saveStructuredEdit = (editedPayload: EditedPayload) => {
 		if (inFlight !== null || proposal.status === "deciding") return;
 		setInFlight("edit");
 		setEditing(false);
@@ -483,7 +486,7 @@ type EntityEditDraft =
 // that re-seeds — that is the re-seed-per-open behavior.
 function seedEntityEditDraft(
 	variant: EntityEditVariant,
-	payload: unknown,
+	payload: JsonValue,
 ): EntityEditDraft {
 	switch (variant) {
 		case "person":
@@ -510,8 +513,8 @@ function entityRequiredEmpty(state: EntityEditDraft): boolean {
 // clone).
 function overlayEntityEdit(
 	state: EntityEditDraft,
-	payload: unknown,
-): Record<string, unknown> {
+	payload: JsonValue,
+): EditedPayload {
 	switch (state.variant) {
 		case "person":
 			return overlayCreatePerson(payload, state.draft);
@@ -533,9 +536,9 @@ function EntityEditForm({
 	onCancel,
 }: {
 	variant: EntityEditVariant;
-	payload: unknown;
+	payload: JsonValue;
 	submitting: boolean;
-	onSave: (editedPayload: Record<string, unknown>) => void;
+	onSave: (editedPayload: EditedPayload) => void;
 	onCancel: () => void;
 }): ReactNode {
 	const noteInputId = useId();
@@ -656,7 +659,7 @@ function EntityEditForm({
 									variant: "project",
 									draft: {
 										...state.draft,
-										status: event.target.value as ProjectStatus,
+										status: asProjectStatus(event.target.value),
 									},
 								})
 							}

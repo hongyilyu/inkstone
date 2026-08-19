@@ -44,16 +44,16 @@ export function toMessage(view: ThreadGetResult["messages"][number]): Message {
 	const segments: Segment[] = view.segments.map((segment) =>
 		toSegment(view.run_id, segment),
 	);
-	return {
+	const message: Message = {
 		id: view.id,
 		role,
 		status,
 		run_id: view.run_id,
 		segments,
-		// Keep the key ABSENT (not false) otherwise — matching how applyEvent
-		// leaves non-cancelled turns.
-		...(cancelled ? { cancelled: true } : {}),
 	};
+	// Keep the key ABSENT (not false) unless cancelled — matching how applyEvent
+	// leaves non-cancelled turns.
+	return cancelled ? { ...message, cancelled: true } : message;
 }
 
 /**

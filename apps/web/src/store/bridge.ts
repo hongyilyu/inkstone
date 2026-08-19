@@ -1,4 +1,5 @@
 import {
+	type JsonValue,
 	type NodeDecision,
 	type ThreadGetResult,
 	type ThreadListResult,
@@ -11,8 +12,7 @@ import {
 	type WsError,
 } from "@inkstone/ui-sdk";
 import type { QueryClient } from "@tanstack/react-query";
-import { Cause, Effect, Exit, Fiber, Stream } from "effect";
-import { taggedErrorMessage } from "../lib/taggedErrorMessage.js";
+import { Cause, Effect, Exit, Fiber, Option, Stream } from "effect";
 import type { WsRuntime } from "../runtime.js";
 import {
 	appendMessage,
@@ -109,12 +109,12 @@ export function registerThreadTitledHandler(
 }
 
 /** The outcome of a send — a discriminated result so callers learn of failure off the awaited promise. */
-export type SendResult = { ok: true } | { ok: false; error: unknown };
+export type SendResult = { ok: true } | { ok: false; error: WsError | null };
 
 /** A first-message send also surfaces the minted thread id so its React caller can navigate to `/thread/<id>` (ADR-0061). */
 export type NewThreadResult =
 	| { ok: true; threadId: string }
-	| { ok: false; error: unknown };
+	| { ok: false; error: WsError | null };
 
 /** Optimistically seed a turn into `threadId` (completed user + live assistant), returning the seeded assistant id.
  * `attachmentSegments` (ADR-0058) follow the text segment so the user bubble shows
@@ -229,7 +229,11 @@ function readAsBase64(file: File): Promise<string> {
 	return new Promise((resolve, reject) => {
 		const reader = new FileReader();
 		reader.onload = () => {
-			const dataUrl = reader.result as string;
+			const dataUrl = reader.result;
+			if (typeof dataUrl !== "string") {
+				reject(new TypeError("FileReader did not return a data URL"));
+				return;
+			}
 			resolve(dataUrl.slice(dataUrl.indexOf(",") + 1));
 		};
 		reader.onerror = () => reject(reader.error);
@@ -271,7 +275,7 @@ async function uploadFiles(
 	files: readonly File[],
 ): Promise<
 	| { ok: true; ids: readonly string[]; segments: readonly Segment[] }
-	| { ok: false; error: unknown }
+	| { ok: false; error: WsError | null }
 > {
 	const ids: string[] = [];
 	const segments: Segment[] = [];
@@ -279,8 +283,10 @@ async function uploadFiles(
 		let bytesBase64: string;
 		try {
 			bytesBase64 = await readAsBase64(file);
-		} catch (error) {
-			return { ok: false, error };
+		} catch {
+			// A file read that never reached the wire carries no `WsError`; the caller
+			// shows the generic send-failure copy.
+			return { ok: false, error: null };
 		}
 		const dims = await imageDimensions(file);
 		const exit = await runtime.runPromiseExit(
@@ -289,16 +295,20 @@ async function uploadFiles(
 			),
 		);
 		if (Exit.isFailure(exit)) {
-			return { ok: false, error: Cause.squash(exit.cause) };
+			return { ok: false, error: wsFailure(exit.cause) };
 		}
 		const mediaId = exit.value.media_id;
 		ids.push(mediaId);
-		segments.push({
+		const attachment = {
 			kind: "attachment",
 			mediaId,
 			mime: file.type,
-			...(dims !== undefined ? { width: dims.width, height: dims.height } : {}),
-		});
+		} satisfies Segment;
+		segments.push(
+			dims === undefined
+				? attachment
+				: { ...attachment, width: dims.width, height: dims.height },
+		);
 	}
 	return { ok: true, ids, segments };
 }
@@ -331,12 +341,12 @@ export async function send(
 			: client.postMessage(threadId, text);
 	});
 
-	// Run via `runPromiseExit` + `Cause.squash` (mirrors useEntityMutation/
+	// Run via `runPromiseExit` + the failure channel (mirrors useEntityMutation/
 	// useRescanJournalEntry): `runPromise` would reject with Effect's `FiberFailure`
 	// WRAPPER, whose generic message hides the head `WsRequestError` — so a caller
-	// reading `error.reason` gets `undefined`. Squashing returns the real `WsError`,
-	// which ChatColumn parses to pick the connection-specific send-failure copy
-	// (ADR-0051: the per-send copy is error-driven, not ambient).
+	// reading `error.reason` gets `undefined`. `wsFailure` hands back the real typed
+	// `WsError`, which ChatColumn branches on to pick the connection-specific
+	// send-failure copy (ADR-0051: the per-send copy is error-driven, not ambient).
 	const exit = await runtime.runPromiseExit(post);
 	if (Exit.isSuccess(exit)) {
 		const runId = exit.value;
@@ -347,7 +357,7 @@ export async function send(
 	// postMessage failed: mark the seeded assistant message incomplete and surface
 	// the squashed WsError (its `reason` drives the failure copy).
 	markMessageIncomplete(threadId, assistantId);
-	return { ok: false, error: Cause.squash(exit.cause) };
+	return { ok: false, error: wsFailure(exit.cause) };
 }
 
 /**
@@ -376,8 +386,8 @@ export async function sendNewThread(
 			: client.threadCreate(text);
 	});
 
-	// `runPromiseExit` + `Cause.squash` so the failure carries the real `WsError`,
-	// not Effect's `FiberFailure` wrapper — same rationale as {@link send}.
+	// `runPromiseExit` + the failure channel so the failure carries the real typed
+	// `WsError`, not Effect's `FiberFailure` wrapper — same rationale as {@link send}.
 	const exit = await runtime.runPromiseExit(create);
 	if (Exit.isSuccess(exit)) {
 		const { thread_id, run_id } = exit.value;
@@ -388,8 +398,8 @@ export async function sendNewThread(
 		startRunStream(runtime, thread_id, run_id);
 		return { ok: true, threadId: thread_id };
 	}
-	// threadCreate failed before any thread was minted — nothing seeded, no orphaned bubble. Surface the squashed failure.
-	return { ok: false, error: Cause.squash(exit.cause) };
+	// threadCreate failed before any thread was minted — nothing seeded, no orphaned bubble. Surface the failure.
+	return { ok: false, error: wsFailure(exit.cause) };
 }
 
 /** Whether a run's stream fiber is currently tracked — test helper (M2). */
@@ -520,10 +530,9 @@ function settleCancelledLocally(
  * `not_errored`/`unknown_run` are benign no-ops: the bubble already shows its
  * terminal state (a non-errored Run can't be retried), so both return `{ ok: true }`.
  * A failed REQUEST (transport/decode) returns `{ ok: false, error }` carrying the
- * squashed {@link WsError} — so the caller can surface the SAME connection-failure
- * copy `resend` does, instead of the retry button being a silent no-op (CodeRabbit
- * #244). Uses `runPromiseExit` + `Cause.squash` for the real `WsError`, mirroring
- * {@link send}.
+ * typed {@link WsError} — so the caller can surface the SAME connection-failure copy
+ * `resend` does, instead of the retry button being a silent no-op (CodeRabbit #244).
+ * Uses `runPromiseExit` + the failure channel, mirroring {@link send}.
  */
 export async function retryRun(
 	runtime: WsRuntime,
@@ -534,9 +543,9 @@ export async function retryRun(
 
 	const exit = await runtime.runPromiseExit(program);
 	if (Exit.isFailure(exit)) {
-		// The retry request itself failed (link down, decode) — surface the squashed
+		// The retry request itself failed (link down, decode) — surface the typed
 		// WsError so the caller shows the connection-specific copy, like a failed send.
-		return { ok: false, error: Cause.squash(exit.cause) };
+		return { ok: false, error: wsFailure(exit.cause) };
 	}
 
 	if (exit.value.outcome !== "accepted") {
@@ -676,6 +685,13 @@ async function settleDecidedProposal(
 	startRunStream(runtime, threadId, runId);
 }
 
+/** The typed `WsError` a failed Effect carried, or `null` for a DEFECT (a die has
+ * no failure value). Replaces `Cause.squash`, whose `unknown` output forced every
+ * reader to duck-type the tag it wanted. */
+function wsFailure(cause: Cause.Cause<WsError>): WsError | null {
+	return Option.getOrNull(Cause.failureOption(cause));
+}
+
 /** Decide a parked Run's Proposal (accept/reject/edit) and re-subscribe for the
  * resume tail — see docs/design/web-store.md (ADR-0025). `decisions` carries the
  * per-node vector for an `apply_intent_graph` commit (ADR-0042); the single-entity
@@ -684,7 +700,7 @@ export async function decideProposal(
 	runtime: WsRuntime,
 	runId: RunId,
 	decision: "accept" | "reject" | "edit",
-	editedPayload?: unknown,
+	editedPayload?: JsonValue,
 	decisions?: readonly NodeDecision[],
 ): Promise<void> {
 	const proposal = getChatState().proposals[runId];
@@ -706,20 +722,25 @@ export async function decideProposal(
 		decisionKeys.set(proposal.proposal_id, key);
 	}
 
+	// Add only the keys this decision carries: an absent `edited_payload` /
+	// `decisions` is the wire's "not applicable" for this kind.
+	const scalar = {
+		proposal_id: proposal.proposal_id,
+		decision,
+		decision_idempotency_key: key,
+	};
+	const edited =
+		decision === "edit" ? { ...scalar, edited_payload: editedPayload } : scalar;
+	const params = decisions === undefined ? edited : { ...edited, decisions };
+
 	const program = Effect.flatMap(WsClient, (client) =>
-		client.proposalDecide({
-			proposal_id: proposal.proposal_id,
-			decision,
-			decision_idempotency_key: key,
-			...(decision === "edit" ? { edited_payload: editedPayload } : {}),
-			...(decisions !== undefined ? { decisions } : {}),
-		}),
+		client.proposalDecide(params),
 	);
 
 	const exit = await runtime.runPromiseExit(program);
 	if (Exit.isFailure(exit)) {
-		const error = Cause.squash(exit.cause);
-		if (taggedErrorMessage(error, "ProposalNotPendingError") !== undefined) {
+		const error = wsFailure(exit.cause);
+		if (error?._tag === "ProposalNotPendingError") {
 			// -32002: the Proposal is no longer decidable — decided in another tab,
 			// or the Run advanced past parked. Settle from durable truth instead of
 			// dead-ending. (A same-key replay returns Core's prior result as
@@ -731,7 +752,7 @@ export async function decideProposal(
 			runId,
 			"error",
 			undefined,
-			taggedErrorMessage(error, "InvalidParamsError"),
+			error?._tag === "InvalidParamsError" ? error.message : undefined,
 		);
 		return;
 	}

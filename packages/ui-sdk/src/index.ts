@@ -6,6 +6,8 @@ import {
 	EntityMutateResult,
 	type EntityTypeName,
 	JournalEntryRescanResult,
+	type JsonObject,
+	type JsonValue,
 	MediaUploadResult,
 	MessageSearchResult,
 	ModelCatalogResult,
@@ -213,7 +215,10 @@ export const requestDescriptors = {
 	// text-send frame byte-identical to before.
 	threadCreate: {
 		method: "thread/create",
-		toParams: (prompt: string, attachmentIds?: readonly string[]) =>
+		toParams: (
+			prompt: string,
+			attachmentIds?: readonly string[],
+		): JsonObject =>
 			attachmentIds?.length
 				? { prompt, attachment_ids: attachmentIds }
 				: { prompt },
@@ -225,7 +230,7 @@ export const requestDescriptors = {
 			threadId: string,
 			prompt: string,
 			attachmentIds?: readonly string[],
-		) =>
+		): JsonObject =>
 			attachmentIds?.length
 				? { thread_id: threadId, prompt, attachment_ids: attachmentIds }
 				: { thread_id: threadId, prompt },
@@ -243,12 +248,14 @@ export const requestDescriptors = {
 			mime: string,
 			width?: number,
 			height?: number,
-		) => ({
-			bytes_base64: bytesBase64,
-			mime,
-			...(width !== undefined ? { width } : {}),
-			...(height !== undefined ? { height } : {}),
-		}),
+		) => {
+			const params: JsonObject = {};
+			params.bytes_base64 = bytesBase64;
+			params.mime = mime;
+			if (width !== undefined) params.width = width;
+			if (height !== undefined) params.height = height;
+			return params;
+		},
 		result: MediaUploadResult,
 	},
 	threadList: {
@@ -272,10 +279,11 @@ export const requestDescriptors = {
 	},
 	// run/get_history (ADR-0028 as-built): the recent-Runs feed, newest-first.
 	// A `limit` is sent only when given; omitting it lets Core apply its
-	// default (an undefined field serializes away to `{}`).
+	// default (`{}` on the wire).
 	getRunHistory: {
 		method: "run/get_history",
-		toParams: (limit?: number) => (limit === undefined ? {} : { limit }),
+		toParams: (limit?: number): JsonObject =>
+			limit === undefined ? {} : { limit },
 		result: RunHistoryResult,
 	},
 	threadGet: {
@@ -445,9 +453,9 @@ export const requestDescriptors = {
 		// Contravariant param position: every concrete toParams is assignable to
 		// (...a: never[]) => ..., while the Record return keeps each row honest —
 		// the constraint the derivation casts below would otherwise erase.
-		readonly toParams: (...a: never[]) => Record<string, unknown>;
+		readonly toParams: (...a: never[]) => JsonObject;
 		readonly result: S.Schema.Any;
-		readonly map?: (r: never) => unknown;
+		readonly map?: (r: never) => JsonValue;
 	}
 >;
 
@@ -521,16 +529,14 @@ export type WsClientService = Context.Tag.Service<typeof WsClient>;
 export function stubWsClient(
 	overrides: Partial<WsClientService> = {},
 ): WsClientService {
-	const die = (method: string) => () =>
-		Effect.die(`WsClient.${method} not stubbed`);
-	// Derived from the descriptor table. The cast crosses fromEntries' index
-	// signature; the compiler-check property survives structurally: the tag's
-	// request half IS `RequestVerbs` (derived from the same table these keys
-	// come from), and `WsClient.of` below still demands every stream member —
-	// so a new table row is auto-stubbed and a new hand member still reds here.
+	const die =
+		(method: string) =>
+		(..._args: never[]): Effect.Effect<unknown, WsError> =>
+			Effect.die(`WsClient.${method} not stubbed`);
+	// Object.fromEntries erases keys; RequestVerbs derives from this same table.
 	const verbs = Object.fromEntries(
 		Object.keys(requestDescriptors).map((k) => [k, die(k)]),
-	) as unknown as RequestVerbs;
+	) as RequestVerbs;
 	return WsClient.of({
 		...verbs,
 		subscribeRun: () => Stream.empty,
@@ -719,7 +725,7 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 							kind: "error",
 							message:
 								"Lost the connection before this reply finished. Check that Inkstone is running, then try again.",
-						} as RunEventValue).pipe(Effect.zipRight(Queue.shutdown(queue))),
+						}).pipe(Effect.zipRight(Queue.shutdown(queue))),
 					);
 				}
 				runQueues.clear();
@@ -818,7 +824,7 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 
 			const request = <A, I>(
 				method: string,
-				params: Record<string, unknown>,
+				params: JsonObject,
 				schema: S.Schema<A, I>,
 			): Effect.Effect<A, WsError> =>
 				Effect.gen(function* () {
@@ -840,29 +846,25 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 					);
 				});
 
-			// Every request/response verb derives from `requestDescriptors`: send
-			// `d.method` with `d.toParams(...args)`, decode with `d.result`, apply
-			// `d.map` when present. The cast at the end is the one seam between the
-			// table's per-row types and the mapped-object type — the round-trip test
-			// exercises every row against a live socket, so a row whose closure
-			// misbehaved would fail there, not hide behind the cast.
+			// Object.entries erases row correlations; round-trip tests cover every descriptor.
 			const verbs = Object.fromEntries(
 				Object.entries(requestDescriptors).map(([k, d]) => [
 					k,
 					(...args: never[]) => {
 						const sent = request(
 							d.method,
-							(d.toParams as (...a: never[]) => Record<string, unknown>)(
-								...args,
-							),
+							(d.toParams as (...a: never[]) => JsonObject)(...args),
 							d.result as S.Schema<unknown>,
 						);
-						return "map" in d
-							? sent.pipe(Effect.map(d.map as (r: unknown) => unknown))
-							: sent;
+						if (!("map" in d)) return sent;
+						const decoded = sent as Effect.Effect<
+							Parameters<typeof d.map>[0],
+							WsError
+						>;
+						return decoded.pipe(Effect.map(d.map));
 					},
 				]),
-			) as unknown as RequestVerbs;
+			) as RequestVerbs;
 
 			// Queue is created before run/subscribe is sent so post-ack events aren't dropped — see docs/design/ui-sdk.md
 			const subscribeRun = (

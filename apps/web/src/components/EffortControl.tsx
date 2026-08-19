@@ -13,14 +13,22 @@ export const EFFORT_LEVELS = [
 
 export type EffortLevel = (typeof EFFORT_LEVELS)[number];
 
-const LABELS: Record<EffortLevel, string> = {
+const LABELS = {
 	off: "Off",
 	minimal: "Minimal",
 	low: "Low",
 	medium: "Medium",
 	high: "High",
 	xhigh: "Max",
-};
+} satisfies Record<EffortLevel, string>;
+
+const LABEL_BY_VALUE = new Map<string, string>(Object.entries(LABELS));
+
+/** The label for a STORED effort value (an unvalidated settings string), or
+ * undefined when it names no known level. */
+export function effortLabel(value: string): string | undefined {
+	return LABEL_BY_VALUE.get(value);
+}
 
 export interface EffortControlProps {
 	value: string;
@@ -38,7 +46,7 @@ export function EffortControl({
 	// known level, e.g. pre-load) — anchors roving tabindex and arrow navigation.
 	const selectedIndex = Math.max(
 		0,
-		EFFORT_LEVELS.indexOf(value as EffortLevel),
+		EFFORT_LEVELS.findIndex((level) => level === value),
 	);
 
 	// Per-radio refs so arrow navigation can move DOM focus to the newly-selected

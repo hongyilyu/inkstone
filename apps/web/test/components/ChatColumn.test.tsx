@@ -681,15 +681,14 @@ describe("ChatColumn", () => {
 		const toolRow = screen.getByTestId("tool-call");
 		const proposal = document.querySelector('[data-proposal="r-order"]');
 		const text = screen.getByText("the reply text");
-		expect(proposal).not.toBeNull();
+		if (proposal === null) throw new Error("no proposal card rendered");
 		// tool row precedes proposal, proposal precedes text (DOCUMENT_POSITION_FOLLOWING = 4).
 		expect(
-			toolRow.compareDocumentPosition(proposal as Node) &
+			toolRow.compareDocumentPosition(proposal) &
 				Node.DOCUMENT_POSITION_FOLLOWING,
 		).toBeTruthy();
 		expect(
-			(proposal as Node).compareDocumentPosition(text) &
-				Node.DOCUMENT_POSITION_FOLLOWING,
+			proposal.compareDocumentPosition(text) & Node.DOCUMENT_POSITION_FOLLOWING,
 		).toBeTruthy();
 	});
 
@@ -865,7 +864,7 @@ describe("ChatColumn", () => {
 		const tail = Effect.runSync(Queue.unbounded<RunEventValue>());
 		const cancelRun = vi.fn(() =>
 			Effect.sync(() => {
-				Queue.unsafeOffer(tail, { kind: "cancelled" } as RunEventValue);
+				Queue.unsafeOffer<RunEventValue>(tail, { kind: "cancelled" });
 				// live_tail: true — the live stream delivers the real `cancelled`.
 				return { outcome: "accepted" as const, live_tail: true };
 			}),
@@ -879,8 +878,8 @@ describe("ChatColumn", () => {
 			}),
 			subscribeRun: () =>
 				Stream.concat(
-					Stream.fromIterable([
-						{ kind: "text_delta", delta: "echo: h" } as RunEventValue,
+					Stream.fromIterable<RunEventValue>([
+						{ kind: "text_delta", delta: "echo: h" },
 					]),
 					Stream.fromQueue(tail),
 				),
@@ -1060,6 +1059,14 @@ describe("ChatColumn", () => {
 		}
 	});
 
+	/** Remove this suite's prototype `scrollHeight` stub (jsdom has no layout, so
+	 * the scroll tests install one per test and drop it in `finally`). */
+	const restoreScrollHeight = (): void => {
+		// the stub is the own property installed just above;
+		// `Element.scrollHeight` is declared readonly, which `delete` rejects.
+		delete (HTMLElement.prototype as { scrollHeight?: number }).scrollHeight;
+	};
+
 	it("scrolls to the bottom on cold-load when no anchor is set (ADR-0061)", async () => {
 		// jsdom has no layout, so stub a non-zero scrollHeight and capture scrollTop
 		// writes — the cold-load effect pins scrollTop to scrollHeight.
@@ -1098,7 +1105,7 @@ describe("ChatColumn", () => {
 			});
 		} finally {
 			scrollTopSpy.mockRestore();
-			delete (HTMLElement.prototype as { scrollHeight?: number }).scrollHeight;
+			restoreScrollHeight();
 		}
 	});
 
@@ -1149,7 +1156,7 @@ describe("ChatColumn", () => {
 			expect(setScrollTop).not.toHaveBeenCalledWith(4000);
 		} finally {
 			scrollTopSpy.mockRestore();
-			delete (HTMLElement.prototype as { scrollHeight?: number }).scrollHeight;
+			restoreScrollHeight();
 		}
 	});
 
@@ -1218,7 +1225,7 @@ describe("ChatColumn", () => {
 			});
 		} finally {
 			scrollTopSpy.mockRestore();
-			delete (HTMLElement.prototype as { scrollHeight?: number }).scrollHeight;
+			restoreScrollHeight();
 		}
 	});
 
@@ -1274,7 +1281,7 @@ describe("ChatColumn", () => {
 			});
 		} finally {
 			scrollTopSpy.mockRestore();
-			delete (HTMLElement.prototype as { scrollHeight?: number }).scrollHeight;
+			restoreScrollHeight();
 		}
 	});
 

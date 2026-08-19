@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import path from "node:path";
+import type { JsonValue } from "@inkstone/protocol";
 
 /**
  * Direct tier-2 seeding for full-system specs that drive Core's read/write
@@ -19,7 +20,7 @@ export function dbPathFor(workspacePath: string): string {
 interface SeedEntity {
 	readonly id: string;
 	readonly type: "person" | "project" | "journal_entry" | "media";
-	readonly data: unknown;
+	readonly data: JsonValue;
 }
 
 /** Insert entities into the Workspace DB in one tx. */
@@ -62,6 +63,6 @@ function sqlValue(value: string): string {
 	return `'${value.replaceAll("'", "''")}'`;
 }
 
-function jsonValue(value: unknown): string {
+function jsonValue(value: JsonValue): string {
 	return sqlValue(JSON.stringify(value));
 }

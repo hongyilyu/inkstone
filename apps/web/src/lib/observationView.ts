@@ -1,4 +1,4 @@
-import type { ObservationRow } from "@inkstone/protocol";
+import type { JsonValue, ObservationRow } from "@inkstone/protocol";
 import { Either, Schema as S } from "effect";
 
 /** One displayed field row of an observation view (label + already-rendered value). */
@@ -18,7 +18,7 @@ export interface ObservationItemView {
 	/** The raw `values` JSON object from the wire, carried verbatim so the
 	 * correction editor can pre-fill its `values` textarea. Display projects to
 	 * `summary`/`fields`, which lose the raw shape. */
-	values: unknown;
+	values: JsonValue;
 	/** Calm one-line headline (e.g. `"72.4 kg"`, `"Habit · abcd1234"`). */
 	summary: string;
 	/** Per-schema detail rows for display. */
@@ -28,13 +28,32 @@ export interface ObservationItemView {
 	source: ObservationRow["source"];
 }
 
-/** A per-`schema_key` polish strategy. `summary`/`fields` only run on `values`
- * that already decoded against {@link ObservationView.decode}; a decode failure
- * skips them and the caller degrades to the raw-JSON fallback. */
-export interface ObservationView<A = unknown> {
-	decode: (values: unknown) => Either.Either<A, unknown>;
-	summary: (values: A) => string;
-	fields: (values: A) => ObservationField[];
+/** A per-`schema_key` polish strategy with its value type ERASED: decode and both
+ * renderers are paired INSIDE `render`, so a registry can hold views over different
+ * value types without a cast. `null` when `values` don't decode — the caller then
+ * degrades to the raw-JSON fallback. */
+interface ObservationView {
+	render: (
+		values: JsonValue,
+	) => { summary: string; fields: ObservationField[] } | null;
+}
+
+/** Pair a value schema with its renderers into one {@link ObservationView}; `A` is
+ * bound here and never escapes. */
+function polished<A>(
+	schema: S.Schema<A>,
+	summary: (values: A) => string,
+	fields: (values: A) => ObservationField[],
+): ObservationView {
+	const decode = S.decodeUnknownEither(schema);
+	return {
+		render: (values) => {
+			const decoded = decode(values);
+			return Either.isLeft(decoded)
+				? null
+				: { summary: summary(decoded.right), fields: fields(decoded.right) };
+		},
+	};
 }
 
 // Read-side value schemas mirroring protocol's private `bodyweightValues` /
@@ -51,34 +70,37 @@ const habitCheckinValues = S.Struct({
 	quantity: S.optional(S.Number),
 });
 
-const bodyweightView: ObservationView<typeof bodyweightValues.Type> = {
-	decode: S.decodeUnknownEither(bodyweightValues),
-	summary: (v) => `${v.kg} kg`,
-	fields: (v) => [{ label: "Weight", value: `${v.kg} kg` }],
-};
-
-const habitCheckinView: ObservationView<typeof habitCheckinValues.Type> = {
-	decode: S.decodeUnknownEither(habitCheckinValues),
-	summary: (v) => `Habit · ${v.habit_id.slice(0, 8)}`,
-	fields: (v) => {
-		const fields: ObservationField[] = [{ label: "State", value: v.state }];
-		if (v.quantity !== undefined) {
-			fields.push({ label: "Quantity", value: String(v.quantity) });
-		}
-		return fields;
-	},
-};
-
 /** Open map of schema-aware views, keyed by `schema_key`. An unrecognized key
- * falls through to the JSON fallback in {@link toObservationView}. */
-export const OBSERVATION_VIEWS: Record<string, ObservationView> = {
-	bodyweight: bodyweightView as ObservationView,
-	"habit.checkin": habitCheckinView as ObservationView,
-};
+ * falls through to the JSON fallback in {@link toObservationView}; a Map keys on an
+ * unvalidated wire string without inheriting `Object.prototype` members. */
+const OBSERVATION_VIEWS = new Map<string, ObservationView>([
+	[
+		"bodyweight",
+		polished(
+			bodyweightValues,
+			(v) => `${v.kg} kg`,
+			(v) => [{ label: "Weight", value: `${v.kg} kg` }],
+		),
+	],
+	[
+		"habit.checkin",
+		polished(
+			habitCheckinValues,
+			(v) => `Habit · ${v.habit_id.slice(0, 8)}`,
+			(v) => {
+				const fields: ObservationField[] = [{ label: "State", value: v.state }];
+				if (v.quantity !== undefined) {
+					fields.push({ label: "Quantity", value: String(v.quantity) });
+				}
+				return fields;
+			},
+		),
+	],
+]);
 
 /** JSON of the raw `values`, used as the graceful fallback for unknown schemas or
  * undecodable values. Mirrors `observationValueText` in ProposalCardObservations. */
-function valuesJson(values: unknown): string {
+function valuesJson(values: JsonValue): string {
 	// Wire `values` is JSON-tree data, so `JSON.stringify` is total over it in
 	// practice — but the "never throws" contract is absolute, so guard against a
 	// non-wire caller passing a BigInt / circular / throwing-`toJSON` value.
@@ -108,13 +130,8 @@ function fallbackView(row: ObservationRow): ObservationItemView {
  * OR a known key whose `values` fail to decode, returns the raw key + JSON
  * fallback. Never throws — read-side display resilience. */
 export function toObservationView(row: ObservationRow): ObservationItemView {
-	if (!Object.hasOwn(OBSERVATION_VIEWS, row.schema_key))
-		return fallbackView(row);
-	const view = OBSERVATION_VIEWS[row.schema_key];
-	if (!view) return fallbackView(row);
-	const decoded = view.decode(row.values);
-	if (Either.isLeft(decoded)) return fallbackView(row);
-	const values = decoded.right;
+	const view = OBSERVATION_VIEWS.get(row.schema_key)?.render(row.values);
+	if (view === undefined || view === null) return fallbackView(row);
 	return {
 		id: row.id,
 		schemaKey: row.schema_key,
@@ -122,8 +139,8 @@ export function toObservationView(row: ObservationRow): ObservationItemView {
 		endedAt: row.ended_at,
 		note: row.note,
 		values: row.values,
-		summary: view.summary(values),
-		fields: view.fields(values),
+		summary: view.summary,
+		fields: view.fields,
 		source: row.source,
 	};
 }

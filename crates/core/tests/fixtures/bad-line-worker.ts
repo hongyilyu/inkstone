@@ -23,6 +23,7 @@ const main = async (): Promise<void> => {
 	while (line === "") line = await lines.next();
 	if (line === null) return;
 
+	// Core writes the manifest line, which always carries `prompt`.
 	const inbound = JSON.parse(line) as { prompt: string };
 
 	// The malformed line: valid UTF-8, but NOT a JSON `WorkerStdout` frame, so

@@ -16,11 +16,14 @@ import {
 	createRoute,
 	createRouter,
 	Outlet,
+	RouterContextProvider,
 	RouterProvider,
 } from "@tanstack/react-router";
 import { type RenderResult, render } from "@testing-library/react";
 import { Effect, Layer, ManagedRuntime, Stream } from "effect";
 import type { ReactElement, ReactNode } from "react";
+import type { LibraryItem } from "@/lib/libraryItems";
+import { routeTree } from "@/routeTree.gen";
 import { makeWsLayer, RuntimeProvider, type WsRuntime } from "@/runtime";
 
 // The single-entry render harness for Web Client view tests: internalizes the
@@ -94,11 +97,7 @@ export function makeCoreRuntime(opts: CoreRuntimeOptions = {}): WsRuntime {
  * `QueryClientProvider > RuntimeProvider`, plus the runtime and queryClient it
  * provides so a test can drive them directly.
  */
-export function makeCoreWrapper(opts: CoreRuntimeOptions = {}): {
-	wrapper: (props: { children: ReactNode }) => ReactElement;
-	runtime: WsRuntime;
-	queryClient: QueryClient;
-} {
+export function makeCoreWrapper(opts: CoreRuntimeOptions = {}) {
 	const runtime = makeCoreRuntime(opts);
 	const queryClient = makeQueryClient();
 	const wrapper = ({ children }: { children: ReactNode }) => (
@@ -189,6 +188,8 @@ export async function renderWithCore(
 	// Resolve the initial match before render so the route's component is mounted
 	// synchronously — otherwise the first paint is empty and `getBy*` would race.
 	await router.load();
+	// the ad-hoc memory router below carries the two chat routes only, so its
+	// generics can't match the app's registered router; only runtime rendering matters.
 	const result = render(
 		<QueryClientProvider client={queryClient}>
 			<RuntimeProvider runtime={runtime}>
@@ -201,11 +202,60 @@ export async function renderWithCore(
 }
 
 /**
+ * Render `ui` under the production providers plus the REAL route tree in CONTEXT
+ * only: `RouterContextProvider` places the router without rendering any route
+ * component, so a `useNavigate()` inside `ui` resolves against production's routes
+ * (including their `validateSearch`) and the test asserts the resulting
+ * `router.state.location` instead of spying on the hook. Synchronous — no match has
+ * to resolve before the first paint, which keeps `fireEvent`-driven suites sync.
+ *
+ * `libraryItems` seeds React Query's `["library-items"]` cache — the same seam
+ * `useLibraryItems` reads — so a warm-cache-dependent view renders on first paint.
+ */
+export function renderWithRouterContext(
+	ui: ReactElement,
+	opts: CoreRuntimeOptions & {
+		libraryItems?: readonly LibraryItem[];
+		/** The memory router's starting location (default "/"). */
+		path?: string;
+	} = {},
+) {
+	const runtime = makeCoreRuntime(opts);
+	const queryClient = makeQueryClient();
+	if (opts.libraryItems !== undefined) {
+		queryClient.setQueryData(["library-items"], opts.libraryItems);
+	}
+	const router = createRouter({
+		routeTree,
+		history: createMemoryHistory({ initialEntries: [opts.path ?? "/"] }),
+	});
+	// The providers wrap every render INCLUDING a rerender — testing-library's own
+	// `rerender` takes the bare element, which would drop them mid-test.
+	const wrap = (node: ReactElement) => (
+		<QueryClientProvider client={queryClient}>
+			<RuntimeProvider runtime={runtime}>
+				<RouterContextProvider router={router}>{node}</RouterContextProvider>
+			</RuntimeProvider>
+		</QueryClientProvider>
+	);
+	const result = render(wrap(ui));
+	return {
+		...result,
+		rerender: (node: ReactElement) => {
+			result.rerender(wrap(node));
+		},
+		router,
+		runtime,
+		queryClient,
+	};
+}
+
+/**
  * Render an entity editor under the shared Core harness: `entityMutate`
  * (defaulting to a canned success) is the only stubbed request verb — others
  * die loudly — while the harness serves empty entity/backlink/run-event reads.
  */
-export function renderEntityEditor<P extends Record<string, unknown>>(
+export function renderEntityEditor<P extends object>(
 	Editor: (props: P) => ReactElement,
 	props: P,
 	entityMutate: (

@@ -70,12 +70,12 @@ export function EntityDetail({
  * on screen is the single source of truth and a kind/delete-kind mismatch is
  * unrepresentable.
  */
-const DELETE_KIND: Record<LibraryItemKind, EntityMutationKind> = {
+const DELETE_KIND = {
 	person: "delete_person",
 	project: "delete_project",
 	journal_entry: "delete_journal_entry",
 	media: "delete_media",
-};
+} satisfies Record<LibraryItemKind, EntityMutationKind>;
 
 /**
  * The Library inspector shell: one view↔edit↔delete state machine behind every

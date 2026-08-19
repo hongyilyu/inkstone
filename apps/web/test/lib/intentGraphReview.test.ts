@@ -1,4 +1,4 @@
-import type { ResolvedNode } from "@inkstone/protocol";
+import type { JsonObject, ResolvedNode } from "@inkstone/protocol";
 import { describe, expect, it } from "vitest";
 import {
 	appendedClauses,
@@ -453,7 +453,7 @@ describe("buildDecisions with near-match re-point", () => {
 
 describe("parseGraphLinks", () => {
 	it("parses the one known link kind and drops every other/malformed entry", () => {
-		const payload = {
+		const payload: JsonObject = {
 			links: [
 				{ kind: "journal_ref", from: "@je", to: "@morris" },
 				// Unknown link kinds must drop.
@@ -553,7 +553,7 @@ describe("appendedClauses", () => {
 // The graph payload carries each node's ORIGINAL proposed fields; editing reads from
 // and diffs against it. A representative payload with both node types, each carrying
 // an optional, plus a reuse hint that is irrelevant to seeding.
-const GRAPH_PAYLOAD = {
+const GRAPH_PAYLOAD: JsonObject = {
 	entities: [
 		{ handle: "@leadads", type: "project", name: "Lead Ads", note: "guessed" },
 		{

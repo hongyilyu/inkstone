@@ -1,6 +1,6 @@
 import { useId } from "react";
 import { buildProject, projectDraftFromVm } from "@/lib/entityCodec.js";
-import { PROJECT_STATUS_OPTIONS, type ProjectStatus } from "@/lib/entityFields";
+import { asProjectStatus, PROJECT_STATUS_OPTIONS } from "@/lib/entityFields";
 import { useEntityDraftEditor } from "@/lib/hooks/useEntityDraftEditor";
 import type { Project } from "@/lib/libraryItems";
 import {
@@ -83,7 +83,7 @@ export function ProjectEditor({ onDone, onCancel, ...m }: Props) {
 				<EditorSelect
 					id={ids.status}
 					value={draft.status}
-					onChange={(e) => set("status", e.target.value as ProjectStatus)}
+					onChange={(e) => set("status", asProjectStatus(e.target.value))}
 				>
 					{PROJECT_STATUS_OPTIONS.map((o) => (
 						<option key={o.value} value={o.value}>

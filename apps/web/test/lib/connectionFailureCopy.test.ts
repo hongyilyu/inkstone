@@ -1,4 +1,4 @@
-import { WsRequestError } from "@inkstone/ui-sdk";
+import { UnknownThreadError, WsRequestError } from "@inkstone/ui-sdk";
 import { describe, expect, it } from "vitest";
 import {
 	CONNECTION_SEND_FAILURE,
@@ -49,20 +49,16 @@ describe("connectionFailureCopy", () => {
 		expect(copy).not.toContain("openai-codex");
 	});
 
-	it("returns null for a plain Error", () => {
-		expect(connectionFailureCopy(new Error("x"))).toBeNull();
-	});
-
-	it("returns null for undefined", () => {
-		expect(connectionFailureCopy(undefined)).toBeNull();
-	});
-
-	it("returns null for a FiberFailure-shaped object lacking the WsRequestError tag", () => {
-		// A leaked Effect wrapper duck-types as { _tag: "Die" | ... } / no reason —
-		// the guard must reject anything whose `_tag` isn't exactly "WsRequestError".
+	it("returns null for a WsError of any other tag", () => {
+		// Only a WsRequestError carries the connection `reason`/`code`; a tagged
+		// sibling must never borrow the connection copy.
 		expect(
-			connectionFailureCopy({ _tag: "Die", reason: "connection_lost" }),
+			connectionFailureCopy(new UnknownThreadError({ message: "x" })),
 		).toBeNull();
+	});
+
+	it("returns null when the failure is a defect (no wire error at all)", () => {
+		expect(connectionFailureCopy(null)).toBeNull();
 	});
 
 	it("never surfaces the raw reason token as the copy (BookmarkEditor precedent)", () => {

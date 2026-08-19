@@ -1,3 +1,4 @@
+import type { JsonValue } from "@inkstone/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LiveEntityRow } from "@/lib/entityCodec";
 import {
@@ -19,7 +20,7 @@ const empty: LibraryRows = {
 	media: [],
 };
 
-const jeRow = (data: unknown, id = "je"): LiveEntityRow => ({
+const jeRow = (data: JsonValue, id = "je"): LiveEntityRow => ({
 	id,
 	data,
 	created_at: 1000,

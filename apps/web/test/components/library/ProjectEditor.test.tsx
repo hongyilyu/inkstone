@@ -1,4 +1,4 @@
-import type { EntityMutateParams } from "@inkstone/protocol";
+import type { EntityMutateParams, JsonObject } from "@inkstone/protocol";
 import { renderEntityEditor } from "@test/test-utils/renderWithCore";
 import { cleanup, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -6,6 +6,7 @@ import { Effect } from "effect";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ProjectEditor } from "@/components/library/ProjectEditor";
 import type { Project } from "@/lib/libraryItems";
+import { asObject } from "@/lib/readPayload";
 
 const renderEditor = (
 	props: Parameters<typeof ProjectEditor>[0],
@@ -30,6 +31,10 @@ const existing: Project = {
 };
 
 afterEach(cleanup);
+
+/** The mutation payload the editor sent, as a JSON object. */
+const payloadOf = (params: EntityMutateParams): JsonObject =>
+	asObject(params.payload) ?? {};
 
 describe("ProjectEditor create", () => {
 	it("emits create_project with only the filled fields (no review_every)", async () => {
@@ -142,7 +147,7 @@ describe("ProjectEditor edit", () => {
 		await user.click(screen.getByRole("button", { name: /^save$/i }));
 
 		await waitFor(() => expect(seen).toHaveLength(1));
-		const payload = seen[0].payload as Record<string, unknown>;
+		const payload = payloadOf(seen[0]);
 		expect(payload.name).toBe("Daycare move");
 		expect(payload.status).toBe("on_hold");
 		// Server-managed fields survive the edit.
@@ -193,7 +198,7 @@ describe("ProjectEditor edit", () => {
 		await user.click(screen.getByRole("button", { name: /^save$/i }));
 
 		await waitFor(() => expect(seen).toHaveLength(1));
-		const payload = seen[0].payload as Record<string, unknown>;
+		const payload = payloadOf(seen[0]);
 		// Under full-replace, a cleared optional is simply absent (omit ≡ null).
 		expect("outcome" in payload).toBe(false);
 		// The rest of the document is preserved.
@@ -233,7 +238,7 @@ describe("ProjectEditor edit", () => {
 		await user.click(screen.getByRole("button", { name: /^save$/i }));
 
 		await waitFor(() => expect(seen).toHaveLength(1));
-		const payload = seen[0].payload as Record<string, unknown>;
+		const payload = payloadOf(seen[0]);
 		expect(payload.status).toBe("active");
 		expect(payload.name).toBe("Daycare move");
 		// The terminal timestamps are dropped from the replaced document.
@@ -279,7 +284,7 @@ describe("ProjectEditor edit", () => {
 		await user.click(screen.getByRole("button", { name: /^save$/i }));
 
 		await waitFor(() => expect(seen).toHaveLength(1));
-		const payload = seen[0].payload as Record<string, unknown>;
+		const payload = payloadOf(seen[0]);
 		expect(payload.status).toBe("completed");
 		expect(payload.outcome).toBe("Moved in");
 		// The original completion timestamp survives — NOT re-stamped to today.
@@ -301,11 +306,11 @@ describe("ProjectEditor edit", () => {
 		await user.click(screen.getByRole("button", { name: /^save$/i }));
 
 		await waitFor(() => expect(seen).toHaveLength(1));
-		const payload = seen[0].payload as Record<string, unknown>;
+		const payload = payloadOf(seen[0]);
 		expect(payload.entity_id).toBe(existing.id);
 		expect(payload.name).toBe("Daycare move");
 		expect(payload.status).toBe("completed");
 		expect("dropped_at" in payload).toBe(false);
-		expect(typeof payload.completed_at).toBe("string");
+		expect(payload.completed_at).toEqual(expect.any(String));
 	});
 });

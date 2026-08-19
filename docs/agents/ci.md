@@ -12,17 +12,17 @@ branch protection keys off them (see below).
 
 | Job | §6 gate | Command |
 |---|---|---|
-| `lint-format` | format + lint | `biome ci .` |
+| `lint-format` | format + lint | `pnpm exec biome ci .` then `pnpm exec oxlint` |
 | `ts` | check (TS) + vitest | `pnpm -r --if-present check` then `pnpm -r test` |
 | `rust` | check (Rust) + cargo test | `cargo check`/`cargo test` on `crates/core` |
 | `e2e` | hermetic e2e | `pnpm test:e2e` |
 
 ## Non-obvious decisions
 
-- **`biome ci .`, not `pnpm format`.** `pnpm format` is `biome format --write .`,
-  which *mutates* files — wrong for a gate. `biome ci .` is read-only and fails on
-  any format, lint, **or** `organizeImports` diagnostic, covering both §6 biome
-  gates in one pass.
+- **`biome ci .` + `oxlint`, not `pnpm format`.** `pnpm format` is
+  `biome format --write .`, which *mutates* files — wrong for a gate. Biome is the
+  read-only format/import/lint pass; Oxlint runs the repository's custom
+  `anti-slop` rules. Together they mirror `pnpm lint` without writing.
 
 - **The `rust` job installs Node deps.** The `crates/core` integration tests spawn
   TypeScript worker fixtures through `packages/worker/node_modules/.bin/tsx`

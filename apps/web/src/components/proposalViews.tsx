@@ -1,4 +1,4 @@
-import type { NodeDecision } from "@inkstone/protocol";
+import type { JsonObject, JsonValue, NodeDecision } from "@inkstone/protocol";
 import { useNavigate } from "@tanstack/react-router";
 import {
 	Activity,
@@ -68,7 +68,7 @@ export interface ProposalView {
 	 * defensive helpers so a malformed payload degrades rather than crashes
 	 * (the wire keeps the payload opaque — ADR-0009/0014).
 	 */
-	summary: (payload: unknown) => string;
+	summary: (payload: JsonValue) => string;
 	/** Muted review prompt shown above the summary. */
 	reviewCopy: string;
 	/** Confirmation copy once the Proposal is accepted / rejected. */
@@ -99,7 +99,7 @@ export interface ProposalView {
 	renderBody: (args: ProposalBodyArgs) => ReactNode;
 }
 
-export const PROPOSAL_VIEWS: Record<ProposalKind, ProposalView> = {
+export const PROPOSAL_VIEWS = {
 	create_journal_entry: {
 		glyph: KIND_META.journal_entry.icon,
 		acceptGlyph: CalendarDays,
@@ -259,7 +259,14 @@ export const PROPOSAL_VIEWS: Record<ProposalKind, ProposalView> = {
 		editPolicy: "observation",
 		renderBody: renderObservationBody,
 	},
-};
+} satisfies Record<ProposalKind, ProposalView>;
+
+// Kind → view by MAP, not by indexing the record: `mutation_kind` is an
+// unvalidated wire string (ADR-0014) and a Map has no prototype keys, so an
+// unrecognized kind — including "toString" — falls through to `fallbackView`.
+const viewsByKind = new Map<string, ProposalView>(
+	Object.entries(PROPOSAL_VIEWS),
+);
 
 // An unrecognized kind renders like a generic Journal-Entry create, echoing the
 // raw kind into the review prompt. Unreachable for rendered rows above, but
@@ -286,18 +293,10 @@ function fallbackView(kind: string): ProposalView {
 }
 
 export function proposalView(mutationKind: string): ProposalView {
-	// Gate on OWN membership, not a bare `??`: `mutation_kind` is an unvalidated
-	// wire string (ADR-0014), and indexing the record with a prototype key
-	// ("toString", "constructor", …) would return an inherited Object.prototype
-	// member — truthy, so `?? fallbackView` would NOT fire and the card would
-	// crash reading `.summary` off a function. `Object.hasOwn` degrades every
-	// non-own key through the fallback.
-	return Object.hasOwn(PROPOSAL_VIEWS, mutationKind)
-		? PROPOSAL_VIEWS[mutationKind as ProposalKind]
-		: fallbackView(mutationKind);
+	return viewsByKind.get(mutationKind) ?? fallbackView(mutationKind);
 }
 
-export type EditedPayload = Record<string, unknown>;
+export type EditedPayload = JsonObject;
 
 export type DecideHandler = (
 	decision: "accept" | "reject" | "edit",

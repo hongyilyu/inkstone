@@ -3,6 +3,7 @@
 
 import { Schema as S } from "effect";
 
+import { JsonValue } from "./json.js";
 import { WorkerRunEvent } from "./run.js";
 import { ToolTextContent, TranscriptToolResult } from "./transcript.js";
 
@@ -12,7 +13,7 @@ import { ToolTextContent, TranscriptToolResult } from "./transcript.js";
 /** Hand-mirror of pi-agent-core's `AgentToolResult` (ADR-0018:201; no `isError`). */
 export const AgentToolResult = S.Struct({
 	content: S.Array(ToolTextContent),
-	details: S.optional(S.Unknown),
+	details: S.optional(JsonValue),
 	terminate: S.optional(S.Boolean),
 });
 
@@ -24,7 +25,7 @@ export const ToolRequest = S.Struct({
 	run_id: S.String,
 	tool_call_id: S.String,
 	name: S.String,
-	params: S.Unknown,
+	params: JsonValue,
 });
 
 export type ToolRequest = S.Schema.Type<typeof ToolRequest>;
@@ -63,7 +64,7 @@ export const CoreToolDescriptor = S.Struct({
 	name: S.String,
 	description: S.String,
 	label: S.String,
-	json_schema: S.Unknown,
+	json_schema: JsonValue,
 });
 
 export type CoreToolDescriptor = S.Schema.Type<typeof CoreToolDescriptor>;
@@ -76,7 +77,7 @@ export const ExternalToolStarted = S.Struct({
 	kind: S.Literal("external_tool_started"),
 	tool_call_id: S.String,
 	name: S.String,
-	arguments: S.Unknown,
+	arguments: JsonValue,
 });
 
 export type ExternalToolStarted = S.Schema.Type<typeof ExternalToolStarted>;
@@ -125,7 +126,7 @@ export type ProviderHelperLine = S.Schema.Type<typeof ProviderHelperLine>;
 export const ManifestToolCall = S.Struct({
 	id: S.String,
 	name: S.String,
-	arguments: S.Unknown,
+	arguments: JsonValue,
 });
 
 export type ManifestToolCall = S.Schema.Type<typeof ManifestToolCall>;

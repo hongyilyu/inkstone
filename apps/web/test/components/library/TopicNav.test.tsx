@@ -1,5 +1,5 @@
 import type { EntityListResult } from "@inkstone/protocol";
-import type { WsError } from "@inkstone/ui-sdk";
+import { WsRequestError } from "@inkstone/ui-sdk";
 import {
 	createMemoryHistory,
 	createRootRoute,
@@ -24,23 +24,19 @@ function renderTopicNav(projects: Rows = [], failing = false) {
 		routeTree: rootRoute,
 		history: createMemoryHistory({ initialEntries: ["/"] }),
 	});
+	const seeds = { entities: { project: projects } };
 	return renderWithCore(
 		// biome-ignore lint/suspicious/noExplicitAny: the ad-hoc single-route router type doesn't match the app RegisteredRouter; only runtime rendering matters here.
 		<RouterProvider router={router as any} />,
-		{
-			entities: { project: projects },
-			...(failing
-				? {
-						overrides: {
-							listEntities: () =>
-								Effect.fail({
-									_tag: "WsRequestError",
-									reason: "connection_lost",
-								} as WsError),
-						},
-					}
-				: {}),
-		},
+		failing
+			? {
+					...seeds,
+					overrides: {
+						listEntities: () =>
+							Effect.fail(new WsRequestError({ reason: "connection_lost" })),
+					},
+				}
+			: seeds,
 	);
 }
 

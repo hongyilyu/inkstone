@@ -1,3 +1,4 @@
+import type { JsonObject } from "@inkstone/protocol";
 import {
 	BookOpenText,
 	Film,
@@ -13,6 +14,7 @@ import {
 	PROJECT_STATUSES,
 	type ProjectStatus,
 } from "@/lib/entityFields";
+import { asNumber, asObject, asString } from "@/lib/readPayload";
 
 export type LibraryItemKind = "journal_entry" | "person" | "project" | "media";
 
@@ -97,7 +99,7 @@ export interface Project extends LibraryItemBase {
 	 * stored data, it does not merge — slice-7). Absent on test fixtures that
 	 * omit the raw stored object.
 	 */
-	data?: Record<string, unknown>;
+	data?: JsonObject;
 }
 
 /**
@@ -158,7 +160,7 @@ export const CREATABLE_KINDS: ReadonlySet<LibraryItemKind> = new Set([
 	"media",
 ]);
 
-export const KIND_META: Record<LibraryItemKind, KindMeta> = {
+export const KIND_META = {
 	journal_entry: {
 		label: "Journal Entry",
 		plural: "Journal",
@@ -178,19 +180,21 @@ export const KIND_META: Record<LibraryItemKind, KindMeta> = {
 		slug: "media",
 		icon: Film,
 	},
-};
+} satisfies Record<LibraryItemKind, KindMeta>;
 
-const SLUG_TO_KIND: Record<string, LibraryItemKind> = {
-	journal: "journal_entry",
-	people: "person",
-	projects: "project",
-	media: "media",
-};
+// Slug → kind by MAP: the slug comes from the URL, and `Map.get` returns
+// `undefined` for a key equal to an `Object.prototype` member ("toString").
+const KIND_BY_SLUG = new Map<string, LibraryItemKind>([
+	["journal", "journal_entry"],
+	["people", "person"],
+	["projects", "project"],
+	["media", "media"],
+]);
 
 export function libraryItemKindForSlug(
 	slug: string,
 ): LibraryItemKind | undefined {
-	return SLUG_TO_KIND[slug];
+	return KIND_BY_SLUG.get(slug);
 }
 
 /** The user-facing title of any Library item. */
@@ -262,17 +266,24 @@ export function mediaHref(url: string | undefined): string | null {
 	}
 }
 
-export const PROJECT_STATUS_LABEL = Object.fromEntries(
-	PROJECT_STATUSES.map((o) => [o.value, o.label]),
-) as Record<ProjectStatus, string>;
+/** The `value → label` map of a canonical `{value,label}` domain array (the
+ * entityFields domains). */
+function labelsOf<V extends string>(
+	options: readonly { readonly value: V; readonly label: string }[],
+): Record<V, string> {
+	// `options` covers every member of `V` by construction, so the derived
+	// map is total — `Object.fromEntries` cannot express that.
+	return Object.fromEntries(options.map((o) => [o.value, o.label])) as Record<
+		V,
+		string
+	>;
+}
 
-export const MEDIA_MEDIUM_LABEL = Object.fromEntries(
-	MEDIA_MEDIUMS.map((o) => [o.value, o.label]),
-) as Record<MediaMedium, string>;
+export const PROJECT_STATUS_LABEL = labelsOf(PROJECT_STATUSES);
 
-export const MEDIA_STATE_LABEL = Object.fromEntries(
-	MEDIA_STATES.map((o) => [o.value, o.label]),
-) as Record<MediaState, string>;
+export const MEDIA_MEDIUM_LABEL = labelsOf(MEDIA_MEDIUMS);
+
+export const MEDIA_STATE_LABEL = labelsOf(MEDIA_STATES);
 
 /** Most recently captured items, newest first. */
 export function recentlyCapturedItems(
@@ -377,10 +388,7 @@ export function projectsForReview(
  * gone. `now` is injectable for clock-independent tests; the live hub passes
  * the real wall clock.
  */
-export function todayHubStats(
-	all: LibraryItem[],
-	now: Date = new Date(),
-): { toReview: number } {
+export function todayHubStats(all: LibraryItem[], now: Date = new Date()) {
 	return {
 		toReview: projectsForReview(all, localNowString(now)).length,
 	};
@@ -393,10 +401,10 @@ export function todayHubStats(
  * `null` when the Project carries no cadence (nothing schedules its next review).
  */
 export function reviewCadenceLabel(project: Project): string | null {
-	const every = project.data?.review_every;
-	if (!every || typeof every !== "object") return null;
-	const { interval, unit } = every as { interval?: unknown; unit?: unknown };
-	if (typeof interval !== "number" || typeof unit !== "string") return null;
+	const every = asObject(project.data?.review_every);
+	const interval = asNumber(every?.interval);
+	const unit = asString(every?.unit);
+	if (interval === undefined || unit === undefined) return null;
 	return interval === 1 ? `Every ${unit}` : `Every ${interval} ${unit}s`;
 }
 

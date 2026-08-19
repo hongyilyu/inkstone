@@ -8,7 +8,9 @@
 // credentials line. The credential access token is `logged-in-access` so the
 // test can assert the persisted/connected outcome.
 
-const emit = (obj: unknown): void => {
+import type { JsonValue } from "./transport.js";
+
+const emit = (obj: JsonValue): void => {
 	process.stdout.write(`${JSON.stringify(obj)}\n`);
 };
 

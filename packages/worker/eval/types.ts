@@ -1,3 +1,5 @@
+import type { JsonObject, JsonValue } from "@inkstone/protocol";
+
 // Shared types for Inkstone's capture eval harness.
 //
 // The Worker drives an LLM that emits a structured proposal: an
@@ -59,20 +61,20 @@ export interface ExpectedProposal {
 	/** For `apply_intent_graph`: the entity nodes (person/project), each with
 	 * its fields. */
 	entities?: Array<
-		Record<string, unknown> & { type: string; name?: string; title?: string }
+		JsonObject & { type: string; name?: string; title?: string }
 	>;
 	/** For `record_observations`: the observation rows, each with `schema_key` +
 	 * values. */
-	observations?: Array<Record<string, unknown> & { schema_key: string }>;
+	observations?: Array<JsonObject & { schema_key: string }>;
 	/** For single-entity `create_*`: the entity fields directly. */
-	fields?: Record<string, unknown>;
+	fields?: JsonObject;
 }
 
 /** The captured raw payload the model proposed (`mutation_kind` + `payload`), or
  * `null` = proposed nothing. */
 export interface PredictedProposal {
 	mutation_kind: string;
-	payload: unknown;
+	payload: JsonValue;
 }
 
 /** One eval case: the user `message` the model interprets, the `world` of

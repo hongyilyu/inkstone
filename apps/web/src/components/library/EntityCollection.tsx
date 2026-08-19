@@ -28,12 +28,20 @@ import { EntityRow } from "./EntityRow.js";
 import { EntitySkeleton } from "./EntitySkeleton.js";
 import { FacetRow } from "./FacetRow.js";
 
-const PROJECT_STATUS_RANK: Record<Project["status"], number> = {
+const PROJECT_STATUS_RANK = {
 	active: 0,
 	on_hold: 1,
 	completed: 2,
 	dropped: 3,
-};
+} satisfies Record<Project["status"], number>;
+
+// The two per-kind sort keys, read off the item's own discriminant. A collection
+// is filtered to one kind before sorting, so the off-kind default never orders.
+const occurredAtOf = (item: LibraryItem): string =>
+	item.kind === "journal_entry" ? item.occurredAt : "";
+
+const statusRankOf = (item: LibraryItem): number =>
+	item.kind === "project" ? PROJECT_STATUS_RANK[item.status] : 0;
 
 function compareForKind(
 	kind: LibraryItemKind,
@@ -41,15 +49,13 @@ function compareForKind(
 	switch (kind) {
 		case "journal_entry":
 			return (a, b) =>
-				(b as JournalEntry).occurredAt.localeCompare(
-					(a as JournalEntry).occurredAt,
-				) || a.id.localeCompare(b.id);
+				occurredAtOf(b).localeCompare(occurredAtOf(a)) ||
+				a.id.localeCompare(b.id);
 		case "person":
 			return (a, b) => libraryItemTitle(a).localeCompare(libraryItemTitle(b));
 		case "project":
 			return (a, b) =>
-				PROJECT_STATUS_RANK[(a as Project).status] -
-					PROJECT_STATUS_RANK[(b as Project).status] || b.recency - a.recency;
+				statusRankOf(a) - statusRankOf(b) || b.recency - a.recency;
 		case "media":
 			return (a, b) => b.recency - a.recency;
 	}

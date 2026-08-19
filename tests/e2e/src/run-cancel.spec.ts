@@ -1,3 +1,4 @@
+import type { JsonValue } from "@inkstone/protocol";
 import { expect, test } from "./fixtures.js";
 
 test.use({ coreOptions: { chunks: 2 } });
@@ -53,7 +54,7 @@ test("browser WebSocket sees running cancel accepted then cancelled", async ({
 				});
 			};
 
-			const send = (id: number, method: string, params: unknown) => {
+			const send = (id: number, method: string, params: JsonValue) => {
 				ws.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }));
 			};
 
@@ -73,6 +74,8 @@ test("browser WebSocket sees running cancel accepted then cancelled", async ({
 
 			ws.addEventListener("message", (message) => {
 				try {
+					// the frame is this harness's own JSON-RPC traffic with the Core it
+					// spawned; the branches below read only these fields.
 					const frame = JSON.parse(String(message.data)) as Frame;
 					frames.push(frame);
 

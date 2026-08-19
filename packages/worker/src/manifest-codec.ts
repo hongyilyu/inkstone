@@ -1,6 +1,6 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Message } from "@earendil-works/pi-ai";
-import type { WorkerManifest } from "@inkstone/protocol";
+import { asObject, type WorkerManifest } from "@inkstone/protocol";
 
 // Manifest codec: the pure translation from a WorkerManifest's assembled history
 // into pi `Message[]` (ADR-0025). Mirrors the Web side's entityCodec — a seam
@@ -60,24 +60,18 @@ function toAgentMessages(manifest: WorkerManifest): AgentMessage[] {
 			assistant.content.push({ type: "text", text: m.text });
 		}
 		for (const tc of m.tool_calls ?? []) {
-			// `arguments` is `S.Unknown` on the wire (ManifestToolCall) — coerce any
-			// non-object payload to {} so the toolCall always carries a real object.
-			const args =
-				typeof tc.arguments === "object" &&
-				tc.arguments !== null &&
-				!Array.isArray(tc.arguments)
-					? (tc.arguments as Record<string, unknown>)
-					: {};
 			assistant.content.push({
 				type: "toolCall",
 				id: tc.id,
 				name: tc.name,
-				arguments: args,
+				// `arguments` is un-decoded JSON on the wire (ManifestToolCall) — a
+				// non-object payload coerces to {} so the toolCall carries a real object.
+				arguments: asObject(tc.arguments) ?? {},
 			});
 		}
 		return assistant;
 	});
-	return history as AgentMessage[];
+	return history;
 }
 
 /**

@@ -45,11 +45,9 @@ describe("promoted payload registry", () => {
 			name: "Alice",
 			note: "daycare coordinator",
 		};
-		expect(
-			S.decodeUnknownSync(schemas.create_person as S.Schema<unknown, unknown>)(
-				payload,
-			),
-		).toEqual(payload);
+		expect(S.decodeUnknownSync(schemas.create_person)(payload)).toEqual(
+			payload,
+		);
 	});
 });
 
@@ -76,11 +74,9 @@ describe("record_observations payload (ADR-0053)", () => {
 				journal_entry_id: "0190d3c1-0000-7000-8000-000000000001",
 			},
 		};
-		expect(
-			S.decodeUnknownSync(
-				schemas.record_observations as S.Schema<unknown, unknown>,
-			)(payload),
-		).toEqual(payload);
+		expect(S.decodeUnknownSync(schemas.record_observations)(payload)).toEqual(
+			payload,
+		);
 	});
 
 	it("decodes a nutrition.intake observation", () => {
@@ -99,11 +95,9 @@ describe("record_observations payload (ADR-0053)", () => {
 				},
 			],
 		};
-		expect(
-			S.decodeUnknownSync(
-				schemas.record_observations as S.Schema<unknown, unknown>,
-			)(payload),
-		).toEqual(payload);
+		expect(S.decodeUnknownSync(schemas.record_observations)(payload)).toEqual(
+			payload,
+		);
 	});
 
 	it("rejects malformed or two-source evidence", () => {
@@ -116,7 +110,7 @@ describe("record_observations payload (ADR-0053)", () => {
 				},
 			],
 		};
-		const schema = schemas.record_observations as S.Schema<unknown, unknown>;
+		const schema = schemas.record_observations;
 		expect(() =>
 			S.decodeUnknownSync(schema)({
 				...base,
@@ -135,7 +129,7 @@ describe("record_observations payload (ADR-0053)", () => {
 	});
 
 	it("rejects unknown observation schemas and schema-specific bad values", () => {
-		const schema = schemas.record_observations as S.Schema<unknown, unknown>;
+		const schema = schemas.record_observations;
 		expect(() =>
 			S.decodeUnknownSync(schema)({
 				observations: [
@@ -198,11 +192,9 @@ describe("apply_intent_graph payload (ADR-0042)", () => {
 			links: [{ kind: "journal_ref", from: "@je", to: "@morris" }],
 		};
 		expect(S.decodeUnknownSync(applyIntentGraph)(payload)).toEqual(payload);
-		expect(
-			S.decodeUnknownSync(
-				schemas.apply_intent_graph as S.Schema<unknown, unknown>,
-			)(payload),
-		).toEqual(payload);
+		expect(S.decodeUnknownSync(schemas.apply_intent_graph)(payload)).toEqual(
+			payload,
+		);
 	});
 
 	it("decodes a direct-capture graph (no journal_entry)", () => {
@@ -277,6 +269,7 @@ describe("ungated media schemas (NOT in the proposable registry)", () => {
 	});
 
 	it("keeps the media kinds OUT of `schemas` (the ungated boundary)", () => {
+		// `WireKind` IS `keyof typeof schemas`; only `Object.keys` erases that.
 		const keys = Object.keys(schemas) as WireKind[];
 		expect(keys).not.toContain("create_media");
 		expect(keys).not.toContain("update_media");

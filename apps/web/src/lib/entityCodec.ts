@@ -1,5 +1,7 @@
 import {
 	type EntityMutateParams,
+	type JsonObject,
+	type JsonValue,
 	readJournalEntryData,
 	readMediaData,
 	readPersonData,
@@ -26,15 +28,21 @@ import {
 	type Person,
 	type Project,
 } from "@/lib/libraryItems";
+import {
+	asArray,
+	asNumber,
+	asObject,
+	asString,
+	asStringArray,
+} from "@/lib/readPayload";
 
 // The relaxed read-data schemas (@inkstone/protocol) own each Entity Type's
 // stored `data` FIELD-SET; `readSchemas.test.ts` pins the gated pair as a
 // superset of the write `*_core`. The codec decodes `row.data` against them
 // (lenient — every field `S.optional(S.Unknown)`, unknown keys ignored) and then
 // COERCES the loose values to the view model below. A decode is total ONLY over a
-// plain object, so `asRecord()` first coerces a null / array / non-object `data`
-// to `{}` — that guard is what keeps the three fail-soft parsers from ever throwing
-// (an `S.Struct` decode rejects a top-level array, `typeof [] === "object"`).
+// plain object, so `dataObject()` first coerces a null / array / non-object `data`
+// to `{}` — that guard is what keeps the three fail-soft parsers from ever throwing.
 const decodePersonData = S.decodeUnknownSync(readPersonData);
 const decodeProjectData = S.decodeUnknownSync(readProjectData);
 const decodeMediaData = S.decodeUnknownSync(readMediaData);
@@ -47,7 +55,7 @@ const decodeJournalEntryData = S.decodeUnknownSync(readJournalEntryData);
 
 export interface LiveEntityRow {
 	readonly id: string;
-	readonly data: unknown;
+	readonly data: JsonValue;
 	readonly created_at: number;
 	readonly refs?: readonly LiveResolvedEntityRef[];
 	readonly source?: LiveEntitySource;
@@ -71,8 +79,9 @@ export interface LiveResolvedEntityRef {
 }
 
 /** A non-empty string id, or undefined — an empty id is treated as absent. */
-function nonEmptyId(value: unknown): string | undefined {
-	return typeof value === "string" && value.trim() !== "" ? value : undefined;
+function nonEmptyId(value: JsonValue | undefined): string | undefined {
+	const id = asString(value);
+	return id !== undefined && id.trim() !== "" ? id : undefined;
 }
 
 /**
@@ -96,8 +105,7 @@ function parseSource(
 		return {
 			kind: "thread",
 			threadId,
-			threadTitle:
-				typeof source.thread_title === "string" ? source.thread_title : "",
+			threadTitle: source.thread_title ?? "",
 			messageId: nonEmptyId(source.message_id),
 		};
 	}
@@ -112,36 +120,36 @@ const LOCAL_DATETIME_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/;
 // express stay as the inline throws. `useLibraryItems` catches the throw and
 // drops the row so one bad entry never blanks the whole Library (slice-3).
 function parseJournalEntry(row: LiveEntityRow): JournalEntry {
-	const data = decodeJournalEntryData(asRecord(row.data));
-	if (
-		typeof data.occurred_at !== "string" ||
-		!LOCAL_DATETIME_RE.test(data.occurred_at)
-	) {
+	const data = decodeJournalEntryData(dataObject(row));
+	const occurredAt = asString(data.occurred_at);
+	if (occurredAt === undefined || !LOCAL_DATETIME_RE.test(occurredAt)) {
 		throw new Error(
 			`Invalid journal_entry ${row.id}: occurred_at must use YYYY-MM-DDTHH:MM:SS`,
 		);
 	}
-	if (!Array.isArray(data.body) || data.body.length === 0) {
+	const nodes = asArray(data.body);
+	if (nodes.length === 0) {
 		throw new Error(`Invalid journal_entry ${row.id}: body must not be empty`);
 	}
 	const refsById = new Map((row.refs ?? []).map((ref) => [ref.id, ref]));
-	const body: JournalEntryBodyNode[] = data.body.map((node) => {
-		if (!node || typeof node !== "object") {
+	const body: JournalEntryBodyNode[] = nodes.map((node) => {
+		const record = asObject(node);
+		if (record === null) {
 			throw new Error(
 				`Invalid journal_entry ${row.id}: body nodes must be objects`,
 			);
 		}
-		const record = node as Record<string, unknown>;
 		if (record.type === "entity_ref") {
-			if (typeof record.ref_id !== "string" || record.ref_id.trim() === "") {
+			const refId = asString(record.ref_id);
+			if (refId === undefined || refId.trim() === "") {
 				throw new Error(
 					`Invalid journal_entry ${row.id}: entity_ref ref_id must not be empty`,
 				);
 			}
-			const ref = refsById.get(record.ref_id);
+			const ref = refsById.get(refId);
 			return {
 				type: "entity_ref",
-				refId: record.ref_id,
+				refId,
 				targetEntityId: ref?.target_entity_id,
 				targetKind: ref?.target_entity_type,
 				targetTitle: ref?.target_title,
@@ -153,20 +161,21 @@ function parseJournalEntry(row: LiveEntityRow): JournalEntry {
 				`Invalid journal_entry ${row.id}: body supports only text or entity_ref nodes`,
 			);
 		}
-		if (typeof record.text !== "string" || record.text.trim() === "") {
+		const text = asString(record.text);
+		if (text === undefined || text.trim() === "") {
 			throw new Error(
 				`Invalid journal_entry ${row.id}: body text must not be empty`,
 			);
 		}
-		return { type: "text", text: record.text };
+		return { type: "text", text };
 	});
 	return {
 		id: row.id,
 		kind: "journal_entry",
-		occurredAt: data.occurred_at,
+		occurredAt,
 		// Carry a stored `ended_at` so the editor's full-replace update can
 		// round-trip it instead of dropping it (slice-8 trap).
-		endedAt: typeof data.ended_at === "string" ? data.ended_at : undefined,
+		endedAt: asString(data.ended_at),
 		body,
 		source: parseSource(row.source),
 		recency: row.created_at,
@@ -174,34 +183,25 @@ function parseJournalEntry(row: LiveEntityRow): JournalEntry {
 	} satisfies JournalEntry;
 }
 
-/** A stored `data` blob coerced to a record for decoding — `{}` when Core sent a
+/** A row's stored `data` blob as a JSON object for decoding — `{}` when Core sent a
  * null / array / non-object `data`, so a decode (and the coercion below) can never
- * throw on a malformed row. Arrays are excluded deliberately: `typeof [] ===
- * "object"`, but an `S.Struct` decode rejects a top-level array, so without the
- * `!Array.isArray` guard an array `data` would throw and the fail-soft parsers
+ * throw on a malformed row. An ARRAY degrades too: an `S.Struct` decode rejects a
+ * top-level array, so passing one through would throw and the fail-soft parsers
  * would drop the row instead of defaulting it. */
-function asRecord(value: unknown): Record<string, unknown> {
-	return value && typeof value === "object" && !Array.isArray(value)
-		? (value as Record<string, unknown>)
-		: {};
-}
-
-function asString(value: unknown): string | undefined {
-	return typeof value === "string" ? value : undefined;
+function dataObject(row: LiveEntityRow): JsonObject {
+	return asObject(row.data) ?? {};
 }
 
 /** Map a live `entity/list` row to the Library `Person` view model (ADR-0031). */
 function parsePerson(row: LiveEntityRow): Person {
-	const data = decodePersonData(asRecord(row.data));
-	const aliases = Array.isArray(data.aliases)
-		? data.aliases.filter((a): a is string => typeof a === "string")
-		: undefined;
+	const data = decodePersonData(dataObject(row));
+	const aliases = asStringArray(data.aliases);
 	return {
 		id: row.id,
 		kind: "person",
 		name: asString(data.name) ?? "Unnamed",
 		note: asString(data.note),
-		aliases: aliases && aliases.length > 0 ? aliases : undefined,
+		aliases: aliases.length > 0 ? aliases : undefined,
 		source: parseSource(row.source),
 		recency: row.created_at,
 		createdAt: new Date(row.created_at).toLocaleDateString(),
@@ -209,7 +209,7 @@ function parsePerson(row: LiveEntityRow): Person {
 }
 
 function parseProject(row: LiveEntityRow): Project {
-	const data = decodeProjectData(asRecord(row.data));
+	const data = decodeProjectData(dataObject(row));
 	// Carry the complete stored object verbatim so the editor can build a
 	// full-document-replace `update_project` without dropping server-managed
 	// fields the projection above omits (slice-7). This reads `row.data` directly,
@@ -217,7 +217,7 @@ function parseProject(row: LiveEntityRow): Project {
 	// passthrough must keep them (e.g. a legacy `review_every: "P1W"` the schema
 	// can't model) so update_project's full-replace round-trips. `asRecord` shares
 	// the same null/array/non-object guard as the decode above.
-	const rawData = { ...asRecord(row.data) };
+	const rawData = { ...dataObject(row) };
 	return {
 		id: row.id,
 		kind: "project",
@@ -242,21 +242,19 @@ function parseProject(row: LiveEntityRow): Project {
  * is kept only when a number; `finished_at` only when a string.
  */
 function parseMedia(row: LiveEntityRow): Media {
-	const data = decodeMediaData(asRecord(row.data));
-	const tags = Array.isArray(data.tags)
-		? data.tags.filter((t): t is string => typeof t === "string")
-		: undefined;
+	const data = decodeMediaData(dataObject(row));
+	const tags = asStringArray(data.tags);
 	return {
 		id: row.id,
 		kind: "media",
 		title: asString(data.title) ?? "Untitled",
 		medium: asMediaMedium(data.medium),
 		state: asMediaState(data.state),
-		rating: typeof data.rating === "number" ? data.rating : undefined,
+		rating: asNumber(data.rating),
 		finishedAt: asString(data.finished_at),
 		url: asString(data.url),
 		note: asString(data.note),
-		tags: tags && tags.length > 0 ? tags : undefined,
+		tags: tags.length > 0 ? tags : undefined,
 		source: parseSource(row.source),
 		recency: row.created_at,
 		createdAt: new Date(row.created_at).toLocaleDateString(),
@@ -325,7 +323,8 @@ function personDraftFromVm(person: Person | undefined): PersonDraft {
 }
 
 function buildPersonCreate(d: PersonDraft): EntityMutateParams {
-	const payload: Record<string, unknown> = { name: d.name.trim() };
+	const payload: JsonObject = {};
+	payload.name = d.name.trim();
 	if (d.note.trim()) payload.note = d.note.trim();
 	const aliases = parseAliases(d.aliases);
 	if (aliases.length > 0) payload.aliases = aliases;
@@ -343,10 +342,9 @@ function buildPersonUpdate(
 		next.aliases.trim() !== prev.aliases;
 	if (!changed) return null;
 
-	const payload: Record<string, unknown> = {
-		entity_id: person.id,
-		name: next.name.trim(),
-	};
+	const payload: JsonObject = {};
+	payload.entity_id = person.id;
+	payload.name = next.name.trim();
 	const note = next.note.trim();
 	if (note) payload.note = note;
 	const aliases = parseAliases(next.aliases);
@@ -429,12 +427,11 @@ function mediaDraftFromVm(media: Media | undefined): MediaDraft {
  * `finishedDay` folds to a `T00:00:00` wall-clock string. Off-terminal, both are
  * omitted regardless of the draft — Core rejects them in a non-terminal state.
  */
-function buildMediaDoc(d: MediaDraft): Record<string, unknown> {
-	const doc: Record<string, unknown> = {
-		title: d.title.trim(),
-		medium: d.medium,
-		state: d.state,
-	};
+function buildMediaDoc(d: MediaDraft): JsonObject {
+	const doc: JsonObject = {};
+	doc.title = d.title.trim();
+	doc.medium = d.medium;
+	doc.state = d.state;
 	if (isMediaTerminalState(d.state)) {
 		// Clamp to the ADR-0059 contract (integer 1–5) before emitting — the
 		// `<input min/max>` in MediaEditor doesn't block pasted/scripted values, and
@@ -532,7 +529,8 @@ function projectDraftFromVm(project: Project | undefined): ProjectDraft {
 }
 
 function buildProjectCreate(d: ProjectDraft): EntityMutateParams {
-	const payload: Record<string, unknown> = { name: d.name.trim() };
+	const payload: JsonObject = {};
+	payload.name = d.name.trim();
 	if (d.outcome.trim()) payload.outcome = d.outcome.trim();
 	if (d.note.trim()) payload.note = d.note.trim();
 	if (d.status !== "active") {
@@ -558,26 +556,31 @@ function buildProjectUpdate(
 	// Clone the complete stored data verbatim, then overlay the form edits. The
 	// stored data never carries `entity_id` (Core strips it), but drop it
 	// defensively so it rides only as the top-level row target.
-	const doc: Record<string, unknown> = { ...(project.data ?? {}) };
+	const doc = { ...project.data };
 	delete doc.entity_id;
 
 	doc.name = next.name.trim();
-	doc.outcome = next.outcome.trim() || undefined;
-	doc.note = next.note.trim() || undefined;
+	const outcome = next.outcome.trim();
+	if (outcome) doc.outcome = outcome;
+	else delete doc.outcome;
+	const note = next.note.trim();
+	if (note) doc.note = note;
+	else delete doc.note;
 	doc.status = next.status;
 	// Only (re)stamp the terminal timestamp(s) on a status CHANGE. When status is
 	// unchanged, leave the stored `completed_at`/`dropped_at` (cloned from
 	// `project.data`) intact — re-stamping every edit would silently overwrite the
 	// original completion/drop date (ADR-0033).
 	if (next.status !== prev.status) {
-		stampStatusTimestamps(doc, next.status, localNowString(), "undefined");
+		stampStatusTimestamps(doc, next.status, localNowString());
 	}
 
 	// Drop cleared optionals: under full-replace, an absent key carries no value
 	// (omit ≡ null — ADR-0033).
-	const payload: Record<string, unknown> = { entity_id: project.id };
+	const payload: JsonObject = {};
+	payload.entity_id = project.id;
 	for (const [key, value] of Object.entries(doc)) {
-		if (value !== undefined && value !== null) payload[key] = value;
+		if (value !== null) payload[key] = value;
 	}
 	return { mutation_kind: "update_project", payload };
 }
@@ -626,6 +629,8 @@ export type DraftEntityRefNode = {
 	/** For a NEW chip: the picked Entity's id (the reference target). */
 	newTargetId?: string;
 };
+
+type StagedEntityRefNode = DraftEntityRefNode & { newTargetId: string };
 
 export type DraftBodyNode = { type: "text"; text: string } | DraftEntityRefNode;
 
@@ -709,10 +714,9 @@ function buildBody(
 }
 
 function buildJournalEntryCreate(d: JournalDraft): EntityMutateParams {
-	const payload: Record<string, unknown> = {
-		occurred_at: localToWallClock(d.occurredAt),
-		body: buildBody(d.body),
-	};
+	const payload: JsonObject = {};
+	payload.occurred_at = localToWallClock(d.occurredAt);
+	payload.body = buildBody(d.body);
 	if (d.endedAt) payload.ended_at = localToWallClock(d.endedAt);
 	return { mutation_kind: "create_journal_entry", payload };
 }
@@ -726,11 +730,10 @@ function buildJournalEntryUpdate(
 	entry: JournalEntry,
 	d: JournalDraft,
 ): EntityMutateParams {
-	const payload: Record<string, unknown> = {
-		entity_id: entry.id,
-		occurred_at: emitWallClock(d.occurredAt, entry.occurredAt),
-		body: buildBody(d.body),
-	};
+	const payload: JsonObject = {};
+	payload.entity_id = entry.id;
+	payload.occurred_at = emitWallClock(d.occurredAt, entry.occurredAt);
+	payload.body = buildBody(d.body);
 	if (d.endedAt) payload.ended_at = emitWallClock(d.endedAt, entry.endedAt);
 	return { mutation_kind: "update_journal_entry", payload };
 }
@@ -751,9 +754,9 @@ function buildJournalEntry(
 }
 
 /** The single staged new chip (the one bare placeholder), or undefined. */
-function stagedNewChip(body: DraftBodyNode[]): DraftEntityRefNode | undefined {
+function stagedNewChip(body: DraftBodyNode[]): StagedEntityRefNode | undefined {
 	return body.find(
-		(node): node is DraftEntityRefNode =>
+		(node): node is StagedEntityRefNode =>
 			node.type === "entity_ref" && node.newTargetId !== undefined,
 	);
 }
@@ -804,13 +807,12 @@ function buildReferenceBody(
 function buildJournalReference(
 	entry: JournalEntry,
 	d: JournalDraft,
-	chip: DraftEntityRefNode,
+	chip: StagedEntityRefNode,
 ): EntityMutateParams {
-	const payload: Record<string, unknown> = {
-		source_entity_id: entry.id,
-		target_entity_id: chip.newTargetId,
-		body: buildReferenceBody(d.body),
-	};
+	const payload: JsonObject = {};
+	payload.source_entity_id = entry.id;
+	payload.target_entity_id = chip.newTargetId;
+	payload.body = buildReferenceBody(d.body);
 	if (chip.label) payload.label_snapshot = chip.label;
 	return {
 		mutation_kind: "reference_existing_entity_from_journal_entry",

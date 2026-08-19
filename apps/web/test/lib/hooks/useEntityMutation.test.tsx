@@ -76,9 +76,11 @@ describe("useEntityMutation", () => {
 		await waitFor(() => expect(result.current.isError).toBe(true));
 		const error = result.current.error;
 		expect(error).toBeInstanceOf(WsRequestError);
-		expect((error as WsRequestError).reason).toBe("boom");
+		expect(error).toMatchObject({ reason: "boom" });
 		// Not Effect's generic FiberFailure message.
-		expect((error as Error).message).not.toBe("An error has occurred");
+		expect(error).not.toMatchObject({
+			message: "An error has occurred",
+		});
 	});
 
 	it("fires the 'Created' cue on a successful create", async () => {

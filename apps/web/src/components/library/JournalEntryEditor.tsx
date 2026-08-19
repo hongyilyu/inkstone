@@ -23,6 +23,13 @@ import {
 	libraryItemTitle,
 } from "@/lib/libraryItems";
 import { EditorField, EditorInput, EntityEditorFrame } from "./EntityEditor.js";
+
+/** The referenceable kinds as a membership set over the whole kind domain, so the
+ * chip-candidate filter tests an item's kind without widening the source array. */
+const REFERENCEABLE: ReadonlySet<LibraryItemKind> = new Set(
+	REFERENCEABLE_KINDS,
+);
+
 import { EntityGlyph } from "./EntityGlyph.js";
 
 type Props = (
@@ -218,7 +225,7 @@ function AddReferenceField({
 	const candidates = useMemo(
 		() =>
 			allEntities.filter((e): e is LibraryItem & { kind: ReferenceableKind } =>
-				(REFERENCEABLE_KINDS as readonly LibraryItemKind[]).includes(e.kind),
+				REFERENCEABLE.has(e.kind),
 			),
 		[allEntities],
 	);

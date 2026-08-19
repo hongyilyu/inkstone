@@ -4,6 +4,7 @@ import {
 	type ProviderModels,
 	type ProviderStatusResult,
 } from "@inkstone/protocol";
+import type { WsError } from "@inkstone/ui-sdk";
 import { onNotification } from "@inkstone/ui-sdk";
 import { useQueryClient } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
@@ -17,7 +18,6 @@ import {
 	type SaveStatus,
 	useOptimisticSetting,
 } from "@/lib/hooks/useOptimisticSetting";
-import { taggedErrorMessage } from "@/lib/taggedErrorMessage";
 import { cn } from "@/lib/utils";
 import { useRuntime } from "@/runtime";
 import {
@@ -337,10 +337,13 @@ function ModelsSettings() {
 				// row. Surface it — a typed -32003 (ProviderLoginFailedError) carries
 				// Core's sanitized reason verbatim; anything else (or an empty
 				// message) gets the generic couldn't-start copy.
-				.catch((e: unknown) => {
-					const reason = taggedErrorMessage(e, "ProviderLoginFailedError");
+				// `runSquashed` rejects with the request's own `WsError` (never Effect's
+				// FiberFailure wrapper), so the handler branches on its tag.
+				.catch((error: WsError) => {
+					const reason =
+						error._tag === "ProviderLoginFailedError" ? error.message : "";
 					setConnectError(
-						reason !== undefined && reason.length > 0
+						reason.length > 0
 							? reason
 							: "Couldn't start the connection. Try Connect again.",
 					);
@@ -430,9 +433,12 @@ function ModelsSettings() {
 					// Disable when the provider has no models (nothing to probe).
 					canTest={focused.models.length > 0}
 					onTest={() => {
-						const testModel = focused.models.some((m) => m.id === model.value)
-							? (model.value as string)
-							: focused.models[0]?.id;
+						const preferred = model.value;
+						const testModel =
+							preferred !== null &&
+							focused.models.some((m) => m.id === preferred)
+								? preferred
+								: focused.models[0]?.id;
 						return testProvider(runtime, focused.id, testModel ?? "");
 					}}
 				/>

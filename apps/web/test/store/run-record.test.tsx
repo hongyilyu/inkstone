@@ -125,7 +125,7 @@ describe("Run record — field reads", () => {
 describe("Run record — snapshot SET-vs-APPEND is a record read, not caller flag-juggling", () => {
 	it("the first text_delta SETs (snapshot), disarming the bit; the rest APPEND", () => {
 		// Drive applyEvent through the record verb only — no caller threads a flag.
-		const runId = "run-1" as RunId;
+		const runId = "run-1";
 		seedTurn(runId);
 		beginRunSubscription("t1", runId);
 
@@ -140,7 +140,7 @@ describe("Run record — snapshot SET-vs-APPEND is a record read, not caller fla
 	});
 
 	it("a re-armed resume SETs the cumulative snapshot over the on-screen prefix (M1)", () => {
-		const runId = "run-1" as RunId;
+		const runId = "run-1";
 		seedTurn(runId);
 
 		// Original parked subscribe: first delta SETs the snapshot, then it parks.
@@ -179,12 +179,12 @@ describe("Run record — terminal transitions", () => {
 			resetChatStore();
 			resetBridge();
 			const queue = Effect.runSync(Queue.unbounded<RunEventValue>());
-			const runtime = makeStubRuntime(queue, runId as RunId);
+			const runtime = makeStubRuntime(queue, runId);
 			await send(runtime, "t1", "hi");
 			expect(getRun(runId)?.status).toBe("running");
 
 			Queue.unsafeOffer(queue, terminal);
-			await awaitRun(runtime, runId as RunId);
+			await awaitRun(runtime, runId);
 
 			expect(getRun(runId)?.status).toBe("terminal");
 			expect(getChatState().threads.t1?.activeRunId).toBeUndefined();

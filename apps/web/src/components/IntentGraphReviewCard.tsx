@@ -1,4 +1,4 @@
-import type { ResolvedNode } from "@inkstone/protocol";
+import type { JsonObject, ResolvedNode } from "@inkstone/protocol";
 import {
 	Check,
 	Loader2,
@@ -29,7 +29,6 @@ import {
 import {
 	KIND_META,
 	type LibraryItem,
-	type LibraryItemKind,
 	libraryItemSubtitle,
 	libraryItemTitle,
 } from "@/lib/libraryItems";
@@ -53,10 +52,7 @@ const GRAPH_VIEW = PROPOSAL_VIEWS.apply_intent_graph;
 /** Per-disposition badge copy + tone. Kinds differ by glyph + label, never colour
  * alone (PRODUCT.md a11y): each badge pairs a glyph with its word. `ambiguous`
  * wears the warning tone because it BLOCKS accept (no picker yet, #181). */
-const DISPOSITION_BADGE: Record<
-	ResolvedNode["disposition"],
-	{ label: string; glyph: LucideIcon; variant: BadgeProps["variant"] }
-> = {
+const DISPOSITION_BADGE = {
 	create: {
 		label: "New",
 		glyph: Plus,
@@ -72,7 +68,10 @@ const DISPOSITION_BADGE: Record<
 		glyph: TriangleAlert,
 		variant: "destructive",
 	},
-};
+} satisfies Record<
+	ResolvedNode["disposition"],
+	{ label: string; glyph: LucideIcon; variant: BadgeProps["variant"] }
+>;
 
 /**
  * The `apply_intent_graph` review surface (ADR-0042): the whole resolved plan is
@@ -467,7 +466,7 @@ function GraphNodeRow({
 	explicitStage: "accept" | "reject" | undefined;
 	disabled: boolean;
 	draft: GraphNodeDraft | undefined;
-	seed: Record<string, unknown> | undefined;
+	seed: JsonObject | undefined;
 	editing: boolean;
 	repointId: string | null;
 	itemsById: Map<string, LibraryItem>;
@@ -479,7 +478,7 @@ function GraphNodeRow({
 	onReuseExisting: () => void;
 	onPickCandidate: (entityId: string) => void;
 }) {
-	const NodeGlyph = KIND_META[node.type as LibraryItemKind].icon;
+	const NodeGlyph = KIND_META[node.type].icon;
 	// An UNPICKED ambiguous node sits at the `reject` DEFAULT but is pending a pick,
 	// not dismissed — it should not read as rejected (no line-through/opacity) and must
 	// still show its picker. A node reads "rejected" only when it is explicitly rejected

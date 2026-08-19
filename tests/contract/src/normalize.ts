@@ -1,3 +1,10 @@
+import {
+	asObject,
+	asStringArray,
+	type JsonObject,
+	type JsonValue,
+} from "@inkstone/protocol";
+
 // The parity normalizer: a pure function applied to BOTH the Rust fixture and
 // the `JSONSchema.make` output before deep-equality, reconciling the two
 // Draft-07 dialects down to a common form. Each rule names the dialect quirk it
@@ -6,6 +13,9 @@
 // one field's type in the Effect schema turns it red.
 //
 // Dialects (verified, see FEATURE-PLAN.md "Verified facts"):
+// A schema document is JSON, so `JsonValue`/`JsonObject` (@inkstone/protocol) are
+// the node types throughout and `asObject` is the only narrowing needed.
+//
 // - Rust (`crates/core/src/field_spec.rs`): inline Draft-07, no `$schema`, no
 //   `$ref`/`$defs`, no `title`; `additionalProperties:false` always; `required`
 //   OMITTED when empty; object keys BTreeMap-sorted.
@@ -15,11 +25,6 @@
 //   emits an annotation-only `$id`; `required` ordered before `properties`; emits
 //   unions as `anyOf` (Rust emits `oneOf`) and COLLAPSES a 1-element union to its
 //   bare member (Rust keeps `oneOf:[X]`).
-
-type Json = unknown;
-
-const isObject = (value: Json): value is Record<string, Json> =>
-	typeof value === "object" && value !== null && !Array.isArray(value);
 
 /** Schema-map keywords: their VALUE is a map of arbitrary names → subschemas
  * (`properties.title` is a field literally named "title", NOT a `title`
@@ -38,22 +43,23 @@ const SCHEMA_MAP_KEYS = new Set([
 /** The recursive walk. `inSchemaMap` is true when `value` is the VALUE of a
  * schema-map keyword (a `name → subschema` map), so the keyword rewrites are
  * skipped for it. */
-const walk = (value: Json, inSchemaMap = false): Json => {
+const walk = (value: JsonValue, inSchemaMap = false): JsonValue => {
 	if (Array.isArray(value)) return value.map((item) => walk(item));
-	if (!isObject(value)) return value;
+	const object = asObject(value);
+	if (object === null) return value;
 
 	// Inside a schema map (e.g. the object under `properties`), the keys are
 	// arbitrary field names — skip `walk1` so a field named `title`/`$schema`/etc.
 	// is preserved. Its values are walked as ordinary subschemas below.
 	if (inSchemaMap) {
-		const mapped: Record<string, Json> = {};
-		for (const [key, child] of Object.entries(value)) {
+		const mapped: JsonObject = {};
+		for (const [key, child] of Object.entries(object)) {
 			mapped[key] = walk(child);
 		}
 		return sortKeys(mapped);
 	}
 
-	const node = walk1(value);
+	const node = walk1(object);
 
 	// Rule 8b — unwrap a single-element `oneOf`. After rule 8a (`anyOf → oneOf`)
 	// both dialects key the journal body union as `oneOf`. A union of ONE member
@@ -68,7 +74,7 @@ const walk = (value: Json, inSchemaMap = false): Json => {
 	// bare member, the other keeps `oneOf:[A,B]` — still unequal). Only a lone
 	// `oneOf` key qualifies; a `oneOf` alongside sibling constraints is left
 	// wrapped (none occur in these schemas, but staying conservative is safer).
-	const only = isObject(node) ? node.oneOf : undefined;
+	const only = node.oneOf;
 	if (
 		Array.isArray(only) &&
 		only.length === 1 &&
@@ -77,7 +83,7 @@ const walk = (value: Json, inSchemaMap = false): Json => {
 		return walk(only[0]);
 	}
 
-	const out: Record<string, Json> = {};
+	const out: JsonObject = {};
 	for (const [key, child] of Object.entries(node)) {
 		out[key] = walk(child, SCHEMA_MAP_KEYS.has(key));
 	}
@@ -86,8 +92,8 @@ const walk = (value: Json, inSchemaMap = false): Json => {
 
 /** Per-node, pre-recursion rewrites: strip `$schema`/`title`, and collapse an
  * empty `required` to absent. */
-const walk1 = (node: Record<string, Json>): Record<string, Json> => {
-	const out: Record<string, Json> = { ...node };
+const walk1 = (node: JsonObject) => {
+	const out = { ...node };
 
 	// Rule 1 — strip `$schema`. Effect stamps the dialect URI on the root; Rust
 	// never emits it.
@@ -140,10 +146,12 @@ const walk1 = (node: Record<string, Json>): Record<string, Json> => {
 	// `month_days` values, …) is POSITIONAL and must NOT be sorted, or we'd hide
 	// real drift or corrupt meaning.
 	for (const key of ["required", "enum"] as const) {
-		const arr = out[key];
-		if (Array.isArray(arr) && arr.every((m) => typeof m === "string")) {
-			out[key] = [...(arr as string[])].sort();
-		}
+		const values = out[key];
+		if (!Array.isArray(values)) continue;
+		const strings = asStringArray(values);
+		// Only a wholly-string set is sortable — `asStringArray` drops non-strings,
+		// so an equal length means every element was one.
+		if (strings.length === values.length) out[key] = strings.sort();
 	}
 
 	return out;
@@ -151,8 +159,8 @@ const walk1 = (node: Record<string, Json>): Record<string, Json> => {
 
 /** Rule 6 — deep key-sort. Effect orders `required` before `properties`; Rust
  * is BTreeMap-sorted. Canonicalize both by sorting every object's keys. */
-const sortKeys = (node: Record<string, Json>): Record<string, Json> => {
-	const sorted: Record<string, Json> = {};
+const sortKeys = (node: JsonObject) => {
+	const sorted: JsonObject = {};
 	for (const key of Object.keys(node).sort()) {
 		sorted[key] = node[key];
 	}
@@ -160,4 +168,4 @@ const sortKeys = (node: Record<string, Json>): Record<string, Json> => {
 };
 
 /** Normalize a Draft-07 schema (from either dialect) to the common form. */
-export const normalize = (schema: Json): Json => walk(schema);
+export const normalize = (schema: JsonValue): JsonValue => walk(schema);

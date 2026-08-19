@@ -1,0 +1,17 @@
+{
+	"name": "@inkstone/anti-slop",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"check": "tsc --noEmit",
+		"test": "vitest run"
+	},
+	"devDependencies": {
+		"@oxlint/plugins": "1.78.0",
+		"@types/node": "^22.0.0",
+		"oxlint": "1.78.0",
+		"typescript": "~7.0.2",
+		"vitest": "^4.1.7"
+	}
+}

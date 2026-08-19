@@ -22,6 +22,7 @@
 
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import type { JsonValue } from "@inkstone/protocol";
 import { Schema as S } from "effect";
 import { describe, expect, it } from "vitest";
 import { fixtures } from "./structs.registry.js";
@@ -30,7 +31,7 @@ const fixturesRoot = fileURLToPath(
 	new URL("../fixtures/structs/", import.meta.url),
 );
 
-const readFixture = (dir: string, file: string): unknown =>
+const readFixture = (dir: string, file: string): JsonValue =>
 	JSON.parse(readFileSync(`${fixturesRoot}${dir}/${file}`, "utf8"));
 
 describe("non-payload wire-message parity (Rust serde ≡ TS Effect Schema)", () => {

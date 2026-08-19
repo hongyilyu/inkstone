@@ -9,7 +9,9 @@ import {
 	fauxThinking,
 	fauxToolCall,
 } from "@earendil-works/pi-ai";
-import type { WorkerManifest } from "@inkstone/protocol";
+import type { JsonObject, JsonValue, WorkerManifest } from "@inkstone/protocol";
+import { asArray, asObject, asString, decodeJson } from "@inkstone/protocol";
+import { Option } from "effect";
 import type { InterpreterDeps } from "../interpreter.js";
 import { runWorkerMain } from "../worker-main.js";
 import {
@@ -20,19 +22,16 @@ import {
 } from "./faux-decisions.js";
 import { fauxInterpreterDeps } from "./faux-deps.js";
 
-/** Flatten a pi message `content` (string | content blocks) to plain text. */
-function textOf(content: unknown): string {
-	if (typeof content === "string") return content;
-	if (Array.isArray(content)) {
-		return content
-			.map((c) =>
-				c && typeof c === "object" && "text" in c
-					? String((c as { text: unknown }).text)
-					: "",
-			)
-			.join("");
-	}
-	return "";
+/** Flatten a message `content` (a string, or content blocks) to plain text. */
+function textOf(content: JsonValue | undefined): string {
+	const text = asString(content);
+	if (text !== undefined) return text;
+	return asArray(content)
+		.map((block) => {
+			const record = asObject(block);
+			return record !== null && "text" in record ? String(record.text) : "";
+		})
+		.join("");
 }
 
 // ── Ordered-Turn fixtures (ADR-0019) ───────────────────────────────────────
@@ -51,7 +50,7 @@ type FauxContext = { messages: AnyMessage[] };
 /** A tool-use Turn: the assistant calls `name(args)` under tool-call id `id`. */
 function toolCallTurn(
 	name: string,
-	args: Record<string, unknown>,
+	args: JsonObject,
 	id: string,
 ): ReturnType<typeof fauxAssistantMessage> {
 	return fauxAssistantMessage([fauxToolCall(name, args, { id })], {
@@ -77,6 +76,9 @@ function currentThreadEntriesFromToolResult(
 	text: string,
 ): JournalEntrySnapshot[] {
 	try {
+		// `text` is the JSON result of the
+		// `read_current_thread_journal_entries` tool this harness scripts; `entries`
+		// is re-checked for an array below.
 		const payload = JSON.parse(text) as { entries?: JournalEntrySnapshot[] };
 		return Array.isArray(payload.entries) ? payload.entries : [];
 	} catch {
@@ -84,9 +86,17 @@ function currentThreadEntriesFromToolResult(
 	}
 }
 
+/** The `update_journal_entry` payload the correction Turn proposes. */
+type JournalEntryUpdatePayload = {
+	entity_id: string;
+	occurred_at: string;
+	ended_at?: string;
+	body: Array<{ type: "text"; text: string }>;
+};
+
 function firstBodyText(entry: JournalEntrySnapshot): string {
 	const firstNode = Array.isArray(entry.body) ? entry.body[0] : undefined;
-	return typeof firstNode?.text === "string" ? firstNode.text : "";
+	return firstNode?.text ?? "";
 }
 
 function journalConfirmation(text: string): string {
@@ -126,12 +136,7 @@ function updateJournalEntryProposal(
 	bodyText: string,
 	occurredAt: string,
 ) {
-	const payload: {
-		entity_id: string;
-		occurred_at: string;
-		ended_at?: string;
-		body: Array<{ type: "text"; text: string }>;
-	} = {
+	const payload: JournalEntryUpdatePayload = {
 		entity_id: entry.entity_id,
 		occurred_at: occurredAt,
 		body: [
@@ -141,7 +146,7 @@ function updateJournalEntryProposal(
 			},
 		],
 	};
-	if (typeof entry.ended_at === "string") {
+	if (entry.ended_at !== undefined) {
 		payload.ended_at = entry.ended_at;
 	}
 	return {
@@ -232,6 +237,7 @@ function readProposeScenario(): ProposeScenario {
 			}
 		}
 	}
+	// every field the harness reads is checked above.
 	return parsed as ProposeScenario;
 }
 
@@ -271,11 +277,8 @@ function setProposePlaybackResponses(
 			`tc_read_current_${position}`,
 		),
 		(context) => {
-			const toolResult = [...context.messages]
-				.reverse()
-				.find((message) => message.role === "toolResult");
 			const entries = currentThreadEntriesFromToolResult(
-				textOf(toolResult?.content),
+				latestToolResultText(context.messages) ?? "",
 			);
 			const entry = entries[0];
 			if (entry === undefined) {
@@ -297,12 +300,10 @@ function setProposePlaybackResponses(
 					: `tc_delete_${position}`,
 			);
 		},
-		(context) => {
-			const toolResult = [...context.messages]
-				.reverse()
-				.find((message) => message.role === "toolResult");
-			return textTurn(journalConfirmation(textOf(toolResult?.content)));
-		},
+		(context) =>
+			textTurn(
+				journalConfirmation(latestToolResultText(context.messages) ?? ""),
+			),
 	]);
 }
 
@@ -345,6 +346,7 @@ function readExtractScenario(): ExtractScenario {
 			"INKSTONE_FAUX_EXTRACT=1 requires INKSTONE_FAUX_EXTRACT_PARAMS to point at a scenario JSON file",
 		);
 	}
+	// the file is the scenario the e2e spec wrote for this run.
 	const parsed = JSON.parse(readFileSync(file, "utf8")) as ExtractScenario;
 	return {
 		journal_text: parsed.journal_text,
@@ -363,6 +365,8 @@ interface SearchResultRow {
 /** Parse `results[]` out of a `search_entities` tool result JSON string. */
 function searchResultsFromToolResult(text: string): SearchResultRow[] {
 	try {
+		// `text` is the JSON result of the `search_entities` tool this
+		// harness scripts; `results` is re-checked for an array below.
 		const payload = JSON.parse(text) as { results?: SearchResultRow[] };
 		return Array.isArray(payload.results) ? payload.results : [];
 	} catch {
@@ -386,13 +390,15 @@ type AnyMessage = {
 /** The flattened text of a tool result, across both transcript forms: the wire
  * `tool_result`'s `result.content` blocks, or the pi `toolResult`'s `content`. */
 function toolResultText(m: AnyMessage): string {
-	return textOf(m.result?.content ?? m.content);
+	// pi's in-process content crosses as its own open type; decode it to JSON here.
+	return textOf(Option.getOrNull(decodeJson(m.result?.content ?? m.content)));
 }
 
-/** Newest-first scan for the latest tool_result content matching `predicate`. */
+/** Newest-first scan for the latest tool_result content, matching `predicate` when
+ * one is given (a context-dependent Turn just wants the newest one). */
 function latestToolResultText(
 	messages: readonly AnyMessage[],
-	predicate: (text: string) => boolean,
+	predicate: (text: string) => boolean = () => true,
 ): string | undefined {
 	for (let i = messages.length - 1; i >= 0; i--) {
 		const m = messages[i];
@@ -499,12 +505,15 @@ function createJournalEntryForExtraction(scenario: ExtractScenario) {
 
 // Per-kind labels keep the person path's prose byte-identical while letting the
 // project path reuse the same machine.
-const KIND_LABEL: Record<ExtractTarget["kind"], string> = {
+const KIND_LABEL = {
 	person: "Person",
 	project: "Project",
-};
+} satisfies Record<ExtractTarget["kind"], string>;
 
-function createEntityProposal(target: ExtractTarget, journalEntryId: string) {
+function createEntityProposal(
+	target: ExtractTarget,
+	journalEntryId: string,
+): JsonObject {
 	return {
 		mutation_kind:
 			target.kind === "project" ? "create_project" : "create_person",
@@ -520,7 +529,7 @@ function referenceEntityProposal(
 	target: ExtractTarget,
 	journalEntryId: string,
 	entityId: string,
-) {
+): JsonObject {
 	return {
 		mutation_kind: "reference_existing_entity_from_journal_entry",
 		payload: {
@@ -557,6 +566,7 @@ function readCaptureScenario(): CaptureScenario {
 			"INKSTONE_FAUX_CAPTURE=1 requires INKSTONE_FAUX_CAPTURE_PARAMS to point at a scenario JSON file",
 		);
 	}
+	// the file is the scenario the e2e spec wrote for this run.
 	return JSON.parse(readFileSync(file, "utf8")) as CaptureScenario;
 }
 
@@ -567,24 +577,24 @@ function readCaptureScenario(): CaptureScenario {
 function captureProposal(scenario: CaptureScenario) {
 	if (scenario.intent === "project" && scenario.project !== undefined) {
 		const { name, outcome } = scenario.project;
+		const payload: JsonObject = {};
+		payload.name = name;
+		if (outcome !== undefined) payload.outcome = outcome;
 		return {
 			mutation_kind: "create_project",
-			payload: {
-				name,
-				...(outcome !== undefined ? { outcome } : {}),
-			},
+			payload,
 			rationale: "the user asked to start a Project outcome",
 		};
 	}
 	if (scenario.intent === "person" && scenario.person !== undefined) {
 		const { name, note, aliases } = scenario.person;
+		const payload: JsonObject = {};
+		payload.name = name;
+		if (note !== undefined) payload.note = note;
+		if (aliases !== undefined) payload.aliases = aliases;
 		return {
 			mutation_kind: "create_person",
-			payload: {
-				name,
-				...(note !== undefined ? { note } : {}),
-				...(aliases !== undefined ? { aliases } : {}),
-			},
+			payload,
 			rationale: "the user asked to remember a Person",
 		};
 	}
@@ -748,12 +758,10 @@ export function fauxDepsFor(manifest: WorkerManifest): InterpreterDeps {
 					`tc_ext_${index + 1}`,
 				),
 			),
-			(context) => {
-				const toolResult = [...context.messages]
-					.reverse()
-					.find((m) => m.role === "toolResult");
-				return textTurn(`external result: ${textOf(toolResult?.content)}`);
-			},
+			(context) =>
+				textTurn(
+					`external result: ${latestToolResultText(context.messages) ?? ""}`,
+				),
 		]);
 	} else if (process.env.INKSTONE_FAUX_TOOL_CALL === "1") {
 		// Tool-call mode (e2e): turn 1 read_thread on the pasted id, turn 2 echoes the result.
@@ -762,19 +770,19 @@ export function fauxDepsFor(manifest: WorkerManifest): InterpreterDeps {
 				const lastUser = [...context.messages]
 					.reverse()
 					.find((m) => m.role === "user");
-				const match = textOf(lastUser?.content).match(UUID_RE);
+				const match = textOf(
+					Option.getOrNull(decodeJson(lastUser?.content)),
+				).match(UUID_RE);
 				const threadId = match ? match[0] : "missing";
 				return fauxAssistantMessage(
 					[fauxToolCall("read_thread", { thread_id: threadId })],
 					{ stopReason: "toolUse" },
 				);
 			},
-			(context) => {
-				const toolResult = [...context.messages]
-					.reverse()
-					.find((m) => m.role === "toolResult");
-				return textTurn(`read_thread result: ${textOf(toolResult?.content)}`);
-			},
+			(context) =>
+				textTurn(
+					`read_thread result: ${latestToolResultText(context.messages) ?? ""}`,
+				),
 		]);
 	} else if (process.env.INKSTONE_FAUX_LOAD_SKILL !== undefined) {
 		// Load-skill mode (e2e, ADR-0036): turn 1 calls the ambient load_skill by
@@ -791,12 +799,10 @@ export function fauxDepsFor(manifest: WorkerManifest): InterpreterDeps {
 		} else {
 			faux.setResponses([
 				toolCallTurn("load_skill", { name: skillName }, "tc_load_skill"),
-				(context) => {
-					const toolResult = [...context.messages]
-						.reverse()
-						.find((m) => m.role === "toolResult");
-					return textTurn(`load_skill result: ${textOf(toolResult?.content)}`);
-				},
+				(context) =>
+					textTurn(
+						`load_skill result: ${latestToolResultText(context.messages) ?? ""}`,
+					),
 			]);
 		}
 	} else if (process.env.INKSTONE_FAUX_PROPOSE === "1") {
@@ -837,7 +843,9 @@ export function fauxDepsFor(manifest: WorkerManifest): InterpreterDeps {
 			(context) => {
 				// All prior turns except the current prompt (the last user message).
 				const prior = context.messages.slice(0, -1);
-				const parts = prior.map((m) => `${m.role}=${textOf(m.content)}`);
+				const parts = prior.map(
+					(m) => `${m.role}=${textOf(Option.getOrNull(decodeJson(m.content)))}`,
+				);
 				return textTurn(`history:${parts.join("|")}`);
 			},
 		]);

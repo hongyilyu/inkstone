@@ -12,22 +12,21 @@ import {
 import { cn } from "@/lib/utils.js";
 import { ObservationCorrectionForm } from "./ObservationCorrectionForm.js";
 
+/** The schemas that get a dedicated filter chip, in chip order — the one source of
+ * truth for the chip set: {@link HealthFilter} is derived from it, `SCHEMA_LABELS`
+ * must cover exactly it, and the route validates `?schema=` against it. A schema
+ * absent here stays reachable under All but never gets a chip. */
+export const KNOWN_SCHEMAS = ["bodyweight", "habit.checkin"] as const;
+
 /** The active schema filter; `undefined` = All. Only the schemas we render a chip
  * for are selectable — the route validates `?schema=` against these. */
-export type HealthFilter = "bodyweight" | "habit.checkin" | undefined;
+export type HealthFilter = (typeof KNOWN_SCHEMAS)[number] | undefined;
 
-/** Display labels for the schemas we offer a dedicated chip for, in chip order. A
- * schema absent from this map stays reachable under All but never gets a chip. */
-const SCHEMA_LABELS: Record<NonNullable<HealthFilter>, string> = {
+/** Display labels for the chip schemas. */
+const SCHEMA_LABELS = {
 	bodyweight: "Bodyweight",
 	"habit.checkin": "Habits",
-};
-
-/** The schemas that get a dedicated filter chip. Exported so the route validates
- * `?schema=` against exactly the chip set this view renders (one source of truth). */
-export const KNOWN_SCHEMAS = Object.keys(
-	SCHEMA_LABELS,
-) as NonNullable<HealthFilter>[];
+} satisfies Record<NonNullable<HealthFilter>, string>;
 
 /** A display-only "Captured from" line — text only, no link, no navigation. Shown
  * only when the observation carries a recorded source. Keyed purely on `relation`

@@ -1,4 +1,4 @@
-import type { EntityMutateParams } from "@inkstone/protocol";
+import type { EntityMutateParams, JsonObject } from "@inkstone/protocol";
 import { renderEntityEditor } from "@test/test-utils/renderWithCore";
 import { cleanup, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -6,6 +6,7 @@ import { Effect } from "effect";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { JournalEntryEditor } from "@/components/library/JournalEntryEditor";
 import type { JournalEntry, LibraryItem } from "@/lib/libraryItems";
+import { asArray, asObject } from "@/lib/readPayload";
 
 const renderEditor = (
 	props: Parameters<typeof JournalEntryEditor>[0],
@@ -71,6 +72,10 @@ const textOnlyEntry: JournalEntry = {
 };
 
 afterEach(cleanup);
+
+/** The mutation payload the editor sent, as a JSON object. */
+const payloadOf = (params: EntityMutateParams): JsonObject =>
+	asObject(params.payload) ?? {};
 
 describe("JournalEntryEditor create", () => {
 	it("emits create_journal_entry with a text-only body and occurred_at", async () => {
@@ -255,15 +260,15 @@ describe("JournalEntryEditor edit", () => {
 		await user.click(screen.getByRole("button", { name: /^save$/i }));
 
 		await waitFor(() => expect(seen).toHaveLength(1));
-		const payload = seen[0].payload as {
-			body: Array<{ type: string; ref_id?: string }>;
-		};
-		const refNodes = payload.body.filter((n) => n.type === "entity_ref");
+		const body = asArray(payloadOf(seen[0]).body);
+		const refNodes = body.filter(
+			(node) => asObject(node)?.type === "entity_ref",
+		);
 		// Only the kept chip rides through — snake_case ref_id, real stored id.
 		expect(refNodes).toEqual([{ type: "entity_ref", ref_id: REF_B }]);
 		// The removed chip's id is absent entirely.
-		expect(JSON.stringify(payload.body)).not.toContain(REF_A);
-		expect(JSON.stringify(payload.body)).not.toContain("refId");
+		expect(JSON.stringify(body)).not.toContain(REF_A);
+		expect(JSON.stringify(body)).not.toContain("refId");
 	});
 
 	it("can drop ended_at when the end time is cleared", async () => {
@@ -287,7 +292,7 @@ describe("JournalEntryEditor edit", () => {
 		await user.click(screen.getByRole("button", { name: /^save$/i }));
 
 		await waitFor(() => expect(seen).toHaveLength(1));
-		const payload = seen[0].payload as Record<string, unknown>;
+		const payload = payloadOf(seen[0]);
 		expect("ended_at" in payload).toBe(false);
 		expect(payload.occurred_at).toBe("2026-06-10T10:30:00");
 	});
@@ -324,7 +329,7 @@ describe("JournalEntryEditor edit", () => {
 		await user.click(screen.getByRole("button", { name: /^save$/i }));
 
 		await waitFor(() => expect(seen).toHaveLength(1));
-		const payload = seen[0].payload as Record<string, unknown>;
+		const payload = payloadOf(seen[0]);
 		expect(payload.occurred_at).toBe("2026-06-10T10:30:45");
 	});
 
@@ -390,19 +395,17 @@ describe("JournalEntryEditor add chip", () => {
 		expect(seen[0].mutation_kind).toBe(
 			"reference_existing_entity_from_journal_entry",
 		);
-		const payload = seen[0].payload as {
-			source_entity_id: string;
-			target_entity_id: string;
-			label_snapshot?: string;
-			body: Array<{ type: string; ref_id?: string }>;
-		};
+		const payload = payloadOf(seen[0]);
 		expect(payload.source_entity_id).toBe(textOnlyEntry.id);
 		expect(payload.target_entity_id).toBe(PERSON_BOB.id);
 		expect(payload.label_snapshot).toBe("Bob");
 		// EXACTLY ONE placeholder — a bare entity_ref with NO ref_id (Core mints it).
-		const refNodes = payload.body.filter((n) => n.type === "entity_ref");
+		const body = asArray(payload.body);
+		const refNodes = body.filter(
+			(node) => asObject(node)?.type === "entity_ref",
+		);
 		expect(refNodes).toEqual([{ type: "entity_ref" }]);
-		expect(JSON.stringify(payload.body)).not.toContain("ref_id");
+		expect(JSON.stringify(body)).not.toContain("ref_id");
 		await waitFor(() => expect(onDone).toHaveBeenCalledWith(textOnlyEntry.id));
 	});
 
@@ -449,11 +452,7 @@ describe("JournalEntryEditor add chip", () => {
 		expect(seen[1].mutation_kind).toBe(
 			"reference_existing_entity_from_journal_entry",
 		);
-		const refPayload = seen[1].payload as {
-			target_entity_id: string;
-			occurred_at?: string;
-		};
-		expect(refPayload.target_entity_id).toBe(PERSON_BOB.id);
+		expect(payloadOf(seen[1]).target_entity_id).toBe(PERSON_BOB.id);
 		await waitFor(() => expect(onDone).toHaveBeenCalledWith(textOnlyEntry.id));
 	});
 

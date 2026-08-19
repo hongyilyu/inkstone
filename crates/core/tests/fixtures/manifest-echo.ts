@@ -6,6 +6,8 @@
 // Reads one stdin line (the WorkerManifest), emits the access_token as a
 // single text_delta (or "<none>" when absent), then done.
 
+import type { JsonValue } from "./transport.js";
+
 function readFirstLine(): Promise<string | null> {
 	return new Promise((resolve) => {
 		let buf = "";
@@ -26,13 +28,14 @@ function readFirstLine(): Promise<string | null> {
 	});
 }
 
-const emit = (event: unknown): void => {
+const emit = (event: JsonValue): void => {
 	process.stdout.write(`${JSON.stringify(event)}\n`);
 };
 
 async function main(): Promise<void> {
 	const line = await readFirstLine();
 	if (line === null) return;
+	// Core writes the manifest line; this fixture reads only these fields.
 	const manifest = JSON.parse(line) as { access_token?: string };
 	const token = manifest.access_token ?? "<none>";
 	emit({ kind: "text_delta", delta: token });

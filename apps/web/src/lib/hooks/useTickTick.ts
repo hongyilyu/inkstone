@@ -1,6 +1,5 @@
 import type {
 	TickTickStatusResult,
-	TickTickTaskRow,
 	TickTickTasksListResult,
 } from "@inkstone/protocol";
 import { type ConnectionStatus, WsClient } from "@inkstone/ui-sdk";
@@ -35,7 +34,7 @@ const STATUS_KEY = ["ticktick", "status"] as const;
 export function classifyTasksError(
 	isError: boolean,
 	data: TickTickTasksListResult | undefined,
-): { tasksInitialError: boolean; tasksStaleError: boolean } {
+) {
 	return {
 		tasksInitialError: isError && data === undefined,
 		tasksStaleError: isError && data !== undefined,
@@ -156,7 +155,7 @@ export function useTickTick() {
 
 	// #4: a FAILED background refetch keeps the last-good rows (TanStack retains
 	// `data` on error), so distinguish it from an initial failure with no rows.
-	const rows = (tasks.data?.tasks ?? []) as readonly TickTickTaskRow[];
+	const rows = tasks.data?.tasks ?? [];
 	return {
 		connected: status.data?.state === "connected",
 		statusResolved: status.isSuccess,

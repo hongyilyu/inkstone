@@ -6,6 +6,7 @@
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { JsonObject } from "@inkstone/protocol";
 import { describe, expect, it } from "vitest";
 import {
 	aggregate,
@@ -37,15 +38,15 @@ describe("eval fixtures", () => {
 
 	it("each fixture parses against the Fixture shape", () => {
 		for (const f of fixtures) {
-			expect(typeof f.message).toBe("string");
+			expect(f.message).toEqual(expect.any(String));
 			expect(f.message.length).toBeGreaterThan(0);
 			expect(Array.isArray(f.world)).toBe(true);
 			expect(f.expected).toBeDefined();
 			expect(ALLOWED_KINDS.has(f.expected.kind)).toBe(true);
 			for (const e of f.world) {
-				expect(typeof e.id).toBe("string");
-				expect(typeof e.name).toBe("string");
-				expect(typeof e.type).toBe("string");
+				expect(e.id).toEqual(expect.any(String));
+				expect(e.name).toEqual(expect.any(String));
+				expect(e.type).toEqual(expect.any(String));
 			}
 		}
 	});
@@ -134,14 +135,14 @@ describe("aggregate + append", () => {
 
 	it("resultsRow has the 8-field shape + types", () => {
 		const row = resultsRow(aggregate([score(1, 1, 1)]), "abc123def456", "all");
-		expect(typeof row.date).toBe("string");
-		expect(typeof row.prompt_hash).toBe("string");
+		expect(row.date).toEqual(expect.any(String));
+		expect(row.prompt_hash).toEqual(expect.any(String));
 		expect(row.split).toBe("all");
-		expect(typeof row.entity_f1).toBe("number");
-		expect(typeof row.obs_f1).toBe("number");
-		expect(typeof row.field_f1).toBe("number");
-		expect(typeof row.kind_match_rate).toBe("number");
-		expect(typeof row.n).toBe("number");
+		expect(row.entity_f1).toEqual(expect.any(Number));
+		expect(row.obs_f1).toEqual(expect.any(Number));
+		expect(row.field_f1).toEqual(expect.any(Number));
+		expect(row.kind_match_rate).toEqual(expect.any(Number));
+		expect(row.n).toEqual(expect.any(Number));
 		expect(Object.keys(row).sort()).toEqual(
 			[
 				"date",
@@ -213,7 +214,7 @@ describe("create_* fixtures align with a correct prediction (no false zero)", ()
 		message: string;
 		mutation_kind: "create_project" | "create_person";
 		// The predicted payload a good model emits; project/person fields are flat.
-		payload: Record<string, unknown>;
+		payload: JsonObject;
 	}> = [
 		{
 			file: "project-lisbon-trip.json",

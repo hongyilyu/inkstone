@@ -1,6 +1,9 @@
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { createServer as createNetServer } from "node:net";
+import {
+	createServer as createNetServer,
+	type Server as NetServer,
+} from "node:net";
 import { expect, test as harness } from "./fixtures.js";
 import { type SpawnedCore, spawnCore } from "./spawnCore.js";
 
@@ -50,6 +53,12 @@ function taskResponse(): string {
 	return JSON.stringify(tasks);
 }
 
+/** The port a just-listening TCP server bound.
+ * these servers listen on a TCP port, so `address()` is an `AddressInfo`
+ * (it is a string only for a UNIX pipe) and non-null inside `listen`. */
+const boundPort = (server: Server | NetServer): number =>
+	(server.address() as AddressInfo).port;
+
 /** A fake TickTick OpenAPI server with one project and a 200-row task page. */
 function startFakeOpenApi(): Promise<{
 	url: string;
@@ -67,7 +76,7 @@ function startFakeOpenApi(): Promise<{
 	});
 	return new Promise((resolve) => {
 		server.listen(0, "127.0.0.1", () => {
-			const { port } = server.address() as AddressInfo;
+			const port = boundPort(server);
 			resolve({
 				url: `http://127.0.0.1:${port}`,
 				close: () =>
@@ -79,24 +88,21 @@ function startFakeOpenApi(): Promise<{
 	});
 }
 
-const test = harness.extend<{
-	fakeApi: { url: string; close: () => Promise<void> };
-}>({
-	// biome-ignore lint/correctness/noEmptyPattern: Playwright's empty-destructure idiom for a dependency-free fixture.
-	fakeApi: async ({}, use) => {
+// The fake OpenAPI server lives INSIDE the `core` fixture: it is its only
+// consumer, and a fixture of its own would need Playwright's empty-destructure
+// idiom to declare "no dependencies".
+const test = harness.extend({
+	core: async ({ coreOptions }, use) => {
 		const fake = await startFakeOpenApi();
-		await use(fake);
-		await fake.close();
-	},
-	core: async ({ coreOptions, fakeApi }, use) => {
 		// Spread coreOptions so a `test.use({ coreOptions })` here is honored, not
 		// silently dropped (review M11) — matching external-tools.spec's fixture.
 		const core = await spawnCore({
 			...coreOptions,
-			ticktickApiUrl: fakeApi.url,
+			ticktickApiUrl: fake.url,
 		});
 		await use(core);
 		await core.shutdown();
+		await fake.close();
 	},
 });
 
@@ -129,7 +135,7 @@ function freePort(): Promise<number> {
 		const srv = createNetServer();
 		srv.on("error", reject);
 		srv.listen(0, "127.0.0.1", () => {
-			const { port } = srv.address() as AddressInfo;
+			const port = boundPort(srv);
 			srv.close(() => resolve(port));
 		});
 	});
@@ -171,7 +177,7 @@ function startPerTokenServer(tasksByToken: Record<string, string>): Promise<{
 	});
 	return new Promise((resolve) => {
 		server.listen(0, "127.0.0.1", () => {
-			const { port } = server.address() as AddressInfo;
+			const port = boundPort(server);
 			resolve({
 				url: `http://127.0.0.1:${port}`,
 				close: () =>
@@ -184,7 +190,7 @@ function startPerTokenServer(tasksByToken: Record<string, string>): Promise<{
 }
 
 // This test manages its own Core lifecycle (two spawns on a fixed port), so it
-// opts OUT of the per-test `core`/`fakeApi` fixtures via the base harness.
+// opts OUT of the per-test `core` fixture via the base harness.
 harness(
 	"swapping the account across a Core restart clears account A's tasks (A2 reconnect)",
 	async ({ page }) => {

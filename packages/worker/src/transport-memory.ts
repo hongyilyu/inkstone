@@ -1,3 +1,4 @@
+import type { JsonValue } from "@inkstone/protocol";
 import { Effect, Layer } from "effect";
 import type { ToolCallResponse } from "./tool-proxy.js";
 import {
@@ -10,7 +11,7 @@ import {
 export interface CapturedToolRequest {
 	readonly toolCallId: string;
 	readonly name: string;
-	readonly params: unknown;
+	readonly params: JsonValue;
 }
 
 /** Scripted Tool Protocol channel for {@link InMemoryTransport}: the Tool Results `callTool` returns plus an array of received Tool Requests, for assertions. */

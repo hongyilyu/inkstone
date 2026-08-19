@@ -23,17 +23,14 @@ import {
 	readProjectData,
 } from "../src/index.js";
 
-/** Field names of a Struct (`.fields`) or a plain field-map, sorted. */
-const keysOf = (schemaOrFields: object): string[] => {
-	const fields = (schemaOrFields as { fields?: Record<string, unknown> })
-		.fields;
-	return Object.keys(fields ?? schemaOrFields).sort();
-};
+/** Field names of a Struct's field-map, sorted. */
+const keysOf = (fields: S.Struct.Fields): string[] =>
+	Object.keys(fields).sort();
 
 describe("read-data schema is a superset of the write-data schema (gated pair)", () => {
 	const pair = [
-		{ name: "person", read: readPersonData, write: personCore },
-		{ name: "project", read: readProjectData, write: projectCore },
+		{ name: "person", read: readPersonData.fields, write: personCore },
+		{ name: "project", read: readProjectData.fields, write: projectCore },
 	] as const;
 
 	for (const { name, read, write } of pair) {
@@ -49,11 +46,11 @@ describe("read-data schema is a superset of the write-data schema (gated pair)",
 	// so a future refactor that derived the read keys from the write cores (the
 	// vacuity that would silently turn the gate into a no-op) can no longer pass.
 	it("flags a write field the read schema is missing (the gate is not vacuous)", () => {
-		const writeWithExtra = S.Struct({
+		const writeWithExtra = {
 			...personCore,
 			brand_new_write_field: S.String,
-		});
-		const readKeys = new Set(keysOf(readPersonData));
+		};
+		const readKeys = new Set(keysOf(readPersonData.fields));
 		const missing = keysOf(writeWithExtra).filter((k) => !readKeys.has(k));
 		expect(missing).toEqual(["brand_new_write_field"]);
 	});

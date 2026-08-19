@@ -2,7 +2,8 @@ name: CI
 
 # The full AGENTS.md §6 quality gate, run on every push to master and every PR.
 # Four parallel jobs, each a required status check (see docs/agents/ci.md):
-#   lint-format  →  biome ci .            (format + lint + organizeImports)
+#   lint-format  →  biome ci . + oxlint   (format + lint + organizeImports,
+#                                          then the anti-slop plugin)
 #   ts           →  pnpm -r check + test  (tsc + vitest across the workspace)
 #   rust         →  cargo check + test    (crates/core)
 #   e2e          →  pnpm test:e2e         (full-system Playwright harness)
@@ -44,6 +45,12 @@ jobs:
       # lint gates in one pass. Honors biome.json includes/excludes + vcs ignore.
       - name: Biome (format + lint + organizeImports)
         run: pnpm exec biome ci .
+      # The vendored anti-slop plugin (tools/oxlint/anti-slop, all rules at
+      # `error` in .oxlintrc.json): bans broad input/dictionary contracts,
+      # assertion chains, module mocking, and related evidence-losing patterns.
+      # Same command as `pnpm lint:anti-slop`.
+      - name: Oxlint (anti-slop)
+        run: pnpm exec oxlint
 
   ts:
     name: ts

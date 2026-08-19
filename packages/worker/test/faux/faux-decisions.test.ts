@@ -27,6 +27,8 @@ interface DecisionProse {
 	accepted_examples: AcceptedExample[];
 }
 
+// the fixture is Core's committed decision-prose dump, regenerated and
+// diff-gated in CI; the assertions below read exactly the fields this type names.
 const fixture: DecisionProse = JSON.parse(
 	readFileSync(
 		fileURLToPath(

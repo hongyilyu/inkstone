@@ -2,7 +2,7 @@ import type {
 	EntityMutateParams,
 	EntityMutateResult,
 } from "@inkstone/protocol";
-import { WsClient } from "@inkstone/ui-sdk";
+import { WsClient, type WsError } from "@inkstone/ui-sdk";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Effect } from "effect";
 import { invalidateEntityReads } from "@/lib/entityReads";
@@ -22,7 +22,7 @@ import { showEntityCue, verbForMutationKind } from "@/store/entityCue";
 export function useEntityMutation() {
 	const runtime = useRuntime();
 	const queryClient = useQueryClient();
-	return useMutation<EntityMutateResult, unknown, EntityMutateParams>({
+	return useMutation<EntityMutateResult, WsError, EntityMutateParams>({
 		mutationFn: (params) =>
 			runSquashed(
 				runtime,

@@ -1,8 +1,10 @@
+import type { JsonObject } from "@inkstone/protocol";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import {
 	type TimelineFilter,
 	TimelineView,
 } from "@/components/library/TimelineView";
+import { asString } from "@/lib/readPayload";
 
 const TIMELINE_FILTERS: TimelineFilter[] = [
 	"all",
@@ -49,16 +51,11 @@ function TimelineRoute() {
 }
 
 export const Route = createFileRoute("/library/timeline")({
-	validateSearch: (search: Record<string, unknown>): TimelineSearch => ({
-		filter: TIMELINE_FILTERS.includes(search.filter as TimelineFilter)
-			? (search.filter as TimelineFilter)
-			: undefined,
+	validateSearch: (search: JsonObject): TimelineSearch => ({
+		filter: TIMELINE_FILTERS.find((known) => known === asString(search.filter)),
 		// Absent (or empty) `?focus=` means "no rail" — onFocusChange clears it by
 		// writing undefined, so normalize "" to undefined to keep the two in sync.
-		focus:
-			typeof search.focus === "string" && search.focus
-				? search.focus
-				: undefined,
+		focus: asString(search.focus) || undefined,
 	}),
 	component: TimelineRoute,
 });

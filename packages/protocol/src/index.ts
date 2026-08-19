@@ -3,6 +3,7 @@
 // observation/proposal/provider/worker + payloads). No schema is defined here.
 
 export * from "./entity.js";
+export * from "./json.js";
 export * from "./media.js";
 export * from "./observation.js";
 export * from "./payloads.js";

@@ -5,10 +5,10 @@
 // the matching `@inkstone/protocol` schema; an invalid payload scores zero.
 
 import { isDeepStrictEqual } from "node:util";
-import { schemas } from "@inkstone/protocol";
+import type { JsonObject, JsonValue } from "@inkstone/protocol";
+import { asArray, asObject, asString, schemas } from "@inkstone/protocol";
 import { Either, Schema as S } from "effect";
 import type {
-	ExpectedKind,
 	ExpectedProposal,
 	PredictedProposal,
 	ScoreResult,
@@ -54,27 +54,24 @@ export function f1(precision: number, recall: number): number {
 interface Record_ {
 	tag: string;
 	name: string | undefined;
-	fields: Record<string, unknown>;
+	fields: JsonObject;
 }
 
-const isRecord = (v: unknown): v is Record<string, unknown> =>
-	typeof v === "object" && v !== null && !Array.isArray(v);
-
-const asString = (v: unknown): string | undefined =>
-	typeof v === "string" ? v : undefined;
-
 /** Pull the entity record pool out of a predicted payload by kind. */
-function predictedEntityPool(
-	kind: string,
-	payload: Record<string, unknown>,
-): Record_[] {
+function predictedEntityPool(kind: string, payload: JsonObject): Record_[] {
 	if (kind === "apply_intent_graph") {
-		const nodes = Array.isArray(payload.entities) ? payload.entities : [];
-		return nodes.filter(isRecord).map((n) => ({
-			tag: asString(n.type) ?? "",
-			name: asString(n.name) ?? asString(n.title),
-			fields: n,
-		}));
+		return asArray(payload.entities).flatMap((node): Record_[] => {
+			const record = asObject(node);
+			return record === null
+				? []
+				: [
+						{
+							tag: asString(record.type) ?? "",
+							name: asString(record.name) ?? asString(record.title),
+							fields: record,
+						},
+					];
+		});
 	}
 	if (kind === "create_person" || kind === "create_project") {
 		// A single synthetic record from the payload's entity fields.
@@ -88,17 +85,20 @@ function predictedEntityPool(
 }
 
 /** Pull the observation record pool out of a predicted payload by kind. */
-function predictedObsPool(
-	kind: string,
-	payload: Record<string, unknown>,
-): Record_[] {
+function predictedObsPool(kind: string, payload: JsonObject): Record_[] {
 	if (kind !== "record_observations") return [];
-	const rows = Array.isArray(payload.observations) ? payload.observations : [];
-	return rows.filter(isRecord).map((o) => ({
-		tag: asString(o.schema_key) ?? "",
-		name: undefined, // observations align on schema_key alone
-		fields: o,
-	}));
+	return asArray(payload.observations).flatMap((row): Record_[] => {
+		const record = asObject(row);
+		return record === null
+			? []
+			: [
+					{
+						tag: asString(record.schema_key) ?? "",
+						name: undefined, // observations align on schema_key alone
+						fields: record,
+					},
+				];
+	});
 }
 
 /** Build the expected entity pool from an ExpectedProposal. */
@@ -139,7 +139,7 @@ interface Alignment {
  * name match after normalize — with the projectBaseName relaxation for project
  * names. Each predicted record is consumed by at most one expected record. */
 function align(expected: Record_[], predicted: Record_[]): Alignment {
-	const used = new Array<boolean>(predicted.length).fill(false);
+	const used = predicted.map(() => false);
 	const pairs: Alignment["pairs"] = [];
 	for (const exp of expected) {
 		for (let i = 0; i < predicted.length; i++) {
@@ -173,14 +173,13 @@ interface PoolScore {
 	expected: number;
 }
 
-function scorePool(
-	expected: Record_[],
-	predicted: Record_[],
-): {
+interface PoolResult {
 	score: PoolScore;
 	f1: number;
 	pairs: Alignment["pairs"];
-} {
+}
+
+function scorePool(expected: Record_[], predicted: Record_[]): PoolResult {
 	const { matched, pairs } = align(expected, predicted);
 	const p = predicted.length === 0 ? 0 : matched / predicted.length;
 	const r = expected.length === 0 ? 0 : matched / expected.length;
@@ -225,10 +224,18 @@ const HANDLE_TAGS = new Set(["handle"]);
  * (precision hit), every `expected` record must be FIELD-EXHAUSTIVE — list every
  * field a correct model emits for the message. Under-specify a field a correct
  * model would produce and the precision term scores that correct model FALSE-LOW. */
+/** The field micro-F1 tally: graded-correct, expected-total, and hallucinated
+ * extras. */
+interface FieldTally {
+	correct: number;
+	expectedTotal: number;
+	extraPredicted: number;
+}
+
 function scoreFields(
 	pairs: Alignment["pairs"],
 	scoredKeys: (rec: Record_) => string[],
-): { correct: number; expectedTotal: number; extraPredicted: number } {
+): FieldTally {
 	let correct = 0;
 	let expectedTotal = 0;
 	let extraPredicted = 0;
@@ -247,9 +254,14 @@ function scoreFields(
 	return { correct, expectedTotal, extraPredicted };
 }
 
-function fieldEquals(a: unknown, b: unknown): boolean {
-	if (typeof a === "string" && typeof b === "string") {
-		return normalize(a) === normalize(b);
+function fieldEquals(
+	a: JsonValue | undefined,
+	b: JsonValue | undefined,
+): boolean {
+	const left = asString(a);
+	const right = asString(b);
+	if (left !== undefined && right !== undefined) {
+		return normalize(left) === normalize(right);
 	}
 	return isDeepStrictEqual(a, b);
 }
@@ -294,11 +306,11 @@ const emptyPool = (): PoolScore => ({
 	expected: 0,
 });
 
-const emptyFields = (): {
-	correct: number;
-	expectedTotal: number;
-	extraPredicted: number;
-} => ({ correct: 0, expectedTotal: 0, extraPredicted: 0 });
+const emptyFields = (): FieldTally => ({
+	correct: 0,
+	expectedTotal: 0,
+	extraPredicted: 0,
+});
 
 /** A perfect result (all F1 = 1, clean pools) — the `none`+`null` case. */
 function perfect(): ScoreResult {
@@ -347,9 +359,9 @@ function isRegisteredKind(
  * separately (see `isRegisteredKind`); this only runs for known kinds. */
 function schemaDecodes(
 	mutationKind: keyof typeof schemas,
-	payload: unknown,
+	payload: JsonValue,
 ): boolean {
-	const schema = schemas[mutationKind] as S.Schema<unknown, unknown>;
+	const schema: S.Schema.AnyNoContext = schemas[mutationKind];
 	return Either.isRight(S.decodeUnknownEither(schema)(payload));
 }
 
@@ -385,7 +397,7 @@ export function scoreProposal(
 
 	// kindMatch is computed BEFORE the schema gate so an invalid-payload return can
 	// still report the right kind (right kind + bad shape ≠ a real kind mismatch).
-	const kindMatch = predicted.mutation_kind === (expected.kind as ExpectedKind);
+	const kindMatch = predicted.mutation_kind === expected.kind;
 
 	// 2. Schema gate. An unregistered/hallucinated kind fails outright; a
 	// registered kind whose payload doesn't decode fails as "invalid".
@@ -396,7 +408,7 @@ export function scoreProposal(
 		return zeroed("invalid", { schemaValid: false, kindMatch });
 	}
 
-	const payload = isRecord(predicted.payload) ? predicted.payload : {};
+	const payload = asObject(predicted.payload) ?? {};
 
 	// 4 + 5. Extract + align record pools.
 	const entExpected = expectedEntityPool(expected);

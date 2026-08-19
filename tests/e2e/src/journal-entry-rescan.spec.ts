@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { asArray, asObject, asString } from "@inkstone/protocol";
 import { expect, test } from "./fixtures.js";
 import { dbPathFor } from "./seed.js";
 import { jsonValue, sqlite, sqlValue } from "./seed-proposal.js";
@@ -280,18 +281,19 @@ test.describe("Scan again drives an anchor-reuse re-scan", () => {
 			dbPath,
 			`SELECT data FROM entity_revisions WHERE entity_id = ${sqlValue(JE_ID)} ORDER BY seq DESC LIMIT 1;`,
 		).trim();
-		const body = JSON.parse(latestBody).body as Array<{
-			type: string;
-			text?: string;
-			ref_id?: string;
-		}>;
-		const chips = body.filter((n) => n.type === "entity_ref");
+		const body = asArray(asObject(JSON.parse(latestBody))?.body).flatMap(
+			(node) => {
+				const record = asObject(node);
+				return record === null ? [] : [record];
+			},
+		);
+		const chips = body.filter((node) => node.type === "entity_ref");
 		expect(chips).toHaveLength(1);
 		expect(chips[0].ref_id).toBe(refId);
 		// Surrounding prose intact; "Priya" is now a chip, not plain text.
 		const prose = body
-			.filter((n) => n.type === "text")
-			.map((n) => n.text ?? "")
+			.filter((node) => node.type === "text")
+			.map((node) => asString(node.text) ?? "")
 			.join("");
 		expect(prose).toBe("Caught up with  about the roadmap.");
 		expect(prose).not.toContain(PERSON_NAME);
@@ -441,14 +443,15 @@ test.describe("an append re-scan folds in a later-mentioned Person", () => {
 			dbPath,
 			`SELECT data FROM entity_revisions WHERE entity_id = ${sqlValue(APPEND_JE_ID)} ORDER BY seq DESC LIMIT 1;`,
 		).trim();
-		const body = JSON.parse(latestBody).body as Array<{
-			type: string;
-			text?: string;
-			ref_id?: string;
-		}>;
+		const body = asArray(asObject(JSON.parse(latestBody))?.body).flatMap(
+			(node) => {
+				const record = asObject(node);
+				return record === null ? [] : [record];
+			},
+		);
 
 		// Exactly ONE chip, and its ref_id is the backlink.
-		const chips = body.filter((n) => n.type === "entity_ref");
+		const chips = body.filter((node) => node.type === "entity_ref");
 		expect(chips).toHaveLength(1);
 		expect(chips[0].ref_id).toBe(refId);
 
