@@ -9,13 +9,13 @@
 // read serves whatever has been created so far — so the Tasks view really
 // reflects the accepted write.
 
-import { createServer, type Server } from "node:http";
 import { mkdtempSync, writeFileSync } from "node:fs";
+import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { expect as baseExpect } from "@playwright/test";
 import { test as harness } from "./fixtures.js";
-import { FAUX_WORKER_CMD, spawnCore, type SpawnedCore } from "./spawnCore.js";
+import { FAUX_WORKER_CMD, type SpawnedCore, spawnCore } from "./spawnCore.js";
 
 const expect = baseExpect;
 
