@@ -1,4 +1,4 @@
-import type { ObservationRow } from "@inkstone/protocol";
+import type { JsonObject, ObservationRow } from "@inkstone/protocol";
 import { describe, expect, it } from "vitest";
 import {
 	groupObservationsByDay,
@@ -107,10 +107,12 @@ describe("toObservationView — graceful fallback (load-bearing)", () => {
 	});
 
 	it("a values payload that JSON.stringify cannot serialize falls back without throwing", () => {
-		// Wire `values` is always JSON-tree data, but the never-throw contract is
-		// absolute — a non-wire caller passing a BigInt (or circular) must degrade,
-		// not throw out of `JSON.stringify`.
-		const r = row({ schema_key: "sleep.session", values: { big: 10n } });
+		// Wire `values` is always a finite JSON tree, but the never-throw contract is
+		// absolute — a CIRCULAR object (which the JSON types cannot rule out) must
+		// degrade, not throw out of `JSON.stringify`.
+		const circular: JsonObject = {};
+		circular.self = circular;
+		const r = row({ schema_key: "sleep.session", values: circular });
 		expect(() => toObservationView(r)).not.toThrow();
 		expect(fieldsText(toObservationView(r))).toContain("[unserializable]");
 	});

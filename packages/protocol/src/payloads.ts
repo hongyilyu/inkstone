@@ -14,7 +14,7 @@
 
 import { Schema as S } from "effect";
 
-import { JsonValue } from "./json.js";
+import { JsonObject, JsonValue } from "./json.js";
 
 // ── Leaf builders that match the Rust `field_spec.rs` dialect ──
 //
@@ -361,7 +361,7 @@ export const observationRecordDraft = S.Union(
 const observationUpdateDraft = S.Struct({
 	occurred_at: localDateTime,
 	ended_at: S.optional(localDateTime),
-	values: S.Record({ key: S.String, value: S.Unknown }),
+	values: JsonObject,
 	note: S.optional(S.String),
 });
 
