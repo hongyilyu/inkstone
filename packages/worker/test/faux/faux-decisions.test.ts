@@ -6,6 +6,7 @@ import {
 	acceptedVerb,
 	DECLINED_TEXT,
 	decisionOutcome,
+	tickTickWriteOutcome,
 } from "../../src/faux/faux-decisions.js";
 
 // The Decision-prose contract pin (finding F12). Core renders a decided
@@ -25,6 +26,10 @@ interface DecisionProse {
 	declined_text: string;
 	accepted_prefix: string;
 	accepted_examples: AcceptedExample[];
+	ticktick_write_outcomes: Array<{
+		outcome: "created" | "failed" | "unknown";
+		sample: string;
+	}>;
 }
 
 // the fixture is Core's committed decision-prose dump, regenerated and
@@ -53,6 +58,44 @@ describe("decision-prose contract (faux-decisions ↔ Core renderers)", () => {
 	it("every Core accept sample classifies as accepted", () => {
 		for (const ex of fixture.accepted_examples) {
 			expect(decisionOutcome(ex.sample), ex.sample).toBe("accepted");
+		}
+	});
+
+	// The TickTick write family (ticktick-writes W-A3): the faux worker relays
+	// the outcome across the resume, so its matcher must classify each of
+	// Core's three REAL texts — and must not fire on any other Decision prose.
+	it("every TickTick write outcome text classifies as itself", () => {
+		expect(fixture.ticktick_write_outcomes).toHaveLength(3);
+		for (const { outcome, sample } of fixture.ticktick_write_outcomes) {
+			expect(tickTickWriteOutcome(sample), sample).toBe(outcome);
+			// None of the three is a DECLINE — all three are accepted Decisions
+			// whose outcome is content the model relays (`is_error: false`).
+			expect(decisionOutcome(sample), sample).not.toBe("declined");
+		}
+	});
+
+	// Prose shape worth pinning: only the CREATED text wears the strict
+	// "Accepted." prefix; failed/unknown read "Accepted, but …", so the shared
+	// prefix classifier does not claim them. That is why the faux confirmation
+	// consults `tickTickWriteOutcome` BEFORE falling through to the verb
+	// matchers — a reordering there would silently report a failed write as
+	// "Done." A change to either Core text reds this pin.
+	it("only the created write text matches the shared accepted prefix", () => {
+		const byOutcome = new Map(
+			fixture.ticktick_write_outcomes.map((o) => [o.outcome, o.sample]),
+		);
+		expect(decisionOutcome(byOutcome.get("created") ?? "")).toBe("accepted");
+		expect(decisionOutcome(byOutcome.get("failed") ?? "")).toBeUndefined();
+		expect(decisionOutcome(byOutcome.get("unknown") ?? "")).toBeUndefined();
+		for (const { sample } of fixture.ticktick_write_outcomes) {
+			expect(sample.startsWith("Accepted"), sample).toBe(true);
+		}
+	});
+
+	it("the write matcher ignores non-write Decision prose", () => {
+		expect(tickTickWriteOutcome(fixture.declined_text)).toBeUndefined();
+		for (const ex of fixture.accepted_examples) {
+			expect(tickTickWriteOutcome(ex.sample), ex.sample).toBeUndefined();
 		}
 	});
 

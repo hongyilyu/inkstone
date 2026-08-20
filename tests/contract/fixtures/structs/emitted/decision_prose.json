@@ -37,5 +37,19 @@
     }
   ],
   "accepted_prefix": "Accepted.",
-  "declined_text": "User declined this proposal."
+  "declined_text": "User declined this proposal.",
+  "ticktick_write_outcomes": [
+    {
+      "outcome": "created",
+      "sample": "Accepted. Created \"buy milk\" in TickTick (task 6899f2b3c1a4de0000000001)."
+    },
+    {
+      "outcome": "failed",
+      "sample": "Accepted, but the TickTick write FAILED (HTTP 401). The task was NOT created. Do not retry on your own — tell the user, and let them re-ask or add it in TickTick."
+    },
+    {
+      "outcome": "unknown",
+      "sample": "Accepted, but the write outcome is UNKNOWN (the request may or may not have reached TickTick). Ask the user to check TickTick before proposing it again."
+    }
+  ]
 }

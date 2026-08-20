@@ -121,7 +121,7 @@ _Avoid_: Library (the retired flat sidebar), tab, section, area, category.
 The Web Client's global home Topic — a read-only aggregate over existing reads showing live Workspace stats, a cross-Topic glance, and the projects due for review. Adds no storage; purely a derived dashboard (ADR-0054).
 
 **Tasks**:
-The Topic that reads the user's tasks from **TickTick**, the sole task authority (ADR-0064). It is a read-only surface backed by the `ticktick/tasks/list` verb — Inkstone shows the user's tasks but never creates or edits one. Not an Entity Type, and not stored (the retired GTD Topic's Inbox/Waiting/Scheduled todo views went with the native Todo).
+The Topic that reads the user's tasks from **TickTick**, the sole task authority (ADR-0064). It is a read-only surface backed by the `ticktick/tasks/list` verb — the user creates and edits tasks in TickTick, not here (the one write Inkstone performs is an agent-proposed *create*, decided on the chat card, ADR-0065; the Topic just refetches after it). Not an Entity Type, and not stored (the retired GTD Topic's Inbox/Waiting/Scheduled todo views went with the native Todo).
 
 **Timeline**:
 Two related read-only chronologies at different altitudes, neither with new storage. (1) The **Timeline Topic** is a client-side presentation projection (ADR-0054 §4): Journal Entries, People, and Projects ordered by time via `entity/list` rows and their Entity Sources / Entity References. (2) The **Timeline Read Model** (ADR-0057) is the backend model behind a future `timeline/query` verb: a typed `(occurred_at, kind, ref)` union assembled at query time over the canonical fact tables — v1 members are **Journal Entries and Observations** (the records carrying an authoritative wall-clock `occurred_at`), ordered by that single wall-clock TEXT key, with Proposal/Message provenance as an event *attribute* (never a standalone event) and corrections as a per-record drilldown (not events). It is a typed union *read*, **not** a materialized table and **not** a client union; it never stores rows and is never a write target. Person/Project (no domain time) and Media (`captured_at` reserved, absent today) are out of v1. The two coexist as different consumers: the Topic is a presentation surface (Journal·Person·Project), the Read Model a backend fact chronology (Journal·Observation).
@@ -146,8 +146,12 @@ A derived date-grouped view over Journal Entries, grouped by the entries' occurr
 _Avoid_: daily entity, daily document as source of truth.
 
 **Task**:
-Something the user is responsible for doing. Tasks are NOT an Inkstone Entity — they live in **TickTick**, the sole task authority (ADR-0064, which retired the native Todo). Inkstone reads tasks through two read-only lanes (the `Tasks` Topic via `ticktick/tasks/list`; the model via the `ticktick_*` MCP read tools) but never writes one. When the user asks to track a task ("remind me to buy milk"), the agent's honest move is to tell them to add it in TickTick — it proposes no Workspace mutation.
-_Avoid_: Todo (the retired native Entity), task Entity, reminder row.
+Something the user is responsible for doing. Tasks are NOT an Inkstone Entity — they live in **TickTick**, the sole task authority (ADR-0064, which retired the native Todo). Inkstone reads tasks through two read-only lanes (the `Tasks` Topic via `ticktick/tasks/list`; the model via the `ticktick_*` MCP read tools), and writes exactly one thing: it **creates** a task through the Proposal gate (ADR-0065). When the user asks to track a task ("remind me to buy milk"), the agent proposes ONE **TickTick write** via `propose_ticktick_task`; on accept Core POSTs it into TickTick's Inbox and records a three-valued **write outcome** (`created | failed | unknown`) — an `unknown` never re-fires. Inkstone still cannot complete, edit, or delete a task, and stores no task row: the created task is visible by re-reading TickTick.
+_Avoid_: Todo (the retired native Entity), task Entity, reminder row, syncing/queuing a task write.
+
+**TickTick write**:
+The one remote write Inkstone performs (ADR-0065): a create-task `POST` executed by **Core** on a manually accepted Proposal — never by the Worker, whose `ticktick_*` MCP lane stays read-only. Its **write state** (`proposed → executing → settled`) lives on a `ticktick_writes` row created at park, beside the credential fingerprint the review happened under; its **write outcome** is the settled three-valued verdict. `accepted` is the human Decision; the outcome is a separate durable value, so a card mid-write reads "creating…" and a failed one never renders success-shaped.
+_Avoid_: task sync, write queue, retry (there is none), pending write (the *Proposal* pends; a write is `executing` for one bounded call, then settles).
 
 **Project**:
 A GTD-style outcome Entity — a desired result the user is driving toward, not a generic category, area, or stakeholder container. Its constituent tasks live in TickTick (ADR-0064), not in Inkstone. Project status is manual: active, on hold, completed, or dropped. Projects carry review metadata so Project Review can prompt periodic reassessment.
@@ -231,7 +235,7 @@ A back-and-forth between two contributors walking through an extraction flow. Th
 >
 > **A:** Who creates the Proposal?
 >
-> **B:** The Worker, during the Run. The Workflow submits Proposals one at a time: first "Create this Journal Entry," then, after it is accepted, "Create Person 'Alice'" or "Create Project 'Lisbon trip'." The accepted Journal Entry becomes the provenance source for the extracted Entities. (A concrete task Alice owes you goes in TickTick, not Inkstone — ADR-0064.)
+> **B:** The Worker, during the Run. The Workflow submits Proposals one at a time: first "Create this Journal Entry," then, after it is accepted, "Create Person 'Alice'" or "Create Project 'Lisbon trip'." The accepted Journal Entry becomes the provenance source for the extracted Entities. (A concrete task Alice owes you goes in TickTick, not Inkstone — ADR-0064 — proposed as a TickTick write, ADR-0065.)
 >
 > **A:** And the Proposal is one of those Run Events?
 >
@@ -247,4 +251,4 @@ A back-and-forth between two contributors walking through an extraction flow. Th
 
 Notable disambiguations the dialogue exercises: tier 2 vs tier 3 authority; Journal Entry as accepted event record vs Message as chat input; Extraction Candidate vs Accepted Entity; Proposal vs Run Event.
 
-Direct non-journal capture uses the same Proposal and Entity Source vocabulary without forcing a Journal Entry. If the user says "Remember Alice is the daycare coordinator," the Workflow may propose a Person sourced directly from that Message; "Start a project for the API v2 migration" may propose a Project. A bare task ("remind me to buy milk") is not captured — tasks live in TickTick (ADR-0064), so the agent redirects there. Journal Entry is required for journal-worthy event capture, not for every Person or Project.
+Direct non-journal capture uses the same Proposal and Entity Source vocabulary without forcing a Journal Entry. If the user says "Remember Alice is the daycare coordinator," the Workflow may propose a Person sourced directly from that Message; "Start a project for the API v2 migration" may propose a Project. A bare task ("remind me to buy milk") is not captured as an Entity — tasks live in TickTick (ADR-0064), so the agent proposes a TickTick write instead (ADR-0065). Journal Entry is required for journal-worthy event capture, not for every Person or Project.

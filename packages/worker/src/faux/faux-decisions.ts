@@ -28,6 +28,25 @@ export function decisionOutcome(
  * renders an accepted Decision as `Accepted. <Verb> <Kind> (…details…).`, so
  * `acceptedVerb(text, "Updated", "Journal Entry")` matches
  * `Accepted. Updated Journal Entry (…).`. */
+/** Which TickTick write outcome an accepted Decision reports
+ * (ticktick-writes W-A3's three model-facing texts), or `undefined` when the
+ * content is not a TickTick write Decision. The faux worker reconstructs its
+ * phase from this across resumes, exactly like {@link acceptedVerb}. */
+export function tickTickWriteOutcome(
+	content: string,
+): "created" | "failed" | "unknown" | undefined {
+	if (content.includes("in TickTick (task ")) {
+		return "created";
+	}
+	if (content.includes("the TickTick write FAILED")) {
+		return "failed";
+	}
+	if (content.includes("the write outcome is UNKNOWN")) {
+		return "unknown";
+	}
+	return undefined;
+}
+
 export function acceptedVerb(
 	content: string,
 	verb: "Created" | "Updated" | "Deleted",

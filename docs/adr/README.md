@@ -7,7 +7,7 @@ the tree as history. Prose may be refreshed in place to track the code, but the
 recorded *decision* does not.
 
 New ADR: copy [`0000-template.md`](./0000-template.md), take the next free number
-(currently **0064**), and add a row below. When superseding, add the
+(currently **0065**), and add a row below. When superseding, add the
 `/ supersedes` and `/ superseded by` pointers to both files and update the table.
 
 ## Conventions
@@ -85,7 +85,8 @@ New ADR: copy [`0000-template.md`](./0000-template.md), take the next free numbe
 | 0061 | URL-addressable Threads: the route is the source of truth for thread focus | Accepted |
 | 0062 | Provider auth-kind abstraction | Accepted |
 | 0063 | Deterministic skill triggers: matched-skill directive at dispatch | Accepted |
-| 0064 | Task ownership moves to TickTick: native Todo retirement + two external read paths | Accepted (supersedes 0037/0039; in part 0031/0032/0033/0042/0050/0055) |
+| 0064 | Task ownership moves to TickTick: native Todo retirement + two external read paths | Accepted (supersedes 0037/0039; in part 0031/0032/0033/0042/0050/0055); amended in part by 0065 |
+| 0065 | TickTick task creation through the Proposal gate | Accepted (amends 0064 — its "no task writes" decision, create only) |
 
 ## Supersession map
 

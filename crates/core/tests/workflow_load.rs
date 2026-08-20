@@ -123,9 +123,11 @@ fn default_workflow_prompts_for_capture_intent_boundary() {
             && lower.contains("event"),
         "default.toml system_prompt must define what counts as a Journal Entry, got: {system_prompt:?}"
     );
-    // Bucket 2 — the reminder boundary (ADR-0064): a reminder/task/obligation is
-    // kept OUT of a Journal Entry AND out of Inkstone entirely — the model's
-    // honest move is the TickTick redirect, never a Workspace mutation.
+    // Bucket 2 — the reminder boundary (ADR-0065 amending ADR-0064): a
+    // reminder/task/obligation is still kept OUT of a Journal Entry, but it is
+    // no longer a dead end — it becomes exactly ONE `propose_ticktick_task`
+    // Proposal, and no other Workspace mutation. The prompt must also keep the
+    // capability limits honest (Inbox-only; no complete/edit/delete).
     assert!(
         lower.contains("do not propose a journal entry")
             && lower.contains("reminders")
@@ -135,9 +137,23 @@ fn default_workflow_prompts_for_capture_intent_boundary() {
     );
     assert!(
         lower.contains("ticktick is the user's task system")
-            && lower.contains("add it in ticktick")
-            && lower.contains("do not propose any workspace mutation for it"),
-        "default.toml system_prompt must route reminders/tasks to TickTick with no mutation, got: {system_prompt:?}"
+            && lower.contains("propose_ticktick_task")
+            && lower.contains("never a journal entry")
+            && lower.contains("never any other workspace")
+            && lower.contains("inbox")
+            && lower.contains("cannot complete, edit, or delete"),
+        "default.toml system_prompt must route reminders/tasks to ONE propose_ticktick_task with honest limits, got: {system_prompt:?}"
+    );
+    assert!(
+        lower.contains("propose one ticktick task via"),
+        "default.toml system_prompt must ask for exactly ONE task per proposal, got: {system_prompt:?}"
+    );
+    // The retired dead-end redirect must be GONE — that phrasing is exactly the
+    // capability ADR-0065 restores.
+    assert!(
+        !lower.contains("add it in ticktick — do not propose")
+            && !lower.contains("you cannot create or edit tasks from here"),
+        "default.toml system_prompt must not keep the retired add-it-yourself dead end, got: {system_prompt:?}"
     );
     // Task capture is fully retired: no todo mutation kind may be prompted.
     assert!(
@@ -157,12 +173,17 @@ fn default_workflow_prompts_for_capture_intent_boundary() {
         lower.contains("outcome, not a category"),
         "default.toml system_prompt must define a Project as an outcome, not a category/area, got: {system_prompt:?}"
     );
+    // Phrases that WRAP across prompt lines are matched on whitespace-collapsed
+    // text, so a harmless reflow of the shipped prompt cannot red this test.
+    let flat = lower.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(
         lower.contains("names a project")
             && lower.contains("concrete next")
-            && lower.contains("point them to ticktick")
-            && lower.contains("do not turn the action phrase into a new project name"),
-        "default.toml system_prompt must route a named Project plus explicit action to TickTick, got: {system_prompt:?}"
+            // Post-cutover (ADR-0065) the action is PROPOSED as a TickTick
+            // task, not pointed at; one proposal at a time still holds.
+            && flat.contains("propose it via propose_ticktick_task")
+            && flat.contains("do not turn the action phrase into a new project name"),
+        "default.toml system_prompt must route a named Project plus explicit action to a TickTick task proposal, got: {system_prompt:?}"
     );
     // Bucket 3 — ordinary conversation captures nothing.
     assert!(
@@ -271,9 +292,12 @@ fn default_workflow_prompts_for_capture_intent_boundary() {
             "read_thread",
             "read_current_thread_journal_entries",
             "propose_workspace_mutation",
+            // The ticktick-writes cutover's exposure lever (ADR-0065): the ONE
+            // remote write, reachable only through this Proposal tool.
+            "propose_ticktick_task",
             "search_entities",
         ],
-        "default.toml must allowlist only the exact Journal Entry intake tools"
+        "default.toml must allowlist only the exact capture-intake tools"
     );
     // The S4 cutover exposes the Worker-executed ticktick_* read tools to the
     // default Workflow (external-task-views A3).

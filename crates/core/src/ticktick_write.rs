@@ -272,6 +272,14 @@ fn decision_content(outcome: &WriteOutcome, title: &str) -> String {
     }
 }
 
+/// The Decision content for the schema-parity prose fixture (test-only): the
+/// SAME renderer production uses, so `decision_prose.json` carries ground-truth
+/// prose the faux worker's matcher can be locked against.
+#[cfg(test)]
+pub(crate) fn decision_content_for_contract(outcome: &WriteOutcome, title: &str) -> String {
+    decision_content(outcome, title)
+}
+
 /// The `unknown` Decision content — shared by phase C, the watchdog, and the
 /// boot sweep (the settle triggers that may run without the payload at hand).
 const UNKNOWN_DECISION_CONTENT: &str = "Accepted, but the write outcome is UNKNOWN (the \

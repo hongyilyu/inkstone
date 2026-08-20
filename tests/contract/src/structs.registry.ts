@@ -101,6 +101,15 @@ const DecisionProse = S.Struct({
 	accepted_examples: S.Array(
 		S.Struct({ verb: S.String, kind: S.String, sample: S.String }),
 	),
+	/** The TickTick write family's three model-facing outcome texts
+	 * (ticktick-writes W-A3): the faux worker's `tickTickWriteOutcome` matcher
+	 * branches on substrings of these, so they are part of the prose contract. */
+	ticktick_write_outcomes: S.Array(
+		S.Struct({
+			outcome: S.Literal("created", "failed", "unknown"),
+			sample: S.String,
+		}),
+	),
 });
 
 export interface FixtureEntry {
