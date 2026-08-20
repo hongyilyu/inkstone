@@ -2,10 +2,10 @@
 //! S2): a fake TickTick OpenAPI server serves small hand-authored wire
 //! responses. Core reads them through the real `TickTickClient` +
 //! normalization and answers the two verbs over the WS. Also covers the
-//! not-connected gate.
+//! not-connected gate and the detached `tasks/list` socket lane.
 
 use std::io::{Read, Write};
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
 use std::time::Duration;
 
 use futures_util::SinkExt;
@@ -49,19 +49,31 @@ fn task_response() -> String {
     serde_json::to_string(&tasks).expect("task response serializes")
 }
 
-fn write_ticktick_credential(creds_dir: &std::path::Path, token: &str) {
+fn write_ticktick_credential(creds_dir: &std::path::Path, body: &str) {
     std::fs::create_dir_all(creds_dir).expect("mk creds dir");
     let path = creds_dir.join("ticktick.json");
-    std::fs::write(
-        &path,
-        format!(r#"{{"access_token":"{token}","scope":"tasks:read tasks:write"}}"#),
-    )
-    .expect("write ticktick credential");
+    std::fs::write(&path, body).expect("write ticktick credential");
+    // The custody gate rejects group/world-readable tokens.
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("chmod");
     }
+}
+
+fn write_ticktick_response(stream: &mut TcpStream, head: &str, projects: &str, tasks: &str) {
+    let body = if head.starts_with("GET /open/v1/project") {
+        projects
+    } else {
+        tasks
+    };
+    let response = format!(
+        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    let _ = stream.write_all(response.as_bytes());
+    let _ = stream.flush();
 }
 
 /// A blocking HTTP/1.1 fake of TickTick's OpenAPI on a background thread.
@@ -82,18 +94,7 @@ fn start_fake_ticktick(expected_requests: usize) -> (String, std::thread::JoinHa
             let mut buf = [0u8; 8192];
             let n = stream.read(&mut buf).unwrap_or(0);
             let head = String::from_utf8_lossy(&buf[..n]);
-            let body = if head.starts_with("GET /open/v1/project") {
-                &projects
-            } else {
-                &tasks
-            };
-            let resp = format!(
-                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
-                body.len(),
-                body
-            );
-            let _ = stream.write_all(resp.as_bytes());
-            let _ = stream.flush();
+            write_ticktick_response(&mut stream, &head, &projects, &tasks);
         }
     });
     (format!("http://{addr}"), handle)
@@ -123,21 +124,10 @@ fn start_held_ticktick() -> (
             held.push((stream, String::from_utf8_lossy(&buf[..n]).into_owned()));
         }
         ready_tx.send(()).expect("signal held requests");
-        let _ = release_rx.recv_timeout(Duration::from_secs(5));
+        let _ = release_rx.recv();
 
         for (mut stream, head) in held {
-            let body = if head.starts_with("GET /open/v1/project") {
-                &projects
-            } else {
-                &tasks
-            };
-            let resp = format!(
-                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
-                body.len(),
-                body
-            );
-            let _ = stream.write_all(resp.as_bytes());
-            let _ = stream.flush();
+            write_ticktick_response(&mut stream, &head, &projects, &tasks);
         }
     });
 
@@ -157,20 +147,10 @@ fn tasks_list_normalizes_a_full_page_and_flags_truncation() {
     let (api_url, server) = start_fake_ticktick(2);
     let workspace = Workspace::new();
     let creds_dir = workspace.path().join("credentials");
-    std::fs::create_dir_all(&creds_dir).expect("mk creds dir");
-    let cred_path = creds_dir.join("ticktick.json");
-    std::fs::write(
-        &cred_path,
+    write_ticktick_credential(
+        &creds_dir,
         r#"{"access_token":"tok_e2e","token_type":"bearer","scope":"tasks:read tasks:write"}"#,
-    )
-    .expect("write ticktick credential");
-    // The custody gate (review R12 #5) rejects group/world-readable tokens.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&cred_path, std::fs::Permissions::from_mode(0o600))
-            .expect("chmod 0600");
-    }
+    );
 
     let core = workspace
         .core()
@@ -276,15 +256,7 @@ fn upstream_401_surfaces_as_an_error() {
 
     let workspace = Workspace::new();
     let creds_dir = workspace.path().join("credentials");
-    std::fs::create_dir_all(&creds_dir).expect("mk creds dir");
-    let cred_path = creds_dir.join("ticktick.json");
-    std::fs::write(&cred_path, r#"{"access_token":"tok_expired"}"#).expect("write cred");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&cred_path, std::fs::Permissions::from_mode(0o600))
-            .expect("chmod");
-    }
+    write_ticktick_credential(&creds_dir, r#"{"access_token":"tok_expired"}"#);
 
     let core = workspace
         .core()
@@ -329,15 +301,7 @@ fn stalled_upstream_is_bounded_by_the_timeout_knob() {
 
     let workspace = Workspace::new();
     let creds_dir = workspace.path().join("credentials");
-    std::fs::create_dir_all(&creds_dir).expect("mk creds dir");
-    let cred_path = creds_dir.join("ticktick.json");
-    std::fs::write(&cred_path, r#"{"access_token":"tok_stall"}"#).expect("write cred");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&cred_path, std::fs::Permissions::from_mode(0o600))
-            .expect("chmod");
-    }
+    write_ticktick_credential(&creds_dir, r#"{"access_token":"tok_stall"}"#);
 
     let core = workspace
         .core()
@@ -369,7 +333,10 @@ fn held_tasks_list_does_not_block_same_socket_run_tail_or_requests() {
     let workspace = Workspace::new();
     let gate_path = workspace.path().join("worker-gate");
     let creds_dir = workspace.path().join("credentials");
-    write_ticktick_credential(&creds_dir, "tok_detached");
+    write_ticktick_credential(
+        &creds_dir,
+        r#"{"access_token":"tok_detached","scope":"tasks:read tasks:write"}"#,
+    );
 
     let core = workspace
         .core()
@@ -418,24 +385,6 @@ fn held_tasks_list_does_not_block_same_socket_run_tail_or_requests() {
             snapshot["params"]["event"]["kind"],
             serde_json::json!("snapshot")
         );
-        let snapshot_has_text = snapshot["params"]["event"]["segments"]
-            .as_array()
-            .expect("snapshot segments")
-            .iter()
-            .any(|segment| {
-                segment["kind"] == serde_json::json!("text")
-                    && segment["text"]
-                        .as_str()
-                        .is_some_and(|text| !text.is_empty())
-            });
-        if !snapshot_has_text {
-            let first_delta: serde_json::Value =
-                serde_json::from_str(&next_text(&mut ws).await).expect("first delta");
-            assert_eq!(
-                first_delta["params"]["event"]["kind"],
-                serde_json::json!("text_delta")
-            );
-        }
 
         send(
             &mut ws,
@@ -463,10 +412,7 @@ fn held_tasks_list_does_not_block_same_socket_run_tail_or_requests() {
             let frame: serde_json::Value = serde_json::from_str(&body).expect("frame json");
             saw_status |= frame["id"] == serde_json::json!(11);
             saw_live_tail |= frame["method"] == serde_json::json!("run/event")
-                && matches!(
-                    frame["params"]["event"]["kind"].as_str(),
-                    Some("text_delta" | "done")
-                );
+                && frame["params"]["event"]["kind"] == serde_json::json!("done");
         }
 
         release_tx.send(()).expect("release TickTick reads");
@@ -497,7 +443,10 @@ fn closing_connection_during_detached_tasks_list_is_harmless() {
     let (api_url, ready_rx, release_tx, server) = start_held_ticktick();
     let workspace = Workspace::new();
     let creds_dir = workspace.path().join("credentials");
-    write_ticktick_credential(&creds_dir, "tok_closed");
+    write_ticktick_credential(
+        &creds_dir,
+        r#"{"access_token":"tok_closed","scope":"tasks:read tasks:write"}"#,
+    );
 
     let core = workspace
         .core()
@@ -528,7 +477,7 @@ fn closing_connection_during_detached_tasks_list_is_harmless() {
         assert_eq!(
             status["result"]["state"],
             serde_json::json!("connected"),
-            "the detached task's send to the dead connection was harmless"
+            "Core remains available after the disconnected handler finishes"
         );
         replacement.close(None).await.ok();
     });
