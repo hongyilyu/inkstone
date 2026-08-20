@@ -80,8 +80,11 @@ impl HandlerError {
             HandlerError::ProviderNotConnected { provider } => {
                 format!("{provider} is not configured")
             }
-            HandlerError::StaleConnection => "the TickTick connection changed since this \
-                 was proposed — reject it and ask again"
+            // Covers a swapped credential AND a missing / read-only one, so the
+            // guidance is "reconnect with write access", not merely "ask again".
+            HandlerError::StaleConnection => "the TickTick connection changed since this was \
+                 proposed (or lost write access) — reconnect TickTick with tasks:write, then \
+                 reject this and ask again"
                 .to_string(),
             HandlerError::Internal(_) => "internal error".to_string(),
         }
@@ -221,7 +224,10 @@ mod tests {
         assert_eq!(v["error"]["code"], json!(-32005));
         assert_eq!(
             v["error"]["message"],
-            json!("the TickTick connection changed since this was proposed — reject it and ask again")
+            json!(
+                "the TickTick connection changed since this was proposed (or lost write access) \
+                 — reconnect TickTick with tasks:write, then reject this and ask again"
+            )
         );
         assert!(v.get("result").is_none());
     }

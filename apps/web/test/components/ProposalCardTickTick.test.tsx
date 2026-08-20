@@ -1,11 +1,6 @@
-// The TickTick write-family card (ticktick-writes W3): every card state —
-// pending, stale-connection (accept + edit disabled, reject enabled),
-// deciding, executing (with the bounded poll driving hydrated cards to the
-// recorded outcome), created (+ the at-cap caveat), failed, unknown, the
-// past-deadline "still unresolved" + Resolve now, and rejected. States differ
-// by glyph + label (`data-ticktick-write`), never color alone.
-//
-// The existing ProposalCard suite is untouched (ticktick-writes W3 verify).
+// The TickTick write-family card (ticktick-writes W3). Card states are
+// identified by `data-ticktick-write` — they differ by glyph + label, never by
+// color alone (PRODUCT.md a11y).
 
 import type { WsClientService } from "@inkstone/ui-sdk";
 import { renderWithRouterContext } from "@test/test-utils/renderWithCore";

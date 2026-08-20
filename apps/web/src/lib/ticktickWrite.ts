@@ -44,7 +44,9 @@ export function dueLabel(due: ProposedDue): string {
 	if (Number.isNaN(date.getTime())) {
 		return due.date;
 	}
-	const timeZone = due.timeZone || undefined;
+	// `toLocale*String` also THROWS on an unrecognized zone, so guard here too.
+	const timeZone =
+		due.timeZone === "" ? undefined : usableTimeZone(due.timeZone);
 	return due.isAllDay
 		? date.toLocaleDateString(undefined, { timeZone })
 		: date.toLocaleString(undefined, { timeZone });
@@ -63,16 +65,31 @@ export interface TickTickEditDraft {
 }
 
 /** The browser's IANA zone — the "Core-local" fallback when the proposed
- * payload carries none. */
+ * payload carries none (or an unusable one). */
 function browserTimeZone(): string {
 	return Intl.DateTimeFormat().resolvedOptions().timeZone;
+}
+
+/** `zone` if `Intl` accepts it, else the browser's. The payload is unvalidated
+ * wire data and `Intl` THROWS on an unrecognized zone, so every construction
+ * site must pass through here — a raw zone would crash the card's render. */
+function usableTimeZone(zone: string): string {
+	if (zone === "") {
+		return browserTimeZone();
+	}
+	try {
+		new Intl.DateTimeFormat("en-US", { timeZone: zone }).format(0);
+		return zone;
+	} catch {
+		return browserTimeZone();
+	}
 }
 
 /** Seed the edit draft from the proposed payload: the instant decomposed into
  * local wall date/time IN the payload's zone (else the browser's). */
 export function seedTickTickDraft(payload: JsonValue): TickTickEditDraft {
 	const due = readDue(payload);
-	const timeZone = due?.timeZone || browserTimeZone();
+	const timeZone = usableTimeZone(due?.timeZone ?? "");
 	let date = "";
 	let time = "";
 	if (due !== null) {
@@ -184,7 +201,7 @@ export function buildTickTickPayload(
 	}
 	if (draft.date !== "") {
 		const isAllDay = draft.time === "";
-		const timeZone = draft.timeZone.trim() || browserTimeZone();
+		const timeZone = usableTimeZone(draft.timeZone.trim());
 		const ms = zonedWallTimeToEpochMs(draft.date, draft.time, timeZone);
 		if (ms === null) {
 			return { issue: "due date is not a valid date/time" };

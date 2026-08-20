@@ -2754,8 +2754,6 @@ pub(crate) struct TickTickWriteRow {
     pub http_status: Option<i64>,
     pub remote_task_id: Option<String>,
     pub requested_at: Option<i64>,
-    #[allow(dead_code)] // read for completeness; no consumer yet
-    pub settled_at: Option<i64>,
 }
 
 pub(super) async fn ticktick_write_by_proposal<'e, E>(
@@ -2767,7 +2765,7 @@ where
 {
     sqlx::query_as(
         "SELECT proposal_id, credential_fp, state, outcome, http_status, \
-                remote_task_id, requested_at, settled_at \
+                remote_task_id, requested_at \
          FROM ticktick_writes WHERE proposal_id = ?",
     )
     .bind(proposal_id)

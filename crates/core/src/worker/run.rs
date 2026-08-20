@@ -541,7 +541,13 @@ async fn refuse_tool_request<P: WorkerPort + Send>(
     params: &serde_json::Value,
     refusal: crate::tools::ToolError,
 ) -> Result<(), ()> {
+    // Guarded publishes, exactly like the dispatch path: a cancel that commits
+    // mid-refusal must not be followed by `tool_call` events.
     let guard = run_hub.gate().await;
+    if *run_hub.cancel_rx().borrow() {
+        drop(guard);
+        return Err(());
+    }
     run_hub.send(RunEvent::ToolCall {
         tool_call_id: tool_call_id.to_string(),
         name: name.to_string(),
@@ -578,6 +584,10 @@ async fn refuse_tool_request<P: WorkerPort + Send>(
     }
 
     let guard = run_hub.gate().await;
+    if *run_hub.cancel_rx().borrow() {
+        drop(guard);
+        return Err(());
+    }
     run_hub.send(RunEvent::ToolCall {
         tool_call_id: tool_call_id.to_string(),
         name: name.to_string(),

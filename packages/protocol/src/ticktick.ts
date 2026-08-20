@@ -35,7 +35,8 @@ export const TickTickWriteState = S.Union(
 	}),
 	S.Struct({
 		state: S.Literal("executing"),
-		deadline_at: S.Number,
+		// Rust `i64`s: integers, never fractional (S.Int, not S.Number).
+		deadline_at: S.Int,
 	}),
 	S.Struct({
 		state: S.Literal("created"),
@@ -43,7 +44,7 @@ export const TickTickWriteState = S.Union(
 	}),
 	S.Struct({
 		state: S.Literal("failed"),
-		http_status: S.optional(S.Number),
+		http_status: S.optional(S.Int),
 	}),
 	S.Struct({ state: S.Literal("unknown") }),
 );

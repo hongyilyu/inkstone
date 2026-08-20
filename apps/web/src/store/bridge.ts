@@ -182,13 +182,7 @@ export function startRunStream(
 					if (
 						event.kind === "error" &&
 						event.message.startsWith("Lost the connection") &&
-						(isRunParked(runId) ||
-							// A hydrated/replayed EXECUTING write (ticktick-writes W-A4)
-							// is parked server-side even though this tab's run record
-							// reads running — a drop mid-"creating…" is not a failed
-							// reply; the bounded poll reconverges after reconnect.
-							getChatState().proposals[runId]?.ticktick_write?.state ===
-								"executing")
+						runAwaitsDecisionOrWrite(runId)
 					) {
 						return;
 					}
@@ -200,7 +194,7 @@ export function startRunStream(
 		// events arrive) still needs the same treatment.
 		Effect.catchAll(() =>
 			Effect.sync(() => {
-				if (isRunParked(runId)) return;
+				if (runAwaitsDecisionOrWrite(runId)) return;
 				applyEvent(threadId, runId, {
 					kind: "error",
 					message:
@@ -585,6 +579,17 @@ export async function pollTickTickWriteOnce(
 	interruptRun(runtime, runId);
 	startRunStream(runtime, threadId, runId);
 	return "settled";
+}
+
+/** Whether a dropped stream must NOT be reported as a failed reply: the Run is
+ * parked on a Decision, or this tab shows a replayed/hydrated `executing`
+ * TickTick write (parked server-side while the record still reads running —
+ * ticktick-writes W-A4). The bounded poll reconverges after reconnect. */
+function runAwaitsDecisionOrWrite(runId: RunId): boolean {
+	return (
+		isRunParked(runId) ||
+		getChatState().proposals[runId]?.ticktick_write?.state === "executing"
+	);
 }
 
 /** The synthetic cancel settle: interrupt the fiber (so its takeUntil can't

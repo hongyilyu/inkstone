@@ -117,6 +117,54 @@ describe("zonedWallTimeToEpochMs", () => {
 	});
 });
 
+describe("an invalid time_zone never crashes the card", () => {
+	// The payload is unvalidated wire data and `Intl` THROWS on an unrecognized
+	// zone — inside the edit form's useState initializer, which would take the
+	// whole card render down.
+	const bogus = {
+		title: "buy milk",
+		due: {
+			date: "2026-09-02T00:30:00.000+0000",
+			is_all_day: false,
+			time_zone: "Not/AZone",
+		},
+	};
+
+	it("seedTickTickDraft falls back to the browser zone", () => {
+		const draft = seedTickTickDraft(bogus);
+		expect(draft.timeZone).toBe(
+			Intl.DateTimeFormat().resolvedOptions().timeZone,
+		);
+		expect(draft.date).not.toBe("");
+	});
+
+	it("dueLabel renders instead of throwing", () => {
+		expect(() =>
+			dueLabel({
+				date: "2026-09-02T00:30:00.000+0000",
+				isAllDay: false,
+				timeZone: "Not/AZone",
+			}),
+		).not.toThrow();
+	});
+
+	it("buildTickTickPayload substitutes a usable zone", () => {
+		const built = buildTickTickPayload({
+			title: "buy milk",
+			note: "",
+			date: "2026-09-01",
+			time: "17:30",
+			timeZone: "Not/AZone",
+		});
+		if ("issue" in built) {
+			throw new Error(`unexpected issue: ${built.issue}`);
+		}
+		expect(built.payload.due).toMatchObject({
+			time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+		});
+	});
+});
+
 describe("seedTickTickDraft ⇄ buildTickTickPayload", () => {
 	it("seeds the draft from the proposed payload in the payload's zone", () => {
 		const draft = seedTickTickDraft({

@@ -306,6 +306,16 @@ pub(crate) type PostFn = Arc<
 /// watchdog settle; the decide response itself carries the terminal state.
 pub(crate) type NotifyFn = Arc<dyn Fn(Uuid, &str, &TickTickWriteState) + Send + Sync>;
 
+/// What the SETTLE path needs — deliberately no `post`: the watchdog, the boot
+/// sweep, and the past-bound belt settle without ever sending, and a type that
+/// cannot reach the POST is how that is enforced (not a comment on an
+/// unreachable closure).
+#[derive(Clone)]
+pub(crate) struct SettleDeps {
+    pub pool: SqlitePool,
+    pub resume: ResumeFn,
+}
+
 /// The family decide's collaborators, injected so the whole path is
 /// assertable against a `:memory:` pool (ADR-0029, mirroring `decide::apply`).
 #[derive(Clone)]
@@ -314,6 +324,16 @@ pub(crate) struct WriteDeps {
     pub post: PostFn,
     pub resume: ResumeFn,
     pub notify: NotifyFn,
+}
+
+impl WriteDeps {
+    /// The settle-only view of these deps (drops the POST capability).
+    fn settle(&self) -> SettleDeps {
+        SettleDeps {
+            pool: self.pool.clone(),
+            resume: self.resume.clone(),
+        }
+    }
 }
 
 /// A successful family decide.
@@ -489,7 +509,7 @@ pub(crate) async fn decide(
 
     // Phase C: the ONE guarded settle, then resume.
     let (write, _won) = settle_and_resume(
-        deps,
+        &deps.settle(),
         proposal.run_id,
         &proposal_id,
         &proposal.tool_call_id,
@@ -533,7 +553,7 @@ async fn recorded_outcome(
                     // Past-bound belt: a decide is already a write, so it may
                     // legitimately settle. `unknown` — the POST's fate is lost.
                     let (write, _won) = settle_and_resume(
-                        deps,
+                        &deps.settle(),
                         proposal.run_id,
                         &row.proposal_id,
                         &proposal.tool_call_id,
@@ -579,15 +599,15 @@ async fn recorded_outcome(
 /// Run that has since re-parked on a different Proposal (which would orphan
 /// the pending card and feed the model a synthesized "not executed").
 async fn settle_and_resume(
-    deps: &WriteDeps,
+    settle: &SettleDeps,
     run_id: Uuid,
     proposal_id: &str,
     tool_call_id: &str,
     outcome: &WriteOutcome,
     content: &str,
 ) -> anyhow::Result<(TickTickWriteState, bool)> {
-    let (state, won) = settle_write(deps, proposal_id, tool_call_id, outcome, content).await?;
-    resume_if_awaiting(deps, run_id, tool_call_id).await?;
+    let (state, won) = settle_write(settle, proposal_id, tool_call_id, outcome, content).await?;
+    resume_if_awaiting(settle, run_id, tool_call_id).await?;
     Ok((state, won))
 }
 
@@ -596,12 +616,13 @@ async fn settle_and_resume(
 /// Split out so a caller can distinguish "the outcome committed" from "the
 /// follow-up resume failed" — the boot sweep counts the former.
 async fn settle_write(
-    deps: &WriteDeps,
+    settle: &SettleDeps,
     proposal_id: &str,
     tool_call_id: &str,
     outcome: &WriteOutcome,
     content: &str,
 ) -> anyhow::Result<(TickTickWriteState, bool)> {
+    let deps = settle;
     let (outcome_str, http_status, remote_task_id) = match outcome {
         WriteOutcome::Created { task_id } => ("created", None, Some(task_id.as_str())),
         WriteOutcome::Failed { http_status } => ("failed", *http_status, None),
@@ -645,7 +666,7 @@ async fn settle_write(
 /// waitpoint-identity guard: an old write's residue must never resume a Run
 /// that has since re-parked on a different Proposal.
 async fn resume_if_awaiting(
-    deps: &WriteDeps,
+    deps: &SettleDeps,
     run_id: Uuid,
     tool_call_id: &str,
 ) -> anyhow::Result<()> {
@@ -678,19 +699,15 @@ pub(crate) fn arm_watchdog(ctx: WatchdogCtx) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let wait_ms = (ctx.deadline_at - db::now_ms()).max(0) as u64;
         tokio::time::sleep(std::time::Duration::from_millis(wait_ms)).await;
-        let deps = WriteDeps {
+        // Settle-only deps: the watchdog cannot POST by construction.
+        let settle = SettleDeps {
             pool: ctx.pool.clone(),
-            // The watchdog never POSTs — the post arm is unreachable here.
-            post: Arc::new(|_body| {
-                Box::pin(async move { WriteOutcome::Unknown { http_status: None } })
-            }),
             resume: ctx.resume.clone(),
-            notify: ctx.notify.clone(),
         };
         // Only settle if the row still reads `executing` — the guarded flip
         // makes the check-and-settle race-free; a lost flip is a no-op.
         let settled = settle_and_resume(
-            &deps,
+            &settle,
             ctx.run_id,
             &ctx.proposal_id,
             &ctx.tool_call_id,
@@ -730,11 +747,11 @@ pub(crate) fn arm_watchdog(ctx: WatchdogCtx) -> tokio::task::JoinHandle<()> {
 ///
 /// Returns `(settled, resumed)` counts for boot logging.
 pub(crate) async fn sweep(pool: &SqlitePool, resume: ResumeFn) -> anyhow::Result<(u64, u64)> {
-    let deps = WriteDeps {
+    // Settle-only deps: the sweep cannot POST by construction (W-A3: "no POST
+    // in either branch").
+    let settle = SettleDeps {
         pool: pool.clone(),
-        post: Arc::new(|_body| Box::pin(async move { WriteOutcome::Unknown { http_status: None } })),
         resume: resume.clone(),
-        notify: Arc::new(|_run_id, _status, _state| {}),
     };
     // Per-row failures are logged, never propagated: a recovery sweep that
     // aborts boot over one bad row (say, a resume whose PROVIDER credential
@@ -750,7 +767,7 @@ pub(crate) async fn sweep(pool: &SqlitePool, resume: ResumeFn) -> anyhow::Result
         // Count the COMMITTED settle, then resume: a resume failure must not
         // hide (or under-report) work that is already durable.
         match settle_write(
-            &deps,
+            &settle,
             &proposal_id,
             &tool_call_id,
             &WriteOutcome::Unknown { http_status: None },
@@ -768,7 +785,7 @@ pub(crate) async fn sweep(pool: &SqlitePool, resume: ResumeFn) -> anyhow::Result
                 continue;
             }
         }
-        if let Err(error) = resume_if_awaiting(&deps, run_id, &tool_call_id).await {
+        if let Err(error) = resume_if_awaiting(&settle, run_id, &tool_call_id).await {
             tracing::error!(
                 event = "ticktick_write.sweep_resume_failed",
                 %run_id,
@@ -830,7 +847,7 @@ async fn resume_if_parked_awaiting(
     run_id: Uuid,
     tool_call_id: &str,
 ) -> Result<(), WriteDecideError> {
-    resume_if_awaiting(deps, run_id, tool_call_id)
+    resume_if_awaiting(&deps.settle(), run_id, tool_call_id)
         .await
         .map_err(WriteDecideError::Internal)
 }

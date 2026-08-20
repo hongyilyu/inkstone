@@ -308,12 +308,17 @@ async function cleanup() {
 			console.log("cleanup: no projectId resolvable for a staged task");
 			continue;
 		}
-		const r = await request(
-			"DELETE",
-			`/open/v1/project/${resolved}/task/${taskId}`,
-		);
-		if (r.status >= 200 && r.status < 300) deleted += 1;
-		else console.log(`cleanup: delete status=${r.status}`);
+		try {
+			const r = await request(
+				"DELETE",
+				`/open/v1/project/${resolved}/task/${taskId}`,
+			);
+			if (r.status >= 200 && r.status < 300) deleted += 1;
+			else console.log(`cleanup: delete status=${r.status}`);
+		} catch (error) {
+			// A timeout/transport throw on ONE delete must not skip the rest.
+			console.log(`cleanup: delete transport=${error.name}`);
+		}
 	}
 	let leaked = 0;
 	try {

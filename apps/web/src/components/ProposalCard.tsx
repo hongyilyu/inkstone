@@ -832,7 +832,7 @@ function TickTickWriteOutcome({
 			return (
 				<div
 					data-proposal={proposal.run_id}
-					data-proposal-status="accepted"
+					data-proposal-status={proposal.status}
 					data-ticktick-write="unresolved"
 					className={shell}
 				>
@@ -856,7 +856,7 @@ function TickTickWriteOutcome({
 		return (
 			<div
 				data-proposal={proposal.run_id}
-				data-proposal-status="accepted"
+				data-proposal-status={proposal.status}
 				data-ticktick-write="executing"
 				className={shell}
 			>
@@ -877,7 +877,7 @@ function TickTickWriteOutcome({
 		return (
 			<div
 				data-proposal={proposal.run_id}
-				data-proposal-status="accepted"
+				data-proposal-status={proposal.status}
 				data-ticktick-write="created"
 				className={shell}
 			>
@@ -897,7 +897,7 @@ function TickTickWriteOutcome({
 		return (
 			<div
 				data-proposal={proposal.run_id}
-				data-proposal-status="accepted"
+				data-proposal-status={proposal.status}
 				data-ticktick-write="failed"
 				className={shell}
 			>
@@ -989,12 +989,13 @@ function TickTickEditForm({
 					onChange={(event) => setDraft({ ...draft, date: event.target.value })}
 				/>
 			</EditorField>
-			<EditorField label="Time" htmlFor={timeInputId}>
+			{/* The rule rides the LABEL: browsers render no placeholder on a
+			    time input. */}
+			<EditorField label="Time (empty = all day)" htmlFor={timeInputId}>
 				<EditorInput
 					id={timeInputId}
 					type="time"
 					value={draft.time}
-					placeholder="Leave empty for all-day"
 					onChange={(event) => setDraft({ ...draft, time: event.target.value })}
 				/>
 			</EditorField>
