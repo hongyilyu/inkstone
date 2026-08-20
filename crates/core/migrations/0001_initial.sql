@@ -125,6 +125,26 @@ CREATE TABLE proposals (
 );
 CREATE INDEX idx_proposals_status ON proposals(status) WHERE status = 'pending';
 
+-- TickTick writes (sidecar of proposals; ticktick-writes W-A3) ----------
+-- One row per create_ticktick_task Proposal, inserted at park: the remote
+-- write's first-class state machine (proposed -> executing -> settled) plus
+-- the credential fingerprint the review happened under. The effective payload
+-- is NOT duplicated here (proposals.edited_payload ?? tool_calls.request_payload).
+CREATE TABLE ticktick_writes (
+  proposal_id    TEXT PRIMARY KEY REFERENCES proposals(id) ON DELETE CASCADE,
+  credential_fp  TEXT NOT NULL,                    -- internal token hash; never on the wire or in logs
+  state          TEXT NOT NULL DEFAULT 'proposed'
+                   CHECK (state IN ('proposed','executing','settled')),
+  outcome        TEXT CHECK (outcome IN ('created','failed','unknown')),
+  http_status    INTEGER,
+  remote_task_id TEXT,
+  requested_at   INTEGER,                          -- phase-A stamp (the POST intent)
+  settled_at     INTEGER,
+  CHECK ((state = 'settled') = (outcome IS NOT NULL)),
+  CHECK ((state = 'proposed') = (requested_at IS NULL))
+);
+CREATE INDEX idx_ticktick_writes_state ON ticktick_writes(state) WHERE state = 'executing';
+
 -- Entities and revisions -----------------------------------------------
 CREATE TABLE entities (
   id                       TEXT PRIMARY KEY,

@@ -1,5 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
+import { useEffect, useRef } from "react";
 import { invalidateEntityReads } from "@/lib/entityReads";
+import { TASKS_KEY_PREFIX } from "@/lib/hooks/useTickTick";
 import { useRuntime } from "@/runtime";
 import { decideProposal } from "@/store/bridge";
 import { getChatState, useProposalForRun } from "@/store/chat";
@@ -10,6 +12,21 @@ export function AssistantProposals({ runId }: { runId: string }) {
 	const runtime = useRuntime();
 	const queryClient = useQueryClient();
 	const proposal = useProposalForRun(runId);
+	// Only a `created` write invalidates the Tasks read (ticktick-writes W-A5).
+	// An effect on the state TRANSITION, not a decide callback: `created` can
+	// also arrive via the observe-poll or the settle notification.
+	const invalidatedCreated = useRef(false);
+	const writeState = proposal?.ticktick_write?.state;
+	useEffect(() => {
+		if (writeState === "created") {
+			if (!invalidatedCreated.current) {
+				invalidatedCreated.current = true;
+				void queryClient.invalidateQueries({ queryKey: TASKS_KEY_PREFIX });
+			}
+			return;
+		}
+		invalidatedCreated.current = false;
+	}, [writeState, queryClient]);
 	if (proposal === null) {
 		return null;
 	}

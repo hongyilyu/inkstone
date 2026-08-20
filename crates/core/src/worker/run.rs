@@ -149,6 +149,21 @@ pub(super) async fn run_loop<P: WorkerPort + Send>(
                 open_text_part = None;
                 open_reasoning_part = None;
                 if crate::tools::is_proposal(&name) {
+                    // Family pre-park gate (ticktick-writes W-A2): a propose on
+                    // a missing/read-only TickTick connection resolves as a
+                    // NORMAL tool error — the model redirects honestly; nothing
+                    // parks, no dead card, and the loop continues.
+                    if let Some(refusal) = crate::tools::pre_park_refusal(&name) {
+                        if refuse_tool_request(&pool, run_id, &run_hub, &mut worker, &tool_call_id, &name, &params, refusal)
+                            .await
+                            .is_err()
+                        {
+                            worker.shutdown().await;
+                            cancelled_by_core = true;
+                            break;
+                        }
+                        continue;
+                    }
                     if let Err(message) = crate::tools::validate_proposal_request(&name, &params) {
                         worker_error = Some(message);
                         worker.shutdown().await;
@@ -510,6 +525,97 @@ async fn stream_message_delta(
     drop(guard);
 }
 
+/// Resolve a refused pre-park tool request as a NORMAL tool error (ticktick-
+/// writes W-A2): persist + resolve the `tool_calls` row `errored`, publish the
+/// bracketing `tool_call` Run Events, and reply to the Worker so the model
+/// continues (mirroring `handle_tool_request`'s error arm). `Err(())` means a
+/// cancel was signalled mid-sequence and the caller should stop the loop.
+#[allow(clippy::too_many_arguments)]
+async fn refuse_tool_request<P: WorkerPort + Send>(
+    pool: &SqlitePool,
+    run_id: Uuid,
+    run_hub: &RunHub,
+    worker: &mut P,
+    tool_call_id: &str,
+    name: &str,
+    params: &serde_json::Value,
+    refusal: crate::tools::ToolError,
+) -> Result<(), ()> {
+    // Guarded publishes, exactly like the dispatch path: a cancel that commits
+    // mid-refusal must not be followed by `tool_call` events.
+    let guard = run_hub.gate().await;
+    if *run_hub.cancel_rx().borrow() {
+        drop(guard);
+        return Err(());
+    }
+    run_hub.send(RunEvent::ToolCall {
+        tool_call_id: tool_call_id.to_string(),
+        name: name.to_string(),
+        status: ToolCallStatus::Started,
+        arg: None,
+        result: None,
+    });
+    drop(guard);
+
+    if let Err(e) = db::persist_tool_call(
+        pool,
+        run_id,
+        tool_call_id,
+        name,
+        &params.to_string(),
+        db::now_ms(),
+    )
+    .await
+    {
+        tracing::error!(event = "worker.persist_tool_call_failed", %run_id, tool_call_id, error = ?e);
+    }
+    let payload =
+        serde_json::json!({ "code": refusal.code, "message": refusal.message }).to_string();
+    if let Err(e) =
+        db::resolve_tool_call(pool, tool_call_id, "errored", &payload, db::now_ms()).await
+    {
+        tracing::error!(
+            event = "worker.resolve_tool_call_failed",
+            phase = "errored",
+            %run_id,
+            tool_call_id,
+            error = ?e
+        );
+    }
+
+    let guard = run_hub.gate().await;
+    if *run_hub.cancel_rx().borrow() {
+        drop(guard);
+        return Err(());
+    }
+    run_hub.send(RunEvent::ToolCall {
+        tool_call_id: tool_call_id.to_string(),
+        name: name.to_string(),
+        status: ToolCallStatus::Error,
+        arg: None,
+        result: None,
+    });
+    drop(guard);
+
+    if *run_hub.cancel_rx().borrow() {
+        return Err(());
+    }
+    worker
+        .send_tool_result(ToolResult {
+            kind: "tool_result",
+            run_id: run_id.to_string(),
+            tool_call_id: tool_call_id.to_string(),
+            outcome: ToolOutcome::Err {
+                err: ToolErrorWire {
+                    code: refusal.code,
+                    message: refusal.message,
+                },
+            },
+        })
+        .await;
+    Ok(())
+}
+
 /// Park the Run on a Proposal tool request (ADR-0025). In one transaction:
 /// persist the pending `tool_calls` row, the sidecar `proposals` row, the
 /// guarded `running -> parked` move, and the `parked`/`proposal_pending`
@@ -524,10 +630,33 @@ async fn park_on_proposal(
     let now = db::now_ms();
     let request_payload = params.to_string();
 
-    let mutation_kind = params
-        .get("mutation_kind")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default();
+    // The stored kind: `propose_ticktick_task` derives it from the TOOL NAME
+    // (its params carry no `mutation_kind` field — ticktick-writes W-A2), and
+    // the write family's park also snapshots the credential fingerprint the
+    // review will happen under; every other family reads the params field.
+    let (mutation_kind, ticktick_write_fp) =
+        if name == crate::tools::propose_ticktick_task::NAME {
+            let Some(connection) = crate::ticktick::connection() else {
+                // The pre-park gate refused earlier; a vanished connection here
+                // is unreachable (the boot read is static). Refuse the park
+                // rather than store a row without its fingerprint.
+                tracing::error!(event = "worker.park_ticktick_write_no_connection", %run_id);
+                return false;
+            };
+            (
+                crate::ticktick_write::MUTATION_KIND.to_string(),
+                Some(connection.credential_fp.clone()),
+            )
+        } else {
+            (
+                params
+                    .get("mutation_kind")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                None,
+            )
+        };
     let proposal_id = Uuid::now_v7().to_string();
 
     match db::park_on_proposal(
@@ -537,7 +666,8 @@ async fn park_on_proposal(
         tool_call_id,
         name,
         &request_payload,
-        mutation_kind,
+        &mutation_kind,
+        ticktick_write_fp.as_deref(),
         now,
     )
     .await
@@ -1029,6 +1159,225 @@ mod tests {
                 .unwrap()
                 .is_some(),
             "a pending Proposal is persisted on park"
+        );
+    }
+
+    // ── the TickTick write family's park path (ticktick-writes W-A2) ──────
+
+    /// A `propose_ticktick_task` request parks like any Proposal — with the
+    /// kind DERIVED FROM THE TOOL NAME (`create_ticktick_task`; the params
+    /// carry no `mutation_kind` field, so the old `unwrap_or_default` would
+    /// have stored "") and the `ticktick_writes` row inserted in the park tx
+    /// with the boot connection's fingerprint snapshot.
+    #[tokio::test]
+    async fn ticktick_propose_parks_with_derived_kind_and_write_row() {
+        let pool = memory_pool().await;
+        let _conn = crate::ticktick::token::test_override::install(Some(
+            crate::ticktick::token::test_override::test_connection("tok_park", "conn-park"),
+        ));
+        let wf = test_workflow(&["propose_ticktick_task"]);
+        let (run_id, _t, amid) = seed_run(&pool, &wf).await;
+        let (hubs, run_hub) = fixtures(run_id);
+        let (worker, _sent, _sd) = ScriptedWorker::new(vec![WorkerStdout::ToolRequest {
+            run_id: String::new(),
+            tool_call_id: "tc-ttw".to_string(),
+            name: "propose_ticktick_task".to_string(),
+            params: serde_json::json!({
+                "payload": { "title": "buy milk" },
+                "rationale": "the user asked for a reminder"
+            }),
+        }]);
+
+        let exit = run_loop(
+            worker,
+            run_id,
+            wf,
+            pool.clone(),
+            amid,
+            hubs,
+            run_hub.clone(),
+        )
+        .await;
+
+        assert_eq!(exit, Exit::Parked);
+        let proposal = db::get_pending_proposal_for_run(&pool, run_id)
+            .await
+            .unwrap()
+            .expect("a pending Proposal is persisted on park");
+        assert_eq!(
+            proposal.mutation_kind, "create_ticktick_task",
+            "the stored kind derives from the TOOL NAME"
+        );
+        let (state, fp): (String, String) = sqlx::query_as(
+            "SELECT state, credential_fp FROM ticktick_writes WHERE proposal_id = ?",
+        )
+        .bind(&proposal.proposal_id)
+        .fetch_one(&pool)
+        .await
+        .expect("the ticktick_writes row exists");
+        assert_eq!(state, "proposed");
+        assert_eq!(
+            fp,
+            crate::ticktick::token::credential_fingerprint("tok_park"),
+            "the park snapshots the boot credential's fingerprint"
+        );
+    }
+
+    /// A malformed `propose_ticktick_task` payload errors the Run without
+    /// parking, like every non-editable proposal family.
+    #[tokio::test]
+    async fn ticktick_propose_invalid_payload_errors_without_parking() {
+        let pool = memory_pool().await;
+        let _conn = crate::ticktick::token::test_override::install(Some(
+            crate::ticktick::token::test_override::test_connection("tok_park", "conn-park"),
+        ));
+        let wf = test_workflow(&["propose_ticktick_task"]);
+        let (run_id, _t, amid) = seed_run(&pool, &wf).await;
+        let (hubs, run_hub) = fixtures(run_id);
+        let (worker, _sent, _sd) = ScriptedWorker::new(vec![WorkerStdout::ToolRequest {
+            run_id: String::new(),
+            tool_call_id: "tc-ttw-bad".to_string(),
+            name: "propose_ticktick_task".to_string(),
+            params: serde_json::json!({ "payload": { "title": "   " } }),
+        }]);
+
+        let exit = run_loop(
+            worker,
+            run_id,
+            wf,
+            pool.clone(),
+            amid,
+            hubs,
+            run_hub.clone(),
+        )
+        .await;
+
+        match exit {
+            Exit::Errored(message) => assert!(
+                message.contains("title"),
+                "the error names the invalid field: {message}"
+            ),
+            other => panic!("an invalid write proposal must error, got {other:?}"),
+        }
+        assert!(
+            db::get_pending_proposal_for_run(&pool, run_id)
+                .await
+                .unwrap()
+                .is_none(),
+            "nothing parks"
+        );
+    }
+
+    /// Not-connected (and scope-short) proposes resolve as a NORMAL tool
+    /// error — the model continues and redirects; no park, no dead card, no
+    /// Run error.
+    #[tokio::test]
+    async fn ticktick_propose_not_connected_is_a_tool_error_and_run_continues() {
+        let pool = memory_pool().await;
+        let _conn = crate::ticktick::token::test_override::install(None);
+        let wf = test_workflow(&["propose_ticktick_task"]);
+        let (run_id, _t, amid) = seed_run(&pool, &wf).await;
+        let (hubs, run_hub) = fixtures(run_id);
+        let (worker, sent, _sd) = ScriptedWorker::new(vec![
+            WorkerStdout::ToolRequest {
+                run_id: String::new(),
+                tool_call_id: "tc-ttw-nc".to_string(),
+                name: "propose_ticktick_task".to_string(),
+                params: serde_json::json!({ "payload": { "title": "buy milk" } }),
+            },
+            WorkerStdout::TextDelta {
+                delta: "TickTick isn't connected — add it there yourself.".to_string(),
+            },
+            WorkerStdout::Done,
+        ]);
+
+        let exit = run_loop(
+            worker,
+            run_id,
+            wf,
+            pool.clone(),
+            amid,
+            hubs,
+            run_hub.clone(),
+        )
+        .await;
+
+        assert_eq!(exit, Exit::Done, "the Run continues past the refusal");
+        assert_eq!(
+            sent.lock().unwrap().as_slice(),
+            &["tc-ttw-nc".to_string()],
+            "the refusal reached the Worker as a tool result"
+        );
+        assert!(
+            db::get_pending_proposal_for_run(&pool, run_id)
+                .await
+                .unwrap()
+                .is_none(),
+            "nothing parks"
+        );
+        // The refusal is durable: the tool call errored with the named code.
+        let (name, status, payload) = tool_call_row(&pool, "tc-ttw-nc")
+            .await
+            .expect("the refused call is persisted");
+        assert_eq!(name, "propose_ticktick_task");
+        assert_eq!(status, "errored");
+        assert!(
+            payload.unwrap().contains("ticktick_not_connected"),
+            "the persisted error names the refusal code"
+        );
+        assert_eq!(
+            db::run_status(&pool, run_id)
+                .await
+                .unwrap()
+                .map(db::RunStatus::as_str),
+            Some("completed")
+        );
+    }
+
+    /// A read-only (scope-short) connection refuses the same way, pre-park.
+    #[tokio::test]
+    async fn ticktick_propose_scope_short_is_refused_pre_park() {
+        let pool = memory_pool().await;
+        let _conn = crate::ticktick::token::test_override::install(Some(
+            crate::ticktick::token::test_override::test_connection_read_only("tok_ro", "conn-ro"),
+        ));
+        let wf = test_workflow(&["propose_ticktick_task"]);
+        let (run_id, _t, amid) = seed_run(&pool, &wf).await;
+        let (hubs, run_hub) = fixtures(run_id);
+        let (worker, sent, _sd) = ScriptedWorker::new(vec![
+            WorkerStdout::ToolRequest {
+                run_id: String::new(),
+                tool_call_id: "tc-ttw-ro".to_string(),
+                name: "propose_ticktick_task".to_string(),
+                params: serde_json::json!({ "payload": { "title": "buy milk" } }),
+            },
+            WorkerStdout::Done,
+        ]);
+
+        let exit = run_loop(
+            worker,
+            run_id,
+            wf,
+            pool.clone(),
+            amid,
+            hubs,
+            run_hub.clone(),
+        )
+        .await;
+
+        assert_eq!(exit, Exit::Done);
+        assert_eq!(sent.lock().unwrap().as_slice(), &["tc-ttw-ro".to_string()]);
+        let (_, status, payload) = tool_call_row(&pool, "tc-ttw-ro")
+            .await
+            .expect("the refused call is persisted");
+        assert_eq!(status, "errored");
+        assert!(payload.unwrap().contains("ticktick_not_writable"));
+        assert!(
+            db::get_pending_proposal_for_run(&pool, run_id)
+                .await
+                .unwrap()
+                .is_none(),
+            "a scope-short token never parks a write proposal"
         );
     }
 

@@ -13,12 +13,14 @@
 // the assertions are derived, so adding a fixture without declaring its message
 // (or vice versa) fails here.
 
-import { readdirSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import type { JsonObject, JsonValue } from "@inkstone/protocol";
 import { describe, expect, it } from "vitest";
 import {
 	CANONICAL_MESSAGES,
 	fixtures,
+	NESTED_UNION_VARIANTS,
 	UNION_VARIANTS,
 } from "./structs.registry.js";
 
@@ -76,4 +78,65 @@ describe("non-payload completeness lock", () => {
 			expect(got, `${message} variant fixture count`).toBe(count);
 		}
 	});
+
+	// A NESTED union's variants can't be counted per message (they ride inside
+	// other fixtures), so collect its discriminator values across every emitted
+	// fixture body instead.
+	it("each nested tagged union has every variant covered by some fixture", () => {
+		for (const [name, spec] of Object.entries(NESTED_UNION_VARIANTS)) {
+			const seen = new Set<string>();
+			for (const fixture of fixtures) {
+				const root = fileURLToPath(
+					new URL(
+						`../fixtures/structs/${fixture.dir}/${fixture.file}`,
+						import.meta.url,
+					),
+				);
+				let body: JsonValue;
+				try {
+					body = JSON.parse(readFileSync(root, "utf8")) as JsonValue;
+				} catch {
+					continue; // the existence lock above owns missing files
+				}
+				collectTags(body, spec.field, spec.tag, seen);
+			}
+			expect([...seen].sort(), `${name} nested variant coverage`).toStrictEqual(
+				[...spec.variants].sort(),
+			);
+		}
+	});
 });
+
+/** A JSON object (not an array, not null) — the narrowing the walk below needs
+ * before it can index a discriminator off a value. */
+function isJsonObject(value: JsonValue | undefined): value is JsonObject {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Walk a parsed fixture body, and for every `field` property whose value
+ * carries `tag`, record that tag's value. Typed on the protocol's own
+ * `JsonValue`, which is exactly what a fixture parses to. */
+function collectTags(
+	value: JsonValue,
+	field: string,
+	tag: string,
+	into: Set<string>,
+): void {
+	if (Array.isArray(value)) {
+		for (const item of value) collectTags(item, field, tag, into);
+		return;
+	}
+	if (!isJsonObject(value)) {
+		return;
+	}
+	for (const [key, child] of Object.entries(value)) {
+		if (child === undefined) {
+			continue;
+		}
+		if (key === field && isJsonObject(child)) {
+			const tagValue = child[tag];
+			if (typeof tagValue === "string") into.add(tagValue);
+		}
+		collectTags(child, field, tag, into);
+	}
+}

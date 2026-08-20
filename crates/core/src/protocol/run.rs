@@ -188,7 +188,14 @@ mod mirror_tests {
 
     #[test]
     fn run_cancel_result_encodes_outcome_and_live_tail() {
-        for outcome in ["accepted", "already_terminal", "unknown_run"] {
+        for outcome in [
+            "accepted",
+            "already_terminal",
+            "unknown_run",
+            // The TickTick write family's refusal (ticktick-writes W-A3): a
+            // cancel while the write row reads `executing` changes nothing.
+            "write_in_flight",
+        ] {
             let r = RunCancelResult {
                 outcome: outcome.to_string(),
                 live_tail: false,

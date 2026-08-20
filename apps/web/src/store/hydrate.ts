@@ -96,6 +96,11 @@ function rehydrateDecidedProposals(views: ThreadGetResult["messages"]): void {
 			// The Entity the accepted change created/updated (ADR-0044 amendment); the
 			// decided card names + deep-links it. Omitted for a rejected Proposal.
 			entity_id: proposalSegment.entity_id,
+			// The write family's durable state rides the segment (ticktick-writes
+			// W-A4): an accepted-but-executing write rehydrates "creating…" (the
+			// card's bounded poll drives it to the outcome); a settled
+			// failed/unknown never rehydrates success-shaped.
+			ticktick_write: proposalSegment.ticktick_write,
 			status,
 		};
 		rehydrateDecidedProposal(proposal);

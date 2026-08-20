@@ -37,10 +37,105 @@ pub async fn cancel(
     let lifecycle = hub::lifecycle(hubs, run_id).await;
     match db::run_status(pool, run_id).await? {
         None => respond("unknown_run", false),
-        Some(RunStatus::Parked) => {
-            let accepted = db::cancel_parked_run(pool, run_id, db::now_ms()).await?;
+        Some(RunStatus::Parked) => cancel_parked(pool, hubs, run_id, &lifecycle, respond).await?,
+        Some(RunStatus::Running) => {
+            cancel_running(pool, hubs, run_id, &lifecycle, respond).await?;
+        }
+        Some(_) => respond("already_terminal", false),
+    }
+    Ok(())
+}
+
+/// The parked arm — the existing parked-cancel first, then a STATE MATRIX for
+/// the TickTick write family (ticktick-writes W-A3/W-A4) when it loses:
+///
+/// - a pending proposal (the write family's `proposed` included) → the
+///   existing path wins: cancel proposal + Run.
+/// - the parked-cancel LOSES exactly when no proposal is pending — for the
+///   write family that means a decide accepted it. Re-read the write state:
+///   - `executing` → REFUSED with `write_in_flight`; nothing changes — the
+///     Web keeps the card and the subscription (never a local "stopped" over
+///     a POST that may land). This also closes the accept → held-POST → Stop
+///     race: however the reads interleave with the decide, an accepted
+///     in-flight write can only answer `write_in_flight`.
+///   - `settled` (the phase-C-commit → resume window) → a REAL
+///     `parked → cancelled` CAS racing resume's self-guarded
+///     `parked → running`. Cancel wins: no spawn, the recorded outcome stays
+///     readable. Resume wins: re-read and route through the running path, so
+///     the response always reflects the durable state.
+///   - anything else (a decided non-family proposal) → `already_terminal`,
+///     as today.
+async fn cancel_parked(
+    pool: &SqlitePool,
+    hubs: &Hubs,
+    run_id: Uuid,
+    lifecycle: &hub::LifecycleGuard,
+    respond: impl FnOnce(&str, bool),
+) -> anyhow::Result<()> {
+    let accepted = db::cancel_parked_run(pool, run_id, db::now_ms()).await?;
+    if accepted {
+        respond("accepted", false);
+        return Ok(());
+    }
+
+    match db::ticktick_writes::ticktick_write_state_for_parked_run(pool, run_id)
+        .await?
+        .as_deref()
+    {
+        Some("executing") => respond("write_in_flight", false),
+        Some("settled") => {
+            if db::ticktick_writes::cancel_parked_run_settled_write(pool, run_id, db::now_ms())
+                .await?
+            {
+                respond("accepted", false);
+                return Ok(());
+            }
+            // Resume won the CAS: the Run is (or is about to be) running —
+            // route through the running path so the answer matches durable
+            // state. Anything else (a concurrent cancel won, or the Run
+            // advanced past running) is already terminal.
+            match db::run_status(pool, run_id).await? {
+                Some(RunStatus::Running) => {
+                    cancel_running(pool, hubs, run_id, lifecycle, respond).await?;
+                }
+                _ => respond("already_terminal", false),
+            }
+        }
+        // `proposed` (a concurrent plain cancel won) or not the write family.
+        _ => respond("already_terminal", false),
+    }
+    Ok(())
+}
+
+/// The running arm, whole (also the settled-window CAS loser's re-route): win
+/// the guarded `running → cancelled`, signal the live Worker, publish the
+/// terminal `Cancelled` — all under one gated section when a hub is live.
+async fn cancel_running(
+    pool: &SqlitePool,
+    hubs: &Hubs,
+    run_id: Uuid,
+    lifecycle: &hub::LifecycleGuard,
+    respond: impl FnOnce(&str, bool),
+) -> anyhow::Result<()> {
+    match hub::get(hubs, run_id) {
+        Some(run_hub) => {
+            let gate = run_hub.gate().await;
+            match db::cancel_running_run(pool, run_id, db::now_ms()).await? {
+                db::Terminal::Won { interrupted } => {
+                    run_hub.cancel();
+                    respond("accepted", true);
+                    crate::worker::publish_interrupted(&run_hub, interrupted);
+                    run_hub.send(RunEvent::Cancelled);
+                    hub::remove_own(hubs, run_id, &run_hub, lifecycle);
+                }
+                db::Terminal::Lost => respond("already_terminal", false),
+            }
+            drop(gate);
+        }
+        None => {
+            let terminal = db::cancel_running_run(pool, run_id, db::now_ms()).await?;
             respond(
-                if accepted {
+                if terminal.won() {
                     "accepted"
                 } else {
                     "already_terminal"
@@ -48,34 +143,6 @@ pub async fn cancel(
                 false,
             );
         }
-        Some(RunStatus::Running) => match hub::get(hubs, run_id) {
-            Some(run_hub) => {
-                let gate = run_hub.gate().await;
-                match db::cancel_running_run(pool, run_id, db::now_ms()).await? {
-                    db::Terminal::Won { interrupted } => {
-                        run_hub.cancel();
-                        respond("accepted", true);
-                        crate::worker::publish_interrupted(&run_hub, interrupted);
-                        run_hub.send(RunEvent::Cancelled);
-                        hub::remove_own(hubs, run_id, &run_hub, &lifecycle);
-                    }
-                    db::Terminal::Lost => respond("already_terminal", false),
-                }
-                drop(gate);
-            }
-            None => {
-                let terminal = db::cancel_running_run(pool, run_id, db::now_ms()).await?;
-                respond(
-                    if terminal.won() {
-                        "accepted"
-                    } else {
-                        "already_terminal"
-                    },
-                    false,
-                );
-            }
-        },
-        Some(_) => respond("already_terminal", false),
     }
     Ok(())
 }
@@ -140,6 +207,7 @@ mod tests {
             "propose_workspace_mutation",
             r#"{"mutation_kind":"create_journal_entry","payload":{}}"#,
             "create_journal_entry",
+            None,
             db::now_ms(),
         )
         .await
@@ -370,5 +438,205 @@ mod tests {
             Some("parked"),
             "run stays parked"
         );
+    }
+
+    // ── the TickTick write family's cancel matrix (ticktick-writes W-A3) ──
+
+    /// Seed a parked Run holding a pending `create_ticktick_task` Proposal
+    /// (the real park path, fingerprint snapshot included). Returns
+    /// `(run_id, proposal_id, tool_call_id)`.
+    async fn seed_parked_write(pool: &SqlitePool) -> (Uuid, String, String) {
+        let run_id = seed_running_run(pool).await;
+        let proposal_id = Uuid::now_v7().to_string();
+        let tool_call_id = format!("tc-{run_id}");
+        let parked = db::park_on_proposal(
+            pool,
+            run_id,
+            &proposal_id,
+            &tool_call_id,
+            "propose_ticktick_task",
+            r#"{"payload":{"title":"buy milk"}}"#,
+            crate::ticktick_write::MUTATION_KIND,
+            Some("fp-test"),
+            db::now_ms(),
+        )
+        .await
+        .expect("park write proposal");
+        assert!(parked.won());
+        (run_id, proposal_id, tool_call_id)
+    }
+
+    /// `proposed` (proposal pending): the EXISTING parked-cancel path —
+    /// proposal + Run cancelled; the write row stays `proposed`, inert.
+    #[tokio::test]
+    async fn write_family_proposed_cancels_through_the_existing_path() {
+        let pool = memory_pool().await;
+        let (run_id, proposal_id, _tc) = seed_parked_write(&pool).await;
+        let hubs = hub::new_hubs();
+
+        let (outcome, _live) = cancel_recording(&pool, &hubs, run_id).await;
+        assert_eq!(outcome, "accepted");
+        assert_eq!(run_status_str(&pool, run_id).await, Some("cancelled"));
+        let write_state: String =
+            sqlx::query_scalar("SELECT state FROM ticktick_writes WHERE proposal_id = ?")
+                .bind(&proposal_id)
+                .fetch_one(&pool)
+                .await
+                .expect("write row");
+        assert_eq!(write_state, "proposed", "the write row stays inert provenance");
+    }
+
+    /// `executing`: REFUSED with `write_in_flight` — nothing changes; the Run
+    /// stays parked, the write keeps executing (never a fake "stopped" over a
+    /// live POST).
+    #[tokio::test]
+    async fn write_family_executing_refuses_with_write_in_flight() {
+        let pool = memory_pool().await;
+        let (run_id, proposal_id, _tc) = seed_parked_write(&pool).await;
+        db::ticktick_writes::accept_ticktick_write(
+            &pool,
+            run_id,
+            &proposal_id,
+            None,
+            Some("k1"),
+            db::now_ms(),
+        )
+        .await
+        .expect("phase A");
+        let hubs = hub::new_hubs();
+
+        let (outcome, live_tail) = cancel_recording(&pool, &hubs, run_id).await;
+        assert_eq!(outcome, "write_in_flight");
+        assert!(!live_tail);
+        assert_eq!(run_status_str(&pool, run_id).await, Some("parked"));
+        let write_state: String =
+            sqlx::query_scalar("SELECT state FROM ticktick_writes WHERE proposal_id = ?")
+                .bind(&proposal_id)
+                .fetch_one(&pool)
+                .await
+                .expect("write row");
+        assert_eq!(write_state, "executing", "nothing changed");
+    }
+
+    /// Settle the seeded write `created` (phase C committed, resume not yet
+    /// run) — the settled→resume window's durable state.
+    async fn settle_created(pool: &SqlitePool, run_id: Uuid, proposal_id: &str, tool_call_id: &str) {
+        db::ticktick_writes::accept_ticktick_write(
+            pool,
+            run_id,
+            proposal_id,
+            None,
+            Some("k1"),
+            db::now_ms(),
+        )
+        .await
+        .expect("phase A");
+        let settle = db::ticktick_writes::settle_ticktick_write(
+            pool,
+            proposal_id,
+            tool_call_id,
+            "created",
+            Some(200),
+            Some("tt-1"),
+            r#"{"decision":"accept","content":"Accepted. Created \"buy milk\" in TickTick (task tt-1).","is_error":false}"#,
+            db::now_ms(),
+        )
+        .await
+        .expect("phase C");
+        assert!(matches!(settle, db::ticktick_writes::Settle::Won));
+    }
+
+    /// The post-phase-C-commit cancel/resume race, ORDERING 1 — cancel's CAS
+    /// wins: a REAL `parked → cancelled`, no spawn, and the recorded outcome
+    /// stays readable. A resume arriving after loses its self-guarded flip.
+    #[tokio::test]
+    async fn write_family_settled_window_cancel_wins_the_cas() {
+        let pool = memory_pool().await;
+        let (run_id, proposal_id, tool_call_id) = seed_parked_write(&pool).await;
+        settle_created(&pool, run_id, &proposal_id, &tool_call_id).await;
+        let hubs = hub::new_hubs();
+
+        let (outcome, _live) = cancel_recording(&pool, &hubs, run_id).await;
+        assert_eq!(outcome, "accepted", "cancel wins the settled-window CAS");
+        assert_eq!(run_status_str(&pool, run_id).await, Some("cancelled"));
+        // The recorded outcome stays readable on the card.
+        let (state, recorded): (String, Option<String>) = sqlx::query_as(
+            "SELECT state, outcome FROM ticktick_writes WHERE proposal_id = ?",
+        )
+        .bind(&proposal_id)
+        .fetch_one(&pool)
+        .await
+        .expect("write row");
+        assert_eq!(state, "settled");
+        assert_eq!(recorded.as_deref(), Some("created"));
+
+        // The late resume's self-guarded parked→running flip LOSES: no spawn.
+        assert!(
+            !db::mark_run_running(&pool, run_id).await.expect("flip").won(),
+            "resume after a won cancel is a no-op"
+        );
+        assert_eq!(run_status_str(&pool, run_id).await, Some("cancelled"));
+    }
+
+    /// ORDERING 2 — resume wins first: the cancel re-reads `running` and
+    /// routes through the running path, converging on a real cancellation of
+    /// the resumed Run. Both orderings answer the durable state, never a
+    /// local guess.
+    #[tokio::test]
+    async fn write_family_settled_window_resume_wins_then_cancel_routes_running() {
+        let pool = memory_pool().await;
+        let (run_id, proposal_id, tool_call_id) = seed_parked_write(&pool).await;
+        settle_created(&pool, run_id, &proposal_id, &tool_call_id).await;
+        // Resume won the race: the Run flipped parked→running before cancel's CAS.
+        assert!(db::mark_run_running(&pool, run_id).await.expect("flip").won());
+        let hubs = hub::new_hubs();
+
+        let (outcome, _live) = cancel_recording(&pool, &hubs, run_id).await;
+        assert_eq!(
+            outcome, "accepted",
+            "the cancel converges through the running path"
+        );
+        assert_eq!(run_status_str(&pool, run_id).await, Some("cancelled"));
+        let recorded: Option<String> =
+            sqlx::query_scalar("SELECT outcome FROM ticktick_writes WHERE proposal_id = ?")
+                .bind(&proposal_id)
+                .fetch_one(&pool)
+                .await
+                .expect("write row");
+        assert_eq!(recorded.as_deref(), Some("created"), "the outcome stands");
+    }
+
+    /// The accept → Stop race in its lost-parked-race shape: cancel read
+    /// `proposed`, took the existing path, and LOST (a decide flipped the
+    /// proposal accepted concurrently). The re-read answers `write_in_flight`
+    /// — never `already_terminal`, which the Web would settle locally as a
+    /// fake "stopped" over a live write.
+    #[tokio::test]
+    async fn write_family_lost_parked_race_rereads_as_write_in_flight() {
+        let pool = memory_pool().await;
+        let (run_id, proposal_id, _tc) = seed_parked_write(&pool).await;
+        let hubs = hub::new_hubs();
+
+        // Simulate the interleave: by the time cancel_parked_run runs, the
+        // decide has already accepted (proposal no longer pending, write
+        // executing). The dispatch read is bypassed by flipping AFTER seed —
+        // cancel() will re-read the matrix on the lost race.
+        db::ticktick_writes::accept_ticktick_write(
+            &pool,
+            run_id,
+            &proposal_id,
+            None,
+            Some("k1"),
+            db::now_ms(),
+        )
+        .await
+        .expect("concurrent decide accepted");
+
+        let (outcome, _live) = cancel_recording(&pool, &hubs, run_id).await;
+        assert_eq!(
+            outcome, "write_in_flight",
+            "an accepted-and-executing write answers write_in_flight, not already_terminal"
+        );
+        assert_eq!(run_status_str(&pool, run_id).await, Some("parked"));
     }
 }

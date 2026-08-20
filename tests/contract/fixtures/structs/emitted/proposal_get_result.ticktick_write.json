@@ -1,0 +1,14 @@
+{
+  "mutation_kind": "create_ticktick_task",
+  "payload": {
+    "title": "buy milk"
+  },
+  "proposal_id": "0190d3c1-0000-7000-8000-000000000002",
+  "rationale": "the user asked to be reminded",
+  "run_id": "0190d3c1-0000-7000-8000-000000000003",
+  "status": "pending",
+  "ticktick_write": {
+    "stale_connection": true,
+    "state": "proposed"
+  }
+}

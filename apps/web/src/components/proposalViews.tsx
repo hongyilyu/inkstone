@@ -6,6 +6,7 @@ import {
 	CalendarDays,
 	Check,
 	GitBranch,
+	ListTodo,
 	type LucideIcon,
 } from "lucide-react";
 import type { ReactNode } from "react";
@@ -27,6 +28,7 @@ import {
 	renderNoBody,
 	renderPersonBody,
 	renderProjectBody,
+	renderTickTickTaskBody,
 } from "./proposalBody.js";
 
 // The mutation kinds the Worker proposes (ADR-0025). Media and direct
@@ -42,13 +44,15 @@ export type ProposalKind =
 	| "update_person"
 	| "update_project"
 	| "apply_intent_graph"
-	| "record_observations";
+	| "record_observations"
+	| "create_ticktick_task";
 
 export type ProposalEditPolicy =
 	| "journal"
 	| "person"
 	| "project"
 	| "observation"
+	| "ticktick"
 	| "readonly";
 
 // Per-kind presentation for a Proposal — the review card's analogue of KIND_META
@@ -243,6 +247,24 @@ export const PROPOSAL_VIEWS = {
 		canEdit: () => false,
 		editPolicy: "readonly",
 		renderBody: renderNoBody,
+	},
+	create_ticktick_task: {
+		// The remote write: wears the Tasks Topic's mark, not an entity glyph —
+		// nothing lands in the Library. Its decided states render through the
+		// card's write-state branch; `acceptedCopy` is only the fallback.
+		glyph: ListTodo,
+		acceptGlyph: ListTodo,
+		summary: (payload) => readString(payload, "title") || "New task",
+		reviewCopy: "Inkstone wants to create a task in TickTick.",
+		acceptedCopy: "Created in TickTick.",
+		rejectedCopy: "Dismissed.",
+		acceptLabel: "Create in TickTick",
+		acceptBusyLabel: "Creating in TickTick…",
+		rejectLabel: "Dismiss",
+		rejectBusyLabel: "Dismissing...",
+		canEdit: () => true,
+		editPolicy: "ticktick",
+		renderBody: renderTickTickTaskBody,
 	},
 	record_observations: {
 		glyph: Activity,

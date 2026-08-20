@@ -60,6 +60,16 @@
           "status": "accepted"
         },
         {
+          "kind": "proposal",
+          "mutation_kind": "create_ticktick_task",
+          "proposal_id": "0190d3c1-0000-7000-8000-000000000002",
+          "status": "accepted",
+          "ticktick_write": {
+            "state": "created",
+            "task_id": "6899f2b3c1a4de0000000001"
+          }
+        },
+        {
           "duration_ms": 1500,
           "kind": "reasoning",
           "text": "Checking the journal schema…"

@@ -94,6 +94,9 @@ pub enum MessageSegment {
         mutation_kind: String,
         status: String,
         entity_id: Option<String>,
+        /// The TickTick write family's execution state (ticktick-writes W-A4),
+        /// read from the `ticktick_writes` row; `None` for every other kind.
+        ticktick_write: Option<crate::protocol::TickTickWriteState>,
     },
     /// A reasoning/thinking segment (ADR-0045 reasoning amendment, #202): the
     /// streamed thinking text plus Core-computed think duration (next-step
@@ -138,11 +141,13 @@ impl From<MessageSegment> for crate::protocol::Segment {
                 mutation_kind,
                 status,
                 entity_id,
+                ticktick_write,
             } => Segment::Proposal {
                 proposal_id,
                 mutation_kind,
                 status,
                 entity_id,
+                ticktick_write,
             },
             MessageSegment::Reasoning { text, duration_ms } => {
                 Segment::Reasoning { text, duration_ms }
@@ -317,7 +322,11 @@ fn user_segments(
 /// - `tool_call` step without a `proposals` row → a `ToolCall` segment, skipping a
 ///   `pending` call (an in-flight call at reload time is owned by the live tail,
 ///   ADR-0043) and any Proposal-named tool that somehow lacks its `proposals` row
-///   (defensive: a Proposal renders as a card, never a tool-activity row).
+///   (defensive: a Proposal renders as a card, never a tool-activity row) —
+///   EXCEPT an `errored` one, which is a REFUSED propose (ticktick-writes W-A2:
+///   a not-connected / scope-short `propose_ticktick_task` resolves as a normal
+///   tool error and never parks). That has no card to render, so it rides the
+///   tool-activity row and survives reload instead of vanishing.
 ///
 /// `message` steps are scoped to `assistant_message_id` (the Run's user-Message
 /// text step belongs to the user `MessageRow`, not this turn — see
@@ -394,14 +403,24 @@ async fn segment_rows_for_run(
                         // created nothing, so this resolves `None`.
                         let entity_id =
                             queries::entity_id_for_proposal(pool, &proposal_id).await?;
+                        // The TickTick write family carries its durable write
+                        // state (ticktick-writes W-A4) so reload renders what
+                        // live rendered; `None` for every other kind (the one
+                        // decided proposal → at most one extra read).
+                        let ticktick_write =
+                            crate::ticktick_write::wire_state_for_proposal(pool, &proposal_id)
+                                .await?;
                         segments.push(MessageSegment::Proposal {
                             proposal_id,
                             mutation_kind: mutation_kind.unwrap_or_default(),
                             status,
                             entity_id,
+                            ticktick_write,
                         });
                     }
-                } else if !crate::tools::is_proposal(&name) {
+                } else if !crate::tools::is_proposal(&name)
+                    || tc_status.as_deref() == Some("errored")
+                {
                     // A non-Proposal tool call → a tool-activity row (ADR-0043).
                     // Map the persisted status to the wire spelling (never leaking
                     // a non-vocabulary value). thread/get (`include_pending=false`)
@@ -730,6 +749,7 @@ mod tests {
             "propose_workspace_mutation",
             r#"{"mutation_kind":"create_journal_entry","payload":{"occurred_at":"2026-06-10T10:30:00","body":[{"type":"text","text":"x"}]}}"#,
             "create_journal_entry",
+            None,
             7,
         )
         .await
@@ -952,6 +972,7 @@ mod tests {
             "propose_workspace_mutation",
             r#"{"mutation_kind":"apply_intent_graph","payload":{"entities":[],"links":[]}}"#,
             "apply_intent_graph",
+            None,
             2,
         )
         .await
@@ -1012,6 +1033,7 @@ mod tests {
                 mutation_kind,
                 status,
                 entity_id,
+                ticktick_write: _,
             } => {
                 assert_eq!(proposal_id, "proposal-graph");
                 assert_eq!(mutation_kind, "apply_intent_graph");
@@ -1086,6 +1108,7 @@ mod tests {
             "propose_workspace_mutation",
             r#"{"mutation_kind":"create_journal_entry","payload":{"occurred_at":"2026-06-10T10:30:00","body":[{"type":"text","text":"x"}]}}"#,
             "create_journal_entry",
+            None,
             2,
         )
         .await
@@ -1580,6 +1603,7 @@ mod tests {
             "propose_workspace_mutation",
             r#"{"mutation_kind":"update_person","payload":{"entity_id":"entity-pre","name":"y"}}"#,
             "update_person",
+            None,
             2,
         )
         .await
@@ -1693,6 +1717,7 @@ mod tests {
             "propose_workspace_mutation",
             r#"{"mutation_kind":"apply_intent_graph","payload":{"entities":[],"links":[]}}"#,
             "apply_intent_graph",
+            None,
             2,
         )
         .await
@@ -1799,6 +1824,7 @@ mod tests {
             "propose_workspace_mutation",
             r#"{"mutation_kind":"create_journal_entry","payload":{"occurred_at":"2026-06-10T10:30:00","body":[{"type":"text","text":"x"}]}}"#,
             "create_journal_entry",
+            None,
             2,
         )
         .await
@@ -1882,6 +1908,7 @@ mod tests {
             "propose_workspace_mutation",
             r#"{"mutation_kind":"create_journal_entry","payload":{"occurred_at":"2026-06-10T10:30:00","body":[{"type":"text","text":"x"}]}}"#,
             "create_journal_entry",
+            None,
             2,
         )
         .await
@@ -1959,6 +1986,7 @@ mod tests {
             "propose_workspace_mutation",
             r#"{"mutation_kind":"apply_intent_graph","payload":{"entities":[],"links":[]}}"#,
             "apply_intent_graph",
+            None,
             2,
         )
         .await
@@ -1981,6 +2009,7 @@ mod tests {
             "propose_workspace_mutation",
             r#"{"mutation_kind":"create_journal_entry","payload":{"occurred_at":"2026-06-10T10:30:00","body":[{"type":"text","text":"x"}]}}"#,
             "create_journal_entry",
+            None,
             4,
         )
         .await
@@ -2012,6 +2041,251 @@ mod tests {
             MessageSegment::Proposal { proposal_id, .. } => assert_eq!(
                 proposal_id, "proposal-second",
                 "the surviving segment is the MOST-RECENT decided Proposal"
+            ),
+            other => panic!("expected a proposal segment, got {other:?}"),
+        }
+    }
+
+    /// A REFUSED propose (ticktick-writes W-A2: a not-connected or scope-short
+    /// `propose_ticktick_task` resolves as a NORMAL tool error and never parks)
+    /// has no Proposal row and therefore no card — so it must rehydrate as a
+    /// tool-activity ERROR row rather than vanishing on reload, while a
+    /// `pending` proposal-named call still emits nothing (its card is live).
+    #[tokio::test]
+    async fn refused_proposal_tool_call_rehydrates_as_an_error_row() {
+        let pool = memory_pool().await;
+        let thread_id = Uuid::now_v7();
+        let run_id = Uuid::now_v7();
+        let assistant_id = Uuid::now_v7();
+
+        let mut tx = pool.begin().await.expect("begin");
+        queries::insert_thread(&mut *tx, thread_id, "T", 1)
+            .await
+            .expect("thread");
+        sqlx::query(
+            "INSERT INTO runs \
+             (id, thread_id, workflow_name, workflow_version, provider, model, \
+              thinking_level, user_message_id, status, started_at) \
+             VALUES (?, ?, 'w', '1', 'p', 'm', 'off', ?, 'completed', 1)",
+        )
+        .bind(run_id.to_string())
+        .bind(thread_id.to_string())
+        .bind(assistant_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .expect("run");
+        queries::insert_message(
+            &mut *tx,
+            assistant_id,
+            thread_id,
+            run_id,
+            "assistant",
+            "completed",
+            1,
+        )
+        .await
+        .expect("assistant message");
+        tx.commit().await.expect("commit seed");
+
+        // The refusal: a persisted propose call resolved `errored`, NO proposal row.
+        crate::db::persist_tool_call(
+            &pool,
+            run_id,
+            "tc-refused",
+            "propose_ticktick_task",
+            r#"{"payload":{"title":"buy milk"}}"#,
+            2,
+        )
+        .await
+        .expect("persist refused call");
+        crate::db::resolve_tool_call(
+            &pool,
+            "tc-refused",
+            "errored",
+            r#"{"code":"ticktick_not_connected","message":"TickTick is not connected"}"#,
+            3,
+        )
+        .await
+        .expect("resolve refused call");
+
+        let segments = run_live_segments(&pool, run_id, false).await.expect("read");
+        match segments
+            .iter()
+            .find(|s| matches!(s, MessageSegment::ToolCall { .. }))
+            .expect("the refused propose rehydrates as a tool row")
+        {
+            MessageSegment::ToolCall {
+                tool_call_id,
+                name,
+                status,
+                ..
+            } => {
+                assert_eq!(tool_call_id, "tc-refused");
+                assert_eq!(name, "propose_ticktick_task");
+                assert_eq!(status, "error");
+            }
+            other => panic!("expected a tool_call segment, got {other:?}"),
+        }
+        assert!(
+            !segments
+                .iter()
+                .any(|s| matches!(s, MessageSegment::Proposal { .. })),
+            "a refused propose has no Proposal row, so no card segment"
+        );
+
+        // A PENDING proposal-named call still emits nothing (its card is live).
+        crate::db::persist_tool_call(
+            &pool,
+            run_id,
+            "tc-pending",
+            "propose_ticktick_task",
+            r#"{"payload":{"title":"buy eggs"}}"#,
+            4,
+        )
+        .await
+        .expect("persist pending call");
+        let segments = run_live_segments(&pool, run_id, false).await.expect("read");
+        assert_eq!(
+            segments
+                .iter()
+                .filter(|s| matches!(s, MessageSegment::ToolCall { .. }))
+                .count(),
+            1,
+            "the pending propose emits no row"
+        );
+    }
+
+    /// The TickTick write family's segment carries its durable write state
+    /// (ticktick-writes W-A4): an ACCEPTED-but-EXECUTING write rehydrates
+    /// `executing` (+ the Core-computed `deadline_at` — a reload during phase
+    /// B shows "creating…", never a generic accepted), and a settled write
+    /// rehydrates its recorded outcome. LIVE == RELOAD: `run_live_segments`
+    /// (the snapshot) and the `thread/get` walk assemble identically.
+    #[tokio::test]
+    async fn write_family_segment_carries_the_write_state() {
+        let pool = memory_pool().await;
+        let thread_id = Uuid::now_v7();
+        let run_id = Uuid::now_v7();
+        let assistant_id = Uuid::now_v7();
+
+        let mut tx = pool.begin().await.expect("begin");
+        queries::insert_thread(&mut *tx, thread_id, "T", 1)
+            .await
+            .expect("thread");
+        sqlx::query(
+            "INSERT INTO runs \
+             (id, thread_id, workflow_name, workflow_version, provider, model, \
+              thinking_level, user_message_id, status, started_at) \
+             VALUES (?, ?, 'w', '1', 'p', 'm', 'off', ?, 'running', 1)",
+        )
+        .bind(run_id.to_string())
+        .bind(thread_id.to_string())
+        .bind(assistant_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .expect("run");
+        queries::insert_message(
+            &mut *tx,
+            assistant_id,
+            thread_id,
+            run_id,
+            "assistant",
+            "completed",
+            1,
+        )
+        .await
+        .expect("assistant message");
+        tx.commit().await.expect("commit seed");
+
+        park_on_proposal(
+            &pool,
+            run_id,
+            "proposal-ttw",
+            "tc-ttw",
+            "propose_ticktick_task",
+            r#"{"payload":{"title":"buy milk"}}"#,
+            "create_ticktick_task",
+            Some("fp-seg"),
+            2,
+        )
+        .await
+        .expect("park write proposal");
+
+        // A PENDING write proposal emits no segment (the interactive card
+        // renders from proposal/get) — unchanged from every other kind.
+        let segments = run_live_segments(&pool, run_id, false).await.expect("read");
+        assert!(
+            !segments
+                .iter()
+                .any(|s| matches!(s, MessageSegment::Proposal { .. })),
+            "a pending write proposal emits no segment"
+        );
+
+        // Phase A committed: accepted + executing. The segment appears with
+        // the executing state and a deadline.
+        crate::db::ticktick_writes::accept_ticktick_write(
+            &pool,
+            run_id,
+            "proposal-ttw",
+            None,
+            Some("k-seg"),
+            crate::db::now_ms(),
+        )
+        .await
+        .expect("phase A");
+        let segments = run_live_segments(&pool, run_id, false).await.expect("read");
+        match segments
+            .iter()
+            .find(|s| matches!(s, MessageSegment::Proposal { .. }))
+            .expect("the accepted write proposal rehydrates")
+        {
+            MessageSegment::Proposal {
+                status,
+                mutation_kind,
+                ticktick_write,
+                ..
+            } => {
+                assert_eq!(status, "accepted");
+                assert_eq!(mutation_kind, "create_ticktick_task");
+                assert!(
+                    matches!(
+                        ticktick_write,
+                        Some(crate::protocol::TickTickWriteState::Executing { deadline_at })
+                            if *deadline_at > 0
+                    ),
+                    "reload mid-B rehydrates executing + deadline: {ticktick_write:?}"
+                );
+            }
+            other => panic!("expected a proposal segment, got {other:?}"),
+        }
+
+        // Settled `failed`: the segment carries the recorded outcome — a
+        // settled failure never rehydrates success-shaped.
+        let settle = crate::db::ticktick_writes::settle_ticktick_write(
+            &pool,
+            "proposal-ttw",
+            "tc-ttw",
+            "failed",
+            Some(401),
+            None,
+            r#"{"decision":"accept","content":"failed","is_error":false}"#,
+            crate::db::now_ms(),
+        )
+        .await
+        .expect("settle");
+        assert!(matches!(settle, crate::db::ticktick_writes::Settle::Won));
+        let segments = run_live_segments(&pool, run_id, false).await.expect("read");
+        match segments
+            .iter()
+            .find(|s| matches!(s, MessageSegment::Proposal { .. }))
+            .expect("the settled write proposal rehydrates")
+        {
+            MessageSegment::Proposal { ticktick_write, .. } => assert_eq!(
+                ticktick_write,
+                &Some(crate::protocol::TickTickWriteState::Failed {
+                    http_status: Some(401)
+                }),
+                "the settled outcome rehydrates exactly"
             ),
             other => panic!("expected a proposal segment, got {other:?}"),
         }

@@ -73,9 +73,345 @@ pub async fn fetch_tasks(token: &str) -> anyhow::Result<TickTickTasksListResult>
     })
 }
 
+/// The one write body Core ever sends (ticktick-writes W-A6): title, optional
+/// note (`content` — W1: `desc` is the checklist-description field and does
+/// not surface as the note), and the optional due tuple passed through
+/// verbatim (W1: `dueDate` accepts offset-bearing datetimes and normalizes
+/// them; `timeZone` is display-only). No `projectId` — every create lands in
+/// Inbox (the v1 payload cut). Typed, so no generic request builder exists.
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CreateTaskBody {
+    pub title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub due_date: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_all_day: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time_zone: Option<String>,
+}
+
+/// The classified outcome of one write call (ticktick-writes W-A3): the
+/// three-valued verdict plus the provenance columns the `ticktick_writes` row
+/// records. `Failed` means "TickTick deterministically did not create this";
+/// everything ambiguous is `Unknown` — a `failed` that was actually created
+/// invites a duplicate re-propose, so ambiguity NEVER classifies `Failed`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum WriteOutcome {
+    Created { task_id: String },
+    Failed { http_status: Option<i64> },
+    Unknown { http_status: Option<i64> },
+}
+
+/// What phase B observed on the wire, normalized for classification: either an
+/// HTTP response (status + raw body) or a transport failure reduced to the one
+/// predicate that matters (`pre_send_connect` — reqwest `is_connect`, nothing
+/// was sent). A pure data shape so the classifier's full table — including the
+/// default arm — is unit-testable without HTTP.
+#[derive(Debug)]
+pub(crate) enum WireObservation {
+    Response { status: u16, body: String },
+    Transport { pre_send_connect: bool },
+}
+
+/// The EXHAUSTIVE outcome classifier (W-A3; table confirmed by W1). A match
+/// over (status, transport predicate) whose DEFAULT arm is `Unknown` — a novel
+/// status class or transport failure can never classify `Failed`:
+///
+/// - 2xx with a decoded NON-EMPTY task id → `Created` (W1: the create response
+///   is the created task; an undecodable 2xx exists in the wild, so the id
+///   requirement is load-bearing).
+/// - 2xx otherwise (undecodable / id-less / decodable error envelope) →
+///   `Unknown` — creation cannot be confirmed.
+/// - Deterministic 4xx (all but 408) → `Failed` (W1: 401 confirmed; TickTick
+///   wears validation rejections as 500, so this arm is mostly auth/protocol).
+/// - 408, any 5xx (a gateway error can follow an upstream commit — and W1
+///   shows TickTick 500s deterministic rejections too, indistinguishable),
+///   and anything else (1xx/3xx/novel) → `Unknown`.
+/// - Transport: pre-send connect failure → `Failed` (nothing was sent);
+///   timeouts, mid-flight resets, response-read failures, and every other
+///   transport error → `Unknown`.
+pub(crate) fn classify(observation: &WireObservation) -> WriteOutcome {
+    match observation {
+        WireObservation::Response { status, body } => {
+            let http_status = Some(i64::from(*status));
+            match status {
+                200..=299 => match decoded_task_id(body) {
+                    Some(task_id) => WriteOutcome::Created { task_id },
+                    None => WriteOutcome::Unknown { http_status },
+                },
+                408 => WriteOutcome::Unknown { http_status },
+                400..=499 => WriteOutcome::Failed { http_status },
+                // The default arm: 1xx, 3xx, 5xx, and anything novel.
+                _ => WriteOutcome::Unknown { http_status },
+            }
+        }
+        WireObservation::Transport { pre_send_connect } => {
+            if *pre_send_connect {
+                WriteOutcome::Failed { http_status: None }
+            } else {
+                WriteOutcome::Unknown { http_status: None }
+            }
+        }
+    }
+}
+
+/// The created task's non-empty `id` from a 2xx body, or `None` when the body
+/// is undecodable, id-less, or the id is empty/not a string.
+fn decoded_task_id(body: &str) -> Option<String> {
+    let decoded: serde_json::Value = serde_json::from_str(body).ok()?;
+    let id = decoded.get("id")?.as_str()?;
+    if id.is_empty() {
+        return None;
+    }
+    Some(id.to_string())
+}
+
+/// Execute exactly one `POST /open/v1/task` (ticktick-writes phase B) and
+/// classify the observation. Runs under the A7 per-request timeout and the
+/// loopback-guarded base override, like the reads. NEVER retries — the caller
+/// (the write state machine) owns once-only semantics; ambiguity classifies
+/// `Unknown`, not a re-send.
+pub(crate) async fn create_task(token: &str, body: &CreateTaskBody) -> WriteOutcome {
+    let base = base_url();
+    let client = http_client();
+    let timeout = crate::config::get().ticktick_timeout;
+
+    let observation = match client
+        .post(format!("{base}/open/v1/task"))
+        .timeout(timeout)
+        .bearer_auth(token)
+        .json(body)
+        .send()
+        .await
+    {
+        Ok(response) => {
+            let status = response.status().as_u16();
+            match response.text().await {
+                Ok(body) => WireObservation::Response { status, body },
+                // The response ARRIVED but its body could not be read — the
+                // request may have committed upstream: not pre-send.
+                Err(_) => WireObservation::Transport {
+                    pre_send_connect: false,
+                },
+            }
+        }
+        Err(error) => WireObservation::Transport {
+            pre_send_connect: error.is_connect(),
+        },
+    };
+    classify(&observation)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The full classification table (W-A3, confirmed by W1), INCLUDING the
+    /// default arm: a novel status class or transport error classifies
+    /// `Unknown`, never `Failed`; `Created` requires a decoded non-empty id.
+    #[test]
+    fn classifier_covers_the_full_table_with_default_unknown() {
+        let response = |status: u16, body: &str| WireObservation::Response {
+            status,
+            body: body.to_string(),
+        };
+        let cases: Vec<(WireObservation, WriteOutcome)> = vec![
+            // 2xx + decoded non-empty id → Created (200 and 201 alike).
+            (
+                response(200, r#"{"id":"tt-1","projectId":"inbox123"}"#),
+                WriteOutcome::Created {
+                    task_id: "tt-1".to_string(),
+                },
+            ),
+            (
+                response(201, r#"{"id":"tt-2"}"#),
+                WriteOutcome::Created {
+                    task_id: "tt-2".to_string(),
+                },
+            ),
+            // 2xx undecodable (observed in the wild by W1) → Unknown.
+            (
+                response(200, "<html>gateway</html>"),
+                WriteOutcome::Unknown {
+                    http_status: Some(200),
+                },
+            ),
+            // 2xx decodable but id-less / empty-id / non-string id — including
+            // a DECODABLE error envelope — → Unknown, never Created.
+            (
+                response(200, r#"{"projectId":"inbox123"}"#),
+                WriteOutcome::Unknown {
+                    http_status: Some(200),
+                },
+            ),
+            (
+                response(200, r#"{"id":""}"#),
+                WriteOutcome::Unknown {
+                    http_status: Some(200),
+                },
+            ),
+            (
+                response(200, r#"{"id":42}"#),
+                WriteOutcome::Unknown {
+                    http_status: Some(200),
+                },
+            ),
+            (
+                response(200, r#"{"errorCode":"x","errorMessage":"boom"}"#),
+                WriteOutcome::Unknown {
+                    http_status: Some(200),
+                },
+            ),
+            // Deterministic 4xx family → Failed (the W1-probed statuses).
+            (
+                response(400, r#"{"errorCode":"bad"}"#),
+                WriteOutcome::Failed {
+                    http_status: Some(400),
+                },
+            ),
+            (
+                response(401, r#"{"error":"invalid_token"}"#),
+                WriteOutcome::Failed {
+                    http_status: Some(401),
+                },
+            ),
+            (
+                response(403, ""),
+                WriteOutcome::Failed {
+                    http_status: Some(403),
+                },
+            ),
+            (
+                response(404, ""),
+                WriteOutcome::Failed {
+                    http_status: Some(404),
+                },
+            ),
+            (
+                response(413, ""),
+                WriteOutcome::Failed {
+                    http_status: Some(413),
+                },
+            ),
+            (
+                response(422, ""),
+                WriteOutcome::Failed {
+                    http_status: Some(422),
+                },
+            ),
+            (
+                response(429, ""),
+                WriteOutcome::Failed {
+                    http_status: Some(429),
+                },
+            ),
+            // 408 is the 4xx exception → Unknown.
+            (
+                response(408, ""),
+                WriteOutcome::Unknown {
+                    http_status: Some(408),
+                },
+            ),
+            // Any 5xx → Unknown (W1: TickTick 500s deterministic validation
+            // rejections too — indistinguishable from a gateway fault).
+            (
+                response(500, r#"{"errorCode":"title_empty"}"#),
+                WriteOutcome::Unknown {
+                    http_status: Some(500),
+                },
+            ),
+            (
+                response(502, ""),
+                WriteOutcome::Unknown {
+                    http_status: Some(502),
+                },
+            ),
+            (
+                response(503, ""),
+                WriteOutcome::Unknown {
+                    http_status: Some(503),
+                },
+            ),
+            // The default arm: novel status classes → Unknown.
+            (
+                response(100, ""),
+                WriteOutcome::Unknown {
+                    http_status: Some(100),
+                },
+            ),
+            (
+                response(302, ""),
+                WriteOutcome::Unknown {
+                    http_status: Some(302),
+                },
+            ),
+            (
+                response(599, ""),
+                WriteOutcome::Unknown {
+                    http_status: Some(599),
+                },
+            ),
+            // Transport: pre-send connect failure → Failed (nothing sent);
+            // everything else (timeout, mid-flight reset, body-read failure —
+            // the novel-transport default) → Unknown.
+            (
+                WireObservation::Transport {
+                    pre_send_connect: true,
+                },
+                WriteOutcome::Failed { http_status: None },
+            ),
+            (
+                WireObservation::Transport {
+                    pre_send_connect: false,
+                },
+                WriteOutcome::Unknown { http_status: None },
+            ),
+        ];
+        for (observation, expected) in cases {
+            assert_eq!(
+                classify(&observation),
+                expected,
+                "classification of {observation:?}"
+            );
+        }
+    }
+
+    /// The write body serializes to TickTick's exact camelCase keys, omitting
+    /// absent optionals (the minimal Inbox capture is `{"title": …}` alone).
+    #[test]
+    fn create_task_body_serializes_camel_case_and_omits_absent() {
+        let minimal = CreateTaskBody {
+            title: "buy milk".to_string(),
+            content: None,
+            due_date: None,
+            is_all_day: None,
+            time_zone: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&minimal).unwrap(),
+            serde_json::json!({ "title": "buy milk" })
+        );
+        let full = CreateTaskBody {
+            title: "buy milk".to_string(),
+            content: Some("2%".to_string()),
+            due_date: Some("2026-09-01T17:30:00-0700".to_string()),
+            is_all_day: Some(false),
+            time_zone: Some("America/Los_Angeles".to_string()),
+        };
+        assert_eq!(
+            serde_json::to_value(&full).unwrap(),
+            serde_json::json!({
+                "title": "buy milk",
+                "content": "2%",
+                "dueDate": "2026-09-01T17:30:00-0700",
+                "isAllDay": false,
+                "timeZone": "America/Los_Angeles"
+            })
+        );
+    }
 
     /// LIVE OpenAPI contract smoke (review R10 #3): drives the PRODUCTION decode
     /// path — [`fetch_tasks`] is the real reqwest → `wire.rs` serde decode →

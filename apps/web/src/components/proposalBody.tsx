@@ -8,6 +8,7 @@ import {
 	readString,
 	readStringArray,
 } from "@/lib/readPayload";
+import { dueLabel, readDue } from "@/lib/ticktickWrite";
 
 /**
  * Inputs a row's `renderBody` strategy reads to draw the card's detail body — the
@@ -225,6 +226,30 @@ export function renderProjectBody({
 			) : (
 				projectSection("Project", payload)
 			)}
+		</div>
+	);
+}
+
+/** The TickTick task body: the due (localized from the one due tuple), the
+ * note, and the fixed "→ Inbox" affordance — the v1 payload carries no list,
+ * tags, or priority, so every agent create lands in Inbox. */
+export function renderTickTickTaskBody({
+	payload,
+}: ProposalBodyArgs): ReactNode {
+	const note = readString(payload, "note");
+	const due = readDue(payload);
+	return (
+		<div className="flex flex-col gap-3 border-border border-t pt-3">
+			<Section title="Task">
+				{due ? (
+					<Field
+						label="Due"
+						value={`${dueLabel(due)}${due.isAllDay ? " (all day)" : ""}`}
+					/>
+				) : null}
+				{note ? <Field label="Note" value={note} /> : null}
+				<Field label="List" value="→ Inbox" />
+			</Section>
 		</div>
 	);
 }

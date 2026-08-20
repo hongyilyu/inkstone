@@ -4,6 +4,7 @@ import {
 	type ThreadGetResult,
 	type ThreadListResult,
 	ThreadTitledNotification,
+	type TickTickWriteState,
 } from "@inkstone/protocol";
 import {
 	onNotification,
@@ -60,6 +61,7 @@ export function setOnRunSettled(fn: (() => void) | undefined): void {
 export function resetBridge(): void {
 	fibers.clear();
 	decisionKeys.clear();
+	decidesInFlight.clear();
 	proposalFiber = undefined;
 	onRunSettled = undefined;
 }
@@ -180,7 +182,7 @@ export function startRunStream(
 					if (
 						event.kind === "error" &&
 						event.message.startsWith("Lost the connection") &&
-						isRunParked(runId)
+						runAwaitsDecisionOrWrite(runId)
 					) {
 						return;
 					}
@@ -192,7 +194,7 @@ export function startRunStream(
 		// events arrive) still needs the same treatment.
 		Effect.catchAll(() =>
 			Effect.sync(() => {
-				if (isRunParked(runId)) return;
+				if (runAwaitsDecisionOrWrite(runId)) return;
 				applyEvent(threadId, runId, {
 					kind: "error",
 					message:
@@ -452,7 +454,11 @@ export async function cancelRun(
 ): Promise<void> {
 	const program = Effect.flatMap(WsClient, (client) => client.cancelRun(runId));
 
-	let outcome: "accepted" | "already_terminal" | "unknown_run";
+	let outcome:
+		| "accepted"
+		| "already_terminal"
+		| "unknown_run"
+		| "write_in_flight";
 	let liveTail: boolean;
 	try {
 		const result = await runtime.runPromise(program);
@@ -460,6 +466,16 @@ export async function cancelRun(
 		liveTail = result.live_tail;
 	} catch {
 		// Cancel is best-effort; a failed request leaves the Run as-is.
+		return;
+	}
+
+	// `write_in_flight` (ticktick-writes W-A3): the Run is parked on an accepted
+	// TickTick write whose POST is in flight. The cancel was REFUSED and nothing
+	// changed — keep the card and the subscription; the real outcome lands via
+	// the decide response / the settle notification. NEVER settle locally: a
+	// synthetic "cancelled" here would render "stopped" over a write that may
+	// commit.
+	if (outcome === "write_in_flight") {
 		return;
 	}
 
@@ -495,6 +511,85 @@ export async function cancelRun(
 	// parked (no live tail, any outcome), an `accepted` running-without-hub
 	// resume window, or `unknown_run` (no hub — bailing would leak the fiber).
 	settleCancelledLocally(runtime, threadId, runId);
+}
+
+/**
+ * One tick of the bounded observe-poll (ticktick-writes W-A4): re-read the
+ * thread's durable truth and, if this Run's write settled, apply the recorded
+ * outcome + re-subscribe the resumed Run's tail. Pure OBSERVATION — a read
+ * can never settle server-side; the deadline watchdog owns settlement. The
+ * card's `useTickTickWritePoll` drives the interval and the `deadline_at` cap.
+ */
+export async function pollTickTickWriteOnce(
+	runtime: WsRuntime,
+	runId: RunId,
+): Promise<"settled" | "executing" | "gone"> {
+	// The caller's own decide is in flight: its response carries the outcome
+	// and its settle path owns the resume re-subscribe — observing in parallel
+	// would race it into a second live tail. Keep waiting.
+	if (decidesInFlight.has(runId)) {
+		return "executing";
+	}
+	const proposal = getChatState().proposals[runId];
+	if (proposal === undefined) {
+		return "gone";
+	}
+	const threadId = getRunThreadId(runId);
+	if (threadId === undefined) {
+		return "gone";
+	}
+	const program = Effect.flatMap(WsClient, (client) =>
+		client.threadGet(threadId),
+	);
+	const exit = await runtime.runPromiseExit(program);
+	if (Exit.isFailure(exit)) {
+		// A transient read failure: keep observing until the deadline cap.
+		return "executing";
+	}
+	// Currency guard: the record may have settled (the decide response landed)
+	// or been cleared while the read was in flight.
+	const current = getChatState().proposals[runId];
+	if (current?.proposal_id !== proposal.proposal_id) {
+		return "gone";
+	}
+	if (current.ticktick_write?.state !== "executing") {
+		return "settled";
+	}
+	const seg = decidedProposalSegment(
+		exit.value.messages,
+		runId,
+		proposal.proposal_id,
+	);
+	if (
+		seg === undefined ||
+		seg.ticktick_write === undefined ||
+		seg.ticktick_write.state === "executing"
+	) {
+		return "executing";
+	}
+	setProposalStatus(
+		runId,
+		seg.status,
+		seg.entity_id,
+		undefined,
+		seg.ticktick_write,
+	);
+	// The write settled server-side, so the Run resumed: mirror the decided
+	// path — interrupt the parked fiber, re-subscribe the resume tail.
+	interruptRun(runtime, runId);
+	startRunStream(runtime, threadId, runId);
+	return "settled";
+}
+
+/** Whether a dropped stream must NOT be reported as a failed reply: the Run is
+ * parked on a Decision, or this tab shows a replayed/hydrated `executing`
+ * TickTick write (parked server-side while the record still reads running —
+ * ticktick-writes W-A4). The bounded poll reconverges after reconnect. */
+function runAwaitsDecisionOrWrite(runId: RunId): boolean {
+	return (
+		isRunParked(runId) ||
+		getChatState().proposals[runId]?.ticktick_write?.state === "executing"
+	);
 }
 
 /** The synthetic cancel settle: interrupt the fiber (so its takeUntil can't
@@ -586,6 +681,10 @@ export function startProposalStream(runtime: WsRuntime): void {
 						rationale: p.rationale,
 						review_context: p.review_context,
 						resolved_plan: p.resolved_plan,
+						// The write family's pending read (ticktick-writes W-A4):
+						// `proposed` + the read-derived stale_connection, so a stale
+						// card warns on first render.
+						ticktick_write: p.ticktick_write,
 						status: "pending",
 					});
 					// Parking is a Run milestone the feed reflects (Running → Waiting).
@@ -594,7 +693,19 @@ export function startProposalStream(runtime: WsRuntime): void {
 					// any milestone the feed shows, not only terminals).
 					onRunSettled?.();
 				} else {
-					setProposalStatus(n.run_id, n.status);
+					// A late `executing` notification (queued behind a slow pending
+					// fetch) must never overwrite a SETTLED write state — settlement
+					// is monotonic; only the terminal states may replace executing.
+					const existing = getChatState().proposals[n.run_id]?.ticktick_write;
+					const settled =
+						existing !== undefined &&
+						existing.state !== "proposed" &&
+						existing.state !== "executing";
+					const incoming =
+						n.ticktick_write?.state === "executing" && settled
+							? undefined
+							: n.ticktick_write;
+					setProposalStatus(n.run_id, n.status, undefined, undefined, incoming);
 				}
 				// A `proposal/get` failure must not tear down the whole stream.
 			}).pipe(Effect.catchAll(() => Effect.void)),
@@ -619,7 +730,13 @@ function decidedProposalSegment(
 	views: ThreadGetResult["messages"],
 	runId: string,
 	proposalId: string,
-): { status: "accepted" | "rejected"; entity_id?: string } | undefined {
+):
+	| {
+			status: "accepted" | "rejected";
+			entity_id?: string;
+			ticktick_write?: TickTickWriteState;
+	  }
+	| undefined {
 	for (const view of views) {
 		if (view.run_id !== runId) {
 			continue;
@@ -632,7 +749,11 @@ function decidedProposalSegment(
 			if (status !== "accepted" && status !== "rejected") {
 				continue;
 			}
-			return { status, entity_id: seg.entity_id };
+			return {
+				status,
+				entity_id: seg.entity_id,
+				ticktick_write: seg.ticktick_write,
+			};
 		}
 	}
 	return undefined;
@@ -678,7 +799,13 @@ async function settleDecidedProposal(
 		fallback();
 		return;
 	}
-	setProposalStatus(runId, seg.status, seg.entity_id);
+	setProposalStatus(
+		runId,
+		seg.status,
+		seg.entity_id,
+		undefined,
+		seg.ticktick_write,
+	);
 	// Mirror the success path: interrupt the parked fiber, re-subscribe the
 	// resume tail (startRunStream re-arms the snapshot bit — M2/M1 discipline).
 	interruptRun(runtime, runId);
@@ -712,6 +839,13 @@ export async function decideProposal(
 		return;
 	}
 	setProposalStatus(runId, "deciding");
+	// While OUR decide is in flight, the executing card is the caller's own
+	// pending-response state (W-A4): the bounded observe-poll must not run —
+	// the response carries the outcome, and a poll settling in the
+	// settle→response window would double-drive startRunStream (duplicated
+	// resume deltas). Hydrated/replayed executing states (no in-flight decide
+	// on this tab) still poll.
+	decidesInFlight.add(runId);
 
 	// Mint once per proposal_id, reuse on retry — a lost-response "Try again"
 	// replays the SAME key so Core's keyed replay returns the prior result
@@ -737,43 +871,72 @@ export async function decideProposal(
 		client.proposalDecide(params),
 	);
 
-	const exit = await runtime.runPromiseExit(program);
-	if (Exit.isFailure(exit)) {
-		const error = wsFailure(exit.cause);
-		if (error?._tag === "ProposalNotPendingError") {
-			// -32002: the Proposal is no longer decidable — decided in another tab,
-			// or the Run advanced past parked. Settle from durable truth instead of
-			// dead-ending. (A same-key replay returns Core's prior result as
-			// success, so it never lands here.)
-			await settleDecidedProposal(runtime, runId, proposal.proposal_id);
+	try {
+		const exit = await runtime.runPromiseExit(program);
+		if (Exit.isFailure(exit)) {
+			const error = wsFailure(exit.cause);
+			if (error?._tag === "ProposalNotPendingError") {
+				// -32002: the Proposal is no longer decidable — decided in another tab,
+				// or the Run advanced past parked. Settle from durable truth instead of
+				// dead-ending. (A same-key replay returns Core's prior result as
+				// success, so it never lands here.)
+				await settleDecidedProposal(runtime, runId, proposal.proposal_id);
+				return;
+			}
+			if (error?._tag === "StaleConnectionError") {
+				// -32005 (ticktick-writes W-A3): the TickTick credential changed since
+				// this parked — the pre-restart-card race. The Proposal stays pending
+				// with NO write fired; flip the record to what a fresh read would
+				// derive ({state:"proposed", stale_connection:true}), so the card
+				// renders the stale warning with accept disabled and reject enabled —
+				// never the generic proposal_not_pending refetch, never a retry loop.
+				setProposalStatus(runId, "pending", undefined, undefined, {
+					state: "proposed",
+					stale_connection: true,
+				});
+				return;
+			}
+			setProposalStatus(
+				runId,
+				"error",
+				undefined,
+				error?._tag === "InvalidParamsError" ? error.message : undefined,
+			);
 			return;
 		}
+		const result = exit.value;
+		// Currency guard: a concurrent cancelRun (the composer Stop button stays
+		// clickable while deciding) may have settled + cleared this Proposal while
+		// the decide was in flight. If so the Run is terminal — don't re-fork a
+		// resume stream for a cancelled Run (it would re-subscribe a dead Run and
+		// its snapshot text_delta would overwrite the settled bubble).
+		if (getChatState().proposals[runId] === undefined) {
+			return;
+		}
+		// Persist the created/updated `entity_id` (ADR-0044 amendment) so the decided
+		// card can name + deep-link it; absent on a reject. The write family's
+		// outcome (`ticktick_write`) rides the same settle (ticktick-writes W-A4).
 		setProposalStatus(
 			runId,
-			"error",
+			result.status,
+			result.entity_id,
 			undefined,
-			error?._tag === "InvalidParamsError" ? error.message : undefined,
+			result.ticktick_write,
 		);
-		return;
-	}
-	const result = exit.value;
-	// Currency guard: a concurrent cancelRun (the composer Stop button stays
-	// clickable while deciding) may have settled + cleared this Proposal while
-	// the decide was in flight. If so the Run is terminal — don't re-fork a
-	// resume stream for a cancelled Run (it would re-subscribe a dead Run and
-	// its snapshot text_delta would overwrite the settled bubble).
-	if (getChatState().proposals[runId] === undefined) {
-		return;
-	}
-	// Persist the created/updated `entity_id` (ADR-0044 amendment) so the decided
-	// card can name + deep-link it; absent on a reject.
-	setProposalStatus(runId, result.status, result.entity_id);
-	const threadId = getRunThreadId(runId);
-	if (threadId !== undefined) {
-		// Stale-fiber guard (M2): interrupt the parked fiber, then re-subscribe.
-		// startRunStream re-arms the record's snapshot bit, so the resume's first
-		// text_delta SETs (not appends) — the M1 fix; see docs/design/web-store.md.
-		interruptRun(runtime, runId);
-		startRunStream(runtime, threadId, runId);
+		const threadId = getRunThreadId(runId);
+		if (threadId !== undefined) {
+			// Stale-fiber guard (M2): interrupt the parked fiber, then re-subscribe.
+			// startRunStream re-arms the record's snapshot bit, so the resume's first
+			// text_delta SETs (not appends) — the M1 fix; see docs/design/web-store.md.
+			interruptRun(runtime, runId);
+			startRunStream(runtime, threadId, runId);
+		}
+	} finally {
+		decidesInFlight.delete(runId);
 	}
 }
+
+/** Run ids with OUR OWN `proposal/decide` in flight (ticktick-writes W-A4):
+ * the executing observe-poll is gated off while the response — which carries
+ * the outcome — is pending on this tab. */
+const decidesInFlight = new Set<string>();

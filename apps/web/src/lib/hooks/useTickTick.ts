@@ -3,6 +3,7 @@ import type {
 	TickTickTasksListResult,
 } from "@inkstone/protocol";
 import { type ConnectionStatus, WsClient } from "@inkstone/ui-sdk";
+import type { QueryClient } from "@tanstack/react-query";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Effect, Fiber, Stream } from "effect";
 import { useCallback, useEffect, useState } from "react";
@@ -21,8 +22,26 @@ import { useRuntime } from "@/runtime";
 const tasksKey = (connectionId: string) =>
 	["ticktick", "tasks", connectionId] as const;
 
-const TASKS_KEY_PREFIX = ["ticktick", "tasks"] as const;
+export const TASKS_KEY_PREFIX = ["ticktick", "tasks"] as const;
 const STATUS_KEY = ["ticktick", "status"] as const;
+
+/** Whether the CURRENT cached Tasks read is at TickTick's 200-item source
+ * limit (ticktick-writes W-A5): the created card's inline caveat reads the
+ * cache only — a display hint, never a fetch. `false` when no task query has
+ * resolved. */
+export function readTasksAtSourceLimit(queryClient: QueryClient): boolean {
+	return queryClient
+		.getQueriesData<TickTickTasksListResult>({ queryKey: TASKS_KEY_PREFIX })
+		.some(
+			// The prefix also matches the disabled observer's placeholder key, so
+			// check the property is actually there before trusting it.
+			(entry) =>
+				typeof entry[1] === "object" &&
+				entry[1] !== null &&
+				"source_limit_reached" in entry[1] &&
+				entry[1].source_limit_reached === true,
+		);
+}
 
 /** Split a failed task read into an INITIAL failure (no successful fetch yet —
  * `data` is `undefined`) vs. a STALE-refetch failure (a prior fetch's data,

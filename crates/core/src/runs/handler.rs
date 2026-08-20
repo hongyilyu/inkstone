@@ -42,6 +42,12 @@ pub(super) enum HandlerError {
     /// streaming into an opaque provider 401. Carries the provider id (the Web
     /// renders friendlier copy off the code; the id is the sanitized fallback).
     ProviderNotConnected { provider: String },
+    /// `-32005`: a `create_ticktick_task` accept found the TickTick credential
+    /// changed (or gone/read-only) since the Proposal parked (ticktick-writes
+    /// W-A3). DEDICATED — never folded into `proposal_not_pending`, which the
+    /// Web reads as "another tab decided" and answers with a doomed retry. The
+    /// Proposal stays pending: reject remains available; no POST fired.
+    StaleConnection,
     /// `-32603`: an internal fault. The full error is logged server-side; the
     /// client gets a generic message so SQL/internal detail never leaks.
     Internal(anyhow::Error),
@@ -56,6 +62,7 @@ impl HandlerError {
             HandlerError::ProposalNotPending(_) => -32002,
             HandlerError::ProviderLoginFailed(_) => -32003,
             HandlerError::ProviderNotConnected { .. } => -32004,
+            HandlerError::StaleConnection => -32005,
             HandlerError::Internal(_) => -32603,
         }
     }
@@ -73,6 +80,12 @@ impl HandlerError {
             HandlerError::ProviderNotConnected { provider } => {
                 format!("{provider} is not configured")
             }
+            // Covers a swapped credential AND a missing / read-only one, so the
+            // guidance is "reconnect with write access", not merely "ask again".
+            HandlerError::StaleConnection => "the TickTick connection changed since this was \
+                 proposed (or lost write access) — reconnect TickTick with tasks:write, then \
+                 reject this and ask again"
+                .to_string(),
             HandlerError::Internal(_) => "internal error".to_string(),
         }
     }
@@ -193,6 +206,30 @@ mod tests {
         let v = recv_json(&mut rx);
         assert_eq!(v["result"], json!({ "hello": "world" }));
         assert!(v.get("error").is_none());
+    }
+
+    /// The write family's DEDICATED stale-credential code (ticktick-writes
+    /// W-A3): `-32005`, with a message that tells the user what to do. Pinned
+    /// so a future mapping change cannot fold this recoverable case back into
+    /// `-32002` (`proposal_not_pending`), which the Web answers with a doomed
+    /// retry instead of a stale-card warning.
+    #[tokio::test]
+    async fn stale_connection_frames_minus_32005_with_its_message() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        handle(json!(1), json!({ "id": Uuid::nil() }), &tx, |_p: TestParams| async move {
+            Err::<Value, _>(HandlerError::StaleConnection)
+        })
+        .await;
+        let v = recv_json(&mut rx);
+        assert_eq!(v["error"]["code"], json!(-32005));
+        assert_eq!(
+            v["error"]["message"],
+            json!(
+                "the TickTick connection changed since this was proposed (or lost write access) \
+                 — reconnect TickTick with tasks:write, then reject this and ask again"
+            )
+        );
+        assert!(v.get("result").is_none());
     }
 
     #[tokio::test]

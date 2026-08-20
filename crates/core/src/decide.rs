@@ -32,10 +32,19 @@ enum Decision {
 enum StoredMutation {
     Proposable(ProposableMutation),
     NonProposable(MutationKind),
+    /// The TickTick write family (ticktick-writes W-A2): recognized so a
+    /// stored `create_ticktick_task` is never mistaken for corrupt data, but
+    /// NEVER routed through the entity path — `runs/proposal.rs` dispatches
+    /// the family to `crate::ticktick_write::decide` before calling [`apply`];
+    /// reaching an accept here is refused (a reject still works).
+    TickTickWrite,
 }
 
 impl StoredMutation {
     fn from_wire(value: &str) -> Option<Self> {
+        if value == crate::ticktick_write::MUTATION_KIND {
+            return Some(StoredMutation::TickTickWrite);
+        }
         if let Some(proposable) = ProposableMutation::from_wire(value) {
             return Some(StoredMutation::Proposable(proposable));
         }
@@ -49,6 +58,11 @@ impl StoredMutation {
                 "{} cannot be proposed",
                 kind.as_wire()
             ))),
+            StoredMutation::TickTickWrite => Err(DecideError::Invalid(
+                "create_ticktick_task is not a Workspace mutation (it decides through \
+                 the TickTick write family)"
+                    .to_string(),
+            )),
         }
     }
 }
@@ -1338,6 +1352,52 @@ mod tests {
     //    threaded); the deterministic outcome here is `NotDecidable`, which maps
     //    to the same wire code (`-32002`). `LostRace` is covered by the db-layer
     //    guarded-race tests.
+    /// The TickTick write family NEVER rides the entity path (ticktick-writes
+    /// W-A2): `decide::apply` recognizes the stored `create_ticktick_task`
+    /// (never "corrupt data"), refuses an accept as Invalid — no entity
+    /// lands, nothing resumes — while a reject still resolves cleanly (the
+    /// reject branch is kind-agnostic). The real family decide lives in
+    /// `crate::ticktick_write::decide`, routed by the handler.
+    #[tokio::test]
+    async fn ticktick_write_kind_never_takes_the_entity_accept_path() {
+        let pool = memory_pool().await;
+        let (_run, proposal_id) = seed_parked_proposal(&pool).await;
+        retarget_proposal(
+            &pool,
+            &proposal_id.to_string(),
+            "create_ticktick_task",
+            serde_json::json!({ "title": "buy milk" }),
+        )
+        .await;
+
+        let resumed = Arc::new(AtomicBool::new(false));
+        let outcome = apply(
+            &pool,
+            proposal_id,
+            "accept",
+            None,
+            None,
+            Some("ttw-defense".to_string()),
+            resume_closure(pool.clone(), resumed.clone()),
+        )
+        .await;
+
+        let Err(DecideError::Invalid(reason)) = outcome else {
+            panic!("a write-family accept through the entity path must be Invalid: {outcome:?}");
+        };
+        assert!(
+            reason.contains("TickTick write family"),
+            "the refusal names the family route: {reason}"
+        );
+        assert_eq!(entity_count(&pool).await, 0, "no entity lands");
+        assert!(!resumed.load(Ordering::SeqCst), "nothing resumes");
+        assert_eq!(
+            proposal_status(&pool, &proposal_id.to_string()).await,
+            "pending",
+            "the proposal stays decidable"
+        );
+    }
+
     #[tokio::test]
     async fn stale_decide_after_concurrent_winner_is_not_decidable() {
         let pool = memory_pool().await;

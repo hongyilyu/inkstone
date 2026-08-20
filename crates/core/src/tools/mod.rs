@@ -4,6 +4,7 @@
 //! Worker proxies `tool_request`/`tool_result` over stdio with zero per-tool code.
 
 mod load_skill;
+pub(crate) mod propose_ticktick_task;
 mod propose_workspace_mutation;
 mod read_current_thread_journal_entries;
 mod read_thread;
@@ -41,7 +42,8 @@ type ToolFuture<'a> = Pin<Box<dyn Future<Output = Result<AgentToolResult, ToolEr
 enum Dispatch {
     /// Not dispatchable. A Proposal Tool Request parks the Run on a pending
     /// Proposal before dispatch (ADR-0025); its Tool Result is a user Decision,
-    /// so it has no `execute`. `propose_workspace_mutation` is the only one.
+    /// so it has no `execute`. `propose_workspace_mutation` and
+    /// `propose_ticktick_task` (ticktick-writes W-A2) are the two.
     Proposal,
     /// Reads durable state: `(pool, params)`. `read_thread`, `search_entities`.
     Pool(for<'a> fn(&'a SqlitePool, Value) -> ToolFuture<'a>),
@@ -108,6 +110,12 @@ const REGISTRY: &[ToolEntry] = &[
     ToolEntry {
         name: propose_workspace_mutation::NAME,
         descriptor: propose_workspace_mutation::descriptor,
+        dispatch: Dispatch::Proposal,
+        display_arg: no_arg,
+    },
+    ToolEntry {
+        name: propose_ticktick_task::NAME,
+        descriptor: propose_ticktick_task::descriptor,
         dispatch: Dispatch::Proposal,
         display_arg: no_arg,
     },
@@ -202,9 +210,10 @@ pub fn is_registered(name: &str) -> bool {
 
 /// Whether `name` is a Proposal tool (ADR-0025). Core intercepts a Proposal
 /// `tool_request` before dispatch and parks the Run instead of executing it;
-/// non-Proposal tools dispatch synchronously. `propose_workspace_mutation` is
-/// the only Proposal tool today. `false` for an unregistered name — this is
-/// called (run.rs) before the allowlist check.
+/// non-Proposal tools dispatch synchronously. Two Proposal tools exist:
+/// `propose_workspace_mutation` and `propose_ticktick_task` (ticktick-writes
+/// W-A2). `false` for an unregistered name — this is called (run.rs) before
+/// the allowlist check.
 pub fn is_proposal(name: &str) -> bool {
     REGISTRY
         .iter()
@@ -220,8 +229,21 @@ pub fn validate_proposal_request(name: &str, params: &Value) -> Result<(), Strin
         propose_workspace_mutation::NAME => {
             propose_workspace_mutation::validate_request(params).map(|_| ())
         }
+        propose_ticktick_task::NAME => propose_ticktick_task::validate_request(params),
         _ => Err(format!("no proposal validator registered for {name:?}")),
     }
+}
+
+/// A family-specific PRE-PARK gate (ticktick-writes W-A2): a refusal resolves
+/// the propose call as a NORMAL tool error (the model continues and redirects
+/// honestly) instead of parking — `propose_ticktick_task` on a missing or
+/// read-only TickTick connection. `None` for every other tool: proceed to
+/// validate + park.
+pub fn pre_park_refusal(name: &str) -> Option<ToolError> {
+    if name == propose_ticktick_task::NAME {
+        return propose_ticktick_task::pre_park_refusal();
+    }
+    None
 }
 
 /// Dispatch a `tool_request` to the named tool's `execute`, handing it the exact
@@ -247,7 +269,7 @@ pub async fn execute(
         // the park interception was bypassed, so refuse defensively.
         Dispatch::Proposal => Err(ToolError {
             code: "proposal_not_executable".to_string(),
-            message: "propose_workspace_mutation parks the Run; it is not dispatched".to_string(),
+            message: format!("{name} parks the Run; it is not dispatched"),
         }),
     }
 }
@@ -298,8 +320,9 @@ mod tests {
     /// `execute` fails at compile time — neither can slip through to a silent
     /// runtime miss the way the old parallel match tables allowed when one
     /// omitted a tool the others listed. Each entry's descriptor self-reports
-    /// its own `name`, every name is non-empty and unique, and exactly one entry
-    /// is the `Proposal` — `propose_workspace_mutation`.
+    /// its own `name`, every name is non-empty and unique, and exactly two
+    /// entries are `Proposal` — `propose_workspace_mutation` and
+    /// `propose_ticktick_task`.
     #[test]
     fn registry_is_complete_and_consistent() {
         let mut seen = std::collections::HashSet::new();
@@ -325,8 +348,8 @@ mod tests {
             .collect();
         assert_eq!(
             proposals,
-            vec![propose_workspace_mutation::NAME],
-            "exactly one Proposal tool, and it is propose_workspace_mutation"
+            vec![propose_workspace_mutation::NAME, propose_ticktick_task::NAME],
+            "exactly two Proposal tools: propose_workspace_mutation and propose_ticktick_task"
         );
     }
 

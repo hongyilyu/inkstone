@@ -74,6 +74,20 @@ pub(super) fn send_proposal_changed(
     proposal_id: &str,
     status: &str,
 ) {
+    send_proposal_changed_with_write(out_tx, run_id, proposal_id, status, None);
+}
+
+/// The write-family `proposal/changed` (ticktick-writes W-A4): carries the
+/// durable `ticktick_write` state. Fired TWICE on the deciding connection for
+/// a fresh accept — at accept (`executing`) and at settle (the terminal
+/// state).
+pub(crate) fn send_proposal_changed_with_write(
+    out_tx: &UnboundedSender<String>,
+    run_id: Uuid,
+    proposal_id: &str,
+    status: &str,
+    ticktick_write: Option<crate::protocol::TickTickWriteState>,
+) {
     let notification = serde_json::json!({
         "jsonrpc": "2.0",
         "method": "proposal/changed",
@@ -81,6 +95,7 @@ pub(super) fn send_proposal_changed(
             run_id: run_id.to_string(),
             proposal_id: proposal_id.to_string(),
             status: status.to_string(),
+            ticktick_write,
         },
     });
     let body = serde_json::to_string(&notification).expect("notification serializes");

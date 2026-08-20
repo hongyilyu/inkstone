@@ -15,12 +15,17 @@ use serde::Deserialize;
 /// [`crate::credentials::OPENAI_CODEX`].
 const TICKTICK: &str = "ticktick";
 
-/// The token file's shape. Only `access_token` is consumed; scope/lifetime
-/// metadata stays on disk (the A5 expiry-proximity hint is the named S5
-/// candidate, not built).
+/// The token file's shape. `access_token` is the credential; `scope` is the
+/// optional provisioning-recorded grant — when present and missing
+/// `tasks:write`, the connection is read-only and the write family refuses to
+/// propose (ticktick-writes W-A2). Absent `scope` = writable (provisioning
+/// convention: any token that works for the MCP read lane carries
+/// `tasks:write`). Other metadata stays on disk.
 #[derive(Deserialize)]
 struct TokenFile {
     access_token: String,
+    #[serde(default)]
+    scope: Option<String>,
 }
 
 /// The boot-read TickTick connection: one boot, one credential, one ID.
@@ -35,6 +40,43 @@ pub struct Connection {
     /// accounts, and a restart mints a new ID that the A2 reconnect protocol
     /// uses to clear stale task data.
     pub connection_id: String,
+    /// Whether the token may WRITE (ticktick-writes W-A2): the parsed `scope`
+    /// grants `tasks:write`, or `scope` is absent (provisioning convention).
+    /// The pre-park gate refuses proposing on a read-only connection.
+    pub writable: bool,
+    /// INTERNAL fingerprint of the access token (ticktick-writes W-A3): a
+    /// `ticktick_writes` row snapshots it at park and phase A re-checks
+    /// equality, so the SAME credential accepts across any number of restarts
+    /// while a real credential change refuses with a typed error and no POST.
+    /// Never serialized to the wire or logs (A5's never-token-derived rule
+    /// protects wire-visible ids; this is a local comparison only).
+    pub credential_fp: String,
+}
+
+/// Derive the internal credential fingerprint from the access token: a
+/// domain-separated SHA-256, hex-encoded. Deterministic across boots (the
+/// overnight propose-at-night / accept-in-the-morning flow depends on it).
+pub(crate) fn credential_fingerprint(access_token: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(b"inkstone-ticktick-credential-fp-v1:");
+    hasher.update(access_token.as_bytes());
+    let digest = hasher.finalize();
+    let mut hex = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        use std::fmt::Write;
+        let _ = write!(hex, "{byte:02x}");
+    }
+    hex
+}
+
+/// Whether a parsed `scope` string grants `tasks:write`. Absent scope =
+/// writable (provisioning convention, stated in the plan).
+fn scope_grants_write(scope: Option<&str>) -> bool {
+    match scope {
+        None => true,
+        Some(scope) => scope.split_whitespace().any(|s| s == "tasks:write"),
+    }
 }
 
 static CONNECTION: OnceLock<Option<Connection>> = OnceLock::new();
@@ -147,6 +189,8 @@ fn load() -> Option<Connection> {
             None
         }
         Ok(token) => Some(Connection {
+            writable: scope_grants_write(token.scope.as_deref()),
+            credential_fp: credential_fingerprint(&token.access_token),
             access_token: token.access_token,
             connection_id: uuid::Uuid::now_v7().to_string(),
         }),
@@ -186,11 +230,22 @@ pub(crate) mod test_override {
         }
     }
 
-    /// A test [`Connection`] with a fixed id (helper for the verb tests).
+    /// A test [`Connection`] with a fixed id (helper for the verb tests):
+    /// writable, fingerprint derived from the token like the boot read.
     pub(crate) fn test_connection(token: &str, id: &str) -> Connection {
         Connection {
             access_token: token.to_string(),
             connection_id: id.to_string(),
+            writable: true,
+            credential_fp: super::credential_fingerprint(token),
+        }
+    }
+
+    /// A read-only test [`Connection`] (scope lacking `tasks:write`).
+    pub(crate) fn test_connection_read_only(token: &str, id: &str) -> Connection {
+        Connection {
+            writable: false,
+            ..test_connection(token, id)
         }
     }
 
@@ -241,6 +296,37 @@ mod tests {
         );
         // Two loads mint DIFFERENT ids (boot-scoped, no cross-boot equality).
         assert_ne!(conn.connection_id, load().expect("reload").connection_id);
+        // The write-scope parse (ticktick-writes W-A2) and the internal
+        // fingerprint (W-A3): full scope → writable; the fingerprint is
+        // deterministic across loads (restart-stable — the overnight accept)
+        // and never contains the raw token.
+        assert!(conn.writable, "tasks:write scope → writable");
+        assert_eq!(
+            conn.credential_fp,
+            load().expect("reload").credential_fp,
+            "the fingerprint is stable across restarts for the SAME credential"
+        );
+        assert!(
+            !conn.credential_fp.contains("tok_ticktick"),
+            "the fingerprint never embeds the raw token"
+        );
+
+        // A scope WITHOUT tasks:write → connected but read-only; a DIFFERENT
+        // token fingerprints differently (the phase-A guard's signal).
+        write_0600(r#"{"access_token":"tok_other","scope":"tasks:read"}"#);
+        let read_only = load().expect("read-only token loads");
+        assert!(!read_only.writable, "scope lacking tasks:write → read-only");
+        assert_ne!(
+            read_only.credential_fp, conn.credential_fp,
+            "a different credential fingerprints differently"
+        );
+
+        // An ABSENT scope field = writable (provisioning convention).
+        write_0600(r#"{"access_token":"tok_ticktick"}"#);
+        assert!(
+            load().expect("scopeless token loads").writable,
+            "absent scope → writable"
+        );
 
         // An unparseable file degrades to None rather than failing boot.
         write_0600("not json");

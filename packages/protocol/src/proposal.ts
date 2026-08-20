@@ -4,6 +4,7 @@
 import { Schema as S } from "effect";
 
 import { JsonValue } from "./json.js";
+import { TickTickWriteState } from "./ticktick.js";
 
 // proposal/* (ADR-0025): a Proposal is a Tool Request awaiting a human Decision — see docs/design/protocol.md
 
@@ -130,6 +131,10 @@ export const ProposalGetResult = S.Struct({
 	rationale: S.NullOr(S.String),
 	review_context: S.optional(ProposalReviewContext),
 	resolved_plan: S.optional(S.Array(ResolvedNode)),
+	/** The write state for a `create_ticktick_task` Proposal (ticktick-writes
+	 * W-A4): while pending, the `proposed` variant with the derived
+	 * `stale_connection`. Omitted for every other kind. */
+	ticktick_write: S.optional(TickTickWriteState),
 	status: S.String,
 });
 
@@ -162,10 +167,14 @@ export const ProposalDecideParams = S.Struct({
 
 export type ProposalDecideParams = S.Schema.Type<typeof ProposalDecideParams>;
 
-/** `proposal/decide` result: the Proposal's post-decision `status` and any created `entity_id`. */
+/** `proposal/decide` result: the Proposal's post-decision `status`, any
+ * created `entity_id`, and — for a `create_ticktick_task` Proposal — the
+ * write outcome (`created`/`failed`/`unknown` after the two-phase accept
+ * settles, or `executing` + `deadline_at` for a replay while in flight). */
 export const ProposalDecideResult = S.Struct({
 	status: S.Literal("accepted", "rejected"),
 	entity_id: S.optional(S.String),
+	ticktick_write: S.optional(TickTickWriteState),
 });
 
 export type ProposalDecideResult = S.Schema.Type<typeof ProposalDecideResult>;
@@ -180,11 +189,15 @@ export type ProposalPendingNotification = S.Schema.Type<
 	typeof ProposalPendingNotification
 >;
 
-/** `proposal/changed` Notification: pushed when a pending Proposal is decided (ADR-0025). */
+/** `proposal/changed` Notification: pushed when a pending Proposal is decided
+ * (ADR-0025). For the TickTick write family it fires TWICE on the deciding
+ * connection — at accept (`ticktick_write` executing) and at settle (the
+ * terminal write state). */
 export const ProposalChangedNotification = S.Struct({
 	run_id: S.String,
 	proposal_id: S.String,
 	status: S.Literal("accepted", "rejected"),
+	ticktick_write: S.optional(TickTickWriteState),
 });
 
 export type ProposalChangedNotification = S.Schema.Type<

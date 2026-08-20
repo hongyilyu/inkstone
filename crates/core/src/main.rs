@@ -25,6 +25,7 @@ mod shutdown;
 mod skills;
 mod start_run;
 mod ticktick;
+mod ticktick_write;
 mod tools;
 #[cfg(not(debug_assertions))]
 mod web_embed;
@@ -110,6 +111,28 @@ async fn main() -> Result<()> {
         hubs: hub::new_hubs(),
         shutdown: shutdown_rx.clone(),
     };
+
+    // TickTick write sweep (ticktick-writes W-A3), beside the ADR-0012 sweep:
+    // settle `unknown` any write a crash left `executing` (resolve + resume),
+    // and re-drive resume for settled writes whose Run is still parked (the
+    // phase-C-commit → resume crash window). NO POST in either branch.
+    {
+        let pool = state.pool.clone();
+        let hubs = state.hubs.clone();
+        let resume: ticktick_write::ResumeFn = std::sync::Arc::new(move |run_id| {
+            let pool = pool.clone();
+            let hubs = hubs.clone();
+            Box::pin(async move { worker::resume(run_id, &pool, &hubs).await })
+        });
+        let (settled, resumed) = ticktick_write::sweep(&state.pool, resume).await?;
+        if settled > 0 || resumed > 0 {
+            tracing::info!(
+                event = "core.ticktick_writes_swept",
+                settled_unknown = settled,
+                resumed
+            );
+        }
+    }
 
     let app = Router::new()
         .route("/ws", get(ws_handler))

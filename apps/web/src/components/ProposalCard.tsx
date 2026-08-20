@@ -1,5 +1,14 @@
 import type { JsonValue } from "@inkstone/protocol";
-import { Check, Loader2, Pencil, RotateCcw } from "lucide-react";
+import { useQueryClient } from "@tanstack/react-query";
+import {
+	Check,
+	CircleHelp,
+	Loader2,
+	Pencil,
+	RotateCcw,
+	TriangleAlert,
+	X,
+} from "lucide-react";
 import {
 	type ReactNode,
 	useEffect,
@@ -10,6 +19,7 @@ import {
 } from "react";
 import { asProjectStatus, PROJECT_STATUS_OPTIONS } from "@/lib/entityFields";
 import { useLibraryItems } from "@/lib/hooks/useLibraryItems";
+import { readTasksAtSourceLimit } from "@/lib/hooks/useTickTick";
 import { libraryItemTitle } from "@/lib/libraryItems";
 import {
 	type CreatePersonDraft,
@@ -20,6 +30,13 @@ import {
 	seedCreateProject,
 } from "@/lib/proposalEdit";
 import { readString } from "@/lib/readPayload";
+import {
+	buildTickTickPayload,
+	seedTickTickDraft,
+	type TickTickEditDraft,
+} from "@/lib/ticktickWrite";
+import { useRuntime } from "@/runtime";
+import { pollTickTickWriteOnce } from "@/store/bridge";
 import type { PendingProposal } from "@/store/chat";
 import { IntentGraphReviewCard } from "./IntentGraphReviewCard.js";
 import {
@@ -177,6 +194,14 @@ function SingleEntityProposalCard({
 			: null;
 	// Non-journal cards carry no journal-style payload validation.
 	const canApply = payloadIssue === null;
+	// Staleness is DERIVED from the read shape on EVERY render (never a
+	// connection-local flag), so accept + edit stay disabled after any reload.
+	const ticktickWrite = proposal.ticktick_write;
+	const staleConnection =
+		ticktickWrite?.state === "proposed" && ticktickWrite.stale_connection;
+	// The bounded observe-poll for an `executing` entered from hydration or
+	// replay (unconditional hook; a no-op for every other kind/state).
+	const writeUnresolved = useTickTickWritePoll(proposal);
 
 	const [inFlight, setInFlight] = useState<"accept" | "reject" | "edit" | null>(
 		null,
@@ -246,6 +271,24 @@ function SingleEntityProposalCard({
 		onDecide("edit", editedPayload);
 	};
 
+	// The write family renders its DURABLE outcome row, never a generic
+	// accepted pill (ticktick-writes W-A4). `deciding` is included so a
+	// Resolve-now re-decide keeps the outcome row instead of flashing the card.
+	if (
+		(status === "accepted" || status === "deciding") &&
+		ticktickWrite !== undefined &&
+		ticktickWrite.state !== "proposed"
+	) {
+		return (
+			<TickTickWriteOutcome
+				proposal={proposal}
+				write={ticktickWrite}
+				unresolved={writeUnresolved}
+				onResolveNow={() => onDecide("accept")}
+			/>
+		);
+	}
+
 	if (status === "accepted" || status === "rejected") {
 		const accepted = status === "accepted";
 		// Settled inline in the turn timeline next to tool rows, so it wears the
@@ -299,6 +342,13 @@ function SingleEntityProposalCard({
 				view.editPolicy === "person" || view.editPolicy === "project" ? (
 					<EntityEditForm
 						variant={view.editPolicy}
+						payload={payload}
+						submitting={submitting}
+						onSave={saveStructuredEdit}
+						onCancel={() => setEditing(false)}
+					/>
+				) : view.editPolicy === "ticktick" ? (
+					<TickTickEditForm
 						payload={payload}
 						submitting={submitting}
 						onSave={saveStructuredEdit}
@@ -371,6 +421,20 @@ function SingleEntityProposalCard({
 						</p>
 					) : null}
 
+					{staleConnection ? (
+						// Derived from the durable fingerprint comparison on every read
+						// (ticktick-writes W-A4): warns on FIRST render in any tab, after
+						// any reload — accept and edit stay disabled below; reject works.
+						<p
+							role="alert"
+							className="flex items-start gap-1.5 text-sm text-destructive"
+						>
+							<TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden />
+							The TickTick connection changed since this was proposed — reject
+							it and ask again.
+						</p>
+					) : null}
+
 					{payloadIssue ? (
 						// A payload issue reads the same whether or not the last attempt
 						// errored, so check it FIRST and render the alert once (an
@@ -391,13 +455,14 @@ function SingleEntityProposalCard({
 								variant="primary"
 								size="row"
 								className="gap-1.5 px-3.5 py-2"
-								// Gate retry on what it will re-send: reject always allowed; a stored edit on its payload; a plain accept on `canApply`. See docs/design/web-chat-ui.md.
+								// Gate retry on what it will re-send: reject always allowed; a stored edit on its payload; a plain accept on `canApply` AND a fresh (non-stale) connection — a remounted card must not default-retry an accept the stale gate disabled. See docs/design/web-chat-ui.md.
 								disabled={
 									lastAttempt.current?.decision === "reject"
 										? false
 										: lastAttempt.current?.decision === "edit"
-											? lastAttempt.current.editedPayload === undefined
-											: !canApply
+											? lastAttempt.current.editedPayload === undefined ||
+												staleConnection
+											: !canApply || staleConnection
 								}
 								onClick={retry}
 							>
@@ -410,7 +475,7 @@ function SingleEntityProposalCard({
 								variant="primary"
 								size="row"
 								className="gap-1.5 px-3.5 py-2"
-								disabled={submitting || !canApply}
+								disabled={submitting || !canApply || staleConnection}
 								onClick={() => decide("accept")}
 							>
 								{deciding && inFlight === "accept" ? (
@@ -436,7 +501,9 @@ function SingleEntityProposalCard({
 								variant="chip"
 								size="pill"
 								className="gap-1.5 px-3"
-								disabled={submitting}
+								// An edit IS an accept (its save decides), so the stale gate
+								// covers it too; reject below stays enabled.
+								disabled={submitting || staleConnection}
 								onClick={openEdit}
 							>
 								<Pencil className="size-3.5" aria-hidden />
@@ -683,3 +750,272 @@ function EntityEditForm({
 }
 
 // --- Intent-graph sequential review card (ADR-0042) -------------------------
+
+// ─── the TickTick write family (ticktick-writes W3) ────────────────────────
+
+/** Poll interval while observing an `executing` write, and the slack past the
+ * wire's Core-computed `deadline_at` before the card stops polling and turns
+ * honest ("still unresolved"). */
+const TICKTICK_POLL_INTERVAL_MS = 1_500;
+const TICKTICK_POLL_EPSILON_MS = 2_000;
+
+/**
+ * The bounded observe-poll (ticktick-writes W-A4): an `executing` write drives
+ * itself to the recorded outcome, capped by the wire's `deadline_at` + ε —
+ * never a client-computed bound. Polling OBSERVES; it never settles. Past the
+ * bound, it stops and the caller renders "still unresolved" + Resolve-now.
+ *
+ * Unconditional hook: a no-op unless the record reads accepted + executing.
+ */
+function useTickTickWritePoll(proposal: PendingProposal): boolean {
+	const runtime = useRuntime();
+	const write = proposal.ticktick_write;
+	const deadlineAt =
+		proposal.status === "accepted" && write?.state === "executing"
+			? write.deadline_at
+			: null;
+	const runId = proposal.run_id;
+	const [unresolved, setUnresolved] = useState(false);
+
+	useEffect(() => {
+		if (deadlineAt === null) {
+			setUnresolved(false);
+			return;
+		}
+		let stopped = false;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const tick = async () => {
+			if (stopped) {
+				return;
+			}
+			if (Date.now() > deadlineAt + TICKTICK_POLL_EPSILON_MS) {
+				// Watchdog residue: no outcome recorded by the deadline. Stop —
+				// never an eternal creating… — and let the card offer Resolve now.
+				setUnresolved(true);
+				return;
+			}
+			const observed = await pollTickTickWriteOnce(runtime, runId);
+			if (stopped || observed !== "executing") {
+				return;
+			}
+			timer = setTimeout(() => void tick(), TICKTICK_POLL_INTERVAL_MS);
+		};
+		timer = setTimeout(() => void tick(), 0);
+		return () => {
+			stopped = true;
+			clearTimeout(timer);
+		};
+	}, [deadlineAt, runId, runtime]);
+
+	return unresolved;
+}
+
+/** The decided write-family card (W-A4): one row per durable write state —
+ * states differ by glyph + label, never color alone. */
+function TickTickWriteOutcome({
+	proposal,
+	write,
+	unresolved,
+	onResolveNow,
+}: {
+	proposal: PendingProposal;
+	write: NonNullable<PendingProposal["ticktick_write"]>;
+	unresolved: boolean;
+	onResolveNow: () => void;
+}) {
+	const queryClient = useQueryClient();
+	const shell =
+		"inline-flex w-fit max-w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm font-medium text-muted-foreground motion-safe:transition-opacity motion-safe:duration-200";
+
+	if (write.state === "executing") {
+		if (unresolved) {
+			return (
+				<div
+					data-proposal={proposal.run_id}
+					data-proposal-status={proposal.status}
+					data-ticktick-write="unresolved"
+					className={shell}
+				>
+					<CircleHelp className="size-4 shrink-0" aria-hidden />
+					<span aria-live="polite">
+						Still unresolved — no outcome recorded; check TickTick before
+						re-asking.
+					</span>
+					<Button
+						type="button"
+						variant="chip"
+						size="pill"
+						className="px-3"
+						onClick={onResolveNow}
+					>
+						Resolve now
+					</Button>
+				</div>
+			);
+		}
+		return (
+			<div
+				data-proposal={proposal.run_id}
+				data-proposal-status={proposal.status}
+				data-ticktick-write="executing"
+				className={shell}
+			>
+				<Loader2
+					className="size-4 shrink-0 motion-safe:animate-spin"
+					aria-hidden
+				/>
+				<span aria-live="polite">Creating in TickTick…</span>
+			</div>
+		);
+	}
+
+	if (write.state === "created") {
+		// The created task can exist yet fall outside the Tasks view's 200-item
+		// page (W-A5): when the CURRENT cached Tasks read is at the source
+		// limit, say so inline. Cache-only — a display hint, never a fetch.
+		const atCap = readTasksAtSourceLimit(queryClient);
+		return (
+			<div
+				data-proposal={proposal.run_id}
+				data-proposal-status={proposal.status}
+				data-ticktick-write="created"
+				className={shell}
+			>
+				<Check className="size-4 shrink-0" aria-hidden />
+				<span aria-live="polite">
+					Created in TickTick
+					{write.task_id ? ` (task ${write.task_id})` : ""}.
+					{atCap
+						? " May not appear in the Tasks view — TickTick returned its 200-item limit."
+						: ""}
+				</span>
+			</div>
+		);
+	}
+
+	if (write.state === "failed") {
+		return (
+			<div
+				data-proposal={proposal.run_id}
+				data-proposal-status={proposal.status}
+				data-ticktick-write="failed"
+				className={shell}
+			>
+				<X className="size-4 shrink-0 text-destructive" aria-hidden />
+				<span aria-live="polite">
+					Not created —{" "}
+					{write.http_status !== undefined
+						? `TickTick returned HTTP ${write.http_status}`
+						: "the request could not be sent"}
+					.
+				</span>
+			</div>
+		);
+	}
+
+	// `unknown` (and, defensively, any novel state).
+	return (
+		<div
+			data-proposal={proposal.run_id}
+			data-proposal-status="accepted"
+			data-ticktick-write="unknown"
+			className={shell}
+		>
+			<CircleHelp className="size-4 shrink-0" aria-hidden />
+			<span aria-live="polite">
+				Outcome unknown — check TickTick before re-asking.
+			</span>
+		</div>
+	);
+}
+
+/** The TickTick task edit form (W3): title, due date (+ optional time —
+ * clearing the time sets all-day; the zone defaults to the payload's, else
+ * the browser's), note. Submits the FULL effective payload as
+ * `edited_payload` (replace semantics). */
+function TickTickEditForm({
+	payload,
+	submitting,
+	onSave,
+	onCancel,
+}: {
+	payload: JsonValue;
+	submitting: boolean;
+	onSave: (editedPayload: EditedPayload) => void;
+	onCancel: () => void;
+}): ReactNode {
+	const formId = useId();
+	const titleInputId = `${formId}-ticktick-title`;
+	const dateInputId = `${formId}-ticktick-date`;
+	const timeInputId = `${formId}-ticktick-time`;
+	const noteInputId = `${formId}-ticktick-note`;
+	// Seed once from the proposed payload; the form re-mounts on each open.
+	const [draft, setDraft] = useState<TickTickEditDraft>(() =>
+		seedTickTickDraft(payload),
+	);
+	const built = buildTickTickPayload(draft);
+	const issue = "issue" in built ? built.issue : null;
+
+	const submit = () => {
+		if (submitting || "issue" in built) {
+			return;
+		}
+		onSave(built.payload);
+	};
+
+	return (
+		<form
+			onSubmit={(event) => {
+				event.preventDefault();
+				submit();
+			}}
+			className="flex flex-col gap-3 border-border border-t pt-3"
+		>
+			<EditorField label="Title" htmlFor={titleInputId}>
+				<EditorInput
+					id={titleInputId}
+					autoFocus
+					value={draft.title}
+					onChange={(event) =>
+						setDraft({ ...draft, title: event.target.value })
+					}
+				/>
+			</EditorField>
+			<EditorField label="Due date" htmlFor={dateInputId}>
+				<EditorInput
+					id={dateInputId}
+					type="date"
+					value={draft.date}
+					onChange={(event) => setDraft({ ...draft, date: event.target.value })}
+				/>
+			</EditorField>
+			{/* The rule rides the LABEL: browsers render no placeholder on a
+			    time input. */}
+			<EditorField label="Time (empty = all day)" htmlFor={timeInputId}>
+				<EditorInput
+					id={timeInputId}
+					type="time"
+					value={draft.time}
+					onChange={(event) => setDraft({ ...draft, time: event.target.value })}
+				/>
+			</EditorField>
+			<EditorField label="Note" htmlFor={noteInputId}>
+				<EditorTextarea
+					id={noteInputId}
+					value={draft.note}
+					onChange={(event) => setDraft({ ...draft, note: event.target.value })}
+				/>
+			</EditorField>
+			{issue !== null ? (
+				<p role="alert" className="text-sm text-destructive">
+					Fix before saving: {issue}.
+				</p>
+			) : null}
+			<EditFormFooter
+				submitting={submitting}
+				saveDisabled={issue !== null}
+				onCancel={onCancel}
+			/>
+		</form>
+	);
+}

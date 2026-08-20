@@ -19,6 +19,38 @@ export const TickTickStatusResult = S.Union(
 
 export type TickTickStatusResult = S.Schema.Type<typeof TickTickStatusResult>;
 
+/** The durable execution state of a TickTick write (ticktick-writes W-A4):
+ * the ONE outcome shape carried on the `proposal/decide` response,
+ * `proposal/changed`, `proposal/get` (pending), and `Segment.proposal` — so
+ * live and reload render identically for every state.
+ * - `proposed` carries the READ-DERIVED `stale_connection` (a stale card
+ *   warns with accept disabled on FIRST render in any tab).
+ * - `executing` carries the CORE-COMPUTED absolute `deadline_at` (epoch ms)
+ *   capping the client's bounded observe-poll — the client never computes
+ *   the bound itself. */
+export const TickTickWriteState = S.Union(
+	S.Struct({
+		state: S.Literal("proposed"),
+		stale_connection: S.Boolean,
+	}),
+	S.Struct({
+		state: S.Literal("executing"),
+		// Rust `i64`s: integers, never fractional (S.Int, not S.Number).
+		deadline_at: S.Int,
+	}),
+	S.Struct({
+		state: S.Literal("created"),
+		task_id: S.optional(S.String),
+	}),
+	S.Struct({
+		state: S.Literal("failed"),
+		http_status: S.optional(S.Int),
+	}),
+	S.Struct({ state: S.Literal("unknown") }),
+);
+
+export type TickTickWriteState = S.Schema.Type<typeof TickTickWriteState>;
+
 /** A task's single due tuple (S1a: start/due collapse, so no separate start).
  * `date` is TickTick's UTC instant; `is_all_day` + `time_zone` carry the local
  * meaning. Absent on an undated task. */

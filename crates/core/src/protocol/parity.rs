@@ -199,6 +199,13 @@ mod parity_fixtures {
                 }
             ),
             fx!(
+                "run_cancel_result.write_in_flight.json",
+                RunCancelResult {
+                    outcome: "write_in_flight".to_string(),
+                    live_tail: false,
+                }
+            ),
+            fx!(
                 "run_retry_result.json",
                 RunRetryResult {
                     outcome: "accepted".to_string(),
@@ -234,7 +241,8 @@ mod parity_fixtures {
                         current_person: None,
                         current_project: None,
                     }),
-                    resolved_plan: Some(vec![
+                    ticktick_write: None,
+            resolved_plan: Some(vec![
                         ResolvedNode {
                             handle: "@rodeo".to_string(),
                             r#type: "project".to_string(),
@@ -284,6 +292,7 @@ mod parity_fixtures {
                     rationale: None,
                     review_context: None,
                     resolved_plan: None,
+                    ticktick_write: None,
                     status: "pending".to_string(),
                 }
             ),
@@ -292,6 +301,7 @@ mod parity_fixtures {
                 ProposalDecideResult {
                     status: "accepted".to_string(),
                     entity_id: Some(UUID_A.to_string()),
+                    ticktick_write: None,
                 }
             ),
             fx!(
@@ -299,6 +309,17 @@ mod parity_fixtures {
                 ProposalDecideResult {
                     status: "rejected".to_string(),
                     entity_id: None,
+                    ticktick_write: None,
+                }
+            ),
+            fx!(
+                "proposal_decide_result.ticktick_write.json",
+                ProposalDecideResult {
+                    status: "accepted".to_string(),
+                    entity_id: None,
+                    ticktick_write: Some(TickTickWriteState::Created {
+                        task_id: Some("6899f2b3c1a4de0000000001".to_string()),
+                    }),
                 }
             ),
             fx!(
@@ -314,6 +335,58 @@ mod parity_fixtures {
                     run_id: UUID_RUN.to_string(),
                     proposal_id: UUID_B.to_string(),
                     status: "accepted".to_string(),
+                    ticktick_write: None,
+                }
+            ),
+            fx!(
+                "proposal_changed_notification.ticktick_write.json",
+                ProposalChangedNotification {
+                    run_id: UUID_RUN.to_string(),
+                    proposal_id: UUID_B.to_string(),
+                    status: "accepted".to_string(),
+                    ticktick_write: Some(TickTickWriteState::Executing {
+                        deadline_at: 1_755_600_035_000,
+                    }),
+                }
+            ),
+            // The remaining TickTickWriteState variants, each through an
+            // enclosing message, so the cross-language gate locks all five:
+            // `proposed` rides the PENDING read (`proposal/get`), while
+            // `failed`/`unknown` ride the settle notification.
+            fx!(
+                "proposal_get_result.ticktick_write.json",
+                ProposalGetResult {
+                    proposal_id: UUID_B.to_string(),
+                    run_id: UUID_RUN.to_string(),
+                    mutation_kind: "create_ticktick_task".to_string(),
+                    payload: serde_json::json!({ "title": "buy milk" }),
+                    rationale: Some("the user asked to be reminded".to_string()),
+                    review_context: None,
+                    resolved_plan: None,
+                    ticktick_write: Some(TickTickWriteState::Proposed {
+                        stale_connection: true,
+                    }),
+                    status: "pending".to_string(),
+                }
+            ),
+            fx!(
+                "proposal_changed_notification.ticktick_failed.json",
+                ProposalChangedNotification {
+                    run_id: UUID_RUN.to_string(),
+                    proposal_id: UUID_B.to_string(),
+                    status: "accepted".to_string(),
+                    ticktick_write: Some(TickTickWriteState::Failed {
+                        http_status: Some(401),
+                    }),
+                }
+            ),
+            fx!(
+                "proposal_changed_notification.ticktick_unknown.json",
+                ProposalChangedNotification {
+                    run_id: UUID_RUN.to_string(),
+                    proposal_id: UUID_B.to_string(),
+                    status: "accepted".to_string(),
+                    ticktick_write: Some(TickTickWriteState::Unknown),
                 }
             ),
             fx!(
@@ -718,6 +791,19 @@ mod parity_fixtures {
                                     // (ADR-0044 entity_id amendment) — the decided card
                                     // names + deep-links it. Omitted when absent (S.optional).
                                     entity_id: Some(UUID_B.to_string()),
+                                    ticktick_write: None,
+                                },
+                                // The write family's segment (ticktick-writes W-A4):
+                                // `ticktick_write` is defined only for this kind, and it
+                                // mints no Entity, so `entity_id` is absent.
+                                Segment::Proposal {
+                                    proposal_id: UUID_B.to_string(),
+                                    mutation_kind: "create_ticktick_task".to_string(),
+                                    status: "accepted".to_string(),
+                                    entity_id: None,
+                                    ticktick_write: Some(TickTickWriteState::Created {
+                                        task_id: Some("6899f2b3c1a4de0000000001".to_string()),
+                                    }),
                                 },
                                 Segment::Reasoning {
                                     text: "Checking the journal schema…".to_string(),
@@ -1165,13 +1251,19 @@ mod parity_fixtures {
         let committed: &[(&str, &str)] = committed![
             "subscribe_result.json",
             "run_cancel_result.json",
+            "run_cancel_result.write_in_flight.json",
             "run_retry_result.json",
             "proposal_get_result.json",
             "proposal_get_result.bare.json",
             "proposal_decide_result.json",
             "proposal_decide_result.bare.json",
+            "proposal_decide_result.ticktick_write.json",
             "proposal_pending_notification.json",
             "proposal_changed_notification.json",
+            "proposal_changed_notification.ticktick_write.json",
+            "proposal_changed_notification.ticktick_failed.json",
+            "proposal_changed_notification.ticktick_unknown.json",
+            "proposal_get_result.ticktick_write.json",
             "thread_titled_notification.json",
             "provider_connected_notification.json",
             "post_message_result.json",
@@ -1484,6 +1576,13 @@ mod parity_fixtures {
         ("CoreToolDescriptor", "worker_manifest.json"),
         ("ExternalToolsManifest", "worker_manifest.json external_tools"),
         ("TickTickDue", "ticktick_tasks_list_result.json tasks[].due"),
+        (
+            "TickTickWriteState",
+            "all five variants: proposal_get_result.ticktick_write.json (proposed), \
+             proposal_changed_notification.ticktick_write.json (executing), \
+             proposal_decide_result.ticktick_write.json (created), \
+             proposal_changed_notification.ticktick_{failed,unknown}.json",
+        ),
         (
             "TickTickChecklistItem",
             "ticktick_tasks_list_result.json tasks[].checklist_items",
