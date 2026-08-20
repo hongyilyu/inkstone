@@ -8,8 +8,8 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::time::Duration;
 
-use futures_util::SinkExt;
-use tokio_tungstenite::tungstenite::Message;
+use futures_util::{SinkExt, StreamExt};
+use tokio_tungstenite::tungstenite::{error::ProtocolError, Error as WsError, Message};
 
 mod common;
 use common::{next_text, read_response_with_id, rt, send, try_next_text, Workspace, Ws};
@@ -410,7 +410,10 @@ fn held_tasks_list_does_not_block_same_socket_run_tail_or_requests() {
                 continue;
             };
             let frame: serde_json::Value = serde_json::from_str(&body).expect("frame json");
-            saw_status |= frame["id"] == serde_json::json!(11);
+            if frame["id"] == serde_json::json!(11) {
+                assert_eq!(frame["result"]["state"], serde_json::json!("connected"));
+                saw_status = true;
+            }
             saw_live_tail |= frame["method"] == serde_json::json!("run/event")
                 && frame["params"]["event"]["kind"] == serde_json::json!("done");
         }
@@ -459,7 +462,21 @@ fn closing_connection_during_detached_tasks_list_is_harmless() {
         ready_rx
             .recv_timeout(Duration::from_secs(5))
             .expect("both TickTick reads are held");
-        ws.close(None).await.ok();
+        ws.close(None).await.expect("send close frame");
+        let peer_disconnect = tokio::time::timeout(Duration::from_secs(5), ws.next())
+            .await
+            .expect("peer disconnects within the test deadline");
+        match peer_disconnect {
+            Some(Ok(Message::Close(_)))
+            | Some(Err(
+                WsError::ConnectionClosed
+                | WsError::AlreadyClosed
+                | WsError::Protocol(ProtocolError::ResetWithoutClosingHandshake),
+            ))
+            | None => {}
+            Some(Ok(other)) => panic!("expected terminal peer frame, got {other:?}"),
+            Some(Err(error)) => panic!("unexpected peer disconnect error: {error}"),
+        }
         drop(ws);
 
         release_tx.send(()).expect("release TickTick reads");

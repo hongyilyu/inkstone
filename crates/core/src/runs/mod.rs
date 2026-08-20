@@ -293,6 +293,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn detached_handler_finishes_with_closed_response_channel() {
+        let (tx, rx) = mpsc::unbounded_channel();
+        drop(rx);
+        let reply_tx = tx.clone();
+        let (finished_tx, finished_rx) = tokio::sync::oneshot::channel();
+
+        super::spawn_detached_handler("test/closed".to_string(), json!(9), tx, async move {
+            super::reply::send_response(&reply_tx, json!(9), json!({ "ok": true }));
+            finished_tx.send(()).expect("signal detached completion");
+        });
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), finished_rx)
+            .await
+            .expect("detached handler completes within the test deadline")
+            .expect("detached handler signals completion");
+    }
+
+    #[tokio::test]
     async fn detached_provider_test_name_is_routable() {
         let pool = memory_pool().await;
         let frame = dispatch_rpc(&pool, "provider/test", json!({}))
