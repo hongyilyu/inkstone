@@ -15,6 +15,7 @@
 
 import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import type { JsonObject, JsonValue } from "@inkstone/protocol";
 import { describe, expect, it } from "vitest";
 import {
 	CANONICAL_MESSAGES,
@@ -91,9 +92,9 @@ describe("non-payload completeness lock", () => {
 						import.meta.url,
 					),
 				);
-				let body: unknown;
+				let body: JsonValue;
 				try {
-					body = JSON.parse(readFileSync(root, "utf8"));
+					body = JSON.parse(readFileSync(root, "utf8")) as JsonValue;
 				} catch {
 					continue; // the existence lock above owns missing files
 				}
@@ -106,10 +107,17 @@ describe("non-payload completeness lock", () => {
 	});
 });
 
-/** Walk `value`, and for every `field` property whose value carries `tag`,
- * record that tag's value. */
+/** A JSON object (not an array, not null) — the narrowing the walk below needs
+ * before it can index a discriminator off a value. */
+function isJsonObject(value: JsonValue | undefined): value is JsonObject {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Walk a parsed fixture body, and for every `field` property whose value
+ * carries `tag`, record that tag's value. Typed on the protocol's own
+ * `JsonValue`, which is exactly what a fixture parses to. */
 function collectTags(
-	value: unknown,
+	value: JsonValue,
 	field: string,
 	tag: string,
 	into: Set<string>,
@@ -118,17 +126,15 @@ function collectTags(
 		for (const item of value) collectTags(item, field, tag, into);
 		return;
 	}
-	if (typeof value !== "object" || value === null) {
+	if (!isJsonObject(value)) {
 		return;
 	}
 	for (const [key, child] of Object.entries(value)) {
-		if (
-			key === field &&
-			typeof child === "object" &&
-			child !== null &&
-			tag in child
-		) {
-			const tagValue = (child as Record<string, unknown>)[tag];
+		if (child === undefined) {
+			continue;
+		}
+		if (key === field && isJsonObject(child)) {
+			const tagValue = child[tag];
 			if (typeof tagValue === "string") into.add(tagValue);
 		}
 		collectTags(child, field, tag, into);
