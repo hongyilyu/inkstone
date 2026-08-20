@@ -6,12 +6,13 @@
 
 use std::io::{Read, Write};
 use std::net::TcpListener;
+use std::time::Duration;
 
 use futures_util::SinkExt;
 use tokio_tungstenite::tungstenite::Message;
 
 mod common;
-use common::{next_text, rt, Workspace, Ws};
+use common::{next_text, read_response_with_id, rt, send, try_next_text, Workspace, Ws};
 
 fn project_response() -> String {
     serde_json::json!([{ "id": "list-1", "name": "Work" }]).to_string()
@@ -48,6 +49,21 @@ fn task_response() -> String {
     serde_json::to_string(&tasks).expect("task response serializes")
 }
 
+fn write_ticktick_credential(creds_dir: &std::path::Path, token: &str) {
+    std::fs::create_dir_all(creds_dir).expect("mk creds dir");
+    let path = creds_dir.join("ticktick.json");
+    std::fs::write(
+        &path,
+        format!(r#"{{"access_token":"{token}","scope":"tasks:read tasks:write"}}"#),
+    )
+    .expect("write ticktick credential");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("chmod");
+    }
+}
+
 /// A blocking HTTP/1.1 fake of TickTick's OpenAPI on a background thread.
 fn start_fake_ticktick(expected_requests: usize) -> (String, std::thread::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake ticktick");
@@ -81,6 +97,51 @@ fn start_fake_ticktick(expected_requests: usize) -> (String, std::thread::JoinHa
         }
     });
     (format!("http://{addr}"), handle)
+}
+
+/// Hold both concurrent reads from one `tasks/list` call until the test
+/// releases them. `ready_rx` fires only after both request heads were read.
+fn start_held_ticktick() -> (
+    String,
+    std::sync::mpsc::Receiver<()>,
+    std::sync::mpsc::Sender<()>,
+    std::thread::JoinHandle<()>,
+) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind held ticktick");
+    let addr = listener.local_addr().expect("addr");
+    let projects = project_response();
+    let tasks = task_response();
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+
+    let handle = std::thread::spawn(move || {
+        let mut held = Vec::new();
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().expect("accept held request");
+            let mut buf = [0u8; 8192];
+            let n = stream.read(&mut buf).unwrap_or(0);
+            held.push((stream, String::from_utf8_lossy(&buf[..n]).into_owned()));
+        }
+        ready_tx.send(()).expect("signal held requests");
+        let _ = release_rx.recv_timeout(Duration::from_secs(5));
+
+        for (mut stream, head) in held {
+            let body = if head.starts_with("GET /open/v1/project") {
+                &projects
+            } else {
+                &tasks
+            };
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(resp.as_bytes());
+            let _ = stream.flush();
+        }
+    });
+
+    (format!("http://{addr}"), ready_rx, release_tx, handle)
 }
 
 async fn call(ws: &mut Ws, id: u64, method: &str) -> serde_json::Value {
@@ -300,4 +361,175 @@ fn stalled_upstream_is_bounded_by_the_timeout_knob() {
         );
     });
     server.join().expect("fake stall server exits");
+}
+
+#[test]
+fn held_tasks_list_does_not_block_same_socket_run_tail_or_requests() {
+    let (api_url, ready_rx, release_tx, server) = start_held_ticktick();
+    let workspace = Workspace::new();
+    let gate_path = workspace.path().join("worker-gate");
+    let creds_dir = workspace.path().join("credentials");
+    write_ticktick_credential(&creds_dir, "tok_detached");
+
+    let core = workspace
+        .core()
+        .worker_fixture("slow-worker.ts")
+        .env("INKSTONE_FIXTURE_CHUNKS", "3")
+        .env("INKSTONE_FIXTURE_GATE", &gate_path)
+        .env("INKSTONE_CREDENTIALS_DIR", &creds_dir)
+        .env("INKSTONE_TICKTICK_API_URL", &api_url)
+        .spawn();
+
+    rt().block_on(async {
+        let mut ws = core.connect().await;
+        send(
+            &mut ws,
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "thread/create",
+                "params": { "prompt": "stream while TickTick is slow" },
+            })
+            .to_string(),
+        )
+        .await;
+        let created = read_response_with_id(&mut ws, 1).await;
+        let run_id = created["result"]["run_id"]
+            .as_str()
+            .expect("run id")
+            .to_string();
+
+        send(
+            &mut ws,
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "run/subscribe",
+                "params": { "run_id": run_id },
+            })
+            .to_string(),
+        )
+        .await;
+        let subscribed = read_response_with_id(&mut ws, 2).await;
+        assert_eq!(subscribed["id"], serde_json::json!(2));
+        let snapshot: serde_json::Value =
+            serde_json::from_str(&next_text(&mut ws).await).expect("snapshot");
+        assert_eq!(
+            snapshot["params"]["event"]["kind"],
+            serde_json::json!("snapshot")
+        );
+        let snapshot_has_text = snapshot["params"]["event"]["segments"]
+            .as_array()
+            .expect("snapshot segments")
+            .iter()
+            .any(|segment| {
+                segment["kind"] == serde_json::json!("text")
+                    && segment["text"]
+                        .as_str()
+                        .is_some_and(|text| !text.is_empty())
+            });
+        if !snapshot_has_text {
+            let first_delta: serde_json::Value =
+                serde_json::from_str(&next_text(&mut ws).await).expect("first delta");
+            assert_eq!(
+                first_delta["params"]["event"]["kind"],
+                serde_json::json!("text_delta")
+            );
+        }
+
+        send(
+            &mut ws,
+            r#"{"jsonrpc":"2.0","id":10,"method":"ticktick/tasks/list","params":{}}"#.to_string(),
+        )
+        .await;
+        ready_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("both TickTick reads are held");
+
+        send(
+            &mut ws,
+            r#"{"jsonrpc":"2.0","id":11,"method":"ticktick/status","params":{}}"#.to_string(),
+        )
+        .await;
+        std::fs::write(&gate_path, b"go").expect("release Worker tail");
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        let mut saw_status = false;
+        let mut saw_live_tail = false;
+        while tokio::time::Instant::now() < deadline && !(saw_status && saw_live_tail) {
+            let Some(body) = try_next_text(&mut ws, Duration::from_millis(100)).await else {
+                continue;
+            };
+            let frame: serde_json::Value = serde_json::from_str(&body).expect("frame json");
+            saw_status |= frame["id"] == serde_json::json!(11);
+            saw_live_tail |= frame["method"] == serde_json::json!("run/event")
+                && matches!(
+                    frame["params"]["event"]["kind"].as_str(),
+                    Some("text_delta" | "done")
+                );
+        }
+
+        release_tx.send(()).expect("release TickTick reads");
+        let list = loop {
+            let frame: serde_json::Value =
+                serde_json::from_str(&next_text(&mut ws).await).expect("frame json");
+            if frame["id"] == serde_json::json!(10) {
+                break frame;
+            }
+        };
+        assert!(list["result"]["tasks"].is_array(), "list response: {list}");
+        assert!(
+            saw_status,
+            "status response must flush before the held tasks/list completes"
+        );
+        assert!(
+            saw_live_tail,
+            "Run tail must flush before the held tasks/list completes"
+        );
+        ws.close(None).await.ok();
+    });
+
+    server.join().expect("held TickTick server exits");
+}
+
+#[test]
+fn closing_connection_during_detached_tasks_list_is_harmless() {
+    let (api_url, ready_rx, release_tx, server) = start_held_ticktick();
+    let workspace = Workspace::new();
+    let creds_dir = workspace.path().join("credentials");
+    write_ticktick_credential(&creds_dir, "tok_closed");
+
+    let core = workspace
+        .core()
+        .no_seeded_credential()
+        .env("INKSTONE_CREDENTIALS_DIR", &creds_dir)
+        .env("INKSTONE_TICKTICK_API_URL", &api_url)
+        .spawn();
+
+    rt().block_on(async {
+        let mut ws = core.connect().await;
+        send(
+            &mut ws,
+            r#"{"jsonrpc":"2.0","id":20,"method":"ticktick/tasks/list","params":{}}"#.to_string(),
+        )
+        .await;
+        ready_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("both TickTick reads are held");
+        ws.close(None).await.ok();
+        drop(ws);
+
+        release_tx.send(()).expect("release TickTick reads");
+        server.join().expect("held TickTick server exits");
+
+        let mut replacement = core.connect().await;
+        let status = call(&mut replacement, 21, "ticktick/status").await;
+        assert_eq!(status["id"], serde_json::json!(21));
+        assert_eq!(
+            status["result"]["state"],
+            serde_json::json!("connected"),
+            "the detached task's send to the dead connection was harmless"
+        );
+        replacement.close(None).await.ok();
+    });
 }

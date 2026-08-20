@@ -48,6 +48,29 @@ pub async fn dispatch(
     req: JsonRpcRequest,
     out_tx: &UnboundedSender<String>,
 ) {
+    if is_long_remote_handler(&req.method) {
+        let pool = pool.clone();
+        let hubs = hubs.clone();
+        let out_tx = out_tx.clone();
+        tokio::spawn(async move {
+            dispatch_inline(&pool, &hubs, req, &out_tx).await;
+        });
+        return;
+    }
+
+    dispatch_inline(pool, hubs, req, out_tx).await;
+}
+
+fn is_long_remote_handler(method: &str) -> bool {
+    matches!(method, "ticktick/tasks/list" | "provider/test")
+}
+
+async fn dispatch_inline(
+    pool: &SqlitePool,
+    hubs: &Hubs,
+    req: JsonRpcRequest,
+    out_tx: &UnboundedSender<String>,
+) {
     match req.method.as_str() {
         "run/post_message" => {
             post_message::handle(pool, hubs, req.id, req.params, out_tx).await;
@@ -186,6 +209,14 @@ mod tests {
 
     use crate::hub;
     use crate::protocol::JsonRpcRequest;
+
+    #[test]
+    fn only_long_remote_handlers_detach() {
+        assert!(super::is_long_remote_handler("ticktick/tasks/list"));
+        assert!(super::is_long_remote_handler("provider/test"));
+        assert!(!super::is_long_remote_handler("settings/set"));
+        assert!(!super::is_long_remote_handler("proposal/decide"));
+    }
 
     async fn dispatch_rpc(pool: &SqlitePool, method: &str) -> Option<Value> {
         let hubs = hub::new_hubs();
