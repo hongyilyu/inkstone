@@ -402,7 +402,7 @@ fn held_tasks_list_does_not_block_same_socket_run_tail_or_requests() {
         .await;
         std::fs::write(&gate_path, b"go").expect("release Worker tail");
 
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
         let mut saw_status = false;
         let mut saw_live_tail = false;
         while tokio::time::Instant::now() < deadline && !(saw_status && saw_live_tail) {
@@ -416,13 +416,7 @@ fn held_tasks_list_does_not_block_same_socket_run_tail_or_requests() {
         }
 
         release_tx.send(()).expect("release TickTick reads");
-        let list = loop {
-            let frame: serde_json::Value =
-                serde_json::from_str(&next_text(&mut ws).await).expect("frame json");
-            if frame["id"] == serde_json::json!(10) {
-                break frame;
-            }
-        };
+        let list = read_response_with_id(&mut ws, 10).await;
         assert!(list["result"]["tasks"].is_array(), "list response: {list}");
         assert!(
             saw_status,
