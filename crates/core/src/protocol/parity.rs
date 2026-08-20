@@ -349,6 +349,46 @@ mod parity_fixtures {
                     }),
                 }
             ),
+            // The remaining TickTickWriteState variants, each through an
+            // enclosing message, so the cross-language gate locks all five:
+            // `proposed` rides the PENDING read (`proposal/get`), while
+            // `failed`/`unknown` ride the settle notification.
+            fx!(
+                "proposal_get_result.ticktick_write.json",
+                ProposalGetResult {
+                    proposal_id: UUID_B.to_string(),
+                    run_id: UUID_RUN.to_string(),
+                    mutation_kind: "create_ticktick_task".to_string(),
+                    payload: serde_json::json!({ "title": "buy milk" }),
+                    rationale: Some("the user asked to be reminded".to_string()),
+                    review_context: None,
+                    resolved_plan: None,
+                    ticktick_write: Some(TickTickWriteState::Proposed {
+                        stale_connection: true,
+                    }),
+                    status: "pending".to_string(),
+                }
+            ),
+            fx!(
+                "proposal_changed_notification.ticktick_failed.json",
+                ProposalChangedNotification {
+                    run_id: UUID_RUN.to_string(),
+                    proposal_id: UUID_B.to_string(),
+                    status: "accepted".to_string(),
+                    ticktick_write: Some(TickTickWriteState::Failed {
+                        http_status: Some(401),
+                    }),
+                }
+            ),
+            fx!(
+                "proposal_changed_notification.ticktick_unknown.json",
+                ProposalChangedNotification {
+                    run_id: UUID_RUN.to_string(),
+                    proposal_id: UUID_B.to_string(),
+                    status: "accepted".to_string(),
+                    ticktick_write: Some(TickTickWriteState::Unknown),
+                }
+            ),
             fx!(
                 "thread_titled_notification.json",
                 ThreadTitledNotification {
@@ -1221,6 +1261,9 @@ mod parity_fixtures {
             "proposal_pending_notification.json",
             "proposal_changed_notification.json",
             "proposal_changed_notification.ticktick_write.json",
+            "proposal_changed_notification.ticktick_failed.json",
+            "proposal_changed_notification.ticktick_unknown.json",
+            "proposal_get_result.ticktick_write.json",
             "thread_titled_notification.json",
             "provider_connected_notification.json",
             "post_message_result.json",
@@ -1535,8 +1578,10 @@ mod parity_fixtures {
         ("TickTickDue", "ticktick_tasks_list_result.json tasks[].due"),
         (
             "TickTickWriteState",
-            "proposal_decide_result.ticktick_write.json / \
-             proposal_changed_notification.ticktick_write.json ticktick_write",
+            "all five variants: proposal_get_result.ticktick_write.json (proposed), \
+             proposal_changed_notification.ticktick_write.json (executing), \
+             proposal_decide_result.ticktick_write.json (created), \
+             proposal_changed_notification.ticktick_{failed,unknown}.json",
         ),
         (
             "TickTickChecklistItem",

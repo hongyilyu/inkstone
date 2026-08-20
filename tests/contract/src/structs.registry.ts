@@ -423,6 +423,14 @@ export const fixtures: readonly FixtureEntry[] = [
 		schema: ProposalGetResult,
 		dir: "emitted",
 	},
+	// The write family's PENDING read: the `proposed` TickTickWriteState variant
+	// with its read-derived staleness (ticktick-writes W-A4).
+	{
+		message: "ProposalGetResult",
+		file: "proposal_get_result.ticktick_write.json",
+		schema: ProposalGetResult,
+		dir: "emitted",
+	},
 	{
 		message: "ProposalDecideResult",
 		file: "proposal_decide_result.json",
@@ -458,6 +466,18 @@ export const fixtures: readonly FixtureEntry[] = [
 	{
 		message: "ProposalChangedNotification",
 		file: "proposal_changed_notification.ticktick_write.json",
+		schema: ProposalChangedNotification,
+		dir: "emitted",
+	},
+	{
+		message: "ProposalChangedNotification",
+		file: "proposal_changed_notification.ticktick_failed.json",
+		schema: ProposalChangedNotification,
+		dir: "emitted",
+	},
+	{
+		message: "ProposalChangedNotification",
+		file: "proposal_changed_notification.ticktick_unknown.json",
 		schema: ProposalChangedNotification,
 		dir: "emitted",
 	},
@@ -966,6 +986,24 @@ export const CANONICAL_MESSAGES: readonly string[] = [
 /** Expected fixture count per tagged-union message (grilling Q10). A union must
  * contribute exactly one fixture per wire variant; a dropped variant fixture reds
  * the completeness lock. Populated as unions are added (slices 3–4). */
+/** Tagged unions that ride NESTED inside other messages, so the
+ * fixtures-per-message count in {@link UNION_VARIANTS} cannot see them: the
+ * completeness lock instead reads the named field off every fixture and counts
+ * the distinct discriminator values. `TickTickWriteState` (ticktick-writes
+ * W-A4) is the first — its five states must ALL appear across the emitted
+ * fixtures, or a variant could change shape with nothing to catch it. */
+export const NESTED_UNION_VARIANTS = {
+	TickTickWriteState: {
+		/** The field the union rides on, searched at any depth. */
+		field: "ticktick_write",
+		/** Its discriminator. */
+		tag: "state",
+		variants: ["proposed", "executing", "created", "failed", "unknown"],
+	},
+} satisfies Readonly<
+	Record<string, { field: string; tag: string; variants: readonly string[] }>
+>;
+
 export const UNION_VARIANTS = {
 	// A tagged union must contribute a fixture for EVERY wire variant. The count
 	// is fixtures-per-message, so a variant carrying multiple fixtures (RunEvent's

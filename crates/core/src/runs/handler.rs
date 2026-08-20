@@ -205,6 +205,27 @@ mod tests {
         assert!(v.get("error").is_none());
     }
 
+    /// The write family's DEDICATED stale-credential code (ticktick-writes
+    /// W-A3): `-32005`, with a message that tells the user what to do. Pinned
+    /// so a future mapping change cannot fold this recoverable case back into
+    /// `-32002` (`proposal_not_pending`), which the Web answers with a doomed
+    /// retry instead of a stale-card warning.
+    #[tokio::test]
+    async fn stale_connection_frames_minus_32005_with_its_message() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        handle(json!(1), json!({ "id": Uuid::nil() }), &tx, |_p: TestParams| async move {
+            Err::<Value, _>(HandlerError::StaleConnection)
+        })
+        .await;
+        let v = recv_json(&mut rx);
+        assert_eq!(v["error"]["code"], json!(-32005));
+        assert_eq!(
+            v["error"]["message"],
+            json!("the TickTick connection changed since this was proposed — reject it and ask again")
+        );
+        assert!(v.get("result").is_none());
+    }
+
     #[tokio::test]
     async fn unknown_thread_frames_minus_32001() {
         let (tx, mut rx) = mpsc::unbounded_channel();
