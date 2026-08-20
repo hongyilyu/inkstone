@@ -116,15 +116,31 @@ function startFakeTickTick(): Promise<FakeTickTick> {
 				res
 					.writeHead(status, { "content-type": "application/json" })
 					.end(JSON.stringify(body));
+			// Method-exact, so a regression away from the TickTick contract
+			// (create + filter are POST, the project list is GET) fails here
+			// rather than passing on a wrong verb.
+			const method = req.method ?? "";
 			if (url.startsWith("/open/v1/project")) {
+				if (method !== "GET") {
+					json(405, { errorCode: "method_not_allowed" });
+					return;
+				}
 				json(200, []);
 				return;
 			}
 			if (url.startsWith("/open/v1/task/filter")) {
+				if (method !== "POST") {
+					json(405, { errorCode: "method_not_allowed" });
+					return;
+				}
 				json(200, rows);
 				return;
 			}
 			if (url.startsWith("/open/v1/task")) {
+				if (method !== "POST") {
+					json(405, { errorCode: "method_not_allowed" });
+					return;
+				}
 				if (createStatus !== 200) {
 					// A deterministic rejection: nothing is created.
 					json(createStatus, { errorCode: "rejected" });

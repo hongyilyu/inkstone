@@ -221,7 +221,9 @@ function readProposeScenario(): ProposeScenario {
 			action?: unknown;
 			body?: string;
 			occurred_at?: string;
-			title?: string;
+			title?: unknown;
+			note?: unknown;
+			due?: unknown;
 		}>;
 	};
 	try {
@@ -250,13 +252,35 @@ function readProposeScenario(): ProposeScenario {
 				`INKSTONE_FAUX_PROPOSE_PARAMS turn ${index}: unknown action ${JSON.stringify(turn.action)} (expected create|update|delete|ticktick_task)`,
 			);
 		}
-		if (
-			turn.action === "ticktick_task" &&
-			(turn.title === undefined || turn.title === "")
-		) {
-			throw new Error(
-				`INKSTONE_FAUX_PROPOSE_PARAMS turn ${index}: ticktick_task requires "title"`,
-			);
+		if (turn.action === "ticktick_task") {
+			// Fail fast on the WHOLE turn (the module's stated contract): a
+			// non-string title or a `due: null` would otherwise surface as a
+			// throw deep in playback, or as an invalid proposal payload Core
+			// rejects far from the authoring mistake.
+			if (typeof turn.title !== "string" || turn.title === "") {
+				throw new Error(
+					`INKSTONE_FAUX_PROPOSE_PARAMS turn ${index}: ticktick_task requires a non-empty string "title"`,
+				);
+			}
+			if (turn.note !== undefined && typeof turn.note !== "string") {
+				throw new Error(
+					`INKSTONE_FAUX_PROPOSE_PARAMS turn ${index}: ticktick_task "note" must be a string`,
+				);
+			}
+			if (turn.due !== undefined) {
+				const due = turn.due;
+				if (
+					typeof due !== "object" ||
+					due === null ||
+					Array.isArray(due) ||
+					typeof (due as { date?: unknown }).date !== "string" ||
+					(due as { date: string }).date === ""
+				) {
+					throw new Error(
+						`INKSTONE_FAUX_PROPOSE_PARAMS turn ${index}: ticktick_task "due" must be an object with a non-empty string "date"`,
+					);
+				}
+			}
 		}
 		if (turn.action === "create") {
 			// Empty strings are as wrong as missing fields: an empty-body create

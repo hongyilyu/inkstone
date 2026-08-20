@@ -55,9 +55,43 @@ test("prompt boundary fixture rejects a boundary missing the capability limits",
 		hasReminderBoundary(`
 			Do not propose a Journal Entry for reminders, tasks, or future
 			obligations. TickTick is the user's task system: propose ONE TickTick
-			task via propose_ticktick_task — never a Journal Entry.
+			task via propose_ticktick_task — never a Journal Entry, and never any
+			other Workspace mutation for it. Every task lands in TickTick's Inbox.
 		`),
 	).toBe(false);
+});
+
+// Each required constraint is load-bearing on its own: dropping ANY of them
+// must red the predicate, or the e2e boundary test would pass for a prompt that
+// (say) permits a second Workspace mutation alongside the task. The phrases are
+// matched as whitespace-flexible regexes because the shipped prompt wraps them.
+test("prompt boundary fixture rejects a prompt missing any single constraint", () => {
+	const full = `
+		Do not propose a Journal Entry for reminders, tasks, instructions, or
+		future obligations. TickTick is the user's task system: propose ONE
+		TickTick task via propose_ticktick_task — never a Journal Entry, and never
+		any other Workspace mutation for it. Every task lands in TickTick's Inbox.
+		You still cannot complete, edit, or delete a task.
+	`;
+	expect(hasReminderBoundary(full)).toBe(true);
+
+	const required: ReadonlyArray<readonly [string, RegExp]> = [
+		[
+			"the tool call",
+			/propose\s+ONE\s+TickTick\s+task\s+via\s+propose_ticktick_task/,
+		],
+		["never a Journal Entry", /never\s+a\s+Journal\s+Entry/],
+		["no other mutation", /never\s+any\s+other\s+Workspace\s+mutation/],
+		["Inbox-only", /Inbox/],
+		["no complete/edit/delete", /cannot\s+complete,\s+edit,\s+or\s+delete/],
+	];
+	for (const [name, pattern] of required) {
+		const without = full.replace(pattern, "");
+		expect(without, `the phrase must exist to be removed: ${name}`).not.toBe(
+			full,
+		);
+		expect(hasReminderBoundary(without), `without ${name}`).toBe(false);
+	}
 });
 
 // ADR-0042 (narrowed by ADR-0064): the REAL shipped prompt must teach the

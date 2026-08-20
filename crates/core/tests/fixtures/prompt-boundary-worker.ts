@@ -64,17 +64,25 @@ const BAD_REMINDER_PROPOSAL = {
 // dead-end and any softened wording that drops the tool name.
 export function hasReminderBoundary(systemPrompt: string): boolean {
 	const lower = systemPrompt.toLowerCase();
+	// Wrapped phrases are matched on whitespace-collapsed text, so a harmless
+	// reflow of the shipped prompt cannot flip this predicate.
+	const flat = lower.split(/\s+/).join(" ");
 	return (
 		lower.includes("do not propose a journal entry") &&
 		lower.includes("reminders") &&
 		lower.includes("tasks") &&
 		lower.includes("ticktick is the user's task system") &&
 		lower.includes("propose_ticktick_task") &&
-		lower.includes("never a journal entry") &&
-		lower.includes("cannot complete, edit, or delete") &&
+		// ONE task per proposal, and no OTHER mutation may ride along.
+		flat.includes("propose one ticktick task via") &&
+		flat.includes("never a journal entry") &&
+		flat.includes("never any other workspace mutation") &&
+		// The capability limits stay honest: Inbox-only, no complete/edit/delete.
+		lower.includes("inbox") &&
+		flat.includes("cannot complete, edit, or delete") &&
 		// The retired dead-end must be GONE: "tell them to add it in TickTick"
 		// with no proposal is exactly the capability ADR-0065 restores.
-		!lower.includes("add it in ticktick — do not propose")
+		!flat.includes("add it in ticktick — do not propose")
 	);
 }
 
