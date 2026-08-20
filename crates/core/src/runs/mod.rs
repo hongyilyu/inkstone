@@ -1,9 +1,10 @@
 //! Run lifecycle: JSON-RPC method dispatch + per-method handlers.
 //!
-//! [`dispatch`] is the single `match` over the wire method; each arm routes to
-//! a dedicated handler module. Shared wire-framing lives in [`reply`], SQL in
-//! [`crate::db`], Worker management in [`crate::worker`], the per-run hub in
-//! [`crate::hub`].
+//! [`dispatch`] applies the connection scheduling policy, then
+//! [`dispatch_inline`] is the single `match` over the wire method; each arm
+//! routes to a dedicated handler module. Shared wire-framing lives in [`reply`],
+//! SQL in [`crate::db`], Worker management in [`crate::worker`], the per-run hub
+//! in [`crate::hub`].
 
 mod cancel;
 mod catalog;
@@ -32,17 +33,72 @@ mod thread_mutate;
 mod ticktick;
 pub(crate) mod title;
 
+use std::future::Future;
+
 use sqlx::SqlitePool;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::hub::Hubs;
 use crate::protocol::{JsonRpcRequest, SubscribeParams};
 
+/// Keep the connection's single read/write loop live while a remote handler is
+/// in flight. Detached responses remain paired by request id and may interleave
+/// with later responses or Run Events on the same connection.
+pub async fn dispatch(
+    pool: &SqlitePool,
+    hubs: &Hubs,
+    req: JsonRpcRequest,
+    out_tx: &UnboundedSender<String>,
+) {
+    if is_long_remote_handler(&req.method) {
+        let pool = pool.clone();
+        let hubs = hubs.clone();
+        let dispatch_tx = out_tx.clone();
+        spawn_detached_handler(
+            req.method.clone(),
+            req.id.clone(),
+            out_tx.clone(),
+            async move {
+                dispatch_inline(&pool, &hubs, req, &dispatch_tx).await;
+            },
+        );
+        return;
+    }
+
+    dispatch_inline(pool, hubs, req, out_tx).await;
+}
+
+/// Remote round trips that must not hold the socket's single read/write loop.
+fn is_long_remote_handler(method: &str) -> bool {
+    matches!(method, "ticktick/tasks/list" | "provider/test")
+}
+
+fn spawn_detached_handler<F>(
+    method: String,
+    id: serde_json::Value,
+    out_tx: UnboundedSender<String>,
+    future: F,
+) where
+    F: Future<Output = ()> + Send + 'static,
+{
+    tokio::spawn(async move {
+        if let Err(error) = tokio::spawn(future).await {
+            handler::frame_error(
+                &out_tx,
+                id,
+                handler::HandlerError::Internal(anyhow::anyhow!(
+                    "detached handler {method} failed: {error}"
+                )),
+            );
+        }
+    });
+}
+
 /// Route a decoded JSON-RPC request to its handler, one `match` arm per
 /// method. An unknown method is answered with a JSON-RPC `-32601` (method not
 /// found) so a typo'd or misrouted verb fails loud instead of leaving the
 /// client's request future awaiting a reply that never comes.
-pub async fn dispatch(
+async fn dispatch_inline(
     pool: &SqlitePool,
     hubs: &Hubs,
     req: JsonRpcRequest,
@@ -187,7 +243,19 @@ mod tests {
     use crate::hub;
     use crate::protocol::JsonRpcRequest;
 
-    async fn dispatch_rpc(pool: &SqlitePool, method: &str) -> Option<Value> {
+    #[test]
+    fn only_long_remote_handlers_detach() {
+        assert!(super::is_long_remote_handler("ticktick/tasks/list"));
+        assert!(super::is_long_remote_handler("provider/test"));
+        assert!(!super::is_long_remote_handler("settings/set"));
+        assert!(!super::is_long_remote_handler("proposal/decide"));
+    }
+
+    async fn dispatch_rpc(
+        pool: &SqlitePool,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Option<Value> {
         let hubs = hub::new_hubs();
         let (tx, mut rx) = mpsc::unbounded_channel();
         super::dispatch(
@@ -197,20 +265,64 @@ mod tests {
                 jsonrpc: "2.0".to_string(),
                 id: json!(7),
                 method: method.to_string(),
-                params: json!({}),
+                params,
             },
             &tx,
         )
         .await;
-        rx.try_recv()
-            .ok()
+        tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+            .await
+            .expect("dispatch replies within the test deadline")
             .map(|line| serde_json::from_str(&line).expect("frame is JSON"))
+    }
+
+    #[tokio::test]
+    async fn detached_handler_panic_replies_internal_error() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        super::spawn_detached_handler("test/panic".to_string(), json!(8), tx, async move {
+            panic!("detached test panic")
+        });
+        let line = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+            .await
+            .expect("panic recovery replies within the test deadline")
+            .expect("panic recovery queues a frame");
+        let frame: Value = serde_json::from_str(&line).expect("frame is JSON");
+        assert_eq!(frame["id"], json!(8));
+        assert_eq!(frame["error"]["code"], json!(-32603));
+        assert_eq!(frame["error"]["message"], json!("internal error"));
+    }
+
+    #[tokio::test]
+    async fn detached_handler_finishes_with_closed_response_channel() {
+        let (tx, rx) = mpsc::unbounded_channel();
+        drop(rx);
+        let reply_tx = tx.clone();
+        let (finished_tx, finished_rx) = tokio::sync::oneshot::channel();
+
+        super::spawn_detached_handler("test/closed".to_string(), json!(9), tx, async move {
+            super::reply::send_response(&reply_tx, json!(9), json!({ "ok": true }));
+            finished_tx.send(()).expect("signal detached completion");
+        });
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), finished_rx)
+            .await
+            .expect("detached handler completes within the test deadline")
+            .expect("detached handler signals completion");
+    }
+
+    #[tokio::test]
+    async fn detached_provider_test_name_is_routable() {
+        let pool = memory_pool().await;
+        let frame = dispatch_rpc(&pool, "provider/test", json!({}))
+            .await
+            .expect("detached method replies");
+        assert_eq!(frame["error"]["code"], json!(-32602), "{frame:?}");
     }
 
     #[tokio::test]
     async fn unknown_method_replies_method_not_found() {
         let pool = memory_pool().await;
-        let frame = dispatch_rpc(&pool, "does/not_exist")
+        let frame = dispatch_rpc(&pool, "does/not_exist", json!({}))
             .await
             .expect("a frame was queued (previously the arm dropped it silently)");
         assert_eq!(frame["error"]["code"], json!(-32601), "{frame:?}");
